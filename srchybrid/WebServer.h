@@ -80,12 +80,6 @@ typedef struct
 	TCHAR	sClientSoft[2];
 } QueueUsers;
 
-struct SortParams
-{
-	int eSort;
-	bool bReverse;
-};
-
 typedef enum
 {
 	  DOWN_SORT_STATE
@@ -185,7 +179,9 @@ typedef struct
 	CStringA		sHost;
 	CStringA		sOrigin;
 	CStringA		sRange;
+	CStringA		sBrowserSessionToken;
 	ese::web::WebRouteId webRoute;
+	bool			bSecureTransport;
 	void			*pThis;
 	CWebSocket		*pSocket;
 	in_addr			inadr;
@@ -262,10 +258,6 @@ private:
 	static void		_GetClientversionImage(const CUpDownClient &client, TCHAR pSoft[2]);
 
 	bool			_GetIsTempDisabled() const	{ return m_bIsTempDisabled; } //never used
-
-	//comparators for quick sort
-	static int AFX_CDECL _DownloadCmp(void *prm, void const *pv1, void const *pv2);
-	static int AFX_CDECL _UploadCmp(void *prm, void const *pv1, void const *pv2);
 
 	// Common data
 	ese::web::WebAuthPolicy m_authPolicy;

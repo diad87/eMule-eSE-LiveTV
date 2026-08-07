@@ -1,0 +1,66 @@
+{
+  "schema": "ese.mod52.migration-contract/v2",
+  "status": "PRE-A",
+  "w12_base_commit": "545cdf45f9f2efaf56899bee6459bc133cf96071",
+  "scope": "Binding W12 security-expansion and reach-observability closure ratchet; does not rewrite M2A v1 evidence.",
+  "supersedes": ["docs/architecture/mod52_migration_contract_v1.json"],
+  "supersedes_for_card": "M2A-W12",
+  "change_scope": "Only the W12 expansion overlay, reviewed read-only reach-status adapter, advertised Kad6 bind-port correction, and their PRE-A/A/H/R evidence are changed.",
+  "v1_evidence": {
+    "path": "docs/architecture/mod52_migration_contract_v1.json",
+    "sha256": "b3957aca15b7c25e42229c3f9623bff881b450c7277323a28c7639e0ea9f3caf",
+    "immutable": true
+  },
+  "inputs": {
+    "matrix": "docs/architecture/mod52_migration_matrix_v2.json",
+    "ownership": "docs/architecture/mod03_ownership_layering_contract_v3.json",
+    "gates": "docs/architecture/mod04_architecture_gate_catalog_v3.json",
+    "security_contract": "docs/architecture/MOD52_W12_SECURITY_EXPANSION_PLAN_2026-08-02.md"
+  },
+  "card_prerequisites": ["M2A-W11 active", "matrix v2 valid", "MOD-0.3 v3 valid", "MOD-0.4 v3 valid", "Sol has no unresolved P0/P1"],
+  "card_total_budget": {
+    "add_max": 12000,
+    "delete_min": 5500,
+    "net_max": 6500,
+    "scope": "entire closed CARD_PATHS set"
+  },
+  "coordinator_limits": {
+    "WebServer": {"combined_add_max": 500, "combined_delete_min": 120, "combined_net_max": 300, "cpp_target_loc_max": 2100, "cpp_hard_loc_max": 3500, "header_hard_loc_max": 300, "new_mutable_fields": 0, "actual_w12_delta": {"cpp_baseline_physical_loc": 1756, "cpp_current_physical_loc": 2048, "cpp_add": 419, "cpp_delete": 127, "cpp_net": 292, "header_add": 2, "header_delete": 10, "header_net": -8, "combined_add": 421, "combined_delete": 137, "combined_net": 284}},
+    "LiveStreamManager": {"header_hard_loc_max": 700, "cpp_growth_max": 0, "actual_w12_delta": {"header": -2, "cpp": -10}}
+  },
+  "ratchet": {
+    "card_paths_closed": true,
+    "unlisted_production_path": "STOP; publish v3 governance before editing the path.",
+    "coordinator_added_lines_max": 500,
+    "coordinator_deleted_lines_min": 120,
+    "coordinator_net_lines_max": 300,
+    "webserver_cpp_hard_loc_max": 3500,
+    "webserver_cpp_target_loc_max": 2100,
+    "webserver_header_hard_loc_max": 300,
+    "webserver_new_mutable_fields": 0,
+    "live_stream_manager_header_hard_loc_max": 700,
+    "live_stream_manager_cpp_growth_max": 0,
+    "no_new_scc": true,
+    "no_new_over_150_function": true,
+    "no_baseline_oversized_function_growth": true
+  },
+  "additional_modules": ["WebServerFacade", "WebHlsCapabilityController"],
+  "approved_header_only_ports": {"entries": [], "policy": "LiveHlsReadLease is a bounded h/cpp partition, not a header-only port."},
+  "coverage_requirements": ["card:W12", "module:WebServerFacade", "binding:WebServerFacade", "module:WebHlsCapabilityController", "port:LiveHlsReadLease", "finding:W7-SEC-02", "contract:W12-HLS-SECURITY", "endpoint:reach-status", "snapshot:direct-reachability", "security:reach-status-boundary", "contract:advertised-bind-ports"],
+  "security_invariants": {
+    "commit_order": "parse -> Inspect -> exact live lease revalidation -> Commit/touch -> bounded capture -> conditional Note -> send outside lease",
+    "live_lock_order": "LiveStreamManager::m_lock -> WebAuthPolicy::m_mutex -> atomic aggregate reservation",
+    "forbidden_under_lease": ["network send", "UI", "wait", "manager re-entry"],
+    "buffer_cap_per_response_bytes": 20971520,
+    "buffer_cap_aggregate_bytes": 67108864,
+    "capacity_rejection": "503 + Retry-After: 1 + Cache-Control: no-store + Referrer-Policy: no-referrer",
+    "generation_reuse": "A capability can only read bytes and invoke NotePlayerFetch while the exact {role, stream, generation} lease remains current."
+  },
+  "acceptance": {
+    "pre_a": ["W12-COV-01 through W12-COV-05 and W12-COV-08 through W12-COV-11 pass", "Sol independent review APPROVE", "PRE-A budgets comply"],
+    "a": ["W12-COV-06 passes", "clean build", "focal suites", "MOD-5.2 W12 overlay ratchet", "immutable evidence commit"],
+    "h": ["W12-COV-06 repeats from a clean checkout", "production hashes equal A", "no semantic change"],
+    "r": ["W12-COV-07 passes", "final binary exercise", "real-browser no Referer proof", "A-hash-bound collector v3 and proxy-derived CDP-shaped capture", "normalized R trace redacts cookie and x-csrf-token header names while rejecting Referer", "exactly one W12_BROWSER_READY marker to an ACL-isolated exchange hash-only ready file", "exactly five persistent R artifacts", "W7-SEC-02 trace closure"],
+    "complete": ["W12-COV-01 through W12-COV-11 all pass at their declared stages"]
+  }
+}

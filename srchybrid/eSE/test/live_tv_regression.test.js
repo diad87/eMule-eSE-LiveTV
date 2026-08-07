@@ -1671,3 +1671,53 @@ test('URL sources resolve publicly and are pinned before FFmpeg starts', async (
     /DNS-resolved/
   );
 });
+
+test('reach status route is registered and wired through the W12 facade', () => {
+  const table = read(repoRoot, 'srchybrid', 'WebRouteTable.cpp');
+  assert.match(table, /\{"\/api\/reach\/status", WebRouteId::ApiReachStatus\},/);
+  assert.match(read(repoRoot, 'srchybrid', 'WebRouteTable.h'), /ApiReachStatus/);
+  const inventory = JSON.parse(read(repoRoot, 'docs', 'architecture', 'mod23_web_route_inventory_v1.json'));
+  assert.ok(inventory.exact_get_routes.includes('/api/reach/status'));
+  const server = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  assert.match(server, /WebRouteId::ApiReachStatus/);
+  const reachAt = server.indexOf('bool W10DiagnosticsContext::Reach(');
+  assert.ok(reachAt >= 0);
+  const reachLine = server.slice(reachAt, server.indexOf('\n', reachAt));
+  assert.match(reachLine, /theApp\.directreachability/);
+  assert.match(reachLine, /GetStatusJson/);
+  assert.doesNotMatch(reachLine, /GetSnapshot/);
+});
+
+test('reach status serializer maps states literally and leaks no secret field', () => {
+  const mgr = read(repoRoot, 'srchybrid', 'DirectReachabilityManager.cpp');
+  const begin = mgr.indexOf('ReachGateStateName');
+  const end = mgr.indexOf('void CDirectReachabilityManager::GetStatusJson');
+  assert.ok(begin >= 0 && end > begin);
+  const serializer = mgr.slice(begin, end);
+  assert.match(serializer, /Verifying:[\s\S]{0,60}?"CANDIDATE"/);
+  assert.match(serializer, /Renewing:[\s\S]{0,60}?"VERIFIED"/);
+  assert.match(serializer, /Degraded:[\s\S]{0,60}?"WITHDRAWN"/);
+  assert.match(serializer, /ESE_REACH_STATUS_V1/);
+  for (const field of [
+    'usable', 'requested_external_port', 'granted_external_port',
+    'lifetime_seconds', 'mapper_epoch', 'structurally_valid'
+  ]) assert.match(serializer, new RegExp(`\\\\"${field}\\\\"`));
+  assert.match(serializer, /ReachEvidenceJson[\s\S]*?generation/);
+  assert.doesNotMatch(serializer, /ownership_nonce/);
+  assert.doesNotMatch(serializer, /observed_monotonic_ms/);
+  assert.doesNotMatch(serializer, /\\"(?:address|gateway)\\"/);
+});
+
+test('reach status cache publishes std::string under mutex', () => {
+  const hdr = read(repoRoot, 'srchybrid', 'DirectReachabilityManager.h');
+  assert.match(hdr, /void GetStatusJson\(CStringA& json\) const;/);
+  assert.match(hdr, /void UpdateStatusCache\(\) noexcept;/);
+  assert.match(hdr, /mutable std::mutex m_cacheMutex;/);
+  assert.match(hdr, /std::string m_statusJson;/);
+  const mgr = read(repoRoot, 'srchybrid', 'DirectReachabilityManager.cpp');
+  const getAt = mgr.indexOf('void CDirectReachabilityManager::GetStatusJson');
+  assert.ok(getAt >= 0);
+  const getBody = mgr.slice(getAt, mgr.indexOf('\n}', getAt) + 2);
+  assert.match(getBody, /lock_guard/);
+  assert.doesNotMatch(getBody, /m_snapshot/);
+});

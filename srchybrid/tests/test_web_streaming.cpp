@@ -56,6 +56,7 @@ int main()
 	using ese::web::WebFileResponseOptions;
 	using ese::web::WebSocketResponse;
 	using ese::web::WebStaticAssets;
+	using ese::web::WebPreparedFileResponse;
 
 	const auto none = WebStaticAssets::ParseRange("", 100);
 	Check(none.status == WebRangeStatus::None, "missing range");
@@ -147,6 +148,7 @@ int main()
 	WebFileResponseOptions responseOptions;
 	responseOptions.corsOrigin = "*";
 	responseOptions.attachmentUtf8 = "bad\r\nname\".bin";
+	responseOptions.noReferrer = true;
 	const auto response = WebStaticAssets::PlanResponse(
 		"movie.ts",
 		"bytes=10-19",
@@ -163,6 +165,10 @@ int main()
 			std::string::npos,
 		"CORS response header");
 	Check(
+		response.headers.find("Referrer-Policy: no-referrer") !=
+			std::string::npos,
+		"partial file response can suppress capability referrers");
+	Check(
 		response.headers.find("\r\nname") == std::string::npos,
 		"attachment cannot inject headers");
 	Check(
@@ -177,6 +183,36 @@ int main()
 	Check(
 		rejected.headers.find("Content-Range: bytes */100") != std::string::npos,
 		"range rejection content-range");
+	Check(
+		rejected.headers.find("Referrer-Policy: no-referrer") !=
+			std::string::npos,
+		"range rejection suppresses capability referrers");
+
+	WebFileResponseOptions capabilityOptions;
+	capabilityOptions.cacheControl = "no-store";
+	capabilityOptions.noReferrer = true;
+	const auto capabilityResponse = WebStaticAssets::PlanResponse(
+		"stream.m3u8", "", 42, capabilityOptions);
+	Check(
+		capabilityResponse.statusCode == 200 &&
+		capabilityResponse.headers.find("Cache-Control: no-store") !=
+			std::string::npos &&
+		capabilityResponse.headers.find("Referrer-Policy: no-referrer") !=
+			std::string::npos &&
+		capabilityResponse.headers.find("Access-Control-Allow-Origin:") ==
+			std::string::npos,
+		"capability file policy is no-store, no-referrer and same-origin");
+	for (const ese::web::WebFileErrorStatus status : {
+			ese::web::WebFileErrorStatus::Forbidden,
+			ese::web::WebFileErrorStatus::NotFound,
+			ese::web::WebFileErrorStatus::InternalServerError}) {
+		const std::string error =
+			WebStaticAssets::BuildErrorResponse(status, capabilityOptions);
+		Check(
+			error.find("Cache-Control: no-store") != std::string::npos &&
+			error.find("Referrer-Policy: no-referrer") != std::string::npos,
+			"capability early file errors retain no-store and no-referrer");
+	}
 	Check(
 		rejected.headers.find("Access-Control-Allow-Origin: *") !=
 			std::string::npos,
@@ -228,6 +264,119 @@ int main()
 	Check(!streamed.SourceAttached(), "source released at declared length");
 	Check(streamed.FrontSize() == 6, "final stream chunk length");
 	Check(streamed.Consume(6) && !streamed.Pending(), "stream fully drained");
+
+	Check(
+		WebStaticAssets::ReservedPreparedBodyBytes() == 0u,
+		"prepared-body budget starts empty");
+	{
+		std::shared_ptr<void> reservation =
+			WebStaticAssets::ReservePreparedBody(3u);
+		WebSocketResponse completion;
+		Check(
+			reservation && completion.AttachSource(
+				std::make_unique<TestSource>("abc"), 3u,
+				std::move(reservation)),
+			"completion reservation attaches with source");
+		Check(completion.PumpSource(3u), "completion source pumps");
+		Check(
+			WebStaticAssets::ReservedPreparedBodyBytes() == 3u,
+			"reservation survives source completion while bytes remain queued");
+		Check(completion.Consume(3u), "completion bytes consume");
+		Check(
+			WebStaticAssets::ReservedPreparedBodyBytes() == 0u,
+			"reservation releases only after final byte consumption");
+	}
+	{
+		std::shared_ptr<void> reservation =
+			WebStaticAssets::ReservePreparedBody(4u);
+		WebSocketResponse failed;
+		Check(
+			failed.AttachSource(
+				std::make_unique<TestSource>("fail"), 4u,
+				std::move(reservation)),
+			"failure reservation attaches");
+		failed.Fail();
+		Check(
+			WebStaticAssets::ReservedPreparedBodyBytes() == 0u,
+			"failure releases completion reservation");
+	}
+	{
+		std::shared_ptr<void> reservation =
+			WebStaticAssets::ReservePreparedBody(6u);
+		WebSocketResponse closing;
+		Check(
+			closing.AttachSource(
+				std::make_unique<TestSource>("closed"), 6u,
+				std::move(reservation)),
+			"close reservation attaches");
+		closing.RequestClose();
+		Check(
+			WebStaticAssets::ReservedPreparedBodyBytes() == 6u &&
+			closing.Pending(),
+			"close request retains reservation while delivery is pending");
+		Check(closing.PumpSource(6u), "closing source pumps");
+		Check(closing.Consume(6u), "closing bytes consume");
+		Check(
+			WebStaticAssets::ReservedPreparedBodyBytes() == 0u,
+			"closing response releases reservation after final byte");
+	}
+	{
+		std::shared_ptr<void> reservation =
+			WebStaticAssets::ReservePreparedBody(5u);
+		WebSocketResponse failureResponse;
+		const char prefix[] = "hdr";
+		Check(
+			failureResponse.Enqueue(prefix, 3u),
+			"failure-path prefix queues");
+		Check(
+			failureResponse.AttachSource(
+				std::make_unique<TestSource>("bytes"), 5u,
+				std::move(reservation)),
+			"failure-path reservation attaches");
+		Check(
+			!failureResponse.Enqueue(prefix, 3u) &&
+			failureResponse.Failed() &&
+			failureResponse.QueuedBytes() == 3u &&
+			!failureResponse.SourceAttached(),
+			"enqueue rejection preserves historical queue and aborts source");
+		Check(
+			WebStaticAssets::ReservedPreparedBodyBytes() == 0u,
+			"implicit response failure releases completion reservation");
+	}
+	{
+		std::shared_ptr<void> reservation =
+			WebStaticAssets::ReservePreparedBody(7u);
+		WebSocketResponse abandoned;
+		Check(
+			abandoned.AttachSource(
+				std::make_unique<TestSource>("abandon"), 7u,
+				std::move(reservation)),
+			"destructor reservation attaches");
+	}
+	Check(
+		WebStaticAssets::ReservedPreparedBodyBytes() == 0u,
+		"response destructor releases completion reservation");
+	Check(
+		!WebStaticAssets::ReservePreparedBody(
+			WebPreparedFileResponse::kMaximumBodyBytes + 1u),
+		"a single prepared response cannot exceed 20 MiB");
+	{
+		const std::uint64_t slice =
+			WebPreparedFileResponse::kMaximumBodyBytes;
+		auto firstReservation = WebStaticAssets::ReservePreparedBody(slice);
+		auto secondReservation = WebStaticAssets::ReservePreparedBody(slice);
+		auto thirdReservation = WebStaticAssets::ReservePreparedBody(slice);
+		auto rejectedReservation = WebStaticAssets::ReservePreparedBody(
+			5ull * 1024ull * 1024ull);
+		Check(
+			firstReservation && secondReservation && thirdReservation &&
+			!rejectedReservation &&
+			WebStaticAssets::ReservedPreparedBodyBytes() == 3u * slice,
+			"three 20 MiB buffers fit and the next 5 MiB is backpressured");
+	}
+	Check(
+		WebStaticAssets::ReservedPreparedBodyBytes() == 0u,
+		"aggregate reservations release through RAII");
 
 	if (failures == 0)
 		std::cout << "web streaming tests: PASS\n";

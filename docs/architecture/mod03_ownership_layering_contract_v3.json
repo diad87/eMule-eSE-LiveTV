@@ -1,0 +1,30 @@
+{
+  "schema": "ese.mod03.ownership-layering-contract/v3",
+  "status": "PRE-A",
+  "scope": "W12 ownership and layering overlay; v1 and v2 remain immutable historical evidence.",
+  "supersedes": ["docs/architecture/mod03_ownership_layering_contract_v1.json", "docs/architecture/mod03_ownership_layering_contract_v2.json"],
+  "supersedes_for_card": "M2A-W12",
+  "change_scope": "W12 HLS security ownership, lease partition, and dependency constraints only.",
+  "historical_evidence": {
+    "v1_path": "docs/architecture/mod03_ownership_layering_contract_v1.json",
+    "v1_sha256": "0d5bd65c29b48f8525f5a5edcf8ee754610366af89d18cec3f2e51ecbfd98e42",
+    "v2_path": "docs/architecture/mod03_ownership_layering_contract_v2.json"
+  },
+  "owners": [
+    {"surface": "CWebServer", "owns": ["legacy facade composition", "HTTP endpoint orchestration"], "must_not_own": ["new mutable security state", "generation lease state", "buffer reservation state"]},
+    {"surface": "WebAuthPolicy", "owns": ["session/capability digests", "expiry", "revocation", "atomic Commit/touch"], "must_not_own": ["filesystem", "socket send", "LiveStreamManager lock"]},
+    {"surface": "WebHlsCapabilityController", "owns": ["Inspect/Commit capability decision only"], "must_not_own": ["route parsing", "file IO", "socket send", "session store mutation outside Commit"]},
+    {"surface": "LiveHlsReadLease", "owns": ["typed lease callback boundary", "exact role/stream/generation revalidation", "conditional NotePlayerFetch"], "must_not_own": ["persistent LiveStreamManager field", "network send", "UI", "unbounded buffering", "WebAuthPolicy state", "WebSocketResponse state"]},
+    {"surface": "LiveStreamManager", "owns": ["live role/stream/generation/root truth", "m_lock"], "must_not_own": ["new W12 coordinator field", "HTTP policy", "socket response ownership"]},
+    {"surface": "WebSocketResponse", "owns": ["prepared immutable body lifetime", "aggregate reservation release on completion/failure/disconnect"], "must_not_own": ["capability authorization", "LiveStreamManager access"]},
+    {"surface": "WebStaticAssets", "owns": ["safe response/error construction"], "must_not_own": ["HLS capability authentication", "session mutation"]}
+  ],
+  "layer_rules": {
+    "WebHlsCapabilityController": ["WebAuthPolicy"],
+    "LiveHlsReadLease": {"header_direct_dependencies": 0, "cpp_direct_dependencies": ["LiveStreamManager"], "callback": "caller-owned capture executes synchronously under the validated lease"},
+    "WebSocketResponse": [],
+    "forbidden_reverse_dependencies": ["WebAuthPolicy -> CWebServer", "LiveStreamManager -> CWebServer", "WebSocketResponse -> WebAuthPolicy", "LiveHlsReadLease -> UI/socket concrete types"]
+  },
+  "callback_rule": "The lease callback is caller-owned, synchronous and bounded while m_lock is held: it performs the prepared capture after revalidation and before conditional NotePlayerFetch. It cannot wait, send, invoke UI, or re-enter LiveStreamManager. Network completion owns only immutable prepared data after lease release.",
+  "approval": "Any new owner, port, direct dependency, or mutable field requires a reviewed v4 before implementation."
+}

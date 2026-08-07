@@ -5,10 +5,40 @@
 
 #include <chrono>
 #include <cstring>
+#include <mutex>
+#include <string>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #endif
+
+namespace {
+const char* ReachGateStateName(natmap::ReachabilityState state)
+{
+	switch (state) {
+	case natmap::ReachabilityState::Disabled: return "DISABLED";
+	case natmap::ReachabilityState::Discovering: return "DISCOVERING";
+	case natmap::ReachabilityState::Mapping: return "DISCOVERING";
+	case natmap::ReachabilityState::CandidateMapped: return "CANDIDATE";
+	case natmap::ReachabilityState::Verifying: return "CANDIDATE";
+	case natmap::ReachabilityState::Reachable: return "VERIFIED";
+	case natmap::ReachabilityState::Renewing: return "VERIFIED";
+	case natmap::ReachabilityState::Degraded: return "WITHDRAWN";
+	case natmap::ReachabilityState::BlockedByCgnat: return "BLOCKED";
+	case natmap::ReachabilityState::BlockedByRouter: return "BLOCKED";
+	}
+	return "BLOCKED";
+}
+const char* ReachStateName(natmap::ReachabilityState v) { static const char* const n[]={"Disabled","Discovering","Mapping","CandidateMapped","Verifying","Reachable","Renewing","Degraded","BlockedByCgnat","BlockedByRouter"}; return static_cast<unsigned>(v)<10?n[static_cast<unsigned>(v)]:"Disabled"; }
+const char* ReachReasonName(natmap::ReasonCode v) { static const char* const n[]={"None","DisabledByPreference","NoListener","NoRoute","NoGateway","NoMappingProtocol","OperatorDenied","MappingDenied","MappingConflict","MappingTimeout","InvalidResponse","StaleGeneration","LeaseExpired","InterfaceChanged","EndpointDependentMapping","InboundFiltered","ServerCallbackFailed","PeerIncompatible","PortInUse","VerificationTimeout","CgnatWithoutLease","RouterRejectedAllCandidates"}; return static_cast<unsigned>(v)<=21?n[static_cast<unsigned>(v)]:"None"; }
+const char* ReachMapperName(natmap::MapperKind v) { static const char* const n[]={"None","Existing","UpnpIgd","Pcp","NatPmp","FirewallPinhole"}; return static_cast<unsigned>(v)<6?n[static_cast<unsigned>(v)]:"None"; }
+const char* ReachTransportName(natmap::Transport v) { return v==natmap::Transport::Udp?"Udp":"Tcp"; }
+const char* ReachEvidenceName(natmap::EvidenceKind v) { static const char* const n[]={"None","MappingLease","ServerObservedEndpoint","ServerHighId","InboundTcpAccept","DirectPeerHandshake"}; return static_cast<unsigned>(v)<6?n[static_cast<unsigned>(v)]:"None"; }
+const char* ReachSourceName(natmap::EndpointSource v) { static const char* const n[]={"None","LocalInterface","ServerObserved","UpnpExternalAddress","PcpMap","NatPmpPublicAddress","PeerProbe","ServerIdChange"}; return static_cast<unsigned>(v)<8?n[static_cast<unsigned>(v)]:"None"; }
+void ReachEndpointJson(std::string& out,const natmap::Endpoint& e) { const char* f=e.address.family==natmap::AddressFamily::IPv4?"IPv4":e.address.family==natmap::AddressFamily::IPv6?"IPv6":"Unspecified"; const char* c="unspecified"; if(!e.address.IsUnspecified()){ if(e.address.family==natmap::AddressFamily::IPv4&&e.address.bytes[0]==127)c="loopback"; else if(e.address.family==natmap::AddressFamily::IPv4&&e.address.bytes[0]==169&&e.address.bytes[1]==254)c="linklocal"; else if(e.address.IsSharedCgnatV4())c="cgnat"; else if(e.address.IsPrivateOrSharedV4())c="private"; else c="public"; } char b[224]; _snprintf_s(b,_TRUNCATE,"{\"family\":\"%s\",\"address_class\":\"%s\",\"port\":%u,\"source\":\"%s\",\"usable\":%s}",f,c,static_cast<unsigned>(e.port),ReachSourceName(e.source),e.IsUsable()?"true":"false"); out+=b; }
+void ReachEvidenceJson(std::string& out,const natmap::Evidence& e,uint64 g) { char b[96]; _snprintf_s(b,_TRUNCATE,"{\"kind\":\"%s\",\"generation\":%I64u,\"current\":%s}",ReachEvidenceName(e.kind),e.generation,e.IsCurrent(g)?"true":"false");out+=b; }
+void ReachPlaneJson(std::string& out,const natmap::PlaneSnapshot& p,uint64 top) { char b[384]; const bool stale=(p.primary_evidence.kind!=natmap::EvidenceKind::None&&!p.primary_evidence.IsCurrent(top))||(p.inbound_evidence.kind!=natmap::EvidenceKind::None&&!p.inbound_evidence.IsCurrent(top)); _snprintf_s(b,_TRUNCATE,"{\"state\":\"%s\",\"gate_state\":\"%s\",\"reason\":\"%s\",\"reason_code\":%u,\"generation\":%I64u,\"expired\":%s,\"stale\":%s,\"local\":",ReachStateName(p.state),ReachGateStateName(p.state),ReachReasonName(p.reason),static_cast<unsigned>(p.reason),p.generation,p.reason==natmap::ReasonCode::LeaseExpired?"true":"false",stale?"true":"false");out+=b;ReachEndpointJson(out,p.local);out+=",\"mapped\":";ReachEndpointJson(out,p.mapped);out+=",\"advertised\":";ReachEndpointJson(out,p.advertised);_snprintf_s(b,_TRUNCATE,",\"lease\":{\"mapper\":\"%s\",\"transport\":\"%s\",\"requested_external_port\":%u,\"granted_external_port\":%u,\"lifetime_seconds\":%u,\"mapper_epoch\":%u,\"generation\":%I64u,\"owned_by_us\":%s,\"structurally_valid\":%s},\"primary_evidence\":",ReachMapperName(p.lease.mapper),ReachTransportName(p.lease.transport),static_cast<unsigned>(p.lease.requested_external_port),static_cast<unsigned>(p.lease.granted_external_port),static_cast<unsigned>(p.lease.lifetime_seconds),static_cast<unsigned>(p.lease.mapper_epoch),p.lease.generation,p.lease.owned_by_us?"true":"false",p.lease.IsStructurallyValid()?"true":"false");out+=b;ReachEvidenceJson(out,p.primary_evidence,top);out+=",\"inbound_evidence\":";ReachEvidenceJson(out,p.inbound_evidence,top);out+=",\"classic_high_id_evidence\":";out+=(p.HasClassicHighIdEvidence()?"true}":"false}"); }
+}
 
 uint64 CDirectReachabilityManager::MonotonicMilliseconds()
 {
@@ -131,6 +161,7 @@ void CDirectReachabilityManager::AssertMainThread() const
 
 void CDirectReachabilityManager::Initialize(uint16 nLocalTcpPort, uint16 nLocalUdpPort)
 {
+	StatusCacheRefreshGuard guard{*this};
 	AssertMainThread();
 	m_bEnabled.store(false, std::memory_order_release);
 	m_nLocalTcpPort.store(nLocalTcpPort, std::memory_order_release);
@@ -165,6 +196,27 @@ void CDirectReachabilityManager::Initialize(uint16 nLocalTcpPort, uint16 nLocalU
 	m_snapshot.direct_v6.state = natmap::ReachabilityState::Disabled;
 	m_snapshot.direct_v6.reason = natmap::ReasonCode::DisabledByPreference;
 	m_snapshot.direct_v6.generation = 1;
+}
+
+void CDirectReachabilityManager::UpdateStatusCache() noexcept
+{
+	AssertMainThread();
+	try {
+		std::string json("{\"schema\":\"ESE_REACH_STATUS_V1\",\"available\":true,\"topology_generation\":");
+		char generation[32]; _snprintf_s(generation,_TRUNCATE,"%I64u",m_snapshot.topology_generation); json+=generation;
+		json += ",\"planes\":{\"ed2k_tcp_v4\":"; ReachPlaneJson(json,m_snapshot.ed2k_tcp_v4,m_snapshot.topology_generation);
+		json += ",\"kad_udp_v4\":"; ReachPlaneJson(json,m_snapshot.kad_udp_v4,m_snapshot.topology_generation);
+		json += ",\"direct_v6\":"; ReachPlaneJson(json,m_snapshot.direct_v6,m_snapshot.topology_generation); json += "}}";
+		std::lock_guard<std::mutex> lock(m_cacheMutex); m_statusJson.assign(json);
+	} catch (CMemoryException* e) {
+		e->Delete(); try { std::lock_guard<std::mutex> lock(m_cacheMutex); m_statusJson.clear(); } catch (...) {}
+	} catch (...) { try { std::lock_guard<std::mutex> lock(m_cacheMutex); m_statusJson.clear(); } catch (...) {} }
+}
+
+void CDirectReachabilityManager::GetStatusJson(CStringA& json) const
+{
+	std::lock_guard<std::mutex> lock(m_cacheMutex);
+	json = m_statusJson.c_str();
 }
 
 uint16 CDirectReachabilityManager::GetLocalTcpPort() const
@@ -244,6 +296,7 @@ bool CDirectReachabilityManager::ObserveMapperResult(
 	const natmap::MapperResult& result,
 	const natmap::RouteBindingIdentity& routeBinding)
 {
+	StatusCacheRefreshGuard guard{*this};
 	AssertMainThread();
 	if (m_mappedCandidates.is_closed())
 		return false;
@@ -319,10 +372,10 @@ CDirectReachabilityManager::ObservePcpUpstreamBundle(
 	const natmap::PcpUpstreamResultBundle& bundle,
 	const natmap::RouteBindingIdentity& lanRouteBinding)
 {
+	StatusCacheRefreshGuard guard{*this};
 	AssertMainThread();
 	natmap::PcpUpstreamDecision rejected{};
-	rejected.disposition =
-		natmap::PcpUpstreamDisposition::EndpointRejected;
+	rejected.disposition = natmap::PcpUpstreamDisposition::EndpointRejected;
 	rejected.reason = natmap::ReasonCode::NoRoute;
 	if (m_mappedCandidates.is_closed() || !bundle.IsValid() ||
 		natmap::ValidateRouteBinding(lanRouteBinding) !=
@@ -577,6 +630,7 @@ bool CDirectReachabilityManager::ObservePcpCpeAtomicityFailure(
 	const natmap::MapperResult& result,
 	const natmap::RouteBindingIdentity& routeBinding)
 {
+	StatusCacheRefreshGuard guard{*this};
 	AssertMainThread();
 	const natmap::MapperResultData& data = result.data();
 	if (!result.IsStructurallyValid()
@@ -598,6 +652,7 @@ bool CDirectReachabilityManager::ObservePcpCpeAtomicityFailure(
 
 bool CDirectReachabilityManager::ObserveMapperEpochReset()
 {
+	StatusCacheRefreshGuard guard{*this};
 	AssertMainThread();
 	const uint64 generation = m_snapshot.topology_generation + 1;
 	if (generation == 0) {
@@ -640,6 +695,7 @@ bool CDirectReachabilityManager::ObserveMapperEpochReset()
 
 bool CDirectReachabilityManager::DisableMappingsByPreference()
 {
+	StatusCacheRefreshGuard guard{*this};
 	return DisableMappedPlanes(
 		natmap::ReasonCode::DisabledByPreference);
 }
@@ -647,6 +703,7 @@ bool CDirectReachabilityManager::DisableMappingsByPreference()
 bool CDirectReachabilityManager::ObserveNetworkRouteChange(
 	natmap::NetworkChangeTransition* transition)
 {
+	StatusCacheRefreshGuard guard{*this};
 	AssertMainThread();
 	const bool wasEnabled =
 		m_bEnabled.load(std::memory_order_acquire);
@@ -741,6 +798,7 @@ bool CDirectReachabilityManager::DisableMappedPlanes(
 
 bool CDirectReachabilityManager::ObserveFiniteMappingExpiry()
 {
+	StatusCacheRefreshGuard guard{*this};
 	AssertMainThread();
 	const bool hasTcpLease = m_tcpLease.HasLease()
 		&& m_tcpLease.lease().lifetime_seconds != 0;
@@ -800,6 +858,7 @@ bool CDirectReachabilityManager::ObserveFiniteMappingExpiry()
 
 bool CDirectReachabilityManager::ObserveMappingLoss()
 {
+	StatusCacheRefreshGuard guard{*this};
 	return DisableMappedPlanes(natmap::ReasonCode::LeaseExpired);
 }
 
@@ -1022,6 +1081,7 @@ bool CDirectReachabilityManager::BeginDirectV4Verification(
 bool CDirectReachabilityManager::BeginEd2kVerification(
 	natmap::VerificationAttempt& attempt)
 {
+	StatusCacheRefreshGuard guard{*this};
 	AssertMainThread();
 	if (m_mappedCandidates.is_closed())
 		return false;
@@ -1089,6 +1149,7 @@ bool CDirectReachabilityManager::BeginEd2kVerification(
 bool CDirectReachabilityManager::ObserveServerIdChange(
 	bool bHighId, const natmap::VerificationAttempt& attempt)
 {
+	StatusCacheRefreshGuard guard{*this};
 	AssertMainThread();
 	if (m_mappedCandidates.is_closed())
 		return false;
@@ -1144,6 +1205,7 @@ bool CDirectReachabilityManager::ObserveDirectV4ServerState(
 bool CDirectReachabilityManager::ObserveInboundTcpAccept(
 	const natmap::VerificationAttempt& attempt)
 {
+	StatusCacheRefreshGuard guard{*this};
 	AssertMainThread();
 	if (m_mappedCandidates.is_closed())
 		return false;

@@ -283,6 +283,18 @@ depende de LS1–LS5.
 | El slice excede 1.500 líneas netas o 2 JP de retrabajo | diff/estimación rebasa umbral | parar, revertir al commit verde y partir por estado/operación. |
 | Cambio wire/persistencia oculto | golden binario o fixture de disco cambia | bloquear como defecto separado S1/S2, fuera de esta extracción. |
 
+## W12 governance amendment (2026-08-02)
+
+The pre-amendment v1 baseline had SHA-256
+`31abb903d76a7206b8723efdc58b42eb7503f4c390efd8cf0dcb6361c8242403`.
+This link-only appendix means the current markdown is not claimed to reproduce
+that hash. Only M2A-W12 is supplemented by
+`MOD52_W12_SECURITY_EXPANSION_PLAN_2026-08-02.md`,
+`mod52_migration_matrix_v2.json`, `mod52_migration_contract_v2.json`,
+`mod03_ownership_layering_contract_v3.json`, and
+`mod04_architecture_gate_catalog_v3.json`. The amendment keeps its own closed
+budgets, CARD_PATHS, owners, and PRE-A/A/H/R gates; it does not relax v1.
+
 ## 10. Secuencia de ejecución y checkpoints
 
 ```text

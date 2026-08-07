@@ -12,6 +12,8 @@
 #include "natmap/direct_route_selection.h"
 #include "natmap/mapped_candidate_adapter.h"
 #include <atomic>
+#include <mutex>
+#include <string>
 
 // Main-thread owner for direct-reachability state. D1 is deliberately
 // default-OFF: advertised ports remain equal to listener ports until D2
@@ -22,6 +24,7 @@ public:
 	CDirectReachabilityManager();
 
 	void Initialize(uint16 nLocalTcpPort, uint16 nLocalUdpPort);
+	void GetStatusJson(CStringA& json) const;
 	bool IsEnabled() const noexcept { return m_bEnabled.load(std::memory_order_acquire); }
 
 	uint16 GetLocalTcpPort() const;
@@ -84,6 +87,11 @@ public:
 		GetMappedCandidateSnapshot() const;
 
 private:
+	struct StatusCacheRefreshGuard {
+		CDirectReachabilityManager& manager;
+		~StatusCacheRefreshGuard() noexcept { manager.UpdateStatusCache(); }
+	};
+	void UpdateStatusCache() noexcept;
 	bool ObserveMappedPorts(natmap::MapperKind mapper,
 		natmap::MapperSource mapperSource, uint32 nExternalIP,
 		uint16 nLocalTcpPort, uint16 nExternalTcpPort,
@@ -131,4 +139,6 @@ private:
 	uint64 m_nNetworkChangeRediscoveryGeneration;
 	natmap::MappedCandidatePublisher m_mappedCandidates;
 	natmap::ReachabilitySnapshot m_snapshot;
+	mutable std::mutex m_cacheMutex;
+	std::string m_statusJson;
 };

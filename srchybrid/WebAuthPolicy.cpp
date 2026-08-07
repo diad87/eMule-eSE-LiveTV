@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 
 namespace ese {
 namespace web {
@@ -14,6 +15,21 @@ WebSessionSnapshot WebAuthPolicy::MakeSnapshot(const SessionRecord& record)
 	snapshot.last_category = record.last_category;
 	snapshot.last_seen_ms = record.last_seen_ms;
 	snapshot.csrf_token = record.csrf_token;
+	return snapshot;
+}
+
+WebHlsCapabilitySnapshot WebAuthPolicy::MakeSnapshot(
+	const HlsCapabilityRecord& record)
+{
+	WebHlsCapabilitySnapshot snapshot;
+	snapshot.token_digest = record.token_digest;
+	snapshot.stream_key = record.stream_key;
+	snapshot.owner_session_id = record.owner_session_id;
+	snapshot.generation = record.generation;
+	snapshot.issued_ms = record.issued_ms;
+	snapshot.expires_at_ms = record.expires_at_ms;
+	snapshot.scope = record.scope;
+	snapshot.source_role = record.source_role;
 	return snapshot;
 }
 
@@ -38,10 +54,13 @@ bool WebAuthPolicy::AddSession(
 	WebRole role,
 	int lastCategory,
 	std::uint64_t nowMs,
-	const std::string& csrfToken)
+	const std::string& csrfToken,
+	const std::string& browserTokenDigest)
 {
 	if (id == 0 || role == WebRole::None ||
-		!IsValidHexToken(csrfToken, kCsrfTokenHexLength))
+		!IsValidHexToken(csrfToken, kCsrfTokenHexLength) ||
+		(!browserTokenDigest.empty() &&
+		 !IsValidHexToken(browserTokenDigest, kBrowserSessionTokenHexLength)))
 		return false;
 
 	std::lock_guard<std::mutex> guard(m_mutex);
@@ -51,7 +70,56 @@ bool WebAuthPolicy::AddSession(
 	if (duplicate != m_sessions.end())
 		return false;
 
-	m_sessions.push_back({id, role, lastCategory, nowMs, csrfToken});
+	if (!browserTokenDigest.empty()) {
+		const auto bearerDuplicate = std::find_if(
+			m_sessions.begin(), m_sessions.end(),
+			[&browserTokenDigest](const SessionRecord& record) {
+				return !record.browser_token_digest.empty() &&
+					ConstantTimeEqual(
+						record.browser_token_digest, browserTokenDigest);
+			});
+		if (bearerDuplicate != m_sessions.end())
+			return false;
+	}
+	m_sessions.push_back(
+		{id, role, lastCategory, nowMs, csrfToken, browserTokenDigest});
+	return true;
+}
+
+bool WebAuthPolicy::ResolveBrowserSessionDigest(
+	const std::string& browserTokenDigest,
+	std::uint64_t nowMs,
+	std::uint64_t timeoutMs,
+	WebSessionSnapshot* snapshot,
+	std::uint32_t expectedSessionId)
+{
+	if (!IsValidHexToken(
+		browserTokenDigest, kBrowserSessionTokenHexLength))
+		return false;
+
+	std::lock_guard<std::mutex> guard(m_mutex);
+	for (auto it = m_sessions.begin(); it != m_sessions.end();) {
+		if (IsExpired(nowMs, it->last_seen_ms, timeoutMs)) {
+			RemoveHlsCapabilitiesForSessionLocked(it->id);
+			it = m_sessions.erase(it);
+			continue;
+		}
+		++it;
+	}
+	SessionRecord* matched = nullptr;
+	for (SessionRecord& record : m_sessions) {
+		const bool digestMatches = ConstantTimeEqual(
+			record.browser_token_digest, browserTokenDigest);
+		const bool idMatches = expectedSessionId == 0 ||
+			record.id == expectedSessionId;
+		if (!record.browser_token_digest.empty() && digestMatches && idMatches)
+			matched = &record;
+	}
+	if (matched == nullptr)
+		return false;
+	matched->last_seen_ms = nowMs;
+	if (snapshot != nullptr)
+		*snapshot = MakeSnapshot(*matched);
 	return true;
 }
 
@@ -67,6 +135,7 @@ bool WebAuthPolicy::TouchSession(
 	std::lock_guard<std::mutex> guard(m_mutex);
 	for (auto it = m_sessions.begin(); it != m_sessions.end();) {
 		if (IsExpired(nowMs, it->last_seen_ms, timeoutMs)) {
+			RemoveHlsCapabilitiesForSessionLocked(it->id);
 			it = m_sessions.erase(it);
 			continue;
 		}
@@ -109,6 +178,7 @@ bool WebAuthPolicy::RemoveSession(std::uint32_t id)
 		[id](const SessionRecord& record) { return record.id == id; });
 	if (found == m_sessions.end())
 		return false;
+	RemoveHlsCapabilitiesForSessionLocked(found->id);
 	m_sessions.erase(found);
 	return true;
 }
@@ -119,13 +189,14 @@ std::size_t WebAuthPolicy::PurgeExpiredSessions(
 {
 	std::lock_guard<std::mutex> guard(m_mutex);
 	const std::size_t before = m_sessions.size();
-	m_sessions.erase(
-		std::remove_if(
-			m_sessions.begin(), m_sessions.end(),
-			[nowMs, timeoutMs](const SessionRecord& record) {
-				return IsExpired(nowMs, record.last_seen_ms, timeoutMs);
-			}),
-		m_sessions.end());
+	for (auto it = m_sessions.begin(); it != m_sessions.end();) {
+		if (!IsExpired(nowMs, it->last_seen_ms, timeoutMs)) {
+			++it;
+			continue;
+		}
+		RemoveHlsCapabilitiesForSessionLocked(it->id);
+		it = m_sessions.erase(it);
+	}
 	return before - m_sessions.size();
 }
 
@@ -144,6 +215,7 @@ bool WebAuthPolicy::SetLastCategory(
 	std::lock_guard<std::mutex> guard(m_mutex);
 	for (auto it = m_sessions.begin(); it != m_sessions.end();) {
 		if (IsExpired(nowMs, it->last_seen_ms, timeoutMs)) {
+			RemoveHlsCapabilitiesForSessionLocked(it->id);
 			it = m_sessions.erase(it);
 			continue;
 		}
@@ -166,6 +238,7 @@ bool WebAuthPolicy::GetLastCategory(
 	std::lock_guard<std::mutex> guard(m_mutex);
 	for (auto it = m_sessions.begin(); it != m_sessions.end();) {
 		if (IsExpired(nowMs, it->last_seen_ms, timeoutMs)) {
+			RemoveHlsCapabilitiesForSessionLocked(it->id);
 			it = m_sessions.erase(it);
 			continue;
 		}
@@ -177,6 +250,264 @@ bool WebAuthPolicy::GetLastCategory(
 		++it;
 	}
 	return false;
+}
+
+bool WebAuthPolicy::IsValidStreamKey(const std::string& streamKey)
+{
+	if (streamKey.size() != kStreamKeyHexLength)
+		return false;
+	return std::all_of(streamKey.begin(), streamKey.end(), [](char value) {
+		return (value >= '0' && value <= '9') ||
+			(value >= 'a' && value <= 'f');
+	});
+}
+
+void WebAuthPolicy::RemoveHlsCapabilitiesForSessionLocked(
+	std::uint32_t sessionId)
+{
+	m_hlsCapabilities.erase(
+		std::remove_if(
+			m_hlsCapabilities.begin(), m_hlsCapabilities.end(),
+			[sessionId](const HlsCapabilityRecord& record) {
+				return record.owner_session_id == sessionId;
+			}),
+		m_hlsCapabilities.end());
+}
+
+std::size_t WebAuthPolicy::PurgeExpiredHlsCapabilitiesLocked(
+	std::uint64_t nowMs)
+{
+	const std::size_t before = m_hlsCapabilities.size();
+	m_hlsCapabilities.erase(
+		std::remove_if(
+			m_hlsCapabilities.begin(), m_hlsCapabilities.end(),
+			[nowMs](const HlsCapabilityRecord& record) {
+				return nowMs < record.issued_ms || nowMs >= record.expires_at_ms;
+			}),
+		m_hlsCapabilities.end());
+	return before - m_hlsCapabilities.size();
+}
+
+bool WebAuthPolicy::IssueHlsReadCapability(
+	std::uint32_t ownerSessionId,
+	const std::string& streamKey,
+	WebHlsSourceRole sourceRole,
+	std::uint64_t streamGeneration,
+	const std::string& capabilityTokenDigest,
+	std::uint64_t nowMs,
+	std::uint64_t sessionTimeoutMs,
+	WebHlsCapabilitySnapshot& snapshot)
+{
+	snapshot = WebHlsCapabilitySnapshot();
+	if (ownerSessionId == 0 || streamGeneration == 0 ||
+		!IsValidStreamKey(streamKey) ||
+		!IsValidHexToken(
+			capabilityTokenDigest, kHlsCapabilityTokenHexLength) ||
+		(sourceRole != WebHlsSourceRole::Viewer &&
+		 sourceRole != WebHlsSourceRole::Broadcast) ||
+		nowMs > (std::numeric_limits<std::uint64_t>::max)() -
+			kHlsCapabilityLifetimeMs)
+		return false;
+
+	std::lock_guard<std::mutex> guard(m_mutex);
+	PurgeExpiredHlsCapabilitiesLocked(nowMs);
+	const auto session = std::find_if(
+		m_sessions.begin(), m_sessions.end(),
+		[ownerSessionId](const SessionRecord& record) {
+			return record.id == ownerSessionId;
+		});
+	if (session == m_sessions.end())
+		return false;
+	if (IsExpired(nowMs, session->last_seen_ms, sessionTimeoutMs)) {
+		RemoveHlsCapabilitiesForSessionLocked(session->id);
+		m_sessions.erase(session);
+		return false;
+	}
+	const auto duplicate = std::find_if(
+		m_hlsCapabilities.begin(), m_hlsCapabilities.end(),
+		[&capabilityTokenDigest](const HlsCapabilityRecord& record) {
+			return ConstantTimeEqual(
+				record.token_digest, capabilityTokenDigest);
+		});
+	if (duplicate != m_hlsCapabilities.end())
+		return false;
+
+	HlsCapabilityRecord record;
+	record.token_digest = capabilityTokenDigest;
+	record.stream_key = streamKey;
+	record.owner_session_id = ownerSessionId;
+	record.generation = streamGeneration;
+	record.issued_ms = nowMs;
+	record.expires_at_ms = nowMs + kHlsCapabilityLifetimeMs;
+	record.source_role = sourceRole;
+	m_hlsCapabilities.erase(
+		std::remove_if(
+			m_hlsCapabilities.begin(), m_hlsCapabilities.end(),
+			[&record](const HlsCapabilityRecord& existing) {
+				return existing.owner_session_id == record.owner_session_id &&
+					existing.stream_key == record.stream_key &&
+					existing.source_role == record.source_role &&
+					existing.generation != record.generation;
+			}),
+		m_hlsCapabilities.end());
+	while (static_cast<std::size_t>(std::count_if(
+		m_hlsCapabilities.begin(), m_hlsCapabilities.end(),
+		[ownerSessionId](const HlsCapabilityRecord& existing) {
+			return existing.owner_session_id == ownerSessionId;
+		})) >= kMaxHlsCapabilitiesPerSession) {
+		const auto oldest = std::find_if(
+			m_hlsCapabilities.begin(), m_hlsCapabilities.end(),
+			[ownerSessionId](const HlsCapabilityRecord& existing) {
+				return existing.owner_session_id == ownerSessionId;
+			});
+		if (oldest == m_hlsCapabilities.end())
+			break;
+		m_hlsCapabilities.erase(oldest);
+	}
+	m_hlsCapabilities.push_back(record);
+	while (m_hlsCapabilities.size() > kMaxHlsCapabilities)
+		m_hlsCapabilities.erase(m_hlsCapabilities.begin());
+	snapshot = MakeSnapshot(record);
+	return true;
+}
+
+bool WebAuthPolicy::InspectHlsReadCapability(
+	const std::string& capabilityTokenDigest,
+	std::uint64_t pathGeneration,
+	const std::string& streamKey,
+	std::uint64_t nowMs,
+	std::uint64_t sessionTimeoutMs,
+	WebHlsCapabilitySnapshot* snapshot)
+{
+	if (!IsValidHexToken(
+			capabilityTokenDigest, kHlsCapabilityTokenHexLength) ||
+		pathGeneration == 0 ||
+		!IsValidStreamKey(streamKey))
+		return false;
+
+	std::lock_guard<std::mutex> guard(m_mutex);
+	PurgeExpiredHlsCapabilitiesLocked(nowMs);
+	const HlsCapabilityRecord* matched = nullptr;
+	for (const HlsCapabilityRecord& record : m_hlsCapabilities) {
+		if (ConstantTimeEqual(record.token_digest, capabilityTokenDigest))
+			matched = &record;
+	}
+	if (matched == nullptr)
+		return false;
+	const HlsCapabilityRecord& record = *matched;
+	if (record.scope != WebCapabilityScope::HlsRead ||
+		record.generation != pathGeneration ||
+		!ConstantTimeEqual(record.stream_key, streamKey))
+		return false;
+		const auto owner = std::find_if(
+			m_sessions.begin(), m_sessions.end(),
+			[&record](const SessionRecord& session) {
+				return session.id == record.owner_session_id;
+			});
+		if (owner == m_sessions.end())
+			return false;
+		if (IsExpired(nowMs, owner->last_seen_ms, sessionTimeoutMs)) {
+			const std::uint32_t ownerId = owner->id;
+			RemoveHlsCapabilitiesForSessionLocked(ownerId);
+			m_sessions.erase(owner);
+			return false;
+		}
+		if (snapshot != nullptr)
+			*snapshot = MakeSnapshot(record);
+	return true;
+}
+
+bool WebAuthPolicy::CommitHlsReadCapability(
+	const std::string& capabilityTokenDigest,
+	const std::string& streamKey,
+	WebHlsSourceRole currentSourceRole,
+	std::uint64_t currentStreamGeneration,
+	std::uint64_t nowMs,
+	std::uint64_t sessionTimeoutMs,
+	WebHlsCapabilitySnapshot* snapshot)
+{
+	if (!IsValidHexToken(
+			capabilityTokenDigest, kHlsCapabilityTokenHexLength) ||
+		!IsValidStreamKey(streamKey) || currentStreamGeneration == 0 ||
+		(currentSourceRole != WebHlsSourceRole::Viewer &&
+		 currentSourceRole != WebHlsSourceRole::Broadcast))
+		return false;
+	std::lock_guard<std::mutex> guard(m_mutex);
+	PurgeExpiredHlsCapabilitiesLocked(nowMs);
+	auto matched = m_hlsCapabilities.end();
+	for (auto it = m_hlsCapabilities.begin();
+		it != m_hlsCapabilities.end(); ++it) {
+		if (ConstantTimeEqual(it->token_digest, capabilityTokenDigest))
+			matched = it;
+	}
+	if (matched == m_hlsCapabilities.end())
+		return false;
+	const HlsCapabilityRecord& record = *matched;
+	if (record.scope != WebCapabilityScope::HlsRead ||
+		!ConstantTimeEqual(record.stream_key, streamKey))
+		return false;
+	if (record.source_role != currentSourceRole ||
+		record.generation != currentStreamGeneration) {
+		// The manager snapshot is authoritative.  A leave/rejoin or a role
+		// switch makes the old URL permanently stale instead of retaining it
+		// until the absolute capability TTL.
+		m_hlsCapabilities.erase(matched);
+		return false;
+	}
+		const auto owner = std::find_if(
+			m_sessions.begin(), m_sessions.end(),
+			[&record](const SessionRecord& session) {
+				return session.id == record.owner_session_id;
+			});
+		if (owner == m_sessions.end())
+			return false;
+		if (IsExpired(nowMs, owner->last_seen_ms, sessionTimeoutMs)) {
+			const std::uint32_t ownerId = owner->id;
+			RemoveHlsCapabilitiesForSessionLocked(ownerId);
+			m_sessions.erase(owner);
+			return false;
+		}
+		owner->last_seen_ms = nowMs;
+		if (snapshot != nullptr)
+			*snapshot = MakeSnapshot(record);
+	return true;
+}
+
+bool WebAuthPolicy::RevokeHlsCapabilityDigest(
+	const std::string& capabilityTokenDigest)
+{
+	if (!IsValidHexToken(
+		capabilityTokenDigest, kHlsCapabilityTokenHexLength))
+		return false;
+	std::lock_guard<std::mutex> guard(m_mutex);
+	auto matched = m_hlsCapabilities.end();
+	for (auto it = m_hlsCapabilities.begin();
+		it != m_hlsCapabilities.end(); ++it) {
+		if (ConstantTimeEqual(it->token_digest, capabilityTokenDigest))
+			matched = it;
+	}
+	if (matched == m_hlsCapabilities.end())
+		return false;
+	m_hlsCapabilities.erase(matched);
+	return true;
+}
+
+void WebAuthPolicy::RevokeAllHlsCapabilities()
+{
+	std::lock_guard<std::mutex> guard(m_mutex);
+	m_hlsCapabilities.clear();
+}
+
+std::size_t WebAuthPolicy::PurgeExpiredHlsCapabilities(std::uint64_t nowMs)
+{
+	std::lock_guard<std::mutex> guard(m_mutex);
+	return PurgeExpiredHlsCapabilitiesLocked(nowMs);
+}
+
+std::size_t WebAuthPolicy::HlsCapabilityCount() const
+{
+	std::lock_guard<std::mutex> guard(m_mutex);
+	return m_hlsCapabilities.size();
 }
 
 void WebAuthPolicy::PurgeChallengesLocked(std::uint64_t nowMs)
@@ -417,6 +748,7 @@ bool WebAuthPolicy::IsLivePathStateChanging(const std::string& path)
 {
 	static const char* const readOnlyPaths[] = {
 		"/api/status",
+		"/api/reach/status",
 		"/api/live/metrics",
 		"/api/live/channels",
 		"/api/live/mesh",
@@ -518,6 +850,96 @@ bool WebAuthPolicy::AuthorizeLiveRequest(
 	return origin.empty() || IsLocalWebOrigin(origin);
 }
 
+static bool RunHlsCapabilitySelfTest(std::string& failure)
+{
+	// Production startup characterization for the W7-SEC-02 credential split:
+	// browser sessions resolve by digest, while media uses a separately scoped
+	// digest bound to owner, role, stream and real session generation.
+	WebAuthPolicy capabilityPolicy;
+	const std::string token(WebAuthPolicy::kCsrfTokenHexLength, 'a');
+	const std::string browserDigest(
+		WebAuthPolicy::kBrowserSessionTokenHexLength, 'b');
+	const std::string capabilityDigest(
+		WebAuthPolicy::kHlsCapabilityTokenHexLength, 'c');
+	const std::string streamKey(WebAuthPolicy::kStreamKeyHexLength, '1');
+	if (!capabilityPolicy.AddSession(
+			11, WebRole::Guest, 0, 100, token, browserDigest)) {
+		failure = "web browser digest session setup failed";
+		return false;
+	}
+	WebSessionSnapshot browserSession;
+	if (capabilityPolicy.ResolveBrowserSessionDigest(
+			browserDigest, 110, 300, &browserSession, 12) ||
+		!capabilityPolicy.GetSession(11, browserSession) ||
+		browserSession.last_seen_ms != 100 ||
+		!capabilityPolicy.ResolveBrowserSessionDigest(
+			browserDigest, 110, 300, &browserSession, 11)) {
+		failure = "web browser digest locator binding failed";
+		return false;
+	}
+	WebHlsCapabilitySnapshot capability;
+	if (!capabilityPolicy.IssueHlsReadCapability(
+			11, streamKey, WebHlsSourceRole::Viewer, 7,
+			capabilityDigest, 110, 300, capability) ||
+		capability.scope != WebCapabilityScope::HlsRead ||
+		capability.owner_session_id != 11 ||
+		capability.source_role != WebHlsSourceRole::Viewer ||
+		capability.generation != 7 ||
+		capabilityPolicy.InspectHlsReadCapability(
+			capabilityDigest, 8, streamKey, 120, 300) ||
+		!capabilityPolicy.InspectHlsReadCapability(
+			capabilityDigest, 7, streamKey, 120, 300) ||
+		!capabilityPolicy.GetSession(11, browserSession) ||
+		browserSession.last_seen_ms != 110 ||
+		!capabilityPolicy.CommitHlsReadCapability(
+			capabilityDigest, streamKey, WebHlsSourceRole::Viewer,
+			7, 120, 300) ||
+		!capabilityPolicy.GetSession(11, browserSession) ||
+		browserSession.last_seen_ms != 120) {
+		failure = "web HLS capability two-phase authorization failed";
+		return false;
+	}
+	const std::string rolloverDigest(
+		WebAuthPolicy::kHlsCapabilityTokenHexLength, 'd');
+	if (!capabilityPolicy.IssueHlsReadCapability(
+			11, streamKey, WebHlsSourceRole::Viewer, 7,
+			rolloverDigest, 121, 300, capability) ||
+		capabilityPolicy.CommitHlsReadCapability(
+			rolloverDigest, streamKey, WebHlsSourceRole::Viewer,
+			8, 122, 300) ||
+		capabilityPolicy.HlsCapabilityCount() != 1) {
+		failure = "web HLS generation rollover revocation failed";
+		return false;
+	}
+	const std::string ttlDigest(
+		WebAuthPolicy::kHlsCapabilityTokenHexLength, 'e');
+	if (!capabilityPolicy.IssueHlsReadCapability(
+			11, streamKey, WebHlsSourceRole::Viewer, 7,
+			ttlDigest, 200, 0, capability) ||
+		!capabilityPolicy.InspectHlsReadCapability(
+			ttlDigest, 7, streamKey,
+			200 + WebAuthPolicy::kHlsCapabilityLifetimeMs - 1, 0) ||
+		capabilityPolicy.InspectHlsReadCapability(
+			ttlDigest, 7, streamKey,
+			200 + WebAuthPolicy::kHlsCapabilityLifetimeMs, 0)) {
+		failure = "web HLS exact absolute TTL failed";
+		return false;
+	}
+	const std::string logoutDigest(
+		WebAuthPolicy::kHlsCapabilityTokenHexLength, 'f');
+	if (!capabilityPolicy.IssueHlsReadCapability(
+			11, streamKey, WebHlsSourceRole::Viewer, 7,
+			logoutDigest,
+			200 + WebAuthPolicy::kHlsCapabilityLifetimeMs + 1,
+			0, capability) ||
+		!capabilityPolicy.RemoveSession(11) ||
+		capabilityPolicy.HlsCapabilityCount() != 0) {
+		failure = "web HLS logout revocation failed";
+		return false;
+	}
+	return true;
+}
+
 bool RunWebAuthPolicySelfTest(std::string& failure)
 {
 	failure.clear();
@@ -591,7 +1013,8 @@ bool RunWebAuthPolicySelfTest(std::string& failure)
 		failure = "web auth live permission matrix failed";
 		return false;
 	}
-	return true;
+
+	return RunHlsCapabilitySelfTest(failure);
 }
 
 } // namespace web

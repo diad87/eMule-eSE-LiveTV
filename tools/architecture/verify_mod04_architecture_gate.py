@@ -401,17 +401,20 @@ def validate_discovery(
     # is a ledger-active M2A pair; its ownership/includes/SCC are checked by
     # the mandatory M2A ratchet immediately after this gate in CI.
     active_m2a: set[str] = set()
+    ledger: dict[str, Any] = {}
     try:
         matrix = json.loads((ROOT / "docs/architecture/mod52_migration_matrix_v1.json").read_text(encoding="utf-8"))
         ledger = json.loads((ROOT / "docs/architecture/mod52_migration_activation_ledger_v1.json").read_text(encoding="utf-8"))
         overlay = json.loads((ROOT / "docs/architecture/mod04_architecture_gate_catalog_v2.json").read_text(encoding="utf-8"))
+        v1_allowed: set[str] = set()
+        v1_active_m2a: set[str] = set()
         if (
             overlay.get("schema")
             == "ese.mod04.architecture-gate-catalog/v2"
             and overlay.get("catalogue_source")
             == "docs/architecture/mod52_migration_matrix_v1.json"
         ):
-            allowed.update(
+            v1_allowed.update(
                 item["path"]
                 for item in overlay.get("approved_non_module_code", [])
                 if set(item) == {"path", "reason", "adr"}
@@ -419,10 +422,91 @@ def validate_discovery(
         for item in matrix.get("additional_modules", []):
             state = ledger.get("cards", {}).get(item.get("card"), {})
             if state.get("state") == "active":
-                active_m2a.update({f"srchybrid/{item['name']}.cpp", f"srchybrid/{item['name']}.h"})
+                v1_active_m2a.update({f"srchybrid/{item['name']}.cpp", f"srchybrid/{item['name']}.h"})
+        allowed.update(v1_allowed)
+        active_m2a.update(v1_active_m2a)
     except (OSError, ValueError, TypeError, KeyError):
-        # Missing/malformed overlay must never make v1 permissive.
-        active_m2a = set()
+        # Missing/malformed v1 governance must never make v1 permissive.
+        ledger = {}
+
+    w12 = ledger.get("cards", {}).get("W12", {})
+    w12_active = isinstance(w12, dict) and w12.get("state") == "active"
+    try:
+        # W12 is a closed v2/v3 overlay rather than a mutation of the frozen
+        # v1 programme matrix.  Once its ledger card is active, feed its exact
+        # governed source surfaces into the legacy discovery gate as well.
+        matrix_v2 = json.loads((ROOT / "docs/architecture/mod52_migration_matrix_v2.json").read_text(encoding="utf-8"))
+        overlay_v3 = json.loads((ROOT / "docs/architecture/mod04_architecture_gate_catalog_v3.json").read_text(encoding="utf-8"))
+        identity_valid = (
+            matrix_v2.get("schema") == "ese.mod52.migration-matrix/v2"
+            and matrix_v2.get("supersedes_for_card") == "M2A-W12"
+            and overlay_v3.get("schema") == "ese.mod04.architecture-gate-catalog/v3"
+            and overlay_v3.get("catalogue_source") == "docs/architecture/mod52_migration_matrix_v2.json"
+        )
+        cards = matrix_v2.get("cards", [])
+        card_set_valid = (
+            isinstance(cards, list) and len(cards) == 1
+            and isinstance(cards[0], dict)
+            and cards[0].get("card") == "M2A-W12"
+        )
+        w12_pre_a = False
+        if (
+            isinstance(w12, dict)
+            and w12 == {"state": "planned", "activation_commit": None, "evidence": []}
+            and identity_valid
+            and card_set_valid
+        ):
+            card_paths = cards[0].get("card_paths")
+            if (
+                isinstance(card_paths, list)
+                and len(card_paths) == 61
+                and len(card_paths) == len(set(card_paths))
+                and all(isinstance(path, str) for path in card_paths)
+            ):
+                tracked = set(subprocess.check_output(
+                    ["git", "diff", "--name-only", "545cdf45f9f2efaf56899bee6459bc133cf96071", "--"],
+                    cwd=ROOT, text=True, stderr=subprocess.DEVNULL,
+                ).splitlines())
+                untracked = set(subprocess.check_output(
+                    ["git", "ls-files", "--others", "--exclude-standard"],
+                    cwd=ROOT, text=True, stderr=subprocess.DEVNULL,
+                ).splitlines())
+                staged = subprocess.check_output(
+                    ["git", "diff", "--cached", "--name-only", "--"],
+                    cwd=ROOT, text=True, stderr=subprocess.DEVNULL,
+                ).splitlines()
+                w12_pre_a = tracked | untracked == set(card_paths) and not staged
+        if w12_active or w12_pre_a:
+            if not identity_valid:
+                raise GateError("W12 active discovery overlay identity is invalid")
+            if not card_set_valid:
+                raise GateError("W12 active v2 matrix card set is not closed")
+            governed = cards[0]
+            w12_active_m2a: set[str] = set()
+            w12_allowed: set[str] = set()
+            for module in governed.get("additional_modules", []):
+                paths = module.get("paths") if isinstance(module, dict) else None
+                if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+                    raise GateError("W12 active module path set is malformed")
+                w12_active_m2a.update(paths)
+            lease = governed.get("surface_budgets", {}).get("LiveHlsReadLease", {})
+            lease_paths = (lease.get("header_path"), lease.get("cpp_path"))
+            if not all(isinstance(path, str) for path in lease_paths):
+                raise GateError("W12 active lease path set is malformed")
+            w12_active_m2a.update(lease_paths)
+            card_paths = governed.get("card_paths")
+            if not isinstance(card_paths, list) or not all(isinstance(path, str) for path in card_paths):
+                raise GateError("W12 active CARD_PATHS set is malformed")
+            w12_allowed.update(
+                path for path in card_paths
+                if path.startswith("srchybrid/tests/")
+                and PurePosixPath(path).suffix.lower() in CODE_SUFFIXES
+            )
+            active_m2a.update(w12_active_m2a)
+            allowed.update(w12_allowed)
+    except (OSError, ValueError, TypeError, KeyError, subprocess.CalledProcessError):
+        if w12_active:
+            raise GateError("W12 active discovery overlay is absent or malformed")
     overlap = set(file_owner) & allowed
     if overlap:
         raise GateError(f"approved_non_module_code overlaps module catalog: {sorted(overlap)[0]}")

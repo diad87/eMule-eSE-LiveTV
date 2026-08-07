@@ -22,6 +22,7 @@ struct WebClassicInput {
 	CString ip_text;
 	CStringA csrf_token;
 	CStringA fetch_site;
+	CStringA browser_session_token;
 	CString admin_password_hash;
 	CString guest_password_hash;
 	CString access_denied_text;
@@ -32,6 +33,7 @@ struct WebClassicInput {
 	bool use_gzip = false;
 	bool guest_enabled = false;
 	bool allow_high_level = false;
+	bool secure_transport = false;
 };
 
 struct WebClassicPort {
@@ -39,7 +41,8 @@ struct WebClassicPort {
 	CString (*parse_url)(const CString&, const CString&) = nullptr;
 	bool (*validate_challenge)(const void*, const CString&, const CString&, bool&) = nullptr;
 	bool (*login_blocked)(void*, std::uint32_t, std::uint64_t) = nullptr;
-	bool (*add_session)(void*, std::uint32_t, bool, int, std::uint64_t, const CStringA&) = nullptr;
+	bool (*add_session)(void*, std::uint32_t, bool, int, std::uint64_t, const CStringA&, const CStringA&) = nullptr;
+	bool (*resolve_browser_session)(void*, const CStringA&, std::uint64_t, std::uint64_t, std::uint32_t&) = nullptr;
 	bool (*validate_csrf)(void*, std::uint32_t, const CStringA&, const CStringA&) = nullptr;
 	void (*record_login_failure)(void*, std::uint32_t, std::uint64_t) = nullptr;
 	void (*record_login_success)(void*, std::uint32_t) = nullptr;
@@ -74,6 +77,7 @@ WebClassicView ResolveWebClassicView(const CString& page) noexcept;
 std::uint64_t WebRequestAuthNowMs() noexcept;
 std::uint64_t WebRequestSessionTimeoutMs() noexcept;
 CStringA GenerateWebRequestHexToken();
+CStringA DigestWebRequestToken(const CStringA& token);
 std::uint32_t GenerateWebRequestWord32();
 bool ValidateWebChallengeDigest(const CStringA& nonce, const CStringA& response,
 	const CString& adminHash, bool guestEnabled, const CString& guestHash,

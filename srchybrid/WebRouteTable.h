@@ -75,7 +75,8 @@ enum class WebRouteId : std::uint8_t {
 	ApiLiveKadStreams,
 	ApiLiveEdgeSabotage,
 	ApiLiveDebug,
-	ApiLiveStream
+	ApiLiveStream,
+	ApiReachStatus
 };
 
 struct WebRouteMatch {
@@ -83,10 +84,22 @@ struct WebRouteMatch {
 	WebHandler handler = WebHandler::None;
 	WebRouteId route = WebRouteId::None;
 	bool token_prefixed = false;
+	bool hls_capability_prefixed = false;
 	std::string canonical_path;
 };
 
+struct WebHlsCapabilityPath {
+	std::string token;
+	std::string stream_hash;
+	std::string resource;
+	std::string canonical_path;
+	std::uint64_t generation = 0;
+};
+
 WebRouteMatch ResolveWebRoute(WebRouteMethod method, const std::string& target);
+bool ParseWebHlsCapabilityPath(
+	const std::string& target,
+	WebHlsCapabilityPath& capability);
 std::size_t RegisteredExactWebRouteCount();
 bool RunWebRouteTableSelfTest(std::string& failure);
 

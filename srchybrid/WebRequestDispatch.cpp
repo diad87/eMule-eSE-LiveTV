@@ -23,6 +23,7 @@ namespace {
 	"X-Content-Type-Options: nosniff\r\n" \
 	"X-Frame-Options: SAMEORIGIN\r\n" \
 	"Cache-Control: no-store\r\n" \
+	"Referrer-Policy: no-referrer\r\n" \
 	"Access-Control-Allow-Origin: http://localhost:3000\r\n" \
 	"Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n" \
 	"Access-Control-Allow-Headers: Authorization, X-CSRF-Token, Content-Type\r\n" \
@@ -59,6 +60,8 @@ struct RequestState {
 	long session = 0;
 	CString session_text;
 	CStringA issued_csrf;
+	CStringA issued_browser_token;
+	bool clear_browser_cookie = false;
 	CString output;
 };
 
@@ -117,9 +120,47 @@ bool Authenticate(
 		return false;
 	}
 
-	state.session_text = port.parse_url(input.url, _T("ses"));
-	state.session = _tstol(state.session_text);
-	if (port.parse_url(input.url, _T("w")) == _T("password")) {
+	const CString requestedPage(port.parse_url(input.url, _T("w")));
+	const CString requestedSessionText(port.parse_url(input.url, _T("ses")));
+	const long requestedSession = _tstol(requestedSessionText);
+	state.session = input.loopback ? requestedSession : 0;
+	if (!input.browser_session_token.IsEmpty()) {
+		std::uint32_t resolved = 0;
+		if (port.resolve_browser_session(
+			port.context, input.browser_session_token, state.now_ms,
+			WebRequestSessionTimeoutMs(), resolved)) {
+			state.session = static_cast<long>(resolved);
+		} else if (!input.loopback && requestedPage != _T("password")) {
+			state.response_committed = true;
+			port.send_reply(input.legacy,
+				"HTTP/1.1 403 Forbidden\r\n"
+				"Cache-Control: no-store\r\n"
+				"Referrer-Policy: no-referrer\r\n"
+				"Content-Length: 0\r\n\r\n");
+			return false;
+		}
+	}
+	if (!input.loopback && requestedSession > 0) {
+		if (state.session == 0 && requestedPage != _T("password")) {
+			state.response_committed = true;
+			port.send_reply(input.legacy,
+				"HTTP/1.1 403 Forbidden\r\n"
+				"Cache-Control: no-store\r\n"
+				"Referrer-Policy: no-referrer\r\n"
+				"Content-Length: 0\r\n\r\n");
+			return false;
+		}
+		if (state.session != 0 && state.session != requestedSession) {
+			state.response_committed = true;
+			port.send_reply(input.legacy,
+				"HTTP/1.1 403 Forbidden\r\n"
+				"Cache-Control: no-store\r\n"
+				"Referrer-Policy: no-referrer\r\n"
+				"Content-Length: 0\r\n\r\n");
+			return false;
+		}
+	}
+	if (requestedPage == _T("password")) {
 		const CString& ip = input.ip_text;
 		state.just_add_link =
 			!port.parse_url(input.url, _T("c")).IsEmpty();
@@ -148,17 +189,19 @@ bool Authenticate(
 			state.issued_csrf = GenerateWebRequestHexToken();
 			bool added = false;
 			for (unsigned attempt = 0; attempt < 16 && !added; ++attempt) {
+				state.issued_browser_token = GenerateWebRequestHexToken();
 				state.session = static_cast<long>(
 					GenerateWebRequestWord32() & 0x7FFFFFFFu);
 				added = port.add_session(
 					port.context,
 					static_cast<std::uint32_t>(state.session),
 					isAdmin, input.default_category, state.now_ms,
-					state.issued_csrf);
+					state.issued_csrf, state.issued_browser_token);
 			}
 			if (!added) {
 				authOk = false;
 				state.issued_csrf.Empty();
+				state.issued_browser_token.Empty();
 			}
 		}
 		if (authOk) {
@@ -192,11 +235,14 @@ bool Authenticate(
 		port.send_reply(input.legacy,
 			"HTTP/1.1 403 Forbidden\r\n"
 			"Cache-Control: no-store\r\n"
+			"Referrer-Policy: no-referrer\r\n"
 			"Content-Length: 0\r\n\r\n");
 		return false;
 	}
-	if (port.parse_url(input.url, _T("w")) == _T("logout"))
+	if (requestedPage == _T("logout")) {
 		port.remove_session(input.legacy, state.session);
+		state.clear_browser_cookie = true;
+	}
 	return true;
 }
 
@@ -219,8 +265,13 @@ bool SendAdministrativeAction(
 		return false;
 	}
 	port.remove_session(input.legacy, state.session);
+	state.clear_browser_cookie = true;
 	state.response_committed = true;
-	port.send_content(input.legacy, HTTPInit,
+	CStringA headers(HTTPInit);
+	headers.AppendFormat(
+		"Set-Cookie: eSEWebSession=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict%s\r\n",
+		input.secure_transport ? "; Secure" : "");
+	port.send_content(input.legacy, headers,
 		port.render(WebClassicView::Login, input.legacy, state.session));
 	port.perform_admin_action(action);
 	return true;
@@ -322,6 +373,15 @@ void SendResponse(
 	if (!state.issued_csrf.IsEmpty())
 		headers.AppendFormat(
 			"X-CSRF-Token: %s\r\n", (LPCSTR)state.issued_csrf);
+	if (!state.issued_browser_token.IsEmpty())
+		headers.AppendFormat(
+			"Set-Cookie: eSEWebSession=%s; Path=/; HttpOnly; SameSite=Strict%s\r\n",
+			(LPCSTR)state.issued_browser_token,
+			input.secure_transport ? "; Secure" : "");
+	else if (state.clear_browser_cookie)
+		headers.AppendFormat(
+			"Set-Cookie: eSEWebSession=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict%s\r\n",
+			input.secure_transport ? "; Secure" : "");
 	state.response_committed = true;
 	if (state.use_gzip)
 		port.send_binary(input.legacy, headers, gzipOut, gzipLen);
@@ -334,7 +394,24 @@ void SendResponse(
 
 std::uint64_t WebRequestAuthNowMs() noexcept
 {
-	return static_cast<std::uint64_t>(::GetTickCount());
+	// This project still advertises a Windows XP SDK baseline, where the
+	// GetTickCount64 declaration is hidden. Resolve the real 64-bit monotonic
+	// clock on supported systems and retain a locked wrap-extension fallback.
+	typedef ULONGLONG (WINAPI *GetTickCount64Fn)();
+	static GetTickCount64Fn getTickCount64 =
+		reinterpret_cast<GetTickCount64Fn>(GetProcAddress(
+			GetModuleHandleW(L"kernel32.dll"), "GetTickCount64"));
+	if (getTickCount64 != NULL)
+		return static_cast<std::uint64_t>(getTickCount64());
+	static CCriticalSection legacyClockLock;
+	static DWORD previous = 0;
+	static std::uint64_t epoch = 0;
+	CSingleLock lock(&legacyClockLock, TRUE);
+	const DWORD current = ::GetTickCount();
+	if (current < previous)
+		epoch += (1ull << 32);
+	previous = current;
+	return epoch + current;
 }
 
 std::uint64_t WebRequestSessionTimeoutMs() noexcept
@@ -348,6 +425,19 @@ std::uint64_t WebRequestSessionTimeoutMs() noexcept
 CStringA GenerateWebRequestHexToken()
 {
 	return GenerateHexTokenInternal();
+}
+
+CStringA DigestWebRequestToken(const CStringA& token)
+{
+	CryptoPP::byte digest[CryptoPP::SHA256::DIGESTSIZE];
+	CryptoPP::SHA256().CalculateDigest(
+		digest,
+		reinterpret_cast<const CryptoPP::byte*>((LPCSTR)token),
+		token.GetLength());
+	CStringA encoded;
+	for (int index = 0; index < CryptoPP::SHA256::DIGESTSIZE; ++index)
+		encoded.AppendFormat("%02x", digest[index]);
+	return encoded;
 }
 
 std::uint32_t GenerateWebRequestWord32()
@@ -441,6 +531,7 @@ bool WebClassicPort::Complete() const noexcept
 		&& validate_challenge != nullptr
 		&& login_blocked != nullptr
 		&& add_session != nullptr
+		&& resolve_browser_session != nullptr
 		&& validate_csrf != nullptr
 		&& record_login_failure != nullptr
 		&& record_login_success != nullptr
@@ -497,6 +588,8 @@ void WebRequestDispatch::Process(
 			port.send_reply(input.legacy,
 				"HTTP/1.1 500 Internal Server Error\r\n"
 				"Connection: close\r\n"
+				"Cache-Control: no-store\r\n"
+				"Referrer-Policy: no-referrer\r\n"
 				"Content-Length: 0\r\n\r\n");
 		}
 	}
@@ -524,17 +617,26 @@ void M2A_UNBIND_W1_EC6846B80E(const M2AParentPort& parent) { std::lock_guard<std
 
 namespace {
 
-struct DispatchProbe { bool logged = true, admin = false, csrf = true, challenge = true, file_result = false, file_throw = false, parse_throw = false; int contents = 0, binaries = 0, replies = 0, actions = 0, files = 0, sessions = 0; };
+struct DispatchProbe { bool logged = true, admin = false, csrf = true, challenge = true, bearer = true, file_result = false, file_throw = false, parse_throw = false; int contents = 0, binaries = 0, replies = 0, actions = 0, files = 0, sessions = 0, removals = 0; CStringA headers, issued_bearer; };
 thread_local DispatchProbe* activeProbe = nullptr;
 CString ProbeParse(const CString& url, const CString& field) { if (activeProbe != nullptr && activeProbe->parse_throw && field == _T("filehash")) throw 1; const CString key(field + _T("=")); int begin = url.Find(key); if (begin < 0) return CString(); begin += key.GetLength(); const int end = url.Find(_T('&'), begin); return end < 0 ? url.Mid(begin) : url.Mid(begin, end - begin); }
-bool ProbeChallenge(const void* raw, const CString&, const CString&, bool& admin) { const DispatchProbe& p = *static_cast<const DispatchProbe*>(raw); admin = p.admin; return p.challenge; } bool ProbeBlocked(void*, std::uint32_t, std::uint64_t) { return false; } bool ProbeAdd(void* raw, std::uint32_t, bool, int, std::uint64_t, const CStringA&) { DispatchProbe& p = *static_cast<DispatchProbe*>(raw); ++p.sessions; p.logged = true; return true; }
-bool ProbeCsrf(void* raw, std::uint32_t, const CStringA&, const CStringA&) { return static_cast<DispatchProbe*>(raw)->csrf; } void ProbeFailure(void*, std::uint32_t, std::uint64_t) {} void ProbeSuccess(void*, std::uint32_t) {} bool ProbeRemove(const void*, long) { return true; } bool ProbeLogged(const void* raw, long) { return static_cast<const DispatchProbe*>(raw)->logged; } bool ProbeAdmin(const void* raw, const CString&) { return static_cast<const DispatchProbe*>(raw)->admin; }
-void ProbeContent(const void* raw, const CStringA&, const CString&) { ++static_cast<DispatchProbe*>(const_cast<void*>(raw))->contents; } void ProbeBinary(const void* raw, const CStringA&, const void*, unsigned long) { ++static_cast<DispatchProbe*>(const_cast<void*>(raw))->binaries; } void ProbeReply(const void* raw, const char*) { ++static_cast<DispatchProbe*>(const_cast<void*>(raw))->replies; } void ProbeNotify(bool, const CString&) {} void ProbeBad(const CString&) {}
+bool ProbeChallenge(const void* raw, const CString&, const CString&, bool& admin) { const DispatchProbe& p = *static_cast<const DispatchProbe*>(raw); admin = p.admin; return p.challenge; } bool ProbeBlocked(void*, std::uint32_t, std::uint64_t) { return false; } bool ProbeAdd(void* raw, std::uint32_t, bool, int, std::uint64_t, const CStringA&, const CStringA& bearer) { DispatchProbe& p = *static_cast<DispatchProbe*>(raw); ++p.sessions; p.logged = true; p.issued_bearer = bearer; return true; }
+bool ProbeBearer(void* raw, const CStringA&, std::uint64_t, std::uint64_t, std::uint32_t& id) { DispatchProbe& p = *static_cast<DispatchProbe*>(raw); id = 1; return p.bearer; }
+bool ProbeCsrf(void* raw, std::uint32_t, const CStringA&, const CStringA&) { return static_cast<DispatchProbe*>(raw)->csrf; } void ProbeFailure(void*, std::uint32_t, std::uint64_t) {} void ProbeSuccess(void*, std::uint32_t) {} bool ProbeRemove(const void* raw, long) { ++static_cast<DispatchProbe*>(const_cast<void*>(raw))->removals; return true; } bool ProbeLogged(const void* raw, long) { return static_cast<const DispatchProbe*>(raw)->logged; } bool ProbeAdmin(const void* raw, const CString&) { return static_cast<const DispatchProbe*>(raw)->admin; }
+void ProbeContent(const void* raw, const CStringA& headers, const CString&) { DispatchProbe& p=*static_cast<DispatchProbe*>(const_cast<void*>(raw));++p.contents;p.headers=headers; } void ProbeBinary(const void* raw, const CStringA& headers, const void*, unsigned long) { DispatchProbe& p=*static_cast<DispatchProbe*>(const_cast<void*>(raw));++p.binaries;p.headers=headers; } void ProbeReply(const void* raw, const char* headers) { DispatchProbe& p=*static_cast<DispatchProbe*>(const_cast<void*>(raw));++p.replies;p.headers=headers; } void ProbeNotify(bool, const CString&) {} void ProbeBad(const CString&) {}
 void ProbeAction(WebAdminAction) { if (activeProbe != nullptr) ++activeProbe->actions; } bool ProbeFile(const void* raw, const CString&) { DispatchProbe& p = *static_cast<DispatchProbe*>(const_cast<void*>(raw)); ++p.files; if (p.file_throw) throw 1; return p.file_result; } CString ProbeRender(WebClassicView view, const void*, long) { return view == WebClassicView::Header ? _T("H") : view == WebClassicView::Footer ? _T("F") : _T("V"); }
-bool RunProbe(DispatchProbe& probe, const CString& url, bool gzip = false, bool highLevel = false)
+bool ProbeHardened(const CStringA& headers) { return headers.Find("Cache-Control: no-store\r\n") >= 0 && headers.Find("Referrer-Policy: no-referrer\r\n") >= 0; }
+bool RunProbe(
+	DispatchProbe& probe,
+	const CString& url,
+	bool gzip = false,
+	bool highLevel = false,
+	bool secure = false,
+	bool loopback = true,
+	const CStringA& browserToken = CStringA())
 {
-	WebClassicPort port{&probe, ProbeParse, ProbeChallenge, ProbeBlocked, ProbeAdd, ProbeCsrf, ProbeFailure, ProbeSuccess, ProbeRemove, ProbeLogged, ProbeAdmin, ProbeContent, ProbeBinary, ProbeReply, ProbeNotify, ProbeBad, ProbeAction, ProbeFile, ProbeRender};
-	WebClassicInput input; input.legacy = &probe; input.url = url; input.ip_text = _T("127.0.0.1"); input.ip = INADDR_LOOPBACK; input.loopback = true; input.app_running = true; input.use_gzip = gzip; input.allow_high_level = highLevel;
+	WebClassicPort port{&probe, ProbeParse, ProbeChallenge, ProbeBlocked, ProbeAdd, ProbeBearer, ProbeCsrf, ProbeFailure, ProbeSuccess, ProbeRemove, ProbeLogged, ProbeAdmin, ProbeContent, ProbeBinary, ProbeReply, ProbeNotify, ProbeBad, ProbeAction, ProbeFile, ProbeRender};
+	WebClassicInput input; input.legacy = &probe; input.url = url; input.ip_text = loopback ? _T("127.0.0.1") : _T("198.51.100.7"); input.ip = loopback ? INADDR_LOOPBACK : 0x076433c6u; input.loopback = loopback; input.app_running = true; input.use_gzip = gzip; input.allow_high_level = highLevel; input.secure_transport = secure; input.browser_session_token = browserToken;
 	const M2AParentPort parent{&probe}; M2AModuleHandle binding = M2A_BIND_W1_EC6846B80E(parent); if (!binding) return false; activeProbe = &probe; try { RunWebClassicRequest(parent, input, port); } catch (...) { activeProbe = nullptr; M2A_UNBIND_W1_EC6846B80E(parent); return probe.file_throw || probe.parse_throw; } activeProbe = nullptr; M2A_UNBIND_W1_EC6846B80E(parent); return true;
 }
 
@@ -543,10 +645,20 @@ bool RunProbe(DispatchProbe& probe, const CString& url, bool gzip = false, bool 
 bool RunWebClassicRequestCharacterizationSelfTest()
 {
 	if (!(ResolveWebClassicView(_T("server")) == WebClassicView::Server && ResolveWebClassicView(_T("options")) == WebClassicView::Options && ResolveWebClassicView(_T("SERVER")) == WebClassicView::Unknown && ResolveWebClassicView(_T("missing")) == WebClassicView::Unknown && ResolveWebClassicView(CString()) == WebClassicView::Unknown)) return false;
-	DispatchProbe auth; auth.logged = false; if (!RunProbe(auth, _T("?ses=1&w=password&r=ok&n=n")) || auth.sessions != 1 || auth.contents != 1) return false; DispatchProbe csrf; csrf.csrf = false; if (!RunProbe(csrf, _T("?ses=1&w=server")) || csrf.replies != 1 || csrf.contents != 0) return false;
+	if (DigestWebRequestToken(CStringA("abc")) !=
+		"ba7816bf8f01cfea414140de5dae2223"
+		"b00361a396177a9cb410ff61f20015ad") return false;
+	DispatchProbe auth; auth.logged = false; if (!RunProbe(auth, _T("?ses=1&w=password&r=ok&n=n")) || auth.sessions != 1 || auth.issued_bearer.GetLength() != 64 || auth.contents != 1 || !ProbeHardened(auth.headers) || auth.headers.Find("Set-Cookie: eSEWebSession=") < 0 || auth.headers.Find("HttpOnly; SameSite=Strict") < 0 || auth.headers.Find("; Secure") >= 0) return false;
+	DispatchProbe secureAuth; secureAuth.logged = false; if (!RunProbe(secureAuth, _T("?w=password&r=ok&n=n"), false, false, true) || !ProbeHardened(secureAuth.headers) || secureAuth.headers.Find("HttpOnly; SameSite=Strict; Secure") < 0) return false;
+	DispatchProbe remoteNoCookie; if (!RunProbe(remoteNoCookie, _T("?ses=1&w=server"), false, false, false, false) || remoteNoCookie.replies != 1 || remoteNoCookie.contents != 0 || !ProbeHardened(remoteNoCookie.headers)) return false;
+	DispatchProbe remoteCookie; if (!RunProbe(remoteCookie, _T("?ses=1&w=server"), false, false, false, false, CStringA("bearer")) || remoteCookie.contents != 1 || remoteCookie.replies != 0) return false;
+	DispatchProbe remoteMismatch; if (!RunProbe(remoteMismatch, _T("?ses=2&w=server"), false, false, false, false, CStringA("bearer")) || remoteMismatch.replies != 1 || remoteMismatch.contents != 0 || !ProbeHardened(remoteMismatch.headers)) return false;
+	DispatchProbe remoteClean; if (!RunProbe(remoteClean, _T("?w=server"), false, false, false, false, CStringA("bearer")) || remoteClean.contents != 1 || remoteClean.replies != 0) return false;
+	DispatchProbe logout; if (!RunProbe(logout, _T("?w=logout"), false, false, true, false, CStringA("bearer")) || logout.removals != 1 || logout.headers.Find("eSEWebSession=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict; Secure") < 0) return false;
+	DispatchProbe csrf; csrf.csrf = false; if (!RunProbe(csrf, _T("?ses=1&w=server")) || csrf.replies != 1 || csrf.contents != 0 || !ProbeHardened(csrf.headers)) return false;
 	DispatchProbe admin; admin.admin = true; if (!RunProbe(admin, _T("?ses=1&w=close"), false, true) || admin.actions != 1 || admin.contents != 1) return false; DispatchProbe missing; missing.admin = true; if (!RunProbe(missing, _T("?ses=1&w=getfile&filehash=x")) || missing.files != 1 || missing.contents != 1) return false;
-	DispatchProbe fileThrow; fileThrow.admin = true; fileThrow.file_throw = true; if (!RunProbe(fileThrow, _T("?ses=1&w=getfile&filehash=x")) || fileThrow.files != 1 || fileThrow.replies != 0 || fileThrow.contents != 0) return false; DispatchProbe parseThrow; parseThrow.admin = true; parseThrow.parse_throw = true; if (!RunProbe(parseThrow, _T("?ses=1&w=getfile&filehash=x")) || parseThrow.files != 0 || parseThrow.replies != 1) return false; DispatchProbe gzip;
-	return RunProbe(gzip, _T("?ses=1&w=server"), true) && gzip.binaries == 1 && gzip.contents == 0;
+	DispatchProbe fileThrow; fileThrow.admin = true; fileThrow.file_throw = true; if (!RunProbe(fileThrow, _T("?ses=1&w=getfile&filehash=x")) || fileThrow.files != 1 || fileThrow.replies != 0 || fileThrow.contents != 0) return false; DispatchProbe parseThrow; parseThrow.admin = true; parseThrow.parse_throw = true; if (!RunProbe(parseThrow, _T("?ses=1&w=getfile&filehash=x")) || parseThrow.files != 0 || parseThrow.replies != 1 || !ProbeHardened(parseThrow.headers)) return false; DispatchProbe gzip;
+	return RunProbe(gzip, _T("?ses=1&w=server"), true) && gzip.binaries == 1 && gzip.contents == 0 && ProbeHardened(gzip.headers);
 }
 
 } // namespace eSELive

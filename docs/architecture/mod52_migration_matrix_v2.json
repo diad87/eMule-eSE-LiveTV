@@ -1,0 +1,136 @@
+{
+  "schema": "ese.mod52.migration-matrix/v2",
+  "status": "PRE-A",
+  "w12_base_commit": "545cdf45f9f2efaf56899bee6459bc133cf96071",
+  "scope": "W12 security expansion and reviewed reach-observability closure only; every M2A card other than W12 remains governed by the hash-pinned v1 matrix.",
+  "supersedes": ["docs/architecture/mod52_migration_matrix_v1.json"],
+  "supersedes_for_card": "M2A-W12",
+  "change_scope": {
+    "included": ["M2A-W12", "W7-SEC-02 closure", "read-only reach-status adapter", "advertised Kad6 bind-port correction", "A/H/R evidence"],
+    "excluded": ["all other M2A cards", "QUIC", "codec changes", "LiveTunnel protocol changes", "LS1-LS6"]
+  },
+  "v1_evidence": {
+    "path": "docs/architecture/mod52_migration_matrix_v1.json",
+    "sha256": "de7e65410f34813276a3c8ef2f06a54009f2fbbf4ed2175f84eb7d33bdf91a05",
+    "immutable": true
+  },
+  "programme_budget": {
+    "w12_jp": 4.75,
+    "w12_hours": 33.25,
+    "v92_jp": 156.75,
+    "v92_hours": 1097.25,
+    "m2a_jp": 51.75,
+    "m2a_hours": 362.25
+  },
+  "cards": [
+    {
+      "card": "M2A-W12",
+      "name": "WebServer facade and bounded HLS capability security",
+      "parent": "CWebServer",
+      "layer": "facade/application",
+      "depends_on": ["M2A-W11", "WebAuthPolicy", "LiveStreamManager"],
+      "card_prerequisites": ["M2A-W11 active", "W7-SEC-02 contract frozen", "PRE-A governance v2-v3 valid", "no unreviewed P0/P1 finding"],
+      "completion_requires": ["PRE-A", "A", "H", "R"],
+      "card_total_budget": {
+        "add_max": 12000,
+        "delete_min": 5500,
+        "net_max": 6500,
+        "scope": "all CARD_PATHS in the W12 A cut, including production, tests, gates, documentation, and R evidence runners"
+      },
+      "coordinator_budget": {
+        "paths": ["srchybrid/WebServer.cpp", "srchybrid/WebServer.h"],
+        "add_max": 500,
+        "delete_min": 120,
+        "net_max": 300,
+        "cpp_hard_loc_max": 3500,
+        "cpp_target_loc_max": 2100,
+        "header_hard_loc_max": 300,
+        "new_mutable_fields": 0,
+        "actual_w12_delta": {
+          "WebServer.cpp": {"baseline_physical_loc": 1756, "current_physical_loc": 2048, "add": 419, "delete": 127, "net": 292},
+          "WebServer.h": {"net": -8},
+          "combined_add": 421,
+          "combined_delete": 137,
+          "combined_net": 284
+        }
+      },
+      "coordinator_limits": {
+        "CWebServer": {"cpp_target_loc_max": 2100, "cpp_hard_loc_max": 3500, "header_hard_loc_max": 300, "new_mutable_fields": 0, "combined_add_max": 500, "combined_delete_min": 120, "combined_net_max": 300, "actual_w12_delta": {"cpp_add": 419, "cpp_delete": 127, "cpp_net": 292, "header_add": 2, "header_delete": 10, "header_net": -8, "combined_add": 421, "combined_delete": 137, "combined_net": 284}},
+        "CLiveStreamManager": {"header_hard_loc_max": 700, "cpp_growth_max": 0, "w12_actual_delta": {"header": -2, "cpp": -10}}
+      },
+      "live_stream_manager_budget": {
+        "header_hard_loc_max": 700,
+        "cpp_growth_max": 0,
+        "rule": "The W12 extraction must not grow LiveStreamManager.cpp; a governed port or partition owns any new HLS lease mechanics."
+      },
+      "surface_budgets": {
+        "WebServerFacade": {"paths": ["srchybrid/WebServerFacade.h", "srchybrid/WebServerFacade.cpp"], "loc_max": 400},
+        "WebHlsCapabilityController": {"paths": ["srchybrid/WebHlsCapabilityController.h", "srchybrid/WebHlsCapabilityController.cpp"], "loc_max": 400, "dependencies": ["WebAuthPolicy"]},
+        "LiveHlsReadLease": {"header_path": "srchybrid/LiveHlsReadLease.h", "header_loc_max": 100, "cpp_path": "srchybrid/LiveHlsReadLease.cpp", "cpp_loc_max": 180},
+        "WebAuthPolicy": {"paths": ["srchybrid/WebAuthPolicy.h", "srchybrid/WebAuthPolicy.cpp"], "loc_max": 1400, "hard_loc_max": 1500},
+        "WebRequestDispatch": {"paths": ["srchybrid/WebRequestDispatch.h", "srchybrid/WebRequestDispatch.cpp"], "loc_max": 850},
+        "WebRouteTable": {"paths": ["srchybrid/WebRouteTable.h", "srchybrid/WebRouteTable.cpp"], "loc_max": 700},
+        "WebStaticAssets": {"paths": ["srchybrid/WebStaticAssets.h", "srchybrid/WebStaticAssets.cpp"], "loc_max": 600},
+        "WebSocketResponse": {"paths": ["srchybrid/WebSocketResponse.h", "srchybrid/WebSocketResponse.cpp"], "loc_max": 400},
+        "WebSocket": {"paths": ["srchybrid/WebSocket.h", "srchybrid/WebSocket.cpp"], "loc_max": 1300}
+      },
+      "additional_modules": [
+        {"name": "WebServerFacade", "paths": ["srchybrid/WebServerFacade.h", "srchybrid/WebServerFacade.cpp"], "role": "thin legacy facade", "loc_max": 400},
+        {"name": "WebHlsCapabilityController", "paths": ["srchybrid/WebHlsCapabilityController.h", "srchybrid/WebHlsCapabilityController.cpp"], "role": "Inspect/Commit capability decision only", "loc_max": 400, "direct_dependencies": ["WebAuthPolicy"]}
+      ],
+      "approved_header_only_ports": {
+        "entries": [],
+        "policy": "No W12 header-only port is approved. LiveHlsReadLease is a governed h/cpp partition, not a header-only escape hatch."
+      },
+      "surfaces": [
+        {"path": "srchybrid/WebServerFacade.h", "role": "thin legacy facade"},
+        {"path": "srchybrid/WebServerFacade.cpp", "role": "thin legacy facade"},
+        {"path": "srchybrid/WebHlsCapabilityController.h", "role": "capability decision controller", "dependencies": ["WebAuthPolicy"]},
+        {"path": "srchybrid/WebHlsCapabilityController.cpp", "role": "capability decision controller", "dependencies": ["WebAuthPolicy"]},
+        {"path": "srchybrid/LiveHlsReadLease.h", "loc_max": 100, "role": "bounded generation-stable read lease port/partition"},
+        {"path": "srchybrid/LiveHlsReadLease.cpp", "loc_max": 180, "role": "bounded generation-stable read lease port/partition"},
+        {"path": "srchybrid/WebAuthPolicy.h", "role": "digest-only session and capability authority"},
+        {"path": "srchybrid/WebAuthPolicy.cpp", "role": "digest-only session and capability authority"},
+        {"path": "srchybrid/WebRequestDispatch.h", "role": "request authentication dispatch"},
+        {"path": "srchybrid/WebRequestDispatch.cpp", "role": "request authentication dispatch"},
+        {"path": "srchybrid/WebRouteTable.h", "role": "canonical fail-closed routing"},
+        {"path": "srchybrid/WebRouteTable.cpp", "role": "canonical fail-closed routing"},
+        {"path": "srchybrid/WebStaticAssets.h", "role": "hardened static/error response construction"},
+        {"path": "srchybrid/WebStaticAssets.cpp", "role": "hardened static/error response construction"},
+        {"path": "srchybrid/WebSocketResponse.h", "role": "bounded buffered response ownership"},
+        {"path": "srchybrid/WebSocketResponse.cpp", "role": "bounded buffered response ownership"},
+        {"path": "srchybrid/WebSocket.h", "role": "wire adapter"},
+        {"path": "srchybrid/WebSocket.cpp", "role": "wire adapter"}
+      ],
+      "card_paths": [
+        "srchybrid/WebServer.cpp", "srchybrid/WebServer.h", "srchybrid/Mod02BuildIdentity.h", "srchybrid/WebServerFacade.h", "srchybrid/WebServerFacade.cpp",
+        "srchybrid/WebHlsCapabilityController.h", "srchybrid/WebHlsCapabilityController.cpp",
+        "srchybrid/LiveHlsReadLease.h", "srchybrid/LiveHlsReadLease.cpp",
+        "srchybrid/WebAuthPolicy.h", "srchybrid/WebAuthPolicy.cpp", "srchybrid/WebRequestDispatch.h", "srchybrid/WebRequestDispatch.cpp",
+        "srchybrid/WebRouteTable.h", "srchybrid/WebRouteTable.cpp", "srchybrid/WebStaticAssets.h", "srchybrid/WebStaticAssets.cpp",
+        "srchybrid/WebSocketResponse.h", "srchybrid/WebSocketResponse.cpp", "srchybrid/WebSocket.h", "srchybrid/WebSocket.cpp",
+        "srchybrid/LiveStreamManager.h", "srchybrid/LiveStreamManager.cpp", "srchybrid/emule.vcxproj", "srchybrid/WebServer_original.cpp",
+        "srchybrid/tests/make.bat", "srchybrid/tests/test_web_auth_policy.cpp", "srchybrid/tests/test_web_route_table.cpp", "srchybrid/tests/test_web_streaming.cpp", "srchybrid/tests/test_web_hls_capability_controller.cpp",
+        "tests/test_v92_m2a_w12_webserver_close.py", "tests/test_v92_mod22_web_auth_policy.py", "tests/test_v92_mod23_web_route_table.py",
+        "tools/architecture/run_mod02_stream_selftest.ps1", "tools/architecture/verify_mod02_characterization.py", "tools/check_direct_port_usage.py", "tools/architecture/verify_m2a00_migration_ratchet.py", "tests/test_v92_m2a00_migration_ratchet.py",
+        "docs/architecture/MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md",
+        "docs/architecture/MOD52_W12_SECURITY_EXPANSION_PLAN_2026-08-02.md",
+        "docs/architecture/mod52_migration_matrix_v2.json",
+        "docs/architecture/mod52_migration_contract_v2.json",
+        "docs/architecture/mod03_ownership_layering_contract_v3.json",
+        "docs/architecture/mod04_architecture_gate_catalog_v3.json",
+        "docs/V9.2_K03_PORT_USAGE_AUDIT.md", "docs/architecture/mod01_approved_overlays_v1.json",
+        "tools/architecture/run_w12_security_runtime.ps1", "tools/architecture/verify_w12_security_evidence.py", "tools/architecture/collect_w12_browser_cdp.mjs", "tests/test_v92_m2a_w12_security_evidence.py", "tests/test_v92_m2a_w12_browser_collector.py",
+        "docs/architecture/mod23_web_route_inventory_v1.json",
+        "srchybrid/DirectReachabilityManager.h", "srchybrid/DirectReachabilityManager.cpp",
+        "srchybrid/WebLiveApiDiagnosticsController.h", "srchybrid/WebLiveApiDiagnosticsController.cpp",
+        "srchybrid/eSE/test/live_tv_regression.test.js",
+        "srchybrid/Kad6GatewaySocket.cpp", "tests/test_v92_k03_port_roles.py",
+        "tools/architecture/verify_mod04_architecture_gate.py", "tests/test_v92_mod04_architecture_gate.py"
+      ],
+      "coverage_ids": ["W12-COV-01", "W12-COV-02", "W12-COV-03", "W12-COV-04", "W12-COV-05", "W12-COV-06", "W12-COV-07", "W12-COV-08", "W12-COV-09", "W12-COV-10", "W12-COV-11"],
+      "coverage_requirements": ["card:W12", "module:WebServerFacade", "binding:WebServerFacade", "module:WebHlsCapabilityController", "port:LiveHlsReadLease", "finding:W7-SEC-02", "contract:W12-HLS-SECURITY", "endpoint:reach-status", "snapshot:direct-reachability", "security:reach-status-boundary", "contract:advertised-bind-ports"],
+      "approval": "A later revision is mandatory for any path, budget, owner, or dependency change."
+    }
+  ]
+}

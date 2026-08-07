@@ -38,7 +38,7 @@ bool WebSocketResponse::Enqueue(const void* bytes, std::size_t byteCount)
 		(bytes == nullptr && byteCount != 0u) ||
 		byteCount > kMaxQueuedBytes - m_queuedBytes ||
 		m_chunks.size() >= kMaxQueuedChunks) {
-		m_failed = true;
+		MarkFailedPreservingQueue();
 		return false;
 	}
 	if (byteCount == 0u)
@@ -51,7 +51,7 @@ bool WebSocketResponse::Enqueue(const void* bytes, std::size_t byteCount)
 		m_chunks.push_back(std::move(chunk));
 		m_queuedBytes += byteCount;
 	} catch (...) {
-		m_failed = true;
+		MarkFailedPreservingQueue();
 		return false;
 	}
 	return true;
@@ -59,14 +59,17 @@ bool WebSocketResponse::Enqueue(const void* bytes, std::size_t byteCount)
 
 bool WebSocketResponse::AttachSource(
 	std::unique_ptr<IWebResponseSource> source,
-	std::uint64_t byteCount)
+	std::uint64_t byteCount,
+	std::shared_ptr<void> completionReservation)
 {
-	if (m_failed || m_closeRequested || m_source || !source ||
+	if (m_failed || m_closeRequested || m_source ||
+		m_completionReservation || !source ||
 		byteCount == 0u) {
-		m_failed = true;
+		MarkFailedPreservingQueue();
 		return false;
 	}
 	m_source = std::move(source);
+	m_completionReservation = std::move(completionReservation);
 	m_sourceBytesRemaining = byteCount;
 	return true;
 }
@@ -85,7 +88,7 @@ bool WebSocketResponse::PumpSource(std::size_t maximumChunkBytes)
 			kMaxQueuedBytes - m_queuedBytes));
 	const std::size_t permitted = static_cast<std::size_t>(permitted64);
 	if (permitted == 0u) {
-		m_failed = true;
+		MarkFailedPreservingQueue();
 		return false;
 	}
 
@@ -129,13 +132,15 @@ std::size_t WebSocketResponse::FrontSize() const
 bool WebSocketResponse::Consume(std::size_t byteCount)
 {
 	if (m_chunks.empty() || byteCount == 0u || byteCount > FrontSize()) {
-		m_failed = true;
+		MarkFailedPreservingQueue();
 		return false;
 	}
 	m_chunks.front().offset += byteCount;
 	m_queuedBytes -= byteCount;
 	if (m_chunks.front().offset == m_chunks.front().bytes.size())
 		m_chunks.pop_front();
+	if (m_chunks.empty() && !m_source)
+		m_completionReservation.reset();
 	return true;
 }
 
@@ -146,11 +151,17 @@ void WebSocketResponse::RequestClose()
 
 void WebSocketResponse::Fail()
 {
-	m_failed = true;
+	MarkFailedPreservingQueue();
 	m_chunks.clear();
-	m_source.reset();
-	m_sourceBytesRemaining = 0;
 	m_queuedBytes = 0;
+}
+
+void WebSocketResponse::MarkFailedPreservingQueue()
+{
+	m_failed = true;
+	m_source.reset();
+	m_completionReservation.reset();
+	m_sourceBytesRemaining = 0;
 }
 
 bool WebSocketResponse::CloseRequested() const

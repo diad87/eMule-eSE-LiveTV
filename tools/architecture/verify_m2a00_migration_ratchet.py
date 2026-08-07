@@ -12,6 +12,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -29,6 +30,74 @@ MOD51 = ROOT / "docs/architecture/mod51_include_scc_contract_v1.json"
 MOD03V2 = ROOT / "docs/architecture/mod03_ownership_layering_contract_v2.json"
 MOD04V2 = ROOT / "docs/architecture/mod04_architecture_gate_catalog_v2.json"
 ACTIVATION = ROOT / "docs/architecture/mod52_migration_activation_ledger_v1.json"
+W12_MATRIX = ROOT / "docs/architecture/mod52_migration_matrix_v2.json"
+W12_CONTRACT = ROOT / "docs/architecture/mod52_migration_contract_v2.json"
+W12_MOD03 = ROOT / "docs/architecture/mod03_ownership_layering_contract_v3.json"
+W12_MOD04 = ROOT / "docs/architecture/mod04_architecture_gate_catalog_v3.json"
+W12_BASE_COMMIT = "545cdf45f9f2efaf56899bee6459bc133cf96071"
+W12_CARD_BUDGET_PIN = {
+    "add_max": 12000,
+    "delete_min": 5500,
+    "net_max": 6500,
+}
+W12_CARD_PATH_COUNT = 61
+W12_SCOPE_EXPANSION_PATHS = {
+    "docs/architecture/mod23_web_route_inventory_v1.json",
+    "srchybrid/DirectReachabilityManager.h",
+    "srchybrid/DirectReachabilityManager.cpp",
+    "srchybrid/WebLiveApiDiagnosticsController.h",
+    "srchybrid/WebLiveApiDiagnosticsController.cpp",
+    "srchybrid/eSE/test/live_tv_regression.test.js",
+    "srchybrid/Kad6GatewaySocket.cpp",
+    "tests/test_v92_k03_port_roles.py",
+    "tools/architecture/verify_mod04_architecture_gate.py",
+    "tests/test_v92_mod04_architecture_gate.py",
+}
+W12_R_ARTIFACT_NAMES = {
+    "activation": "activation.json",
+    "runtime": "runtime.json",
+    "browser_challenge": "browser-challenge.json",
+    "browser_cdp_trace": "browser-cdp-trace.json",
+    "verdict": "verdict.json",
+}
+W12_EVIDENCE_VERIFIER = "tools/architecture/verify_w12_security_evidence.py"
+W12_R_TOOL_PATHS = {
+    "runner": "tools/architecture/run_w12_security_runtime.ps1",
+    "verifier": W12_EVIDENCE_VERIFIER,
+    "collector": "tools/architecture/collect_w12_browser_cdp.mjs",
+    "test": "tests/test_v92_m2a_w12_security_evidence.py",
+    "ratchet": "tools/architecture/verify_m2a00_migration_ratchet.py",
+}
+W12_COVERAGE_IDS = tuple(f"W12-COV-{index:02d}" for index in range(1, 12))
+W12_TYPED_COVERAGE = (
+    "card:W12",
+    "module:WebServerFacade",
+    "binding:WebServerFacade",
+    "module:WebHlsCapabilityController",
+    "port:LiveHlsReadLease",
+    "finding:W7-SEC-02",
+    "contract:W12-HLS-SECURITY",
+    "endpoint:reach-status",
+    "snapshot:direct-reachability",
+    "security:reach-status-boundary",
+    "contract:advertised-bind-ports",
+)
+# These historical inputs are evidence, not self-authorising configuration.
+# A v2/v3 overlay may refer to them, but cannot replace their digests.
+W12_HISTORICAL_HASHES: dict[str, str] = {
+    "docs/architecture/mod52_migration_contract_v1.json":
+        "b3957aca15b7c25e42229c3f9623bff881b450c7277323a28c7639e0ea9f3caf",
+    "docs/architecture/mod52_migration_matrix_v1.json":
+        "de7e65410f34813276a3c8ef2f06a54009f2fbbf4ed2175f84eb7d33bdf91a05",
+    "docs/architecture/mod03_ownership_layering_contract_v1.json":
+        "0d5bd65c29b48f8525f5a5edcf8ee754610366af89d18cec3f2e51ecbfd98e42",
+    "docs/architecture/mod03_ownership_layering_contract_v2.json":
+        "c3aa3d90bccbc63ff7a0c8ebafd199e9ed2b00acc2c2ef488c5e11515a3f28b1",
+    "docs/architecture/mod04_architecture_gate_baseline_v1.json":
+        "6d5708dcd3ac5cc7379918e4e5e4b9296a624a77c3bf20861e094a62c537a6e0",
+    "docs/architecture/mod04_architecture_gate_catalog_v2.json":
+        "a977410c88a95a8d42c8f03950deb1c9d740da644bb42135df0d67d9b91bc2a4",
+}
 BASELINE_COMMIT = "8534bf9ee48a16084c0368bf33dcafb4ba12558d"
 # Deliberately held in executable code rather than in the documents they pin:
 # changing a contract cannot silently authorize its own replacement.
@@ -111,6 +180,32 @@ def canonical(value: Any) -> str:
 
 
 def load(path: Path) -> dict[str, Any]: return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _w12_strict_json_bytes(blob: bytes, label: str) -> dict[str, Any]:
+    """Decode a W12 authority object without JSON's duplicate-key ambiguity."""
+    def pairs(values: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in values:
+            if key in result:
+                raise GateError(f"W12 duplicate JSON member: {label}/{key}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(blob.decode("utf-8"), object_pairs_hook=pairs)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise GateError(f"W12 JSON is not strict UTF-8 JSON: {label}") from exc
+    if not isinstance(value, dict):
+        raise GateError(f"W12 JSON root is not an object: {label}")
+    return value
+
+
+def _w12_strict_json_file(path: Path) -> dict[str, Any]:
+    try:
+        return _w12_strict_json_bytes(path.read_bytes(), path.as_posix())
+    except OSError as exc:
+        raise GateError(f"W12 JSON file unavailable: {path.name}") from exc
 
 
 def _lines(path: str, overrides: dict[str, bytes] | None) -> list[str]:
@@ -2184,6 +2279,23 @@ def validate_binding_port_contract() -> None:
 
 def validate_inputs(contract: dict[str, Any], matrix: dict[str, Any], baseline: dict[str, Any], ledger: dict[str, Any] | None = None) -> None:
     ledger = load(ACTIVATION) if ledger is None else ledger
+    # W12 v2 is an overlay, not a retroactive v1 module activation.  Preserve
+    # the exact historical v1 interpretation when its state-specific H/R row
+    # is present; the v2 verifier below validates that expanded row in full.
+    w12_state = ledger.get("cards", {}).get("W12") if isinstance(ledger, dict) else None
+    if (
+        W12_MATRIX.is_file()
+        and isinstance(w12_state, dict)
+        and set(w12_state) == {
+            "state", "stage", "activation_commit", "evidence", "r_evidence",
+        }
+        and w12_state.get("state") == "active"
+        and w12_state.get("stage") in {"H", "R"}
+    ):
+        ledger = copy.deepcopy(ledger)
+        ledger["cards"]["W12"] = {
+            "state": "planned", "activation_commit": None, "evidence": [],
+        }
     closed = {
         CONTRACT: {"schema","baseline_commit","scope","inputs","ratchet","module_policy","status"},
         MATRIX: {"schema","scope","field_matrix","function_matrix","additional_module_paths","dependency_policy","parent_edges","card_prerequisites","card_budgets","non_module_cards","existing_modules","additional_modules"},
@@ -2675,6 +2787,1839 @@ def validate_ratchet(baseline: dict[str, Any], current: dict[str, Any], matrix: 
     if current["sccs"]: raise GateError("ratchet new include SCC")
 
 
+def _closed_object(value: Any, keys: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise GateError(f"W12 closed schema drift: {label}")
+    return value
+
+
+def _closed_list(value: Any, label: str) -> list[Any]:
+    if not isinstance(value, list):
+        raise GateError(f"W12 closed schema drift: {label}")
+    return value
+
+
+def _positive_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def _nonnegative_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _validate_budget(
+    value: Any,
+    keys: set[str],
+    label: str,
+    *,
+    text_keys: set[str] | None = None,
+) -> dict[str, Any]:
+    budget = _closed_object(value, keys, label)
+    text_keys = set() if text_keys is None else text_keys
+    for key, item in budget.items():
+        if key in text_keys:
+            if not isinstance(item, str) or not item.strip():
+                raise GateError(f"W12 budget field is not typed text: {label}/{key}")
+        elif not _nonnegative_int(item):
+            raise GateError(f"W12 budget field is not a nonnegative integer: {label}/{key}")
+    return budget
+
+
+def _safe_w12_path(path: Any) -> str:
+    if not isinstance(path, str) or not path or "\\" in path or "\x00" in path:
+        raise GateError("W12 CARD_PATHS contains a malformed path")
+    parsed = PurePosixPath(path)
+    if (
+        parsed.is_absolute()
+        or parsed.as_posix() != path
+        or any(part in {"", ".", ".."} for part in parsed.parts)
+        or parsed.parts[0].casefold() in {".git", ".codex", ".agents"}
+        or not (
+            path.startswith("srchybrid/")
+            or path.startswith("tests/")
+            or path.startswith("tools/")
+            or path.startswith("docs/")
+        )
+    ):
+        raise GateError(f"W12 CARD_PATHS unsafe path: {path}")
+    return path
+
+
+def _coverage_mentions(values: Any, label: str) -> set[str]:
+    result: set[str] = set()
+    for text in _closed_list(values, label):
+        if not isinstance(text, str) or not text.strip():
+            raise GateError(f"W12 acceptance evidence is not typed text: {label}")
+        for start, end in re.findall(
+            r"W12-COV-(\d{2})(?:\s+through\s+W12-COV-(\d{2}))?",
+            text,
+        ):
+            first = int(start)
+            last = int(end) if end else first
+            if first > last:
+                raise GateError(f"W12 acceptance coverage range reversed: {label}")
+            result.update(f"W12-COV-{index:02d}" for index in range(first, last + 1))
+    return result
+
+
+def _validate_w12_historical_inputs() -> None:
+    for relative, expected in W12_HISTORICAL_HASHES.items():
+        path = ROOT / relative
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise GateError(f"W12 hash-pinned historical input drift: {relative}")
+    try:
+        base_ledger = json.loads(
+            _git_blob(
+                W12_BASE_COMMIT,
+                ACTIVATION.relative_to(ROOT).as_posix(),
+            ).decode("utf-8")
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise GateError("W12 base activation ledger is unreadable") from exc
+    cards = base_ledger.get("cards", {})
+    if (
+        cards.get("W11", {}).get("state") != "active"
+        or cards.get("W12") != {
+            "state": "planned", "activation_commit": None, "evidence": [],
+        }
+    ):
+        raise GateError("W12 base is not the exact active-W11/planned-W12 state")
+
+
+def _validate_w12_surface_schemas(card: dict[str, Any]) -> None:
+    surface_budget_keys = {
+        "WebServerFacade", "WebHlsCapabilityController", "LiveHlsReadLease",
+        "WebAuthPolicy", "WebRequestDispatch", "WebRouteTable",
+        "WebStaticAssets", "WebSocketResponse", "WebSocket",
+    }
+    budgets = _closed_object(
+        card["surface_budgets"], surface_budget_keys, "matrix.card.surface_budgets"
+    )
+    for name, budget in budgets.items():
+        if name == "LiveHlsReadLease":
+            keys = {"header_path", "header_loc_max", "cpp_path", "cpp_loc_max"}
+        elif name == "WebHlsCapabilityController":
+            keys = {"paths", "loc_max", "dependencies"}
+        elif name == "WebAuthPolicy":
+            keys = {"paths", "loc_max", "hard_loc_max"}
+        else:
+            keys = {"paths", "loc_max"}
+        _closed_object(budget, keys, f"matrix.card.surface_budgets.{name}")
+        for key, item in budget.items():
+            if key.endswith("_max") and not _nonnegative_int(item):
+                raise GateError(f"W12 surface LOC budget is not typed: {name}/{key}")
+            if key in {"path", "header_path", "cpp_path"}:
+                _safe_w12_path(item)
+            if key == "paths":
+                paths = _closed_list(item, f"surface paths {name}")
+                if (
+                    not paths
+                    or not all(isinstance(path, str) for path in paths)
+                    or len(paths) != len(set(paths))
+                ):
+                    raise GateError(f"W12 surface path set is empty or duplicated: {name}")
+                for path in paths:
+                    _safe_w12_path(path)
+            if key == "dependencies" and (
+                not isinstance(item, list)
+                or not item
+                or not all(isinstance(value, str) and value for value in item)
+                or len(item) != len(set(item))
+            ):
+                raise GateError(f"W12 surface dependency set invalid: {name}")
+
+    modules = _closed_list(card["additional_modules"], "matrix.card.additional_modules")
+    if len(modules) != 2:
+        raise GateError("W12 additional module catalogue must contain exactly two modules")
+    module_names: list[str] = []
+    for module in modules:
+        name = module.get("name") if isinstance(module, dict) else None
+        keys = {"name", "paths", "role", "loc_max"}
+        if name == "WebHlsCapabilityController":
+            keys.add("direct_dependencies")
+        _closed_object(module, keys, f"matrix.card.additional_modules.{name}")
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Z][A-Za-z0-9]*", name):
+            raise GateError("W12 additional module identity invalid")
+        module_names.append(name)
+        if module["paths"] != budgets[name]["paths"] or module["loc_max"] != budgets[name]["loc_max"]:
+            raise GateError(f"W12 module/surface budget cross-link drift: {name}")
+        expected = budgets[name].get("dependencies", [])
+        if module.get("direct_dependencies", []) != expected:
+            raise GateError(f"W12 module dependency cross-link drift: {name}")
+    if module_names != ["WebServerFacade", "WebHlsCapabilityController"]:
+        raise GateError("W12 additional module order/identity drift")
+
+    surfaces = _closed_list(card["surfaces"], "matrix.card.surfaces")
+    if not surfaces:
+        raise GateError("W12 governed surface catalogue missing")
+    seen: set[str] = set()
+    for surface in surfaces:
+        if not isinstance(surface, dict):
+            raise GateError("W12 governed surface row invalid")
+        keys = {"path", "role"}
+        if "loc_max" in surface:
+            keys.add("loc_max")
+        if "dependencies" in surface:
+            keys.add("dependencies")
+        _closed_object(surface, keys, f"matrix.card.surface.{surface.get('path')}")
+        path = _safe_w12_path(surface["path"])
+        if path in seen:
+            raise GateError("W12 governed surface path duplicated")
+        seen.add(path)
+        if not isinstance(surface["role"], str) or not surface["role"].strip():
+            raise GateError(f"W12 governed surface role missing: {path}")
+        if "loc_max" in surface and not _nonnegative_int(surface["loc_max"]):
+            raise GateError(f"W12 governed surface LOC budget invalid: {path}")
+        if "dependencies" in surface and (
+            not isinstance(surface["dependencies"], list)
+            or not all(isinstance(item, str) and item for item in surface["dependencies"])
+            or len(surface["dependencies"]) != len(set(surface["dependencies"]))
+        ):
+            raise GateError(f"W12 governed surface dependencies invalid: {path}")
+    budget_paths: set[str] = set()
+    for budget in budgets.values():
+        budget_paths.update(budget.get("paths", []))
+        budget_paths.update(
+            value for key, value in budget.items()
+            if key in {"header_path", "cpp_path"}
+        )
+    if seen != budget_paths:
+        raise GateError("W12 surfaces and surface budgets do not cover the same paths")
+
+
+def validate_w12_overlay_documents(
+    matrix: dict[str, Any],
+    contract: dict[str, Any],
+    ownership: dict[str, Any],
+    catalogue: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate the PRE-A overlay without reinterpreting the v1 programme."""
+    _validate_w12_historical_inputs()
+    _closed_object(matrix, {
+        "schema", "status", "w12_base_commit", "scope", "supersedes",
+        "supersedes_for_card", "change_scope", "v1_evidence",
+        "programme_budget", "cards",
+    }, "matrix v2")
+    _closed_object(contract, {
+        "schema", "status", "w12_base_commit", "scope", "supersedes",
+        "supersedes_for_card", "change_scope", "v1_evidence", "inputs",
+        "card_prerequisites", "card_total_budget", "coordinator_limits",
+        "ratchet", "additional_modules", "approved_header_only_ports",
+        "coverage_requirements", "security_invariants", "acceptance",
+    }, "contract v2")
+    _closed_object(ownership, {
+        "schema", "status", "scope", "supersedes", "supersedes_for_card",
+        "change_scope", "historical_evidence", "owners", "layer_rules",
+        "callback_rule", "approval",
+    }, "MOD-0.3 v3")
+    _closed_object(catalogue, {
+        "schema", "status", "scope", "supersedes", "supersedes_for_card",
+        "change_scope", "historical_evidence", "catalogue_source",
+        "card_prerequisites", "additional_modules",
+        "approved_header_only_ports", "coordinator_limits",
+        "coverage_requirements", "coverage_map", "gates", "stop_conditions",
+        "approval",
+    }, "MOD-0.4 v3")
+    if (
+        matrix["schema"] != "ese.mod52.migration-matrix/v2"
+        or contract["schema"] != "ese.mod52.migration-contract/v2"
+        or ownership["schema"] != "ese.mod03.ownership-layering-contract/v3"
+        or catalogue["schema"] != "ese.mod04.architecture-gate-catalog/v3"
+        or {matrix["status"], contract["status"], ownership["status"], catalogue["status"]}
+        != {"PRE-A"}
+        or matrix["w12_base_commit"] != W12_BASE_COMMIT
+        or contract["w12_base_commit"] != W12_BASE_COMMIT
+        or any(
+            item["supersedes_for_card"] != "M2A-W12"
+            for item in (matrix, contract, ownership, catalogue)
+        )
+    ):
+        raise GateError("W12 overlay identity/base/status drift")
+    if matrix["supersedes"] != ["docs/architecture/mod52_migration_matrix_v1.json"]:
+        raise GateError("W12 matrix supersedes scope drift")
+    if contract["supersedes"] != ["docs/architecture/mod52_migration_contract_v1.json"]:
+        raise GateError("W12 contract supersedes scope drift")
+    if ownership["supersedes"] != [
+        "docs/architecture/mod03_ownership_layering_contract_v1.json",
+        "docs/architecture/mod03_ownership_layering_contract_v2.json",
+    ]:
+        raise GateError("W12 ownership supersedes scope drift")
+    if catalogue["supersedes"] != [
+        "docs/architecture/mod04_architecture_gate_baseline_v1.json",
+        "docs/architecture/mod04_architecture_gate_catalog_v2.json",
+    ]:
+        raise GateError("W12 gate catalogue supersedes scope drift")
+
+    matrix_v1 = _closed_object(
+        matrix["v1_evidence"], {"path", "sha256", "immutable"},
+        "matrix.v1_evidence",
+    )
+    contract_v1 = _closed_object(
+        contract["v1_evidence"], {"path", "sha256", "immutable"},
+        "contract.v1_evidence",
+    )
+    for evidence, path in (
+        (matrix_v1, "docs/architecture/mod52_migration_matrix_v1.json"),
+        (contract_v1, "docs/architecture/mod52_migration_contract_v1.json"),
+    ):
+        if evidence != {
+            "path": path,
+            "sha256": W12_HISTORICAL_HASHES[path],
+            "immutable": True,
+        }:
+            raise GateError(f"W12 declared historical hash drift: {path}")
+
+    ownership_history = _closed_object(
+        ownership["historical_evidence"],
+        {"v1_path", "v1_sha256", "v2_path"},
+        "ownership.historical_evidence",
+    )
+    if ownership_history != {
+        "v1_path": "docs/architecture/mod03_ownership_layering_contract_v1.json",
+        "v1_sha256": W12_HISTORICAL_HASHES[
+            "docs/architecture/mod03_ownership_layering_contract_v1.json"
+        ],
+        "v2_path": "docs/architecture/mod03_ownership_layering_contract_v2.json",
+    }:
+        raise GateError("W12 MOD-0.3 historical evidence drift")
+    catalogue_history = _closed_object(
+        catalogue["historical_evidence"],
+        {"v1_path", "v1_sha256", "v2_path"},
+        "catalogue.historical_evidence",
+    )
+    if catalogue_history != {
+        "v1_path": "docs/architecture/mod04_architecture_gate_baseline_v1.json",
+        "v1_sha256": W12_HISTORICAL_HASHES[
+            "docs/architecture/mod04_architecture_gate_baseline_v1.json"
+        ],
+        "v2_path": "docs/architecture/mod04_architecture_gate_catalog_v2.json",
+    }:
+        raise GateError("W12 MOD-0.4 historical evidence drift")
+
+    inputs = _closed_object(
+        contract["inputs"], {"matrix", "ownership", "gates", "security_contract"},
+        "contract.inputs",
+    )
+    if inputs != {
+        "matrix": W12_MATRIX.relative_to(ROOT).as_posix(),
+        "ownership": W12_MOD03.relative_to(ROOT).as_posix(),
+        "gates": W12_MOD04.relative_to(ROOT).as_posix(),
+        "security_contract": (
+            "docs/architecture/MOD52_W12_SECURITY_EXPANSION_PLAN_2026-08-02.md"
+        ),
+    } or catalogue["catalogue_source"] != inputs["matrix"]:
+        raise GateError("W12 overlay input cross-link drift")
+
+    cards = _closed_list(matrix["cards"], "matrix.cards")
+    if len(cards) != 1:
+        raise GateError("W12 overlay must contain one closed card")
+    card = _closed_object(cards[0], {
+        "card", "name", "parent", "layer", "depends_on",
+        "card_prerequisites", "completion_requires", "card_total_budget",
+        "coordinator_budget", "coordinator_limits",
+        "live_stream_manager_budget", "surface_budgets", "additional_modules",
+        "approved_header_only_ports", "surfaces", "card_paths",
+        "coverage_ids", "coverage_requirements", "approval",
+    }, "matrix.card.M2A-W12")
+    if (
+        card["card"] != "M2A-W12"
+        or card["parent"] != "CWebServer"
+        or card["layer"] != "facade/application"
+        or card["completion_requires"] != ["PRE-A", "A", "H", "R"]
+        or card["depends_on"] != ["M2A-W11", "WebAuthPolicy", "LiveStreamManager"]
+    ):
+        raise GateError("W12 card identity/dependency/prerequisite drift")
+    if not isinstance(card["card_prerequisites"], list) or not card["card_prerequisites"]:
+        raise GateError("W12 card prerequisites missing")
+
+    programme = _closed_object(matrix["programme_budget"], {
+        "w12_jp", "w12_hours", "v92_jp", "v92_hours", "m2a_jp", "m2a_hours",
+    }, "matrix.programme_budget")
+    if not all(_positive_number(value) for value in programme.values()) or any(
+        programme[f"{prefix}_hours"] != programme[f"{prefix}_jp"] * 7
+        for prefix in ("w12", "v92", "m2a")
+    ):
+        raise GateError("W12 programme budget typing/conversion drift")
+
+    card_total = _validate_budget(
+        card["card_total_budget"], {"add_max", "delete_min", "net_max", "scope"},
+        "matrix.card.card_total_budget", text_keys={"scope"},
+    )
+    contract_total = _validate_budget(
+        contract["card_total_budget"], {"add_max", "delete_min", "net_max", "scope"},
+        "contract.card_total_budget", text_keys={"scope"},
+    )
+    if (
+        card_total["add_max"] <= 0
+        or card_total["delete_min"] <= 0
+        or card_total["net_max"] > card_total["add_max"]
+        or contract_total["add_max"] <= 0
+        or contract_total["delete_min"] <= 0
+        or contract_total["net_max"] > contract_total["add_max"]
+    ):
+        raise GateError("W12 total card budget bounds are nonsensical")
+    if {key: card_total[key] for key in ("add_max", "delete_min", "net_max")} != {
+        key: contract_total[key] for key in ("add_max", "delete_min", "net_max")
+    }:
+        raise GateError("W12 total card budget cross-link drift")
+    if (
+        {key: card_total[key] for key in W12_CARD_BUDGET_PIN}
+        != W12_CARD_BUDGET_PIN
+        or {key: contract_total[key] for key in W12_CARD_BUDGET_PIN}
+        != W12_CARD_BUDGET_PIN
+    ):
+        raise GateError("W12 literal-pinned total card budget drift")
+    coordinator = _closed_object(card["coordinator_budget"], {
+        "paths", "add_max", "delete_min", "net_max", "cpp_hard_loc_max",
+        "cpp_target_loc_max", "header_hard_loc_max", "new_mutable_fields",
+        "actual_w12_delta",
+    }, "matrix.card.coordinator_budget")
+    for key in (
+        "add_max", "delete_min", "net_max", "cpp_hard_loc_max",
+        "cpp_target_loc_max", "header_hard_loc_max", "new_mutable_fields",
+    ):
+        if not _nonnegative_int(coordinator[key]):
+            raise GateError(f"W12 coordinator budget is not typed: {key}")
+    if (
+        coordinator["add_max"] <= 0
+        or coordinator["delete_min"] <= 0
+        or coordinator["net_max"] > coordinator["add_max"]
+        or coordinator["cpp_target_loc_max"] <= 0
+        or coordinator["cpp_target_loc_max"] > coordinator["cpp_hard_loc_max"]
+        or coordinator["header_hard_loc_max"] <= 0
+    ):
+        raise GateError("W12 coordinator budget bounds are nonsensical")
+    if coordinator["paths"] != ["srchybrid/WebServer.cpp", "srchybrid/WebServer.h"]:
+        raise GateError("W12 coordinator budget path scope drift")
+    _closed_object(coordinator["actual_w12_delta"], {
+        "WebServer.cpp", "WebServer.h", "combined_add", "combined_delete",
+        "combined_net",
+    }, "matrix.card.coordinator_budget.actual_w12_delta")
+    _closed_object(coordinator["actual_w12_delta"]["WebServer.cpp"], {
+        "baseline_physical_loc", "current_physical_loc", "add", "delete", "net",
+    }, "matrix.card.coordinator_budget.actual_w12_delta.WebServer.cpp")
+    _closed_object(coordinator["actual_w12_delta"]["WebServer.h"], {"net"},
+                   "matrix.card.coordinator_budget.actual_w12_delta.WebServer.h")
+
+    matrix_limits = _closed_object(
+        card["coordinator_limits"], {"CWebServer", "CLiveStreamManager"},
+        "matrix.card.coordinator_limits",
+    )
+    contract_limits = _closed_object(
+        contract["coordinator_limits"], {"WebServer", "LiveStreamManager"},
+        "contract.coordinator_limits",
+    )
+    catalogue_limits = _closed_object(
+        catalogue["coordinator_limits"], {"WebServer", "LiveStreamManager"},
+        "catalogue.coordinator_limits",
+    )
+    web_limit_keys = {
+        "combined_add_max", "combined_delete_min", "combined_net_max",
+        "cpp_target_loc_max", "cpp_hard_loc_max", "header_hard_loc_max",
+        "new_mutable_fields",
+    }
+    stream_limit_keys = {"header_hard_loc_max", "cpp_growth_max"}
+    _closed_object(matrix_limits["CWebServer"], web_limit_keys | {"actual_w12_delta"},
+                   "matrix.card.coordinator_limits.CWebServer")
+    _closed_object(matrix_limits["CLiveStreamManager"], stream_limit_keys | {"w12_actual_delta"},
+                   "matrix.card.coordinator_limits.CLiveStreamManager")
+    _closed_object(contract_limits["WebServer"], web_limit_keys | {"actual_w12_delta"},
+                   "contract.coordinator_limits.WebServer")
+    _closed_object(contract_limits["LiveStreamManager"], stream_limit_keys | {"actual_w12_delta"},
+                   "contract.coordinator_limits.LiveStreamManager")
+    _closed_object(catalogue_limits["WebServer"], web_limit_keys,
+                   "catalogue.coordinator_limits.WebServer")
+    _closed_object(catalogue_limits["LiveStreamManager"], stream_limit_keys,
+                   "catalogue.coordinator_limits.LiveStreamManager")
+    expected_web_limits = {
+        "combined_add_max": coordinator["add_max"],
+        "combined_delete_min": coordinator["delete_min"],
+        "combined_net_max": coordinator["net_max"],
+        "cpp_target_loc_max": coordinator["cpp_target_loc_max"],
+        "cpp_hard_loc_max": coordinator["cpp_hard_loc_max"],
+        "header_hard_loc_max": coordinator["header_hard_loc_max"],
+        "new_mutable_fields": coordinator["new_mutable_fields"],
+    }
+    for label, limits in (
+        ("matrix", matrix_limits["CWebServer"]),
+        ("contract", contract_limits["WebServer"]),
+        ("catalogue", catalogue_limits["WebServer"]),
+    ):
+        if {key: limits[key] for key in web_limit_keys} != expected_web_limits:
+            raise GateError(f"W12 WebServer coordinator limit cross-link drift: {label}")
+    stream_budget = _closed_object(card["live_stream_manager_budget"], {
+        "header_hard_loc_max", "cpp_growth_max", "rule",
+    }, "matrix.card.live_stream_manager_budget")
+    if not isinstance(stream_budget["rule"], str) or not stream_budget["rule"].strip():
+        raise GateError("W12 LiveStreamManager budget rationale missing")
+    expected_stream_limits = {
+        key: stream_budget[key] for key in stream_limit_keys
+    }
+    for label, limits in (
+        ("matrix", matrix_limits["CLiveStreamManager"]),
+        ("contract", contract_limits["LiveStreamManager"]),
+        ("catalogue", catalogue_limits["LiveStreamManager"]),
+    ):
+        if {key: limits[key] for key in stream_limit_keys} != expected_stream_limits:
+            raise GateError(f"W12 LiveStreamManager limit cross-link drift: {label}")
+
+    _validate_w12_surface_schemas(card)
+    ports = card["approved_header_only_ports"]
+    for label, value in (
+        ("matrix", ports),
+        ("contract", contract["approved_header_only_ports"]),
+        ("catalogue", catalogue["approved_header_only_ports"]),
+    ):
+        value = _closed_object(value, {"entries", "policy"}, f"{label}.approved_header_only_ports")
+        if value["entries"] != [] or not isinstance(value["policy"], str) or "LiveHlsReadLease" not in value["policy"]:
+            raise GateError(f"W12 header-only port policy drift: {label}")
+
+    card_paths = _closed_list(card["card_paths"], "matrix.card.card_paths")
+    if (
+        not card_paths
+        or not all(isinstance(path, str) for path in card_paths)
+        or len(card_paths) != len(set(card_paths))
+        or len(card_paths) != len({path.casefold() for path in card_paths})
+    ):
+        raise GateError("W12 CARD_PATHS is empty or contains duplicates")
+    safe_paths = [_safe_w12_path(path) for path in card_paths]
+    if len(safe_paths) != W12_CARD_PATH_COUNT:
+        raise GateError("W12 CARD_PATHS exact count drift")
+    if not W12_SCOPE_EXPANSION_PATHS.issubset(safe_paths):
+        raise GateError("W12 CARD_PATHS lacks reviewed reach/port scope")
+    forbidden_historical = {
+        f"tests/test_v92_m2a_w{index}_{suffix}.py"
+        for index, suffix in (
+            (8, "live_api_stream_status"), (9, "live_api_transfer_search"),
+            (10, "live_api_settings_diagnostics"), (11, "live_api_legacy"),
+        )
+    }
+    if forbidden_historical & set(safe_paths):
+        raise GateError("W12 CARD_PATHS rewrites historical W8-W11 evidence")
+    required_paths = {
+        W12_MATRIX.relative_to(ROOT).as_posix(),
+        W12_CONTRACT.relative_to(ROOT).as_posix(),
+        W12_MOD03.relative_to(ROOT).as_posix(),
+        W12_MOD04.relative_to(ROOT).as_posix(),
+        "tools/architecture/verify_m2a00_migration_ratchet.py",
+        "tests/test_v92_m2a00_migration_ratchet.py",
+        "tools/architecture/run_w12_security_runtime.ps1",
+        "tools/architecture/verify_w12_security_evidence.py",
+        "tools/architecture/collect_w12_browser_cdp.mjs",
+        "tests/test_v92_m2a_w12_security_evidence.py",
+        "tests/test_v92_m2a_w12_browser_collector.py",
+        "docs/architecture/mod23_web_route_inventory_v1.json",
+        "srchybrid/DirectReachabilityManager.h",
+        "srchybrid/DirectReachabilityManager.cpp",
+        "srchybrid/WebLiveApiDiagnosticsController.h",
+        "srchybrid/WebLiveApiDiagnosticsController.cpp",
+        "srchybrid/eSE/test/live_tv_regression.test.js",
+        "srchybrid/Kad6GatewaySocket.cpp",
+        "tests/test_v92_k03_port_roles.py",
+        "tools/architecture/verify_mod04_architecture_gate.py",
+        "tests/test_v92_mod04_architecture_gate.py",
+    }
+    if not required_paths.issubset(safe_paths):
+        raise GateError("W12 CARD_PATHS lacks governance or R evidence runners")
+    governed_surface_paths = {
+        surface["path"] for surface in card["surfaces"]
+    }
+    if not governed_surface_paths.issubset(safe_paths):
+        raise GateError("W12 CARD_PATHS does not cover every governed surface")
+
+    coverage_ids = card["coverage_ids"]
+    requirements = card["coverage_requirements"]
+    if coverage_ids != list(W12_COVERAGE_IDS) or requirements != list(W12_TYPED_COVERAGE):
+        raise GateError("W12 card coverage catalogue drift")
+    for label, value in (
+        ("contract", contract["coverage_requirements"]),
+        ("catalogue", catalogue["coverage_requirements"]),
+    ):
+        if value != requirements:
+            raise GateError(f"W12 typed coverage cross-link drift: {label}")
+    module_names = [item["name"] for item in card["additional_modules"]]
+    if contract["additional_modules"] != module_names or catalogue["additional_modules"] != module_names:
+        raise GateError("W12 additional module cross-link drift")
+
+    coverage_map = _closed_object(
+        catalogue["coverage_map"], set(W12_TYPED_COVERAGE),
+        "catalogue.coverage_map",
+    )
+    mapped_ids: set[str] = set()
+    for requirement, identifiers in coverage_map.items():
+        if (
+            not isinstance(identifiers, list)
+            or not identifiers
+            or not all(isinstance(identifier, str) for identifier in identifiers)
+            or len(identifiers) != len(set(identifiers))
+            or not set(identifiers).issubset(W12_COVERAGE_IDS)
+        ):
+            raise GateError(f"W12 coverage map row invalid: {requirement}")
+        mapped_ids.update(identifiers)
+    if mapped_ids != set(W12_COVERAGE_IDS):
+        raise GateError("W12 coverage map does not cover all eleven gates")
+    if coverage_map["card:W12"] != list(W12_COVERAGE_IDS):
+        raise GateError("W12 card coverage is incomplete")
+    if coverage_map["contract:W12-HLS-SECURITY"] != list(W12_COVERAGE_IDS[:7]):
+        raise GateError("W12 HLS security contract coverage is incomplete")
+
+    gates = _closed_list(catalogue["gates"], "catalogue.gates")
+    if len(gates) != len(W12_COVERAGE_IDS):
+        raise GateError("W12 gate catalogue must contain exactly eleven gates")
+    stage_by_id: dict[str, str] = {}
+    for gate in gates:
+        gate = _closed_object(gate, {"id", "stage", "assertion", "evidence"},
+                              f"catalogue.gate.{gate.get('id') if isinstance(gate, dict) else '?'}")
+        if (
+            not isinstance(gate["id"], str)
+            or not isinstance(gate["stage"], str)
+            or gate["id"] in stage_by_id
+            or gate["id"] not in W12_COVERAGE_IDS
+            or gate["stage"] not in {"PRE-A", "A/H", "R"}
+            or not isinstance(gate["assertion"], str)
+            or not gate["assertion"].strip()
+            or not isinstance(gate["evidence"], str)
+            or not gate["evidence"].strip()
+        ):
+            raise GateError("W12 gate row invalid")
+        stage_by_id[gate["id"]] = gate["stage"]
+    expected_stages = {
+        **{identifier: "PRE-A" for identifier in W12_COVERAGE_IDS[:5]},
+        W12_COVERAGE_IDS[5]: "A/H",
+        W12_COVERAGE_IDS[6]: "R",
+        **{identifier: "PRE-A" for identifier in W12_COVERAGE_IDS[7:]},
+    }
+    if stage_by_id != expected_stages:
+        raise GateError("W12 coverage stage assignment drift")
+
+    acceptance = _closed_object(
+        contract["acceptance"], {"pre_a", "a", "h", "r", "complete"},
+        "contract.acceptance",
+    )
+    expected_acceptance = {
+        "pre_a": set(W12_COVERAGE_IDS[:5]) | set(W12_COVERAGE_IDS[7:]),
+        "a": {W12_COVERAGE_IDS[5]},
+        "h": {W12_COVERAGE_IDS[5]},
+        "r": {W12_COVERAGE_IDS[6]},
+        "complete": set(W12_COVERAGE_IDS),
+    }
+    for stage, expected in expected_acceptance.items():
+        if _coverage_mentions(acceptance[stage], f"contract.acceptance.{stage}") != expected:
+            raise GateError(f"W12 acceptance coverage drift: {stage}")
+
+    owners = _closed_list(ownership["owners"], "ownership.owners")
+    owner_names: list[str] = []
+    for owner in owners:
+        owner = _closed_object(owner, {"surface", "owns", "must_not_own"},
+                               f"ownership.owner.{owner.get('surface') if isinstance(owner, dict) else '?'}")
+        if (
+            not isinstance(owner["surface"], str)
+            or owner["surface"] in owner_names
+            or not isinstance(owner["owns"], list)
+            or not owner["owns"]
+            or not isinstance(owner["must_not_own"], list)
+            or not owner["must_not_own"]
+        ):
+            raise GateError("W12 ownership row invalid")
+        owner_names.append(owner["surface"])
+    expected_owners = {
+        "CWebServer", "WebAuthPolicy", "WebHlsCapabilityController",
+        "LiveHlsReadLease", "LiveStreamManager", "WebSocketResponse",
+        "WebStaticAssets",
+    }
+    if set(owner_names) != expected_owners:
+        raise GateError("W12 ownership surface catalogue drift")
+    layer_rules = _closed_object(ownership["layer_rules"], {
+        "WebHlsCapabilityController", "LiveHlsReadLease", "WebSocketResponse",
+        "forbidden_reverse_dependencies",
+    }, "ownership.layer_rules")
+    lease_rule = _closed_object(layer_rules["LiveHlsReadLease"], {
+        "header_direct_dependencies", "cpp_direct_dependencies", "callback",
+    }, "ownership.layer_rules.LiveHlsReadLease")
+    if (
+        layer_rules["WebHlsCapabilityController"] != ["WebAuthPolicy"]
+        or layer_rules["WebSocketResponse"] != []
+        or lease_rule["header_direct_dependencies"] != 0
+        or lease_rule["cpp_direct_dependencies"] != ["LiveStreamManager"]
+        or not isinstance(lease_rule["callback"], str)
+        or not layer_rules["forbidden_reverse_dependencies"]
+    ):
+        raise GateError("W12 ownership layer/dependency rule drift")
+    return card
+
+
+def _git_text(*arguments: str, repo_root: Path = ROOT) -> str:
+    try:
+        return subprocess.check_output(
+            ["git", *arguments], cwd=repo_root, text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise GateError(f"W12 Git query failed: {' '.join(arguments)}") from exc
+
+
+def _git_z_paths(*arguments: str, repo_root: Path = ROOT) -> set[str]:
+    if not arguments:
+        raise GateError("W12 empty Git path query")
+    try:
+        raw = subprocess.check_output(
+            ["git", arguments[0], "-z", *arguments[1:]], cwd=repo_root,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise GateError(f"W12 Git path query failed: {' '.join(arguments)}") from exc
+    try:
+        return {
+            item.decode("utf-8") for item in raw.split(b"\0") if item
+        }
+    except UnicodeDecodeError as exc:
+        raise GateError("W12 Git path is not UTF-8") from exc
+
+
+def _w12_worktree_path_sets(repo_root: Path = ROOT) -> tuple[set[str], set[str]]:
+    tracked = _git_z_paths(
+        "diff", "--name-only", "--no-renames", "--ignore-submodules=none",
+        W12_BASE_COMMIT, "--", repo_root=repo_root,
+    )
+    untracked = _git_z_paths(
+        "ls-files", "--others", "--exclude-standard", repo_root=repo_root,
+    )
+    staged = _git_z_paths(
+        "diff", "--cached", "--name-only", "--no-renames",
+        "--ignore-submodules=none", "--", repo_root=repo_root,
+    )
+    return tracked | untracked, staged
+
+
+def validate_w12_card_path_scope(
+    card_paths: list[str],
+    changed_paths: set[str],
+    staged_paths: set[str] | None = None,
+    *,
+    require_exact: bool = True,
+) -> None:
+    declared = set(card_paths)
+    staged_paths = set() if staged_paths is None else staged_paths
+    unlisted_staged = staged_paths - declared
+    if unlisted_staged:
+        raise GateError(
+            "W12 staged path is outside CARD_PATHS: "
+            + ", ".join(sorted(unlisted_staged))
+        )
+    unlisted = changed_paths - declared
+    if unlisted:
+        raise GateError(
+            "W12 changed path is outside CARD_PATHS: "
+            + ", ".join(sorted(unlisted))
+        )
+    missing = declared - changed_paths
+    if require_exact and missing:
+        raise GateError(
+            "W12 declared CARD_PATHS not present in the A cut: "
+            + ", ".join(sorted(missing))
+        )
+
+
+def _w12_commit_changed_paths(
+    base: str, target: str, repo_root: Path = ROOT
+) -> set[str]:
+    return _git_z_paths(
+        "diff", "--name-only", "--no-renames", "--ignore-submodules=none",
+        base, target, "--", repo_root=repo_root,
+    )
+
+
+def _w12_numstat(
+    base: str,
+    target: str | None,
+    paths: list[str],
+    repo_root: Path = ROOT,
+) -> dict[str, tuple[int, int]]:
+    command = [
+        "git", "diff", "--numstat", "--no-renames", "--ignore-submodules=none",
+        base,
+    ]
+    if target is not None:
+        command.append(target)
+    command.extend(["--", *paths])
+    try:
+        output = subprocess.check_output(
+            command, cwd=repo_root, text=True, stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise GateError("W12 numstat query failed") from exc
+    result: dict[str, tuple[int, int]] = {}
+    for line in output.splitlines():
+        columns = line.split("\t")
+        if len(columns) != 3 or columns[0] == "-" or columns[1] == "-":
+            raise GateError("W12 binary or malformed CARD_PATHS numstat")
+        path = columns[2]
+        if path in result:
+            raise GateError(f"W12 duplicate numstat path: {path}")
+        try:
+            result[path] = (int(columns[0]), int(columns[1]))
+        except ValueError as exc:
+            raise GateError("W12 non-numeric CARD_PATHS numstat") from exc
+    if target is None:
+        untracked = _git_z_paths(
+            "ls-files", "--others", "--exclude-standard", "--", *paths,
+            repo_root=repo_root,
+        )
+        for path in untracked:
+            raw = (repo_root / path).read_bytes()
+            if b"\0" in raw:
+                raise GateError(f"W12 binary untracked CARD_PATHS entry: {path}")
+            result[path] = (len(raw.splitlines()), 0)
+    return result
+
+
+def _w12_blob_or_none(commit: str, path: str) -> bytes | None:
+    try:
+        return subprocess.check_output(
+            ["git", "show", f"{commit}:{path}"], cwd=ROOT,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        return None
+    except OSError as exc:
+        raise GateError("W12 Git blob query unavailable") from exc
+
+
+def _w12_current_or_none(path: str) -> bytes | None:
+    candidate = ROOT / path
+    return candidate.read_bytes() if candidate.is_file() else None
+
+
+def _w12_physical_loc(raw: bytes | None) -> int:
+    return 0 if raw is None else mod04.loc_physical(raw)
+
+
+def _w12_declared_classes(raw: bytes | None) -> set[str]:
+    if raw is None:
+        return set()
+    return set(re.findall(
+        r"\b(?:class|struct)\s+([A-Za-z_]\w*)",
+        raw.decode("utf-8", errors="replace"),
+    ))
+
+
+def _w12_function_inventory(
+    raw: bytes | None,
+    path: str,
+    extra_classes: set[str] | None = None,
+) -> dict[str, int]:
+    if raw is None or PurePosixPath(path).suffix.casefold() not in {".h", ".hpp", ".cpp", ".cc", ".cxx", ".inl"}:
+        return {}
+    lines = raw.decode("utf-8", errors="replace").splitlines()
+    text = "\n".join(lines)
+    suffix = PurePosixPath(path).suffix.casefold()
+    classes = _w12_declared_classes(raw)
+    if suffix in {".cpp", ".cc", ".cxx"}:
+        candidates = classes | (set() if extra_classes is None else extra_classes)
+        classes = {
+            owner for owner in candidates
+            if re.search(rf"\b{re.escape(owner)}\s*::", text)
+        }
+    elif extra_classes:
+        classes.update(extra_classes)
+    functions: list[dict[str, Any]] = _free_helpers(lines, path, 150)
+    for owner in classes:
+        try:
+            functions.extend(mod01.functions(lines, owner, path))
+        except (IndexError, ValueError):
+            pass
+        if suffix in {".h", ".hpp", ".inl"}:
+            try:
+                functions.extend(mod01.inline_functions(lines, owner, path))
+            except (IndexError, ValueError):
+                pass
+    result: dict[str, int] = {}
+    for function in functions:
+        length = function["length_approx"]
+        if length <= 150:
+            continue
+        name = re.sub(r"@\d+$", "", function["name"])
+        result[name] = max(result.get(name, 0), length)
+    return result
+
+
+def validate_w12_field_monotonicity(
+    baseline_raw: bytes,
+    current_raw: bytes,
+    owner: str,
+    path: str,
+    allowed_new_fields: int = 0,
+) -> None:
+    baseline = {
+        item["name"] for item in mod01.fields(
+            baseline_raw.decode("utf-8", errors="replace").splitlines(),
+            owner, path,
+        )
+    }
+    current = {
+        item["name"] for item in mod01.fields(
+            current_raw.decode("utf-8", errors="replace").splitlines(),
+            owner, path,
+        )
+    }
+    added = current - baseline
+    if len(added) > allowed_new_fields:
+        raise GateError(f"W12 {owner} mutable fields grew: " + ", ".join(sorted(added)))
+
+
+def _w12_literal_module_dependencies(
+    paths: list[str],
+    reader: Any = _w12_current_or_none,
+) -> set[str]:
+    dependencies: set[str] = set()
+    own_stems = {PurePosixPath(path).stem for path in paths}
+    ignored = {"stdafx", "M2ABindingPort"}
+    for path in paths:
+        raw = reader(path)
+        if raw is None:
+            continue
+        for include in mod51._literal_includes(
+            path, raw.decode("utf-8", errors="replace")
+        ):
+            stem = PurePosixPath(include).stem
+            if stem not in own_stems and stem not in ignored:
+                local = reader(f"srchybrid/{stem}.h")
+                local_cpp = reader(f"srchybrid/{stem}.cpp")
+                if local is not None or local_cpp is not None:
+                    dependencies.add(stem)
+    return dependencies
+
+
+def _w12_tarjan(graph: dict[str, set[str]]) -> list[tuple[str, ...]]:
+    index = 0
+    indices: dict[str, int] = {}
+    low: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    result: list[tuple[str, ...]] = []
+
+    def visit(node: str) -> None:
+        nonlocal index
+        indices[node] = low[node] = index
+        index += 1
+        stack.append(node)
+        on_stack.add(node)
+        for child in sorted(graph.get(node, set())):
+            if child not in graph:
+                continue
+            if child not in indices:
+                visit(child)
+                low[node] = min(low[node], low[child])
+            elif child in on_stack:
+                low[node] = min(low[node], indices[child])
+        if low[node] == indices[node]:
+            component: list[str] = []
+            while True:
+                child = stack.pop()
+                on_stack.remove(child)
+                component.append(child)
+                if child == node:
+                    break
+            if len(component) > 1 or node in graph.get(node, set()):
+                result.append(tuple(sorted(component)))
+
+    for node in sorted(graph):
+        if node not in indices:
+            visit(node)
+    return sorted(result)
+
+
+def validate_w12_dependencies_and_scc(card: dict[str, Any], ownership: dict[str, Any]) -> None:
+    modules = {item["name"]: item for item in card["additional_modules"]}
+    rules = ownership["layer_rules"]
+    expected = {
+        "WebServerFacade": set(),
+        "WebHlsCapabilityController": set(rules["WebHlsCapabilityController"]),
+        "LiveHlsReadLease.h": set(),
+        "LiveHlsReadLease.cpp": set(
+            rules["LiveHlsReadLease"]["cpp_direct_dependencies"]
+        ),
+        "WebSocketResponse": set(rules["WebSocketResponse"]),
+    }
+    observed = {
+        "WebServerFacade": _w12_literal_module_dependencies(
+            modules["WebServerFacade"]["paths"]
+        ),
+        "WebHlsCapabilityController": _w12_literal_module_dependencies(
+            modules["WebHlsCapabilityController"]["paths"]
+        ),
+        "LiveHlsReadLease.h": _w12_literal_module_dependencies(
+            ["srchybrid/LiveHlsReadLease.h"]
+        ),
+        "LiveHlsReadLease.cpp": _w12_literal_module_dependencies(
+            ["srchybrid/LiveHlsReadLease.cpp"]
+        ),
+        "WebSocketResponse": _w12_literal_module_dependencies(
+            ["srchybrid/WebSocketResponse.h", "srchybrid/WebSocketResponse.cpp"]
+        ),
+    }
+    for name in expected:
+        if observed[name] != expected[name]:
+            raise GateError(
+                f"W12 declared direct dependency drift: {name}; "
+                f"expected={sorted(expected[name])}, observed={sorted(observed[name])}"
+            )
+    reverse_targets = {
+        "WebServerFacade", "WebHlsCapabilityController", "LiveHlsReadLease",
+    }
+    for name in reverse_targets:
+        paths = (
+            modules[name]["paths"] if name in modules
+            else ["srchybrid/LiveHlsReadLease.h", "srchybrid/LiveHlsReadLease.cpp"]
+        )
+        if "WebServer" in _w12_literal_module_dependencies(paths):
+            raise GateError(f"W12 reverse coordinator include: {name} -> WebServer")
+    for source, paths, forbidden in (
+        (
+            "WebAuthPolicy",
+            card["surface_budgets"]["WebAuthPolicy"]["paths"],
+            "WebServer",
+        ),
+        (
+            "LiveStreamManager",
+            ["srchybrid/LiveStreamManager.h", "srchybrid/LiveStreamManager.cpp"],
+            "WebServer",
+        ),
+        (
+            "WebSocketResponse",
+            card["surface_budgets"]["WebSocketResponse"]["paths"],
+            "WebAuthPolicy",
+        ),
+    ):
+        if forbidden in _w12_literal_module_dependencies(paths):
+            raise GateError(
+                f"W12 forbidden reverse dependency: {source} -> {forbidden}"
+            )
+
+    # Build the relevant real include graph twice. LiveHlsReadLease is an
+    # approved physical partition, so its h/cpp paths and include name fold
+    # into LiveStreamManager rather than manufacturing a two-node SCC.
+    node_paths = {
+        "WebServer": ["srchybrid/WebServer.h", "srchybrid/WebServer.cpp"],
+        "WebServerFacade": modules["WebServerFacade"]["paths"],
+        "WebHlsCapabilityController": modules["WebHlsCapabilityController"]["paths"],
+        "WebAuthPolicy": card["surface_budgets"]["WebAuthPolicy"]["paths"],
+        "LiveStreamManager": [
+            "srchybrid/LiveStreamManager.h", "srchybrid/LiveStreamManager.cpp",
+            "srchybrid/LiveHlsReadLease.h", "srchybrid/LiveHlsReadLease.cpp",
+        ],
+        "WebSocketResponse": card["surface_budgets"]["WebSocketResponse"]["paths"],
+        "WebStaticAssets": card["surface_budgets"]["WebStaticAssets"]["paths"],
+        "WebSocket": card["surface_budgets"]["WebSocket"]["paths"],
+        "WebRequestDispatch": card["surface_budgets"]["WebRequestDispatch"]["paths"],
+        "WebRouteTable": card["surface_budgets"]["WebRouteTable"]["paths"],
+    }
+    stem_owner = {
+        PurePosixPath(path).stem: node
+        for node, paths in node_paths.items()
+        for path in paths
+    }
+    stem_owner["LiveHlsReadLease"] = "LiveStreamManager"
+
+    def graph_for(reader: Any) -> dict[str, set[str]]:
+        graph: dict[str, set[str]] = {node: set() for node in node_paths}
+        for node, paths in node_paths.items():
+            dependencies = _w12_literal_module_dependencies(paths, reader)
+            graph[node].update(
+                owner for dependency in dependencies
+                if (owner := stem_owner.get(dependency)) is not None
+                and owner != node
+            )
+        return graph
+
+    baseline_reader = lambda path: _w12_blob_or_none(W12_BASE_COMMIT, path)
+    baseline_scc = set(_w12_tarjan(graph_for(baseline_reader)))
+    current_scc = set(_w12_tarjan(graph_for(_w12_current_or_none)))
+    introduced = current_scc - baseline_scc
+    if introduced:
+        raise GateError(
+            "W12 new include SCC: "
+            + ", ".join("/".join(component) for component in sorted(introduced))
+        )
+
+
+def validate_w12_source_ratchets(
+    card: dict[str, Any],
+    numstat: dict[str, tuple[int, int]],
+) -> dict[str, Any]:
+    card_paths = card["card_paths"]
+    additions = sum(numstat.get(path, (0, 0))[0] for path in card_paths)
+    deletions = sum(numstat.get(path, (0, 0))[1] for path in card_paths)
+    total = card["card_total_budget"]
+    if additions > total["add_max"]:
+        raise GateError(f"W12 total CARD_PATHS additions exceed budget: {additions}")
+    if deletions < total["delete_min"]:
+        raise GateError(f"W12 total CARD_PATHS deletions below budget: {deletions}")
+    if additions - deletions > total["net_max"]:
+        raise GateError(f"W12 total CARD_PATHS net growth exceeds budget: {additions - deletions}")
+
+    coordinator_paths = card["coordinator_budget"]["paths"]
+    coordinator_add = sum(numstat.get(path, (0, 0))[0] for path in coordinator_paths)
+    coordinator_delete = sum(numstat.get(path, (0, 0))[1] for path in coordinator_paths)
+    coordinator_net = coordinator_add - coordinator_delete
+    coordinator = card["coordinator_budget"]
+    if coordinator_add > coordinator["add_max"]:
+        raise GateError(f"W12 WebServer coordinator additions exceed budget: {coordinator_add}")
+    if coordinator_delete < coordinator["delete_min"]:
+        raise GateError(f"W12 WebServer coordinator deletions below budget: {coordinator_delete}")
+    if coordinator_net > coordinator["net_max"]:
+        raise GateError(f"W12 WebServer coordinator net growth exceeds budget: {coordinator_net}")
+
+    baseline_web_cpp = _w12_blob_or_none(W12_BASE_COMMIT, "srchybrid/WebServer.cpp")
+    current_web_cpp = _w12_current_or_none("srchybrid/WebServer.cpp")
+    current_web_h = _w12_current_or_none("srchybrid/WebServer.h")
+    cpp_loc = _w12_physical_loc(current_web_cpp)
+    header_loc = _w12_physical_loc(current_web_h)
+    if cpp_loc > coordinator["cpp_hard_loc_max"]:
+        raise GateError(f"W12 WebServer.cpp hard LOC exceeded: {cpp_loc}")
+    if cpp_loc > coordinator["cpp_target_loc_max"]:
+        raise GateError(f"W12 WebServer.cpp target LOC exceeded: {cpp_loc}")
+    if header_loc > coordinator["header_hard_loc_max"]:
+        raise GateError(f"W12 WebServer.h hard LOC exceeded: {header_loc}")
+
+    actual = coordinator["actual_w12_delta"]
+    cpp_stat = numstat.get("srchybrid/WebServer.cpp", (0, 0))
+    header_stat = numstat.get("srchybrid/WebServer.h", (0, 0))
+    measured_cpp = {
+        "baseline_physical_loc": _w12_physical_loc(baseline_web_cpp),
+        "current_physical_loc": cpp_loc,
+        "add": cpp_stat[0], "delete": cpp_stat[1],
+        "net": cpp_stat[0] - cpp_stat[1],
+    }
+    if actual["WebServer.cpp"] != measured_cpp:
+        raise GateError("W12 declared WebServer.cpp actual delta is stale")
+    if actual["WebServer.h"] != {"net": header_stat[0] - header_stat[1]}:
+        raise GateError("W12 declared WebServer.h actual delta is stale")
+    if (
+        actual["combined_add"] != coordinator_add
+        or actual["combined_delete"] != coordinator_delete
+        or actual["combined_net"] != coordinator_net
+    ):
+        raise GateError("W12 declared WebServer combined actual delta is stale")
+
+    validate_w12_field_monotonicity(
+        _w12_blob_or_none(W12_BASE_COMMIT, "srchybrid/WebServer.h"),
+        current_web_h,
+        "CWebServer",
+        "srchybrid/WebServer.h",
+        coordinator["new_mutable_fields"],
+    )
+
+    live_budget = card["live_stream_manager_budget"]
+    base_live_cpp = _w12_blob_or_none(W12_BASE_COMMIT, "srchybrid/LiveStreamManager.cpp")
+    base_live_h = _w12_blob_or_none(W12_BASE_COMMIT, "srchybrid/LiveStreamManager.h")
+    current_live_cpp = _w12_current_or_none("srchybrid/LiveStreamManager.cpp")
+    current_live_h = _w12_current_or_none("srchybrid/LiveStreamManager.h")
+    live_cpp_growth = _w12_physical_loc(current_live_cpp) - _w12_physical_loc(base_live_cpp)
+    live_h_growth = _w12_physical_loc(current_live_h) - _w12_physical_loc(base_live_h)
+    if live_cpp_growth > live_budget["cpp_growth_max"]:
+        raise GateError(f"W12 LiveStreamManager.cpp grew: {live_cpp_growth}")
+    if _w12_physical_loc(current_live_h) > live_budget["header_hard_loc_max"]:
+        raise GateError("W12 LiveStreamManager.h hard LOC exceeded")
+    validate_w12_field_monotonicity(
+        base_live_h,
+        current_live_h,
+        "CLiveStreamManager",
+        "srchybrid/LiveStreamManager.h",
+    )
+
+    matrix_limits = card["coordinator_limits"]
+    web_declared = matrix_limits["CWebServer"]["actual_w12_delta"]
+    expected_web_declared = {
+        "cpp_add": cpp_stat[0], "cpp_delete": cpp_stat[1],
+        "cpp_net": cpp_stat[0] - cpp_stat[1],
+        "header_add": header_stat[0], "header_delete": header_stat[1],
+        "header_net": header_stat[0] - header_stat[1],
+        "combined_add": coordinator_add, "combined_delete": coordinator_delete,
+        "combined_net": coordinator_net,
+    }
+    if web_declared != expected_web_declared:
+        raise GateError("W12 matrix WebServer actual metric cross-link is stale")
+    if matrix_limits["CLiveStreamManager"]["w12_actual_delta"] != {
+        "header": live_h_growth, "cpp": live_cpp_growth,
+    }:
+        raise GateError("W12 matrix LiveStreamManager actual metric is stale")
+
+    budgets = card["surface_budgets"]
+    for name, budget in budgets.items():
+        if name == "LiveHlsReadLease":
+            header = _w12_current_or_none(budget["header_path"])
+            source = _w12_current_or_none(budget["cpp_path"])
+            if header is None or source is None:
+                raise GateError("W12 LiveHlsReadLease partition is missing")
+            if _w12_physical_loc(header) > budget["header_loc_max"]:
+                raise GateError("W12 LiveHlsReadLease header LOC exceeded")
+            if _w12_physical_loc(source) > budget["cpp_loc_max"]:
+                raise GateError("W12 LiveHlsReadLease cpp LOC exceeded")
+            continue
+        raw_paths = [_w12_current_or_none(path) for path in budget["paths"]]
+        if any(raw is None for raw in raw_paths):
+            raise GateError(f"W12 governed surface is missing: {name}")
+        surface_loc = sum(_w12_physical_loc(raw) for raw in raw_paths)
+        if surface_loc > budget["loc_max"]:
+            raise GateError(f"W12 governed surface LOC exceeded: {name}/{surface_loc}")
+        if "hard_loc_max" in budget and surface_loc > budget["hard_loc_max"]:
+            raise GateError(f"W12 governed surface hard LOC exceeded: {name}/{surface_loc}")
+
+    for path in card_paths:
+        if (
+            not path.startswith("srchybrid/")
+            or path.startswith("srchybrid/tests/")
+            or PurePosixPath(path).suffix.casefold()
+            not in {".cpp", ".h", ".hpp", ".inl"}
+        ):
+            continue
+        stem = PurePosixPath(path).stem
+        sibling_header = f"srchybrid/{stem}.h"
+        baseline_header = _w12_blob_or_none(W12_BASE_COMMIT, sibling_header)
+        current_header = _w12_current_or_none(sibling_header)
+        baseline_functions = _w12_function_inventory(
+            _w12_blob_or_none(W12_BASE_COMMIT, path), path,
+            _w12_declared_classes(baseline_header),
+        )
+        current_functions = _w12_function_inventory(
+            _w12_current_or_none(path), path,
+            _w12_declared_classes(current_header),
+        )
+        for name, length in current_functions.items():
+            if name not in baseline_functions:
+                raise GateError(f"W12 new oversized function: {name}/{length}")
+            if length > baseline_functions[name]:
+                raise GateError(f"W12 baseline oversized function grew: {name}/{length}")
+    return {
+        "card_add": additions,
+        "card_delete": deletions,
+        "card_net": additions - deletions,
+        "coordinator_add": coordinator_add,
+        "coordinator_delete": coordinator_delete,
+        "coordinator_net": coordinator_net,
+        "webserver_cpp_loc": cpp_loc,
+        "webserver_header_loc": header_loc,
+        "live_stream_manager_cpp_growth": live_cpp_growth,
+        "live_stream_manager_header_growth": live_h_growth,
+    }
+
+
+def _w12_dirty_paths(repo_root: Path = ROOT) -> set[str]:
+    tracked = _git_z_paths(
+        "diff", "--name-only", "--no-renames", "--ignore-submodules=none",
+        "HEAD", "--", repo_root=repo_root,
+    )
+    untracked = _git_z_paths(
+        "ls-files", "--others", "--exclude-standard", repo_root=repo_root,
+    )
+    # git diff's submodule summary is configuration-sensitive on older Git.
+    # Ask submodule directly as well, so a dirty nested checkout cannot hide.
+    try:
+        status = subprocess.check_output(
+            ["git", "submodule", "status", "--recursive"], cwd=repo_root,
+            text=True, stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise GateError("W12 submodule status query failed") from exc
+    dirty_submodules: set[str] = set()
+    for line in status.splitlines():
+        if not line:
+            continue
+        if line[0] in {"+", "U"}:
+            fields = line[1:].strip().split()
+            if len(fields) < 2:
+                raise GateError("W12 malformed submodule status")
+            dirty_submodules.add(fields[1])
+    return tracked | untracked | dirty_submodules
+
+
+def _validate_w12_activation_evidence(
+    state: dict[str, Any], card: dict[str, Any], activation_commit: str
+) -> None:
+    covered: set[str] = set()
+    executable: dict[str, set[str]] = collections.defaultdict(set)
+    if not state["evidence"]:
+        raise GateError("W12 active overlay lacks immutable typed evidence")
+    for evidence in state["evidence"]:
+        evidence = _closed_object(evidence, {
+            "kind", "path", "sha256", "commit", "covers",
+        }, "activation.W12.evidence")
+        path = _safe_w12_path(evidence["path"])
+        covers = evidence["covers"]
+        if (
+            evidence["kind"] not in {"test_source", "golden", "test_result"}
+            or evidence["commit"] != activation_commit
+            or not isinstance(evidence["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", evidence["sha256"]) is None
+            or not isinstance(covers, list)
+            or not covers
+            or not all(isinstance(cover, str) for cover in covers)
+            or len(covers) != len(set(covers))
+            or not set(covers).issubset(W12_TYPED_COVERAGE)
+            or path not in card["card_paths"]
+        ):
+            raise GateError("W12 active overlay evidence object invalid")
+        blob = _w12_blob_or_none(activation_commit, path)
+        if blob is None or hashlib.sha256(blob).hexdigest() != evidence["sha256"]:
+            raise GateError(f"W12 active overlay evidence SHA drift: {path}")
+        if not _git_path_changed(W12_BASE_COMMIT, activation_commit, path):
+            raise GateError(f"W12 active overlay evidence was not introduced by A: {path}")
+        if evidence["kind"] in {"test_source", "golden"} and not (
+            path.startswith("tests/") or path.startswith("srchybrid/tests/")
+        ):
+            raise GateError("W12 executable/golden evidence must live in a test directory")
+        if evidence["kind"] == "test_source":
+            if re.fullmatch(r"tests/test_v92_m2a[A-Za-z0-9_]*\.py", path) is None:
+                raise GateError("W12 test_source is not discoverable by the M2A CI pattern")
+            _validate_test_source(blob, covers)
+            executable[path].update(covers)
+        covered.update(covers)
+    if covered != set(W12_TYPED_COVERAGE):
+        raise GateError("W12 active overlay lacks complete typed coverage")
+    if not executable:
+        raise GateError("W12 active overlay lacks executable typed evidence")
+    for path, covers in sorted(executable.items()):
+        _run_required_tests(path, covers)
+
+
+def _w12_strict_json_blob(commit: str, path: str) -> dict[str, Any]:
+    blob = _w12_blob_or_none(commit, path)
+    if blob is None:
+        raise GateError(f"W12 JSON blob unavailable: {commit}:{path}")
+    return _w12_strict_json_bytes(blob, path)
+
+
+def _w12_exact_parent(commit: str, repo_root: Path = ROOT) -> str:
+    """Return the sole parent; a merge is never an admissible W12 link."""
+    line = _git_text("rev-list", "--parents", "-n1", commit, repo_root=repo_root)
+    fields = line.split()
+    if len(fields) != 2 or not all(re.fullmatch(r"[0-9a-f]{40}", item) for item in fields):
+        raise GateError("W12 commit must have exactly one parent")
+    return fields[1]
+
+
+def _w12_planned_state() -> dict[str, Any]:
+    return {"state": "planned", "activation_commit": None, "evidence": []}
+
+
+def _w12_r_artifact_paths(activation_commit: str) -> dict[str, str]:
+    root = f"artifacts/mod52-w12-r-{activation_commit[:12]}"
+    return {
+        key: f"{root}/{filename}"
+        for key, filename in W12_R_ARTIFACT_NAMES.items()
+    }
+
+
+def _w12_resolve_r_history(
+    activation_commit: str, ledger_path: str, artifact_paths: dict[str, str],
+    card_paths: list[str],
+) -> tuple[str, str]:
+    ledger_history = _git_text("rev-list", "--reverse",
+        f"{activation_commit}..HEAD", "--", ledger_path).splitlines()
+    if len(ledger_history) != 2 or any(re.fullmatch(r"[0-9a-f]{40}", item) is None
+                                       for item in ledger_history):
+        raise GateError("W12 history must contain exactly one H and one R ledger commit")
+    h_commit, r_commit = ledger_history
+    if _w12_exact_parent(h_commit) != activation_commit: raise GateError("W12 H must be the direct child of A")
+    if _w12_exact_parent(r_commit) != h_commit: raise GateError("W12 R must be the direct child of H")
+    if not _is_ancestor(r_commit, "HEAD"):
+        raise GateError("W12 immutable R is not in HEAD history")
+    descendants = _git_text("rev-list", "--reverse", "--ancestry-path",
+                            f"{r_commit}..HEAD").splitlines()
+    previous = r_commit
+    for commit in descendants:
+        if re.fullmatch(r"[0-9a-f]{40}", commit) is None or \
+                _w12_exact_parent(commit) != previous:
+            raise GateError("W12 post-R history must be one linear chain")
+        previous = commit
+    protected_paths = sorted({*card_paths, ledger_path, *artifact_paths.values()}); changed_after_r = _git_z_paths("log", "--format=", "--name-only",
+        f"{r_commit}..HEAD", "--", *protected_paths)
+    if changed_after_r:
+        raise GateError(
+            "W12 protected path changed after R: "
+            + ", ".join(sorted(changed_after_r))
+        )
+    return h_commit, r_commit
+
+
+def validate_w12_r_evidence_schema(
+    value: Any, activation_commit: str
+) -> dict[str, str]:
+    evidence = _closed_object(value, {
+        *W12_R_ARTIFACT_NAMES,
+        "candidate_commit", "emule_sha256", "verifier_sha256",
+    }, "activation.W12.r_evidence")
+    if evidence["candidate_commit"] != activation_commit:
+        raise GateError("W12 R candidate_commit is not activation A")
+    for key in ("emule_sha256", "verifier_sha256"):
+        if not isinstance(evidence[key], str) or re.fullmatch(r"[0-9a-f]{64}", evidence[key]) is None:
+            raise GateError(f"W12 R {key} is not canonical SHA-256")
+    expected_paths = _w12_r_artifact_paths(activation_commit)
+    for key, expected_path in expected_paths.items():
+        artifact = _closed_object(
+            evidence[key], {"path", "sha256"}, f"activation.W12.r_evidence.{key}"
+        )
+        if artifact["path"] != expected_path:
+            raise GateError(f"W12 R artifact path is not fixed: {key}")
+        if not isinstance(artifact["sha256"], str) or re.fullmatch(
+            r"[0-9a-f]{64}", artifact["sha256"]
+        ) is None:
+            raise GateError(f"W12 R artifact SHA is invalid: {key}")
+    return expected_paths
+
+
+def _w12_sha256(value: Any, where: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise GateError(f"W12 R {where} is not canonical SHA-256")
+    return value
+
+
+def _w12_production_tree(activation_commit: str) -> tuple[str, int]:
+    """Recreate verifier canonical_production_tree from immutable Git blobs.
+
+    The persisted activation file is only a claim.  The authority is A's
+    ``git ls-tree -r --full-tree A -- srchybrid`` listing, serialized as real
+    UTF-8 ``blob-oid TAB path LF`` records in canonical path order.
+    """
+    try:
+        raw = subprocess.check_output(
+            ["git", "ls-tree", "-r", "--full-tree", "-z", activation_commit,
+             "--", "srchybrid"],
+            cwd=ROOT,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise GateError("W12 production tree is unavailable at activation A") from exc
+    entries: list[tuple[str, str]] = []
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        metadata, separator, raw_path = record.partition(b"\t")
+        fields = metadata.split()
+        if separator != b"\t" or len(fields) != 3 or fields[1] != b"blob":
+            raise GateError("W12 production tree entry is not a Git blob")
+        try:
+            oid = fields[2].decode("ascii")
+            path = raw_path.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise GateError("W12 production tree entry is not UTF-8") from exc
+        if (
+            re.fullmatch(r"[0-9a-f]{40}", oid) is None
+            or not path.startswith("srchybrid/")
+            or any(char in path for char in ("\0", "\t", "\n"))
+        ):
+            raise GateError("W12 production tree path is not canonical")
+        entries.append((oid, path))
+    if not entries or len({path for _, path in entries}) != len(entries):
+        raise GateError("W12 production tree is empty or has duplicate paths")
+    payload = "".join(
+        f"{oid}\t{path}\n" for oid, path in sorted(entries, key=lambda item: item[1])
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest(), len(entries)
+
+
+def _w12_toolset_sha256(tools: dict[str, str]) -> str:
+    return hashlib.sha256(
+        json.dumps(tools, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _w12_v2_candidate(
+    value: Any, activation_commit: str, emule_sha256: str, where: str
+) -> dict[str, str]:
+    candidate = _closed_object(value, {
+        "build_commit", "emule_sha256", "build_info_sha256", "release",
+    }, where)
+    if candidate["build_commit"] != activation_commit:
+        raise GateError(f"W12 R {where} BUILD_INFO candidate is not exactly A")
+    if candidate["emule_sha256"] != emule_sha256:
+        raise GateError(f"W12 R {where} binary SHA differs from the ledger")
+    _w12_sha256(candidate["build_info_sha256"], f"{where}.build_info_sha256")
+    if (
+        not isinstance(candidate["release"], str)
+        or not candidate["release"]
+        or len(candidate["release"]) > 96
+        or any(ord(char) < 0x20 for char in candidate["release"])
+    ):
+        raise GateError(f"W12 R {where} release is malformed")
+    return candidate
+
+
+def _w12_v2_binding(
+    value: Any, activation_commit: str, production_tree_sha256: str,
+    toolset_sha256: str, where: str,
+) -> dict[str, str]:
+    binding = _closed_object(value, {
+        "activation_commit", "production_tree_sha256", "toolset_sha256",
+        "run_id_sha256", "challenge_nonce_sha256", "canary_sha256",
+    }, where)
+    for key, item in binding.items():
+        if key == "activation_commit":
+            if item != activation_commit:
+                raise GateError(f"W12 R {where} is not bound to A")
+        else:
+            _w12_sha256(item, f"{where}.{key}")
+    if binding["production_tree_sha256"] != production_tree_sha256:
+        raise GateError(f"W12 R {where} production tree differs from A")
+    if binding["toolset_sha256"] != toolset_sha256:
+        raise GateError(f"W12 R {where} toolset differs from immutable A tools")
+    return binding
+
+
+def _validate_w12_r_artifacts(
+    state: dict[str, Any], activation_commit: str, paths: dict[str, str]
+) -> dict[str, str]:
+    evidence = state["r_evidence"]
+    for key, path in paths.items():
+        blob = _w12_blob_or_none("HEAD", path)
+        if (
+            blob is None
+            or hashlib.sha256(blob).hexdigest() != evidence[key]["sha256"]
+        ):
+            raise GateError(f"W12 R artifact is absent or not immutable: {key}")
+    activation = _w12_strict_json_blob("HEAD", paths["activation"])
+    _closed_object(activation, {
+        "schema", "activation_commit", "production_tree_sha256",
+        "production_path_count", "tool_sha256",
+    }, "W12 R activation artifact")
+    if (
+        activation["schema"] != "ese.v92.w12.activation/v2"
+        or activation["activation_commit"] != activation_commit
+    ):
+        raise GateError("W12 R activation artifact is not bound to A")
+    production_tree_sha256, production_path_count = _w12_production_tree(
+        activation_commit
+    )
+    if (
+        activation["production_tree_sha256"] != production_tree_sha256
+        or activation["production_path_count"] != production_path_count
+        or isinstance(activation["production_path_count"], bool)
+    ):
+        raise GateError("W12 R activation production identity differs from Git A")
+    tools = _closed_object(
+        activation["tool_sha256"], set(W12_R_TOOL_PATHS),
+        "W12 R activation artifact.tool_sha256",
+    )
+    expected_tools: dict[str, str] = {}
+    for key, path in W12_R_TOOL_PATHS.items():
+        at_a = _w12_blob_or_none(activation_commit, path)
+        if (
+            at_a is None
+            or _w12_blob_or_none("HEAD", path) != at_a
+        ):
+            raise GateError(f"W12 R activation tool is not immutable from A: {path}")
+        expected_tools[key] = hashlib.sha256(at_a).hexdigest()
+    if tools != expected_tools:
+        raise GateError("W12 R activation tool hashes are not the immutable A tools")
+    if tools["verifier"] != evidence["verifier_sha256"]:
+        raise GateError("W12 R activation/verifier ledger hash binding drift")
+    verifier_at_a = _w12_blob_or_none(activation_commit, W12_EVIDENCE_VERIFIER)
+    verifier_at_head = _w12_blob_or_none("HEAD", W12_EVIDENCE_VERIFIER)
+    if (
+        verifier_at_a is None
+        or verifier_at_head != verifier_at_a
+        or hashlib.sha256(verifier_at_a).hexdigest() != evidence["verifier_sha256"]
+    ):
+        raise GateError("W12 R verifier is not the immutable A verifier")
+    toolset_sha256 = _w12_toolset_sha256(expected_tools)
+    runtime = _w12_strict_json_blob("HEAD", paths["runtime"])
+    _closed_object(runtime, {
+        "schema", "candidate", "execution", "cases", "canary", "privacy",
+        "binding", "verdict",
+    }, "W12 R runtime")
+    if runtime["schema"] != "ese.v92.w12.security-runtime/v2" or runtime["verdict"] != "PASS":
+        raise GateError("W12 R runtime schema or verdict drift")
+    candidate = _w12_v2_candidate(
+        runtime["candidate"], activation_commit, evidence["emule_sha256"], "runtime.candidate"
+    )
+    binding = _w12_v2_binding(
+        runtime["binding"], activation_commit, production_tree_sha256,
+        toolset_sha256, "runtime.binding",
+    )
+    challenge = _w12_strict_json_blob("HEAD", paths["browser_challenge"])
+    _closed_object(challenge, {"schema", "candidate", "binding"}, "W12 R challenge")
+    if challenge["schema"] != "ese.v92.w12.browser-challenge/v2":
+        raise GateError("W12 R challenge schema drift")
+    if _w12_v2_candidate(challenge["candidate"], activation_commit, evidence["emule_sha256"], "challenge.candidate") != candidate:
+        raise GateError("W12 R challenge candidate differs from runtime")
+    if _w12_v2_binding(challenge["binding"], activation_commit, production_tree_sha256, toolset_sha256, "challenge.binding") != binding:
+        raise GateError("W12 R challenge binding differs from runtime")
+    trace = _w12_strict_json_blob("HEAD", paths["browser_cdp_trace"])
+    _closed_object(trace, {"schema", "activation_commit", "candidate", "binding", "collector_sha256", "browser_binding_sha256", "product_sha256", "version_sha256", "user_agent_sha256", "events"}, "W12 R browser trace")
+    if trace["schema"] != "ese.v92.w12.browser-cdp/v3" or trace["activation_commit"] != activation_commit:
+        raise GateError("W12 R browser trace schema or activation binding drift")
+    for key in ("collector_sha256", "browser_binding_sha256", "product_sha256", "version_sha256", "user_agent_sha256"):
+        if not isinstance(trace[key], str) or re.fullmatch(r"[0-9a-f]{64}", trace[key]) is None:
+            raise GateError(f"W12 R browser trace {key} is malformed")
+    if trace["collector_sha256"] != expected_tools["collector"]:
+        raise GateError("W12 R browser trace collector is not the immutable A collector")
+    if _w12_v2_candidate(trace["candidate"], activation_commit, evidence["emule_sha256"], "trace.candidate") != candidate:
+        raise GateError("W12 R browser trace candidate differs from runtime")
+    if _w12_v2_binding(trace["binding"], activation_commit, production_tree_sha256, toolset_sha256, "trace.binding") != binding:
+        raise GateError("W12 R browser trace binding differs from runtime")
+    _run_w12_r_verifier(paths, evidence, activation_commit)
+    return paths
+
+
+def _run_w12_r_verifier(
+    paths: dict[str, str], evidence: dict[str, Any], activation_commit: str
+) -> None:
+    """Reproduce R using only checked-in Git blobs, never checkout paths."""
+    with tempfile.TemporaryDirectory(prefix="w12-r-verdict-") as temporary:
+        root = Path(temporary)
+        head = _git_text("rev-parse", "HEAD")
+        if re.fullmatch(r"[0-9a-f]{40}", head) is None:
+            raise GateError("W12 R HEAD is not an immutable commit")
+
+        def materialize(name: str, source_path: str, expected_sha256: str | None = None) -> Path:
+            blob = _w12_blob_or_none(head, source_path)
+            if blob is None:
+                raise GateError(f"W12 R Git blob unavailable: {name}")
+            digest = hashlib.sha256(blob).hexdigest()
+            if expected_sha256 is not None and digest != expected_sha256:
+                raise GateError(f"W12 R Git blob hash differs: {name}")
+            target = root / name
+            target.write_bytes(blob)
+            if hashlib.sha256(target.read_bytes()).hexdigest() != digest:
+                raise GateError(f"W12 R blob materialization changed: {name}")
+            return target
+
+        verifier = materialize(
+            "verify_w12_security_evidence.py", W12_EVIDENCE_VERIFIER,
+            evidence["verifier_sha256"],
+        )
+        inputs = {
+            key: materialize(f"{key}.json", path, evidence[key]["sha256"])
+            for key, path in paths.items()
+        }
+        output = root / "reproduced-verdict.json"
+        command = [
+            sys.executable, "-B", str(verifier),
+            "--activation", str(inputs["activation"]),
+            "--runtime", str(inputs["runtime"]),
+            "--challenge", str(inputs["browser_challenge"]),
+            "--browser-trace", str(inputs["browser_cdp_trace"]),
+            "--output", str(output),
+        ]
+        try:
+            completed = subprocess.run(
+                command, cwd=root, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, check=False, timeout=120,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GateError("W12 R evidence verifier did not complete") from exc
+        if completed.returncode != 0 or not output.is_file():
+            raise GateError("W12 R evidence verifier did not PASS")
+        generated = output.read_bytes()
+        committed = inputs["verdict"].read_bytes()
+    if generated != committed:
+        raise GateError("W12 R persisted verdict is not verifier-reproducible")
+    verdict = _w12_strict_json_blob("HEAD", paths["verdict"])
+    _closed_object(verdict, {
+        "schema", "activation_commit", "emule_sha256", "cases", "verdict",
+    }, "W12 R verdict")
+    if verdict["schema"] != "ese.v92.w12.security-verdict/v2" or verdict["verdict"] != "PASS":
+        raise GateError("W12 R verdict identity/status drift")
+    if (
+        verdict["activation_commit"] != activation_commit
+        or verdict["emule_sha256"] != evidence["emule_sha256"]
+    ):
+        raise GateError("W12 R verdict candidate is not activation A/binary")
+    if not isinstance(verdict["cases"], list):
+        raise GateError("W12 R verdict cases are malformed")
+
+
+def validate_w12_activation_state(
+    card: dict[str, Any], ledger: dict[str, Any]
+) -> tuple[str, str | None, dict[str, tuple[int, int]]]:
+    if set(ledger) != {"schema", "scope", "cards"} or ledger.get("schema") != "ese.mod52.activation-ledger/v1":
+        raise GateError("W12 activation ledger schema drift")
+    state = ledger.get("cards", {}).get("W12")
+    if not isinstance(state, dict):
+        raise GateError("W12 activation state is missing or malformed")
+    head = _git_text("rev-parse", "HEAD")
+    if state == _w12_planned_state():
+        if head == W12_BASE_COMMIT:
+            changed, staged = _w12_worktree_path_sets()
+            validate_w12_card_path_scope(card["card_paths"], changed, staged)
+            for path in card["card_paths"]:
+                if _w12_current_or_none(path) is None and _w12_blob_or_none(
+                    W12_BASE_COMMIT, path
+                ) is None:
+                    raise GateError(f"W12 declared CARD_PATHS entry is unavailable: {path}")
+            return "PRE-A", None, _w12_numstat(
+                W12_BASE_COMMIT, None, card["card_paths"]
+            )
+        if _w12_exact_parent(head) != W12_BASE_COMMIT:
+            raise GateError("W12 A must be one exact A^..A cut over the frozen W11 base")
+        if _w12_dirty_paths():
+            raise GateError("W12 A worktree/index must be clean")
+        changed = _w12_commit_changed_paths(W12_BASE_COMMIT, head)
+        validate_w12_card_path_scope(card["card_paths"], changed)
+        return "A", head, _w12_numstat(
+            W12_BASE_COMMIT, head, card["card_paths"]
+        )
+    _closed_object(state, {
+        "state", "stage", "activation_commit", "evidence", "r_evidence",
+    }, "activation.W12.active")
+    if state.get("state") != "active" or state.get("stage") not in {"H", "R"}:
+        raise GateError("W12 activation state must be planned or active")
+    activation_commit = state.get("activation_commit")
+    if (
+        not isinstance(activation_commit, str)
+        or re.fullmatch(r"[0-9a-f]{40}", activation_commit) is None
+    ):
+        raise GateError("W12 active overlay lacks an immutable A commit")
+    if _w12_exact_parent(activation_commit) != W12_BASE_COMMIT:
+        raise GateError("W12 activation A parent is not the exact frozen W11 base")
+    if not _is_ancestor(activation_commit, "HEAD"):
+        raise GateError("W12 activation A is not in HEAD history")
+    if _w12_dirty_paths():
+        raise GateError("W12 H/R worktree/index must be clean")
+    changed = _w12_commit_changed_paths(W12_BASE_COMMIT, activation_commit)
+    validate_w12_card_path_scope(card["card_paths"], changed)
+    ledger_path = ACTIVATION.relative_to(ROOT).as_posix()
+    if _w12_strict_json_blob(activation_commit, ledger_path).get(
+        "cards", {}
+    ).get("W12") != _w12_planned_state():
+        raise GateError("W12 implementation A must retain the planned ledger state")
+    for path in card["card_paths"]:
+        at_a = _w12_blob_or_none(activation_commit, path)
+        at_head = _w12_blob_or_none("HEAD", path)
+        if at_a != at_head or _w12_current_or_none(path) != at_a:
+            raise GateError(f"W12 CARD_PATHS changed after immutable A: {path}")
+    _validate_w12_activation_evidence(state, card, activation_commit)
+    if state["stage"] == "H":
+        if state["r_evidence"] is not None:
+            raise GateError("W12 H must not contain R evidence")
+        if _w12_exact_parent("HEAD") != activation_commit:
+            raise GateError("W12 H must be the direct child of A")
+        if _w12_commit_changed_paths(activation_commit, "HEAD") != {ledger_path}:
+            raise GateError("W12 H may change only the activation ledger")
+        stage = "H"
+    else:
+        artifact_paths = validate_w12_r_evidence_schema(
+            state["r_evidence"], activation_commit
+        )
+        h_commit, r_commit = _w12_resolve_r_history(
+            activation_commit, ledger_path, artifact_paths, card["card_paths"]
+        )
+        h_ledger = _w12_strict_json_blob(h_commit, ledger_path)
+        h_state = h_ledger.get("cards", {}).get("W12")
+        expected_h = {
+            "state": "active", "stage": "H",
+            "activation_commit": activation_commit,
+            "evidence": state["evidence"], "r_evidence": None,
+        }
+        if h_state != expected_h:
+            raise GateError("W12 R parent is not the exact H attestation")
+        if _w12_commit_changed_paths(activation_commit, h_commit) != {ledger_path}:
+            raise GateError("W12 H parent changed more than the activation ledger")
+        expected_r_paths = {ledger_path, *artifact_paths.values()}
+        if _w12_commit_changed_paths(h_commit, r_commit) != expected_r_paths:
+            raise GateError("W12 R commit must contain only ledger plus five fixed artifacts")
+        _validate_w12_r_artifacts(state, activation_commit, artifact_paths)
+        stage = "R"
+    return stage, activation_commit, _w12_numstat(
+        W12_BASE_COMMIT, activation_commit, card["card_paths"]
+    )
+
+
+def _validate_w12_contract_metrics(
+    card: dict[str, Any], contract: dict[str, Any], metrics: dict[str, Any]
+) -> None:
+    matrix_web = card["coordinator_limits"]["CWebServer"]["actual_w12_delta"]
+    contract_web = contract["coordinator_limits"]["WebServer"]["actual_w12_delta"]
+    expected_contract_web = {
+        "cpp_baseline_physical_loc": card["coordinator_budget"]["actual_w12_delta"]["WebServer.cpp"]["baseline_physical_loc"],
+        "cpp_current_physical_loc": metrics["webserver_cpp_loc"],
+        **matrix_web,
+    }
+    if contract_web != expected_contract_web:
+        raise GateError("W12 contract WebServer actual metric cross-link is stale")
+    matrix_live = card["coordinator_limits"]["CLiveStreamManager"]["w12_actual_delta"]
+    if contract["coordinator_limits"]["LiveStreamManager"]["actual_w12_delta"] != matrix_live:
+        raise GateError("W12 contract LiveStreamManager actual metric cross-link is stale")
+    ratchet = _closed_object(contract["ratchet"], {
+        "card_paths_closed", "unlisted_production_path",
+        "coordinator_added_lines_max", "coordinator_deleted_lines_min",
+        "coordinator_net_lines_max", "webserver_cpp_hard_loc_max",
+        "webserver_cpp_target_loc_max", "webserver_header_hard_loc_max",
+        "webserver_new_mutable_fields", "live_stream_manager_header_hard_loc_max",
+        "live_stream_manager_cpp_growth_max", "no_new_scc",
+        "no_new_over_150_function", "no_baseline_oversized_function_growth",
+    }, "contract.ratchet")
+    coordinator = card["coordinator_budget"]
+    live = card["live_stream_manager_budget"]
+    expected_values = {
+        "coordinator_added_lines_max": coordinator["add_max"],
+        "coordinator_deleted_lines_min": coordinator["delete_min"],
+        "coordinator_net_lines_max": coordinator["net_max"],
+        "webserver_cpp_hard_loc_max": coordinator["cpp_hard_loc_max"],
+        "webserver_cpp_target_loc_max": coordinator["cpp_target_loc_max"],
+        "webserver_header_hard_loc_max": coordinator["header_hard_loc_max"],
+        "webserver_new_mutable_fields": coordinator["new_mutable_fields"],
+        "live_stream_manager_header_hard_loc_max": live["header_hard_loc_max"],
+        "live_stream_manager_cpp_growth_max": live["cpp_growth_max"],
+    }
+    if any(ratchet[key] != value for key, value in expected_values.items()):
+        raise GateError("W12 executable ratchet/declared budget cross-link drift")
+    if any(
+        ratchet[key] is not True
+        for key in (
+            "card_paths_closed", "no_new_scc", "no_new_over_150_function",
+            "no_baseline_oversized_function_growth",
+        )
+    ) or not isinstance(ratchet["unlisted_production_path"], str):
+        raise GateError("W12 executable ratchet boolean/STOP policy drift")
+    security = _closed_object(contract["security_invariants"], {
+        "commit_order", "live_lock_order", "forbidden_under_lease",
+        "buffer_cap_per_response_bytes", "buffer_cap_aggregate_bytes",
+        "capacity_rejection", "generation_reuse",
+    }, "contract.security_invariants")
+    if (
+        not _nonnegative_int(security["buffer_cap_per_response_bytes"])
+        or security["buffer_cap_per_response_bytes"] <= 0
+        or not _nonnegative_int(security["buffer_cap_aggregate_bytes"])
+        or security["buffer_cap_aggregate_bytes"] <= 0
+        or security["buffer_cap_per_response_bytes"] >= security["buffer_cap_aggregate_bytes"]
+        or not isinstance(security["forbidden_under_lease"], list)
+        or not security["forbidden_under_lease"]
+        or any(
+            not isinstance(security[key], str) or not security[key].strip()
+            for key in ("commit_order", "live_lock_order", "capacity_rejection", "generation_reuse")
+        )
+    ):
+        raise GateError("W12 security invariant schema/value drift")
+
+
+def verify_w12_overlay() -> dict[str, Any]:
+    matrix = _w12_strict_json_file(W12_MATRIX)
+    contract = _w12_strict_json_file(W12_CONTRACT)
+    ownership = _w12_strict_json_file(W12_MOD03)
+    catalogue = _w12_strict_json_file(W12_MOD04)
+    card = validate_w12_overlay_documents(matrix, contract, ownership, catalogue)
+    ledger = _w12_strict_json_file(ACTIVATION)
+    stage, activation_commit, numstat = validate_w12_activation_state(card, ledger)
+    metrics = validate_w12_source_ratchets(card, numstat)
+    validate_w12_dependencies_and_scc(card, ownership)
+    _validate_w12_contract_metrics(card, contract, metrics)
+    return {
+        "schema": "ese.m2a00.w12-overlay-ratchet-report/v2",
+        "baseline_commit": W12_BASE_COMMIT,
+        "stage": stage,
+        "activation_commit": activation_commit,
+        "metrics": metrics,
+        "coverage": {
+            "pre_a": list(W12_COVERAGE_IDS[:5]) + list(W12_COVERAGE_IDS[7:]),
+            "a_h": [W12_COVERAGE_IDS[5]],
+            "r": [W12_COVERAGE_IDS[6]],
+        },
+        "status": "PASS",
+    }
+
+
 def report() -> dict[str, Any]:
     """Reproduce the baseline only from Git blobs, never from the worktree."""
     measured = metrics(_baseline_overrides(), force_v1_graph=True)
@@ -2686,6 +4631,14 @@ def report() -> dict[str, Any]:
 
 
 def verify(overrides: dict[str, bytes] | None = None) -> dict[str, Any]:
+    overlay_paths = (W12_MATRIX, W12_CONTRACT, W12_MOD03, W12_MOD04)
+    present = [path.is_file() for path in overlay_paths]
+    if any(present):
+        if not all(present):
+            raise GateError("W12 overlay is partially present")
+        if overrides is not None:
+            raise GateError("W12 overlay verification does not accept v1 source overrides")
+        return verify_w12_overlay()
     contract, matrix, baseline = load(CONTRACT), load(MATRIX), load(BASELINE)
     ledger = load(ACTIVATION)
     validate_inputs(contract, matrix, baseline, ledger)

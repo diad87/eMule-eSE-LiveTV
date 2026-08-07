@@ -29,7 +29,9 @@ public:
 	bool Enqueue(const void* bytes, std::size_t byteCount);
 	bool AttachSource(
 		std::unique_ptr<IWebResponseSource> source,
-		std::uint64_t byteCount);
+		std::uint64_t byteCount,
+		std::shared_ptr<void> completionReservation =
+			std::shared_ptr<void>());
 	bool PumpSource(std::size_t maximumChunkBytes);
 	const std::uint8_t* FrontData() const;
 	std::size_t FrontSize() const;
@@ -46,6 +48,11 @@ public:
 	std::size_t QueuedChunks() const;
 
 private:
+	// Abort the pending source and release any completion-scoped resources
+	// without discarding bytes that were already queued.  Several callers rely
+	// on the historical queue contents remaining observable after rejection.
+	void MarkFailedPreservingQueue();
+
 	struct Chunk {
 		std::vector<std::uint8_t> bytes;
 		std::size_t offset = 0;
@@ -53,6 +60,7 @@ private:
 
 	std::deque<Chunk> m_chunks;
 	std::unique_ptr<IWebResponseSource> m_source;
+	std::shared_ptr<void> m_completionReservation;
 	std::uint64_t m_sourceBytesRemaining = 0;
 	std::size_t m_queuedBytes = 0;
 	bool m_closeRequested = false;

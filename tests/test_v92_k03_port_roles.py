@@ -2,6 +2,8 @@
 """K03 regression guard for local-versus-advertised port roles."""
 
 from pathlib import Path
+import subprocess
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -119,10 +121,48 @@ require(
     "Live Kad publication must use the common advertised UDP port",
 )
 
-live_tunnel = source("srchybrid/LiveTunnel.cpp")
+kad6_gateway = source("srchybrid/Kad6GatewaySocket.cpp")
+
+lt4_source_bind_start = kad6_gateway.index("void CKad6OriginSocket::LT4SourceBind(")
+lt4_source_bind_end = kad6_gateway.index(
+    "\nvoid CKad6OriginSocket::LT4Publish(", lt4_source_bind_start
+)
+lt4_source_bind = kad6_gateway[lt4_source_bind_start:lt4_source_bind_end]
 require(
-    "const uint16_t udpPort = theApp.GetAdvertisedUdpPort();" in live_tunnel,
-    "the public Live tunnel endpoint must use the advertised UDP port",
+    "const uint16_t tcpPort = useV6\n"
+    "    ? theApp.GetAdvertisedV6TcpPort()\n"
+    "    : theApp.GetAdvertisedTcpPort();" in lt4_source_bind,
+    "LT4SourceBind must select the advertised TCP authority for its family",
+)
+require(
+    "const uint16_t udpPort = useV6\n"
+    "    ? theApp.GetAdvertisedV6UdpPort()\n"
+    "    : theApp.GetAdvertisedUdpPort();" in lt4_source_bind,
+    "LT4SourceBind must select the advertised UDP authority for its family",
+)
+require(
+    "tcpPort == 0 || udpPort == 0" in lt4_source_bind
+    and "tcpPort, udpPort" in lt4_source_bind
+    and "bound.virtual_endpoint.tcp_port = tcpPort;" in lt4_source_bind
+    and "bound.virtual_endpoint.udp_port = udpPort;" in lt4_source_bind,
+    "LT4SourceBind must use its selected advertised pair for availability, logs, and wire endpoint",
+)
+require(
+    "GetInternKadPort" not in lt4_source_bind
+    and "GetExternalKadPort" not in lt4_source_bind,
+    "LT4SourceBind must not publish Kad internal or external preference ports",
 )
 
-print("test_v92_k03_port_roles: 18 checks, 0 failures")
+linter = subprocess.run(
+    [sys.executable, str(ROOT / "tools" / "check_direct_port_usage.py")],
+    cwd=ROOT,
+    capture_output=True,
+    text=True,
+)
+require(
+    linter.returncode == 0,
+    "direct-port inventory must remain reviewed and stable: "
+    + (linter.stdout + linter.stderr).strip(),
+)
+
+print("test_v92_k03_port_roles: 22 checks, 0 failures")

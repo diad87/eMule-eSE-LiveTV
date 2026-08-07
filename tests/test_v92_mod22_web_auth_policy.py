@@ -13,10 +13,16 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 HEADER = ROOT / "srchybrid" / "WebAuthPolicy.h"
 SOURCE = ROOT / "srchybrid" / "WebAuthPolicy.cpp"
 NATIVE_TEST = ROOT / "srchybrid" / "tests" / "test_web_auth_policy.cpp"
+DISPATCH_H = ROOT / "srchybrid" / "WebRequestDispatch.h"
+DISPATCH_CPP = ROOT / "srchybrid" / "WebRequestDispatch.cpp"
 SERVER_H = ROOT / "srchybrid" / "WebServer.h"
 SERVER_CPP = ROOT / "srchybrid" / "WebServer.cpp"
 SOCKET_CPP = ROOT / "srchybrid" / "WebSocket.cpp"
 TEMPLATE = ROOT / "srchybrid" / "eMule.tmpl"
+TEMPLATE_RENDERER = ROOT / "srchybrid" / "WebTemplateRenderer.cpp"
+FACADE = ROOT / "srchybrid" / "WebServerFacade.cpp"
+STREAM_MANAGER_H = ROOT / "srchybrid" / "LiveStreamManager.h"
+STREAM_MANAGER_CPP = ROOT / "srchybrid" / "LiveStreamManager.cpp"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
 NATIVE_GATE = ROOT / "srchybrid" / "tests" / "make.bat"
 CONTRACT = ROOT / "docs" / "architecture" / "mod03_ownership_layering_contract_v1.json"
@@ -28,10 +34,16 @@ class Mod22WebAuthPolicyTest(unittest.TestCase):
         cls.header = HEADER.read_text(encoding="utf-8")
         cls.source = SOURCE.read_text(encoding="utf-8")
         cls.native = NATIVE_TEST.read_text(encoding="utf-8")
+        cls.dispatch_h = DISPATCH_H.read_text(encoding="utf-8")
+        cls.dispatch = DISPATCH_CPP.read_text(encoding="utf-8")
         cls.server_h = SERVER_H.read_text(encoding="utf-8")
         cls.server = SERVER_CPP.read_text(encoding="utf-8")
         cls.socket = SOCKET_CPP.read_text(encoding="utf-8")
         cls.template = TEMPLATE.read_text(encoding="utf-8")
+        cls.template_renderer = TEMPLATE_RENDERER.read_text(encoding="utf-8")
+        cls.facade = FACADE.read_text(encoding="utf-8")
+        cls.stream_manager_h = STREAM_MANAGER_H.read_text(encoding="utf-8")
+        cls.stream_manager = STREAM_MANAGER_CPP.read_text(encoding="utf-8")
         cls.contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
 
     def test_planned_owner_layer_and_responsibility_are_exact(self) -> None:
@@ -112,10 +124,14 @@ class Mod22WebAuthPolicyTest(unittest.TestCase):
         self.assertIn('header.name == "sec-fetch-site"', self.socket)
         self.assertIn('header.name == "host"', self.socket)
         self.assertIn('header.name == "origin"', self.socket)
-        self.assertIn("X-CSRF-Token: %s", self.server)
-        self.assertIn("Access-Control-Expose-Headers: X-CSRF-Token", self.server)
+        # Header production moved with classic-request orchestration into
+        # WebRequestDispatch; WebServer retains only the application adapter.
+        self.assertIn("X-CSRF-Token: %s", self.dispatch)
+        self.assertIn(
+            "Access-Control-Expose-Headers: X-CSRF-Token", self.dispatch
+        )
         self.assertIn("ValidateCsrfRequest(", self.server)
-        self.assertIn("ConstantTimeEqual(", self.server)
+        self.assertIn("ConstantTimeEqual(", self.source)
         self.assertNotIn("computeExpected(thePrefs.GetWSPass()) == aResponse", self.server)
         self.assertIn("HTTP/1.1 403 Forbidden", self.server)
         self.assertIn("AuthorizeLiveRequest(", self.server)
@@ -141,9 +157,74 @@ class Mod22WebAuthPolicyTest(unittest.TestCase):
             self.template,
             r"<--TMPL_VERSION-->\s*8\s*<--TMPL_VERSION_END-->",
         )
-        self.assertIn("#define WEB_SERVER_TEMPLATES_VERSION\t8", self.server)
-        self.assertIn("loopback && !sPlain.IsEmpty()", self.server)
-        self.assertIn("never accept a reusable password from a remote socket", self.server)
+        self.assertRegex(
+            self.template_renderer,
+            r"#define\s+WEB_SERVER_TEMPLATES_VERSION\s+8",
+        )
+        self.assertIn("input.loopback && !plain.IsEmpty()", self.dispatch)
+        self.assertNotIn("input.loopback && !plain.IsEmpty()", self.server)
+
+    def test_browser_cookie_is_random_hardened_and_digest_only_at_rest(self) -> None:
+        combined_policy = self.header + self.source
+        self.assertIn("browser_token_digest", combined_policy)
+        self.assertIn("ResolveBrowserSessionDigest", combined_policy)
+        self.assertNotRegex(combined_policy, r"\bbrowser_token\b")
+        self.assertIn("ConstantTimeEqual(\n\t\t\trecord.browser_token_digest", self.source)
+        self.assertIn("GenerateWebRequestHexToken()", self.dispatch)
+        self.assertIn("DigestWebRequestToken(const CStringA& token)", self.dispatch)
+        self.assertIn("CryptoPP::SHA256", self.dispatch)
+        self.assertIn(
+            "Set-Cookie: eSEWebSession=%s; Path=/; HttpOnly; SameSite=Strict%s",
+            self.dispatch,
+        )
+        self.assertIn('input.secure_transport ? "; Secure" : ""', self.dispatch)
+        self.assertIn("Max-Age=0; HttpOnly; SameSite=Strict", self.dispatch)
+        self.assertIn('header.name == "cookie"', self.socket)
+        self.assertIn('"eSEWebSession", browserToken', self.socket)
+        self.assertIn("browserSessionCookieInvalid", self.socket)
+        self.assertIn("if (browserSessionCookieSeen)", self.socket)
+        self.assertIn("HTTP/1.1 400 Bad Request", self.socket)
+        add_adapter = re.search(
+            r"port\.add_session\s*=.*?port\.resolve_browser_session\s*=",
+            self.server,
+            re.S,
+        )
+        self.assertIsNotNone(add_adapter)
+        self.assertIn("DigestWebRequestToken(bearer)", add_adapter.group(0))
+
+    def test_hls_capability_policy_is_digest_only_scoped_and_revocable(self) -> None:
+        combined = self.header + self.source
+        for required in (
+            "WebCapabilityScope::HlsRead",
+            "WebHlsSourceRole::Viewer",
+            "WebHlsSourceRole::Broadcast",
+            "token_digest",
+            "owner_session_id",
+            "stream_key",
+            "generation",
+            "kHlsCapabilityLifetimeMs = 12ull * 60ull * 60ull * 1000ull",
+            "kMaxHlsCapabilitiesPerSession = 8",
+            "InspectHlsReadCapability",
+            "CommitHlsReadCapability",
+            "RevokeHlsCapabilityDigest",
+            "RevokeAllHlsCapabilities",
+            "RemoveHlsCapabilitiesForSessionLocked",
+        ):
+            self.assertIn(required, combined)
+        self.assertNotRegex(combined, r"\bcapability_token\b")
+        self.assertNotRegex(combined, r"\brawCapability\b")
+        self.assertIn("nowMs >= record.expires_at_ms", self.source)
+        inspect = self.source.split(
+            "bool WebAuthPolicy::InspectHlsReadCapability", 1
+        )[1].split("bool WebAuthPolicy::CommitHlsReadCapability", 1)[0]
+        self.assertNotIn("last_seen_ms = nowMs", inspect)
+        commit = self.source.split(
+            "bool WebAuthPolicy::CommitHlsReadCapability", 1
+        )[1].split("bool WebAuthPolicy::RevokeHlsCapabilityDigest", 1)[0]
+        self.assertIn("record.source_role != currentSourceRole", commit)
+        self.assertIn("record.generation != currentStreamGeneration", commit)
+        self.assertIn("owner->last_seen_ms = nowMs", commit)
+        self.assertIn("m_hlsCapabilities.erase(matched)", commit)
 
     def test_permissions_and_four_action_limits_delegate_to_policy(self) -> None:
         self.assertIn("HasPermission(", self.server)
@@ -172,7 +253,9 @@ class Mod22WebAuthPolicyTest(unittest.TestCase):
             "s_lastKeepaliveToggle", "s_lastManualHolePunch",
         ):
             self.assertNotIn(removed_clock, self.server)
-        self.assertGreaterEqual(self.server.count("retry_after_ms"), 4)
+        self.assertIn("W9TransferContext::Rate", self.server)
+        self.assertIn("auth->CheckRateLimit(native,now,interval)", self.server)
+        self.assertIn("result.retry_after_ms", self.server)
 
     def test_native_vectors_cover_hostile_and_concurrent_cases(self) -> None:
         for required in (
@@ -186,14 +269,26 @@ class Mod22WebAuthPolicyTest(unittest.TestCase):
             "viewer mutations, operator routes and unknown APIs must be state-changing",
             "non-local or malformed web authority must fail closed",
             "production WebAuthPolicy self-test must pass",
+            "browser session digest must be stored with its session",
+            "wrong browser bearer digest must fail",
+            "invalid capability probes must not touch their owner",
+            "matching live role and generation must Commit",
+            "capability expires at the exact absolute TTL boundary",
+            "paused browser expiry revokes all owned capabilities",
+            "logout revokes only capabilities owned by that session",
+            "server restart revocation clears every capability",
+            "at least eight concurrent valid GET authorizations must serialize safely",
+            "logout wins every Inspect/Commit race before file authorization",
         ):
             self.assertIn(required, self.native)
         self.assertIn("threadCount = 8", self.native)
         self.assertIn("sessionsPerThread = 100", self.native)
+        self.assertIn("workerCount = 8", self.native)
         self.assertIn("RunWebAuthPolicySelfTest(authFailure)", self.server)
-        self.assertIn("std::lock_guard<std::mutex> lock(webRngMutex)", self.server)
-        self.assertEqual(self.server.count("webRng.GenerateBlock"), 1)
-        self.assertEqual(self.server.count("webRng.GenerateWord32"), 1)
+        self.assertIn("std::lock_guard<std::mutex> lock(requestRngMutex)", self.dispatch)
+        self.assertEqual(self.dispatch.count("requestRng.GenerateBlock"), 1)
+        self.assertEqual(self.dispatch.count("requestRng.GenerateWord32"), 1)
+        self.assertIn('DigestWebRequestToken(CStringA("abc"))', self.dispatch)
 
     def test_project_and_standalone_gate_compile_production_module(self) -> None:
         namespace = {"m": "http://schemas.microsoft.com/developer/msbuild/2003"}

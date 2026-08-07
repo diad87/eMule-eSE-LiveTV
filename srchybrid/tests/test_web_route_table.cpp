@@ -56,6 +56,7 @@ void TestExactRoutes()
 		{"/api/ese/netlab/ipv6_echo", WebRouteId::ApiEseNetlabIpv6Echo},
 		{"/api/ese/netlab/report", WebRouteId::ApiEseNetlabReport},
 		{"/api/krp/status", WebRouteId::ApiKrpStatus},
+		{"/api/reach/status", WebRouteId::ApiReachStatus},
 		{"/api/relay/accept", WebRouteId::ApiRelayAccept},
 		{"/api/relay/egress", WebRouteId::ApiRelayEgress},
 		{"/api/relay/selector", WebRouteId::ApiRelaySelector},
@@ -93,6 +94,13 @@ void TestExactRoutes()
 		"/api/status?ignored=/api/future",
 		WebRouteId::ApiStatus,
 		"query text must not alter exact path dispatch");
+	CheckRoute("/api/reach/status?x=1", WebRouteId::ApiReachStatus,
+		"reach-status query must be ignored");
+	const WebRouteMatch reachSuffix = ResolveWebRoute(
+		WebRouteMethod::Get, "/api/reach/status/future");
+	Check(reachSuffix.status == WebRouteStatus::NotFound &&
+		reachSuffix.handler == WebHandler::None,
+		"reach-status path suffix must fail closed");
 }
 
 void TestDynamicRoutes()
@@ -108,13 +116,21 @@ void TestDynamicRoutes()
 		WebRouteId::ApiLiveStream,
 		"canonical stream playlist must dispatch");
 	CheckRoute(
-		"/api/live/0123456789abcdef0123456789ABCDEF/stream_eng.m3u8",
+		"/api/live/0123456789abcdef0123456789ABCDEF/stream_0.m3u8",
 		WebRouteId::ApiLiveStream,
-		"audio rendition playlist must dispatch");
+		"first ABR rendition playlist must dispatch");
 	CheckRoute(
-		"/api/live/0123456789abcdef0123456789ABCDEF/seg_42.ts",
+		"/api/live/0123456789abcdef0123456789ABCDEF/stream_4.m3u8",
+		WebRouteId::ApiLiveStream,
+		"highest runtime ABR rendition playlist must dispatch");
+	CheckRoute(
+		"/api/live/0123456789abcdef0123456789ABCDEF/seg_00042.ts",
 		WebRouteId::ApiLiveStream,
 		"canonical segment must dispatch");
+	CheckRoute(
+		"/api/live/0123456789abcdef0123456789ABCDEF/seg_4_00042.ts",
+		WebRouteId::ApiLiveStream,
+		"canonical ABR segment must dispatch");
 	CheckRoute("/hls/stream.m3u8", WebRouteId::LegacyHls,
 		"legacy playlist must dispatch");
 	CheckRoute("/hls/seg_1.TS", WebRouteId::LegacyHls,
@@ -126,13 +142,46 @@ void TestDynamicRoutes()
 		WebRouteMethod::Get,
 		std::string("/s/2147483647/api/live/") + hash + "/stream.m3u8?x=1");
 	Check(
-		prefixed.status == WebRouteStatus::Matched &&
-		prefixed.route == WebRouteId::ApiLiveStream &&
-		prefixed.handler == WebHandler::LiveApi &&
-		prefixed.token_prefixed &&
-		prefixed.canonical_path ==
-			std::string("/api/live/") + hash + "/stream.m3u8",
-		"strict positive session prefix must preserve canonical nested route");
+		prefixed.status == WebRouteStatus::NotFound &&
+		prefixed.handler == WebHandler::None,
+		"numeric session locator must never authorize an HLS resource");
+
+	const std::string token(64, 'a');
+	const std::string stream(32, 'b');
+	const std::string capability =
+		"/h/" + token + "/7/" + stream + "/stream.m3u8";
+	const WebRouteMatch capabilityRoute = ResolveWebRoute(
+		WebRouteMethod::Get, capability);
+	WebHlsCapabilityPath parsed;
+	Check(
+		capabilityRoute.status == WebRouteStatus::Matched &&
+		capabilityRoute.route == WebRouteId::ApiLiveStream &&
+		capabilityRoute.handler == WebHandler::LiveApi &&
+		capabilityRoute.hls_capability_prefixed &&
+		capabilityRoute.canonical_path ==
+			"/api/live/" + stream + "/stream.m3u8" &&
+		ParseWebHlsCapabilityPath(capability, parsed) &&
+		parsed.token == token && parsed.generation == 7 &&
+		parsed.stream_hash == stream && parsed.resource == "stream.m3u8",
+		"canonical HLS capability must preserve every scope component");
+	Check(
+		ResolveWebRoute(WebRouteMethod::Options, capability).status ==
+			WebRouteStatus::MethodNotAllowed,
+		"HLS capabilities must not expose a CORS preflight route");
+	for (const std::string& resource : {
+			std::string("stream_0.m3u8"), std::string("stream_4.m3u8"),
+			std::string("seg_00000.ts"), std::string("seg_4294967295.ts"),
+			std::string("seg_0_00001.ts"),
+			std::string("seg_4_4294967295.ts")}) {
+		const std::string target =
+			"/h/" + token + "/7/" + stream + "/" + resource;
+		WebHlsCapabilityPath abr;
+		Check(
+			ResolveWebRoute(WebRouteMethod::Get, target).status ==
+				WebRouteStatus::Matched &&
+			ParseWebHlsCapabilityPath(target, abr) && abr.resource == resource,
+			"runtime ABR HLS capability output must dispatch");
+	}
 }
 
 void TestMethods()
@@ -217,6 +266,63 @@ void TestHostileRoutes()
 				stderr,
 				"FAIL: unknown or hostile route must fail closed: %s\n",
 				target);
+			++failures;
+		}
+	}
+
+	const std::string token(64, 'a');
+	const std::string stream(32, 'b');
+	const std::string prefix = "/h/" + token + "/";
+	const std::string validTail = "/" + stream + "/stream.m3u8";
+	const std::string hostileCapabilities[] = {
+		"/h/" + std::string(63, 'a') + "/1" + validTail,
+		"/h/" + std::string(65, 'a') + "/1" + validTail,
+		"/h/" + std::string(63, 'a') + "A/1" + validTail,
+		prefix + "0" + validTail,
+		prefix + "00" + validTail,
+		prefix + "01" + validTail,
+		prefix + "+1" + validTail,
+		prefix + "-1" + validTail,
+		prefix + "18446744073709551616" + validTail,
+		prefix + "1/" + std::string(31, 'b') + "/stream.m3u8",
+		prefix + "1/" + std::string(33, 'b') + "/stream.m3u8",
+		prefix + "1/" + std::string(31, 'b') + "B/stream.m3u8",
+		prefix + "1/" + stream + "/stream.M3U8",
+		prefix + "1/" + stream + "/seg_1.TS",
+		prefix + "1/" + stream + "/stream_.m3u8",
+		prefix + "1/" + stream + "/stream_5.m3u8",
+		prefix + "1/" + stream + "/stream_00.m3u8",
+		prefix + "1/" + stream + "/stream_eng.m3u8",
+		prefix + "1/" + stream + "/seg_.ts",
+		prefix + "1/" + stream + "/seg_0001.ts",
+		prefix + "1/" + stream + "/seg_00000000000.ts",
+		prefix + "1/" + stream + "/seg_4294967296.ts",
+		prefix + "1/" + stream + "/seg_secret.ts",
+		prefix + "1/" + stream + "/seg_5_00001.ts",
+		prefix + "1/" + stream + "/seg_0_.ts",
+		prefix + "1/" + stream + "/seg_0_0001.ts",
+		prefix + "1/" + stream + "/seg_0_4294967296.ts",
+		prefix + "1/" + stream + "/seg_0_00001_extra.ts",
+		prefix + "1/" + stream + "/../stream.m3u8",
+		prefix + "1/" + stream + "/sub/stream.m3u8",
+		prefix + "1/" + stream + "/stream.m3u8/extra",
+		prefix + "1/" + stream + "/stream.m3u8?range=1",
+		prefix + "1/" + stream + "/stream.m3u8#fragment",
+		prefix + "1/" + stream + "/stream%2em3u8",
+		prefix + "1/" + stream + "/stream%252em3u8",
+		prefix + "1/" + stream + "/stream.m3u8:secret.css",
+		prefix + "1/" + stream + "//stream.m3u8"
+	};
+	for (const std::string& target : hostileCapabilities) {
+		WebHlsCapabilityPath parsed;
+		const WebRouteMatch match = ResolveWebRoute(WebRouteMethod::Get, target);
+		if (match.status != WebRouteStatus::NotFound ||
+			match.handler != WebHandler::None ||
+			ParseWebHlsCapabilityPath(target, parsed)) {
+			std::fprintf(
+				stderr,
+				"FAIL: hostile HLS capability must fail closed: %s\n",
+				target.c_str());
 			++failures;
 		}
 	}

@@ -121,6 +121,10 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_web_auth_policy.exe 
 if errorlevel 1 exit /b 1
 tests\build\test_web_auth_policy.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_web_hls_capability_controller.exe tests\test_web_hls_capability_controller.cpp WebHlsCapabilityController.cpp WebAuthPolicy.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_web_hls_capability_controller.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_web_route_table.exe tests\test_web_route_table.cpp WebRouteTable.cpp
 if errorlevel 1 exit /b 1
 tests\build\test_web_route_table.exe

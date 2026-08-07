@@ -1,6 +1,7 @@
 #include "WebStaticAssets.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <limits>
 #include <sstream>
@@ -8,6 +9,8 @@
 namespace ese {
 namespace web {
 namespace {
+
+std::atomic<std::uint64_t> preparedBodyBytes{0};
 
 bool HasSuffix(const std::string& path, const char* suffix)
 {
@@ -193,6 +196,8 @@ WebFileResponsePlan WebStaticAssets::PlanResponse(
 			<< "Content-Range: bytes */" << representationSize << "\r\n";
 		if (!options.corsOrigin.empty())
 			response << "Access-Control-Allow-Origin: " << options.corsOrigin << "\r\n";
+		if (options.noReferrer)
+			response << "Referrer-Policy: no-referrer\r\n";
 		response << "Content-Length: 0\r\n\r\n";
 		plan.headers = response.str();
 		return plan;
@@ -218,6 +223,8 @@ WebFileResponsePlan WebStaticAssets::PlanResponse(
 		<< "\r\n";
 	if (!options.corsOrigin.empty())
 		response << "Access-Control-Allow-Origin: " << options.corsOrigin << "\r\n";
+	if (options.noReferrer)
+		response << "Referrer-Policy: no-referrer\r\n";
 	if (!options.lastModified.empty())
 		response << "Last-Modified: " << options.lastModified << "\r\n";
 	if (!options.etag.empty())
@@ -237,6 +244,74 @@ WebFileResponsePlan WebStaticAssets::PlanResponse(
 	response << "Content-Length: " << plan.length << "\r\n\r\n";
 	plan.headers = response.str();
 	return plan;
+}
+
+std::string WebStaticAssets::BuildErrorResponse(
+	WebFileErrorStatus status,
+	const WebFileResponseOptions& options)
+{
+	const char* reason = "Internal Server Error";
+	switch (status) {
+	case WebFileErrorStatus::Forbidden:
+		reason = "Forbidden";
+		break;
+	case WebFileErrorStatus::NotFound:
+		reason = "Not Found";
+		break;
+	case WebFileErrorStatus::InternalServerError:
+		break;
+	case WebFileErrorStatus::ServiceUnavailable:
+		reason = "Service Unavailable";
+		break;
+	}
+	std::ostringstream response;
+	response << "HTTP/1.1 " << static_cast<int>(status) << ' '
+		<< reason << "\r\nConnection: close\r\n";
+	if (!options.cacheControl.empty())
+		response << "Cache-Control: " << options.cacheControl << "\r\n";
+	if (options.noReferrer)
+		response << "Referrer-Policy: no-referrer\r\n";
+	if (status == WebFileErrorStatus::ServiceUnavailable)
+		response << "Retry-After: 1\r\n";
+	response << "Content-Length: 0\r\n\r\n";
+	return response.str();
+}
+
+std::shared_ptr<void> WebStaticAssets::ReservePreparedBody(
+	std::uint64_t byteCount)
+{
+	if (byteCount == 0u ||
+		byteCount > WebPreparedFileResponse::kMaximumBodyBytes ||
+		byteCount > WebPreparedFileResponse::kGlobalMaximumBodyBytes)
+		return std::shared_ptr<void>();
+	std::uint64_t current =
+		preparedBodyBytes.load(std::memory_order_relaxed);
+	for (;;) {
+		if (current >
+			WebPreparedFileResponse::kGlobalMaximumBodyBytes - byteCount)
+			return std::shared_ptr<void>();
+		if (preparedBodyBytes.compare_exchange_weak(
+				current, current + byteCount,
+				std::memory_order_acq_rel,
+				std::memory_order_relaxed))
+			break;
+	}
+	try {
+		return std::shared_ptr<void>(
+			&preparedBodyBytes,
+			[byteCount](void*) {
+				preparedBodyBytes.fetch_sub(
+					byteCount, std::memory_order_acq_rel);
+			});
+	} catch (...) {
+		preparedBodyBytes.fetch_sub(byteCount, std::memory_order_acq_rel);
+		return std::shared_ptr<void>();
+	}
+}
+
+std::uint64_t WebStaticAssets::ReservedPreparedBodyBytes()
+{
+	return preparedBodyBytes.load(std::memory_order_acquire);
 }
 
 const char* WebStaticAssets::MimeTypeForPath(const std::string& path)
@@ -306,6 +381,17 @@ bool RunWebStaticAssetsSelfTest(std::string& failure)
 		plan.headers.find("Content-Range: bytes 8-9/10") ==
 			std::string::npos) {
 		failure = "web static response-plan self-test failed";
+		return false;
+	}
+	WebFileResponseOptions capabilityOptions;
+	capabilityOptions.cacheControl = "no-store";
+	capabilityOptions.noReferrer = true;
+	const std::string error = WebStaticAssets::BuildErrorResponse(
+		WebFileErrorStatus::NotFound, capabilityOptions);
+	if (error.find("HTTP/1.1 404 Not Found") == std::string::npos ||
+		error.find("Cache-Control: no-store") == std::string::npos ||
+		error.find("Referrer-Policy: no-referrer") == std::string::npos) {
+		failure = "web static error-policy self-test failed";
 		return false;
 	}
 	return true;

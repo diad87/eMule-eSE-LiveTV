@@ -14,24 +14,30 @@ from pathlib import Path
 
 
 EXPECTED = {
-    "ClientList.cpp": 3,
+    # D0 reviewed: a verified IPv6 direct-route observation must agree with
+    # the configured TCP listener before the v6 hello is emitted. The hello
+    # still serializes GetAdvertisedV6TcpPort(), never this local read.
+    "BaseClient.cpp": 1,
     "ClientUDPSocket.cpp": 6,
     "DownloadClient.cpp": 1,
     "Emule.cpp": 7,
     "EmuleDlg.cpp": 4,
-    "FirewallProberV6.cpp": 2,
+    # D0 reviewed: scope evidence and PCP lease setup use the local listener
+    # pair as mapper input. Candidate publication remains gated by verified
+    # route observations; these calls do not serialize a public endpoint.
+    "FirewallProberV6.cpp": 5,
+    # D0 reviewed: LT4 ownership moved this reject-only target policy from
+    # LiveTunnel. It blocks requests to local eD2K/Web ports; it emits none.
+    "Kad6GatewaySocket.cpp": 1,
     "ListenSocket.cpp": 5,
     "kademlia/kademlia/Prefs.cpp": 1,
-    "LiveTunnel.cpp": 1,
     "NetworkInfoDlg.cpp": 5,
-    "PartFile.cpp": 2,
     "PartFile.utf8.cpp": 2,
     # D0 reviewed: UI enablement and Windows Firewall rule management only;
     # these reads never advertise a public endpoint to a peer.
     "PPgConnection.cpp": 7,
     "PShtWiz1.cpp": 5,
     "RelayClient.cpp": 1,
-    "WebServer.cpp": 2,
     # D0 reviewed: decides whether the selected Kad2/Kad6 instances may start
     # when no local UDP socket is configured; it is not an advertised port.
     "kademlia/kademlia/Kademlia.cpp": 1,
@@ -47,7 +53,7 @@ def main() -> int:
     line_count = 0
 
     for path in source_root.rglob("*"):
-        if path.suffix.lower() not in {".cpp", ".h"} or path.name == "WebServer_original.cpp":
+        if path.suffix.lower() not in {".cpp", ".h"}:
             continue
         text = path.read_text(encoding="utf-8-sig", errors="replace")
         count = len(PATTERN.findall(text))
@@ -62,10 +68,10 @@ def main() -> int:
             failures.append(f"{key}: expected {EXPECTED.get(key, 0)}, found {found.get(key, 0)}")
 
     total = sum(found.values())
-    if total != 55:
-        failures.append(f"total: expected 55, found {total}")
-    if line_count != 54:
-        failures.append(f"lines: expected 54, found {line_count}")
+    if total != 52:
+        failures.append(f"total: expected 52, found {total}")
+    if line_count != 51:
+        failures.append(f"lines: expected 51, found {line_count}")
 
     if failures:
         print("Direct-port inventory drift detected:")

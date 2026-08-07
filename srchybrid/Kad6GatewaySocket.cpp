@@ -967,10 +967,6 @@ if (effective != kad6::K6BindingMode::Cohort || bind.commitment_kind == kad6::K6
 if (existing.state == kad6::K6SourceLeaseState::Closed || existing.state == kad6::K6SourceLeaseState::Draining || !kad6::Kad6CtEqual(existing.bind.file_hash.data(), bind.file_hash.data(), 16)) continue; if (existing.bind.file_size != bind.file_size || existing.bind.commitment_kind != bind.commitment_kind || !kad6::Kad6CtEqual(existing.bind.content_commitment.data(), bind.content_commitment.data(), 32)) {
 finish(kad6::K6SourceBoundStatus::Unsupported, NULL); return; } } }
 const uint32_t publicIp = theApp.GetPublicIP();
-uint16_t udpPort = Kademlia::CKademlia::GetPrefs()->GetUseExternKadPort()
-    ? Kademlia::CKademlia::GetPrefs()->GetExternalKadPort() : 0;
-if (udpPort == 0)
-    udpPort = Kademlia::CKademlia::GetPrefs()->GetInternKadPort();
 CAddress advertisedV6;
 if (bind.desired_family == 6) {
     const CString configured(thePrefs.GetIPv6BindAddr());
@@ -987,11 +983,17 @@ if (bind.desired_family == 6) {
     }
 }
 const bool useV6 = bind.desired_family == 6 && !advertisedV6.IsNull();
-if ((!useV6 && publicIp == 0) || theApp.GetAdvertisedTcpPort() == 0 || udpPort == 0) {
+const uint16_t tcpPort = useV6
+    ? theApp.GetAdvertisedV6TcpPort()
+    : theApp.GetAdvertisedTcpPort();
+const uint16_t udpPort = useV6
+    ? theApp.GetAdvertisedV6UdpPort()
+    : theApp.GetAdvertisedUdpPort();
+if ((!useV6 && publicIp == 0) || tcpPort == 0 || udpPort == 0) {
     AddDebugLogLine(false,
         _T("Kad6 source bind: endpoint unavailable circ=0x%08x use_v6=%u tcp=%u udp=%u"),
         ctx.circ ? ctx.circ->Id() : 0, useV6,
-        theApp.GetAdvertisedTcpPort(), udpPort);
+        tcpPort, udpPort);
     finish(kad6::K6SourceBoundStatus::Overloaded, NULL);
     return;
 }
@@ -1010,7 +1012,7 @@ if (useV6) {
         static_cast<uint8_t>(publicIp), static_cast<uint8_t>(publicIp >> 8),
         static_cast<uint8_t>(publicIp >> 16), static_cast<uint8_t>(publicIp >> 24)};
 }
-bound.virtual_endpoint.tcp_port = theApp.GetAdvertisedTcpPort(); bound.virtual_endpoint.udp_port = udpPort; bound.virtual_endpoint.transport_flags = kad6::kK6EpTcpEd2k | kad6::kK6EpEd2kGateway | (useV6 ? kad6::kK6EpUdpKad6 : kad6::kK6EpKad2Gateway); bound.virtual_endpoint.valid_until = now + bound.lifetime_s;
+bound.virtual_endpoint.tcp_port = tcpPort; bound.virtual_endpoint.udp_port = udpPort; bound.virtual_endpoint.transport_flags = kad6::kK6EpTcpEd2k | kad6::kK6EpEd2kGateway | (useV6 ? kad6::kK6EpUdpKad6 : kad6::kK6EpKad2Gateway); bound.virtual_endpoint.valid_until = now + bound.lifetime_s;
 bound.exit_apparent_ip = bound.virtual_endpoint.addr; memcpy(bound.exit_node_pub.data(), exitPub, bound.exit_node_pub.size()); bound.bind_nonce = bind.bind_nonce; std::vector<uint8_t> cohortMaterial; static const char cohortLabel[] = "Kad6-Cohort-v1"; cohortMaterial.insert(cohortMaterial.end(), cohortLabel, cohortLabel + sizeof cohortLabel - 1); cohortMaterial.insert(cohortMaterial.end(), exitPub, exitPub + 32);
 cohortMaterial.insert(cohortMaterial.end(), bind.file_hash.begin(), bind.file_hash.end()); for (size_t i = 0; i < 8; ++i) cohortMaterial.push_back(static_cast<uint8_t>(bind.file_size >> (8 * i))); cohortMaterial.insert(cohortMaterial.end(), bind.content_commitment.begin(), bind.content_commitment.end()); uint8_t digest[32]; if (!crypto.sha256(cohortMaterial.data(), cohortMaterial.size(), digest)) {
 finish(kad6::K6SourceBoundStatus::Overloaded, NULL); return; } memcpy(bound.cohort_id.data(), digest, bound.cohort_id.size()); std::vector<uint8_t> pseudoMaterial(bind.compat_proof.begin(), bind.compat_proof.begin() + 32); pseudoMaterial.insert(pseudoMaterial.end(), bind.bind_nonce.begin(), bind.bind_nonce.end()); if (!crypto.sha256(pseudoMaterial.data(), pseudoMaterial.size(), digest)) {

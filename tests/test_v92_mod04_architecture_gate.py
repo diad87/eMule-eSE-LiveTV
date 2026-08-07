@@ -8,7 +8,9 @@ import json
 import pathlib
 import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "docs" / "architecture" / "mod04_architecture_gate_baseline_v1.json"
@@ -753,6 +755,42 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
             any(message.startswith("slice LiveTunnelFraming:") for message in messages),
             messages,
         )
+
+    def test_active_w12_discovery_overlay_fails_closed(self) -> None:
+        cases = {
+            "absent": {},
+            "malformed": {
+                "mod52_migration_matrix_v2.json": "{",
+                "mod04_architecture_gate_catalog_v3.json": "{}",
+            },
+            "partial": {
+                "mod52_migration_matrix_v2.json": "{}",
+            },
+        }
+        for name, overlay_files in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as folder:
+                root = pathlib.Path(folder)
+                architecture = root / "docs" / "architecture"
+                architecture.mkdir(parents=True)
+                (architecture / "mod52_migration_matrix_v1.json").write_text(
+                    json.dumps({"additional_modules": []}), encoding="utf-8")
+                (architecture / "mod52_migration_activation_ledger_v1.json").write_text(
+                    json.dumps({"cards": {"W12": {"state": "active"}}}),
+                    encoding="utf-8",
+                )
+                (architecture / "mod04_architecture_gate_catalog_v2.json").write_text(
+                    "{}", encoding="utf-8")
+                for filename, contents in overlay_files.items():
+                    (architecture / filename).write_text(contents, encoding="utf-8")
+                with mock.patch.object(VERIFIER, "ROOT", root):
+                    with self.assertRaisesRegex(
+                        VERIFIER.GateError,
+                        "W12 active discovery overlay is absent or malformed",
+                    ):
+                        VERIFIER.validate_discovery(
+                            {"approved_non_module_code": []}, self.contract, {},
+                            None, set(), [], set(),
+                        )
 
     def test_cli_positive_and_exact_negative_fixtures(self) -> None:
         for mode, needle in (

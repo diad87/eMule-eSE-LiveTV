@@ -2,7 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace ese {
 namespace web {
@@ -26,6 +28,7 @@ struct WebFileResponseOptions {
 	std::string lastModified;
 	std::string etag;
 	std::string attachmentUtf8;
+	bool noReferrer = false;
 };
 
 struct WebFileResponsePlan {
@@ -38,6 +41,29 @@ struct WebFileResponsePlan {
 	{
 		return statusCode == 200 || statusCode == 206;
 	}
+};
+
+struct WebPreparedFileResponse {
+	static constexpr std::uint64_t kMaximumBodyBytes =
+		20ull * 1024ull * 1024ull;
+	static constexpr std::uint64_t kGlobalMaximumBodyBytes =
+		64ull * 1024ull * 1024ull;
+
+	WebFileResponsePlan plan;
+	std::vector<std::uint8_t> body;
+	std::shared_ptr<void> bodyReservation;
+
+	bool Ready() const
+	{
+		return !plan.headers.empty();
+	}
+};
+
+enum class WebFileErrorStatus {
+	Forbidden = 403,
+	NotFound = 404,
+	InternalServerError = 500,
+	ServiceUnavailable = 503
 };
 
 class WebStaticAssets final
@@ -56,6 +82,12 @@ public:
 		const std::string& rangeHeader,
 		std::uint64_t representationSize,
 		const WebFileResponseOptions& options);
+	static std::string BuildErrorResponse(
+		WebFileErrorStatus status,
+		const WebFileResponseOptions& options);
+	static std::shared_ptr<void> ReservePreparedBody(
+		std::uint64_t byteCount);
+	static std::uint64_t ReservedPreparedBodyBytes();
 
 	static const char* MimeTypeForPath(const std::string& path);
 	static const char* CacheControlForPath(const std::string& path);

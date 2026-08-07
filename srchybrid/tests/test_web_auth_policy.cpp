@@ -1,5 +1,6 @@
 #include "../WebAuthPolicy.h"
 
+#include <atomic>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -7,7 +8,7 @@
 
 namespace {
 
-int failures = 0;
+std::atomic<int> failures{0};
 
 void Check(bool condition, const char* message)
 {
@@ -20,6 +21,20 @@ void Check(bool condition, const char* message)
 std::string Token(char value)
 {
 	return std::string(ese::web::WebAuthPolicy::kCsrfTokenHexLength, value);
+}
+
+std::string Stream(char value)
+{
+	return std::string(ese::web::WebAuthPolicy::kStreamKeyHexLength, value);
+}
+
+std::string IndexedToken(unsigned value)
+{
+	static const char hex[] = "0123456789abcdef";
+	std::string token = Token('0');
+	token[0] = hex[(value >> 4) & 0x0fu];
+	token[1] = hex[value & 0x0fu];
+	return token;
 }
 
 void TestSessions()
@@ -96,6 +111,7 @@ void TestSessions()
 		"/api/holepunch/test",
 		"/api/keepalive/start",
 		"/api/krp/status",
+		"/api/reach/status",
 		"/api/network/connect",
 		"/api/relay/accept?on=1",
 		"/api/live/broadcast/start",
@@ -134,6 +150,7 @@ void TestSessions()
 	}
 	for (const char* path : {
 		"/api/status",
+		"/api/reach/status",
 		"/api/live/metrics",
 		"/api/live/channels",
 		"/api/live/mesh",
@@ -197,6 +214,251 @@ void TestSessions()
 	Check(WebAuthPolicy::AuthorizeLiveRequest(
 		"/api/status", false, &snapshot, "", "same-origin", "", ""),
 		"authenticated remote read request must pass without mutation CSRF");
+}
+
+void TestBrowserSessionBearer()
+{
+	using namespace ese::web;
+	WebAuthPolicy policy;
+	const std::string browserDigest = Token('b');
+	Check(policy.AddSession(
+		90, WebRole::Guest, 0, 10, Token('a'), browserDigest),
+		"browser session digest must be stored with its session");
+	Check(!policy.AddSession(
+		91, WebRole::Guest, 0, 10, Token('c'), browserDigest),
+		"browser session digests must be unique");
+	WebSessionSnapshot snapshot;
+	Check(!policy.ResolveBrowserSessionDigest(
+		Token('c'), 20, 100, &snapshot),
+		"wrong browser bearer digest must fail");
+	Check(!policy.ResolveBrowserSessionDigest(
+		browserDigest, 20, 100, &snapshot, 91),
+		"numeric locator must match the cookie-owned session");
+	Check(policy.GetSession(90, snapshot) && snapshot.last_seen_ms == 10,
+		"failed bearer lookup must not keep the session alive");
+	Check(policy.ResolveBrowserSessionDigest(
+		browserDigest, 20, 100, &snapshot, 90) &&
+		snapshot.id == 90 && snapshot.last_seen_ms == 20,
+		"matching cookie digest and locator must resolve together");
+	Check(policy.ResolveBrowserSessionDigest(
+		browserDigest, 120, 100, &snapshot, 90),
+		"browser session remains valid at exact timeout boundary");
+	Check(!policy.ResolveBrowserSessionDigest(
+		browserDigest, 221, 100, &snapshot, 90) &&
+		policy.SessionCount() == 0,
+		"browser session expires immediately after the timeout boundary");
+}
+
+void TestHlsCapabilities()
+{
+	using namespace ese::web;
+	const std::string csrf = Token('a');
+	const std::string streamA = Stream('1');
+	const std::string streamB = Stream('2');
+	WebAuthPolicy policy;
+	Check(policy.AddSession(10, WebRole::Guest, 0, 100, csrf, Token('b')),
+		"capability owner session must be added");
+	WebHlsCapabilitySnapshot capability;
+	Check(!policy.IssueHlsReadCapability(
+		99, streamA, WebHlsSourceRole::Viewer, 7, Token('c'),
+		100, 1000, capability),
+		"capability cannot bind to a missing owner");
+	Check(!policy.IssueHlsReadCapability(
+		10, Stream('A'), WebHlsSourceRole::Viewer, 7, Token('c'),
+		100, 1000, capability),
+		"capability stream key must be canonical lowercase hex");
+	Check(!policy.IssueHlsReadCapability(
+		10, streamA, WebHlsSourceRole::Viewer, 0, Token('c'),
+		100, 1000, capability),
+		"capability cannot bind generation zero");
+	Check(!policy.IssueHlsReadCapability(
+		10, streamA, static_cast<WebHlsSourceRole>(9), 7, Token('c'),
+		100, 1000, capability),
+		"capability cannot bind an unknown source role");
+	Check(policy.IssueHlsReadCapability(
+		10, streamA, WebHlsSourceRole::Viewer, 7, Token('c'),
+		100, 1000, capability) &&
+		capability.token_digest == Token('c') &&
+		capability.stream_key == streamA &&
+		capability.owner_session_id == 10 &&
+		capability.generation == 7 &&
+		capability.scope == WebCapabilityScope::HlsRead &&
+		capability.source_role == WebHlsSourceRole::Viewer,
+		"issued capability snapshot must preserve the full scope binding");
+	Check(!policy.InspectHlsReadCapability(
+		Token('d'), 7, streamA, 110, 1000),
+		"wrong capability digest must fail Inspect");
+	Check(!policy.InspectHlsReadCapability(
+		Token('c'), 8, streamA, 110, 1000),
+		"wrong path generation must fail Inspect");
+	Check(!policy.InspectHlsReadCapability(
+		Token('c'), 7, streamB, 110, 1000),
+		"wrong path stream must fail Inspect");
+	WebSessionSnapshot owner;
+	Check(policy.GetSession(10, owner) && owner.last_seen_ms == 100,
+		"invalid capability probes must not touch their owner");
+	Check(policy.InspectHlsReadCapability(
+		Token('c'), 7, streamA, 110, 1000),
+		"matching capability must pass Inspect");
+	Check(policy.GetSession(10, owner) && owner.last_seen_ms == 100,
+		"Inspect must not refresh the owner session");
+	Check(policy.CommitHlsReadCapability(
+		Token('c'), streamA, WebHlsSourceRole::Viewer, 7,
+		200, 1000),
+		"matching live role and generation must Commit");
+	Check(policy.GetSession(10, owner) && owner.last_seen_ms == 200,
+		"Commit keeps the owning browser session alive");
+
+	Check(policy.IssueHlsReadCapability(
+		10, streamA, WebHlsSourceRole::Viewer, 7, Token('d'),
+		201, 1000, capability),
+		"role mismatch vector capability must issue");
+	Check(!policy.CommitHlsReadCapability(
+		Token('d'), streamA, WebHlsSourceRole::Broadcast, 7,
+		202, 1000) && policy.HlsCapabilityCount() == 1,
+		"authoritative role mismatch must revoke only the stale capability");
+	Check(policy.IssueHlsReadCapability(
+		10, streamA, WebHlsSourceRole::Viewer, 7, Token('e'),
+		203, 1000, capability),
+		"generation rollover vector capability must issue");
+	Check(!policy.CommitHlsReadCapability(
+		Token('e'), streamA, WebHlsSourceRole::Viewer, 8,
+		204, 1000) && policy.HlsCapabilityCount() == 1,
+		"generation rollover must permanently revoke the stale capability");
+
+	Check(policy.IssueHlsReadCapability(
+		10, streamB, WebHlsSourceRole::Broadcast, 9, Token('f'),
+		300, 0, capability),
+		"absolute TTL vector capability must issue");
+	Check(policy.InspectHlsReadCapability(
+		Token('f'), 9, streamB,
+		300 + WebAuthPolicy::kHlsCapabilityLifetimeMs - 1, 0),
+		"capability remains valid one tick before absolute TTL");
+	Check(!policy.InspectHlsReadCapability(
+		Token('f'), 9, streamB,
+		300 + WebAuthPolicy::kHlsCapabilityLifetimeMs, 0),
+		"capability expires at the exact absolute TTL boundary");
+
+	WebAuthPolicy paused;
+	Check(paused.AddSession(20, WebRole::Guest, 0, 100, csrf, Token('1')) &&
+		paused.IssueHlsReadCapability(
+			20, streamA, WebHlsSourceRole::Viewer, 1, Token('2'),
+			100, 300, capability),
+		"paused-owner vector must initialize");
+	Check(paused.InspectHlsReadCapability(
+		Token('2'), 1, streamA, 400, 300),
+		"owner remains valid at exact browser timeout");
+	Check(paused.GetSession(20, owner) && owner.last_seen_ms == 100,
+		"capability Inspect cannot mask a paused browser");
+	Check(!paused.InspectHlsReadCapability(
+		Token('2'), 1, streamA, 401, 300) &&
+		paused.SessionCount() == 0 && paused.HlsCapabilityCount() == 0,
+		"paused browser expiry revokes all owned capabilities");
+
+	WebAuthPolicy logout;
+	Check(logout.AddSession(30, WebRole::Guest, 0, 10, csrf, Token('3')) &&
+		logout.AddSession(31, WebRole::Guest, 0, 10, Token('4'), Token('5')) &&
+		logout.IssueHlsReadCapability(
+			30, streamA, WebHlsSourceRole::Viewer, 1, Token('6'),
+			10, 1000, capability) &&
+		logout.IssueHlsReadCapability(
+			31, streamB, WebHlsSourceRole::Broadcast, 1, Token('7'),
+			10, 1000, capability),
+		"logout revocation vectors must initialize");
+	Check(logout.RemoveSession(30) && logout.HlsCapabilityCount() == 1 &&
+		!logout.InspectHlsReadCapability(
+			Token('6'), 1, streamA, 11, 1000) &&
+		logout.InspectHlsReadCapability(
+			Token('7'), 1, streamB, 11, 1000),
+		"logout revokes only capabilities owned by that session");
+	logout.RevokeAllHlsCapabilities();
+	Check(logout.HlsCapabilityCount() == 0,
+		"server restart revocation clears every capability");
+
+	WebAuthPolicy bounded;
+	Check(bounded.AddSession(40, WebRole::Guest, 0, 10, csrf, Token('8')),
+		"bounded capability owner must initialize");
+	for (unsigned index = 0;
+		index < WebAuthPolicy::kMaxHlsCapabilitiesPerSession + 1; ++index) {
+		Check(bounded.IssueHlsReadCapability(
+			40, streamA, WebHlsSourceRole::Viewer, 1,
+			IndexedToken(index + 16), 10 + index, 1000, capability),
+			"bounded per-session capability insertion must succeed");
+	}
+	Check(bounded.HlsCapabilityCount() ==
+		WebAuthPolicy::kMaxHlsCapabilitiesPerSession,
+		"per-session capability store must remain bounded");
+	Check(!bounded.InspectHlsReadCapability(
+		IndexedToken(16), 1, streamA, 30, 1000),
+		"per-session bound evicts the oldest capability");
+}
+
+void TestConcurrentCapabilities()
+{
+	using namespace ese::web;
+	constexpr unsigned workerCount = 8;
+	const std::string stream = Stream('a');
+	WebHlsCapabilitySnapshot capability;
+	WebAuthPolicy valid;
+	Check(valid.AddSession(50, WebRole::Guest, 0, 10, Token('b'), Token('c')) &&
+		valid.IssueHlsReadCapability(
+			50, stream, WebHlsSourceRole::Viewer, 5, Token('d'),
+			10, 1000, capability),
+		"concurrent valid capability vector must initialize");
+	std::atomic<unsigned> validCommits{0};
+	std::vector<std::thread> workers;
+	for (unsigned index = 0; index < workerCount; ++index) {
+		workers.emplace_back([&valid, &stream, &validCommits]() {
+			if (valid.InspectHlsReadCapability(
+					Token('d'), 5, stream, 20, 1000) &&
+				valid.CommitHlsReadCapability(
+					Token('d'), stream, WebHlsSourceRole::Viewer, 5,
+					20, 1000))
+				++validCommits;
+		});
+	}
+	for (std::thread& worker : workers)
+		worker.join();
+	Check(validCommits == workerCount,
+		"at least eight concurrent valid GET authorizations must serialize safely");
+
+	WebAuthPolicy raced;
+	Check(raced.AddSession(60, WebRole::Guest, 0, 10, Token('e'), Token('f')) &&
+		raced.IssueHlsReadCapability(
+			60, stream, WebHlsSourceRole::Viewer, 6, Token('1'),
+			10, 1000, capability),
+		"logout race capability vector must initialize");
+	std::atomic<unsigned> ready{0};
+	std::atomic<unsigned> inspections{0};
+	std::atomic<unsigned> commitsAfterLogout{0};
+	std::atomic<bool> release{false};
+	workers.clear();
+	for (unsigned index = 0; index < workerCount; ++index) {
+		workers.emplace_back([
+			&raced, &stream, &ready, &inspections,
+			&commitsAfterLogout, &release]() {
+			if (raced.InspectHlsReadCapability(
+				Token('1'), 6, stream, 20, 1000))
+				++inspections;
+			++ready;
+			while (!release.load())
+				std::this_thread::yield();
+			if (raced.CommitHlsReadCapability(
+				Token('1'), stream, WebHlsSourceRole::Viewer, 6,
+				21, 1000))
+				++commitsAfterLogout;
+		});
+	}
+	while (ready.load() != workerCount)
+		std::this_thread::yield();
+	Check(raced.RemoveSession(60),
+		"logout must linearize after all capability inspections");
+	release = true;
+	for (std::thread& worker : workers)
+		worker.join();
+	Check(inspections == workerCount && commitsAfterLogout == 0 &&
+		raced.HlsCapabilityCount() == 0,
+		"logout wins every Inspect/Commit race before file authorization");
 }
 
 void TestChallenges()
@@ -317,15 +579,19 @@ void TestConcurrentSessions()
 int main()
 {
 	TestSessions();
+	TestBrowserSessionBearer();
+	TestHlsCapabilities();
 	TestChallenges();
 	TestLoginFailures();
 	TestActionLimits();
 	TestConcurrentSessions();
+	TestConcurrentCapabilities();
 	std::string selfTestFailure;
 	Check(ese::web::RunWebAuthPolicySelfTest(selfTestFailure),
 		"production WebAuthPolicy self-test must pass");
-	if (failures != 0) {
-		std::fprintf(stderr, "%d WebAuthPolicy test(s) failed.\n", failures);
+	if (failures.load() != 0) {
+		std::fprintf(
+			stderr, "%d WebAuthPolicy test(s) failed.\n", failures.load());
 		return 1;
 	}
 	std::puts("WebAuthPolicy tests passed.");

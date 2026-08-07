@@ -150,23 +150,15 @@ bool CLiveStreamManager::PinStreamPubkey(const uchar streamKey[16], const uchar 
         return false;
     ese::live::LivePublicKey publicKey;
     memcpy(publicKey.data(), pubkey, publicKey.size());
-    CString hex = HexStreamKey(streamKey);
     const ese::live::LivePinResult result = m_streamSecurity.PinValidatedPublicKey(
         SecurityStreamKeyOf(streamKey), publicKey,
         static_cast<std::uint32_t>(GetTickCount()));
+    LIVE_LOG("PIN", "Stream public-key validation result=%u", static_cast<unsigned>(result));
     if (result == ese::live::LivePinResult::Pinned) {
-        LIVE_LOG("PIN", "PIN pubkey for stream %s", (LPCSTR)CStringA(hex));
         return true;
     }
     if (result == ese::live::LivePinResult::AlreadyPinned)
         return true;
-    if (result == ese::live::LivePinResult::Conflict) {
-        LIVE_LOG("PIN", "REJECT pubkey switch for stream %s — keeping original",
-            (LPCSTR)CStringA(hex));
-    } else {
-        LIVE_LOG("PIN", "REJECT pubkey for stream %s reason=%u",
-            (LPCSTR)CStringA(hex), static_cast<unsigned>(result));
-    }
     return false;
 }
 
@@ -314,7 +306,7 @@ bool CLiveStreamManager::StartBroadcast(const CString& title, const CString& cat
     char keyHex[33] = {0};
     for (int i = 0; i < 16; ++i)
         sprintf_s(keyHex + i*2, 3, "%02x", m_broadcastStreamInfo.streamKey[i]);
-    LIVE_LOG("MGR", "StartBroadcast key=%s title=\"%S\" %ukbps", keyHex, (LPCWSTR)title, bitrate);
+    LIVE_LOG("MGR", "StartBroadcast title=\"%S\" %ukbps", (LPCWSTR)title, bitrate);
 
     // DISC-S04: persist the active streamKey so a subsequent eMule startup
     // (after brutal kill / OS crash / power loss) can publish a tombstone
@@ -459,7 +451,6 @@ void CLiveStreamManager::GetBroadcastLivenessStatus(bool& outFFmpegRunning, int&
 bool CLiveStreamManager::RunIsolatedLoopbackSelfTest(CString& outFailure)
 {
     outFailure.Empty();
-
     Packet* packet = NULL;
     LiveStreamInfo sourceInfo;
     uint32 seqNum = 0;
@@ -631,8 +622,9 @@ bool CLiveStreamManager::RunIsolatedLoopbackSelfTest(CString& outFailure)
         }
     }
 
+    if (ok) ok = RunHlsReadLeaseSelfTest(sourceInfo.streamKey, outFailure);
     if (ok) {
-        LIVE_LOG("HEADLESS", "Selftest loopback PASS seq=%u bytes=%u (signed ingest + duplicate + tamper + dual-role isolation)",
+        LIVE_LOG("HEADLESS", "Selftest loopback PASS seq=%u bytes=%u (signed ingest + duplicate + tamper + dual-role isolation + real HLS lease)",
             seqNum, (unsigned)expected.size());
     } else {
         LIVE_LOG("HEADLESS", "Selftest loopback FAIL: %S", (LPCWSTR)outFailure);
@@ -799,7 +791,7 @@ bool CLiveStreamManager::JoinStream(const uchar* streamKey, const CString& title
 
     char keyHex[33] = {0};
     for (int i = 0; i < 16; ++i) sprintf_s(keyHex + i*2, 3, "%02x", streamKey[i]);
-    LIVE_LOG("MGR", "JoinStream key=%s title=\"%S\"", keyHex, (LPCWSTR)title);
+    LIVE_LOG("MGR", "JoinStream title=\"%S\"", (LPCWSTR)title);
 
     // Kick off Kad discovery. Three searches:
     //   - "eselive": global browse (every broadcaster publishes here too)
@@ -4840,8 +4832,6 @@ void CLiveStreamManager::BootstrapPingCachedStreams()
         // Inject as a Kad-style discovery result. Reuses the same throttle +
         // validation pipeline (DISC-S06 dial queue, IsGoodIP, dedupe).
         // bitrate=1 sentinel: NOT the DISC-S01 tombstone (==0).
-        LIVE_LOG("BOOTSTRAP", "Cached stream: dial %s:%u for key=%s",
-            (LPCSTR)ipStr, (unsigned)port, (LPCSTR)hex);
         m_kadBridge.OnKadSearchResult(key, _T(""), _T(""),
             ipNet, (uint16)port, /*udpPort*/ 0,
             /*bitrate*/ 1, /*viewerCount*/ 0);

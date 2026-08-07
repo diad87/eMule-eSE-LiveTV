@@ -12,6 +12,8 @@
 #include "Emule.h"
 #include "RelayClient.h"
 
+#include <algorithm>
+
 #include "mbedtls/net_sockets.h"
 #include "mbedtls/ssl_cache.h"
 #include "mbedtls/ssl_ticket.h"
@@ -74,6 +76,118 @@ private:
 	std::unique_ptr<CFile> m_file;
 };
 
+class WebMemoryResponseSource final : public ese::web::IWebResponseSource
+{
+public:
+	WebMemoryResponseSource(
+		std::vector<std::uint8_t>&& bytes)
+		: m_bytes(std::move(bytes))
+	{
+	}
+
+	bool Read(
+		std::uint8_t* destination,
+		std::size_t capacity,
+		std::size_t& bytesRead) override
+	{
+		bytesRead = 0;
+		if (destination == nullptr || capacity == 0u ||
+			m_offset > m_bytes.size())
+			return false;
+		const std::size_t available = m_bytes.size() - m_offset;
+		bytesRead = (std::min)(capacity, available);
+		if (bytesRead != 0u) {
+			memcpy(destination, m_bytes.data() + m_offset, bytesRead);
+			m_offset += bytesRead;
+		}
+		return true;
+	}
+
+private:
+	std::vector<std::uint8_t> m_bytes;
+	std::size_t m_offset = 0;
+};
+
+bool ResolveRequestRoute(
+	CWebSocket& socket,
+	const ese::web::ParsedRequest& request,
+	bool hlsCapabilityNamespace,
+	ese::web::WebRouteMatch& route)
+{
+	ese::web::WebRouteMethod routeMethod = ese::web::WebRouteMethod::Get;
+	switch (request.method) {
+	case ese::web::Method::Get:
+		routeMethod = ese::web::WebRouteMethod::Get;
+		break;
+	case ese::web::Method::Post:
+		routeMethod = ese::web::WebRouteMethod::Post;
+		break;
+	case ese::web::Method::Options:
+		routeMethod = ese::web::WebRouteMethod::Options;
+		break;
+	default:
+		socket.SendReply(
+			hlsCapabilityNamespace
+				? "HTTP/1.1 400 Bad Request\r\n"
+				  "Connection: close\r\nCache-Control: no-store\r\n"
+				  "Referrer-Policy: no-referrer\r\n"
+				  "Content-Length: 0\r\n\r\n"
+				: "HTTP/1.1 400 Bad Request\r\n"
+				  "Connection: close\r\nContent-Length: 0\r\n");
+		socket.Disconnect();
+		return false;
+	}
+	route = ese::web::ResolveWebRoute(routeMethod, request.target);
+	if (route.status == ese::web::WebRouteStatus::Matched)
+		return true;
+	if (route.status == ese::web::WebRouteStatus::MethodNotAllowed) {
+		const char* allowed = "GET, OPTIONS";
+		if (hlsCapabilityNamespace)
+			allowed = "GET";
+		else if (route.route == ese::web::WebRouteId::ClassicPage)
+			allowed = "GET, POST";
+		else if (route.route == ese::web::WebRouteId::StaticAsset)
+			allowed = "GET";
+		CStringA response;
+		response.Format(
+			"HTTP/1.1 405 Method Not Allowed\r\n"
+			"Allow: %s\r\n"
+			"Connection: close\r\n"
+			"%s"
+			"Content-Length: 0\r\n\r\n",
+			allowed,
+			hlsCapabilityNamespace
+				? "Cache-Control: no-store\r\n"
+				  "Referrer-Policy: no-referrer\r\n"
+				: "");
+		socket.SendReply(response);
+	} else if (hlsCapabilityNamespace) {
+		socket.SendReply(
+			"HTTP/1.1 404 Not Found\r\n"
+			"Connection: close\r\n"
+			"Cache-Control: no-store\r\n"
+			"Referrer-Policy: no-referrer\r\n"
+			"Content-Length: 0\r\n\r\n");
+	} else {
+		socket.SendReply(
+			"HTTP/1.1 404 Not Found\r\n"
+			"Connection: close\r\n"
+			"Content-Length: 0\r\n");
+	}
+	socket.Disconnect();
+	return false;
+}
+
+void SendWebFileError(
+	CWebSocket& socket,
+	ese::web::WebFileErrorStatus status,
+	const ese::web::WebFileResponseOptions& options)
+{
+	const std::string response =
+		ese::web::WebStaticAssets::BuildErrorResponse(status, options);
+	socket.SendData(response.data(), static_cast<DWORD>(response.size()));
+}
+
 } // namespace
 
 static void RejectMalformedRequest(CWebSocket *socket, ese::web::ParseStatus status)
@@ -114,51 +228,12 @@ typedef struct
 
 void CWebSocket::OnRequestReceived(const ese::web::ParsedRequest &request, const char *pData, DWORD dwDataLen, const in_addr inad)
 {
-	ese::web::WebRouteMethod routeMethod = ese::web::WebRouteMethod::Get;
-	switch (request.method) {
-	case ese::web::Method::Get:
-		routeMethod = ese::web::WebRouteMethod::Get;
-		break;
-	case ese::web::Method::Post:
-		routeMethod = ese::web::WebRouteMethod::Post;
-		break;
-	case ese::web::Method::Options:
-		routeMethod = ese::web::WebRouteMethod::Options;
-		break;
-	default:
-		SendReply(
-			"HTTP/1.1 400 Bad Request\r\n"
-			"Connection: close\r\n"
-			"Content-Length: 0\r\n");
-		Disconnect();
+	const bool hlsCapabilityNamespace =
+		request.target.compare(0, 3, "/h/") == 0;
+	ese::web::WebRouteMatch route;
+	if (!ResolveRequestRoute(
+			*this, request, hlsCapabilityNamespace, route))
 		return;
-	}
-	const ese::web::WebRouteMatch route =
-		ese::web::ResolveWebRoute(routeMethod, request.target);
-	if (route.status != ese::web::WebRouteStatus::Matched) {
-		if (route.status == ese::web::WebRouteStatus::MethodNotAllowed) {
-			const char* allowed = "GET, OPTIONS";
-			if (route.route == ese::web::WebRouteId::ClassicPage)
-				allowed = "GET, POST";
-			else if (route.route == ese::web::WebRouteId::StaticAsset)
-				allowed = "GET";
-			CStringA response;
-			response.Format(
-				"HTTP/1.1 405 Method Not Allowed\r\n"
-				"Allow: %s\r\n"
-				"Connection: close\r\n"
-				"Content-Length: 0\r\n",
-				allowed);
-			SendReply(response);
-		} else {
-			SendReply(
-				"HTTP/1.1 404 Not Found\r\n"
-				"Connection: close\r\n"
-				"Content-Length: 0\r\n");
-		}
-		Disconnect();
-		return;
-	}
 
 	CStringA sURL(request.target.data(), static_cast<int>(request.target.size()));
 	if (request.method == ese::web::Method::Post) {
@@ -176,6 +251,8 @@ void CWebSocket::OnRequestReceived(const ese::web::ParsedRequest &request, const
 	}
 	Data.webRoute = route.route;
 	bool rangeSeen = false;
+	bool browserSessionCookieSeen = false;
+	bool browserSessionCookieInvalid = false;
 	std::string collectedRange;
 	for (const ese::web::HeaderField& header : request.headers) {
 		if (header.name == "x-csrf-token") {
@@ -196,7 +273,35 @@ void CWebSocket::OnRequestReceived(const ese::web::ParsedRequest &request, const
 				collectedRange,
 				rangeSeen,
 				header.value);
+		} else if (header.name == "cookie") {
+			std::string browserToken;
+			const ese::web::CookieStatus status = ese::web::GetCookieValue(
+				header.value, "eSEWebSession", browserToken);
+			if (status == ese::web::CookieStatus::Ok) {
+				if (browserSessionCookieSeen)
+					browserSessionCookieInvalid = true;
+				else {
+					browserSessionCookieSeen = true;
+					Data.sBrowserSessionToken = CStringA(
+						browserToken.data(), static_cast<int>(browserToken.size()));
+				}
+			} else if (status != ese::web::CookieStatus::NotFound) {
+				browserSessionCookieInvalid = true;
+			}
 		}
+	}
+	if (browserSessionCookieInvalid) {
+		SendReply(
+			hlsCapabilityNamespace
+				? "HTTP/1.1 400 Bad Request\r\n"
+				  "Connection: close\r\nCache-Control: no-store\r\n"
+				  "Referrer-Policy: no-referrer\r\n"
+				  "Content-Length: 0\r\n\r\n"
+				: "HTTP/1.1 400 Bad Request\r\n"
+				  "Connection: close\r\n"
+				  "Content-Length: 0\r\n\r\n");
+		Disconnect();
+		return;
 	}
 	Data.sRange = CStringA(
 		collectedRange.data(),
@@ -204,6 +309,7 @@ void CWebSocket::OnRequestReceived(const ese::web::ParsedRequest &request, const
 	Data.pThis = (void*)m_pParent;
 	Data.inadr = inad;
 	Data.pSocket = this;
+	Data.bSecureTransport = thePrefs.GetWebUseHttps();
 	// CORS preflight is available only for a registered live route. Unknown
 	// method/route pairs have already failed closed in WebRouteTable.
 	if (route.handler == ese::web::WebHandler::CorsPreflight) {
@@ -425,6 +531,122 @@ bool CWebSocket::SendFile(
 	return m_bValid;
 }
 
+bool CWebSocket::PrepareBufferedFileResponse(
+	const CString& filePath,
+	const CStringA& publicPath,
+	const CStringA& rangeHeader,
+	const ese::web::WebFileResponseOptions& options,
+	ULONGLONG maximumBytes,
+	bool allowConcurrentWrite,
+	bool allowEmpty,
+	ese::web::WebPreparedFileResponse& prepared)
+{
+	auto fail = [&prepared, &options](
+			ese::web::WebFileErrorStatus status) {
+		prepared = ese::web::WebPreparedFileResponse();
+		prepared.plan.statusCode = static_cast<int>(status);
+		prepared.plan.headers =
+			ese::web::WebStaticAssets::BuildErrorResponse(status, options);
+		return prepared.Ready();
+	};
+	prepared = ese::web::WebPreparedFileResponse();
+	const ULONGLONG hardMaximum =
+		ese::web::WebPreparedFileResponse::kMaximumBodyBytes;
+	const ULONGLONG effectiveMaximum = maximumBytes == 0u
+		? hardMaximum : (std::min)(maximumBytes, hardMaximum);
+	std::unique_ptr<CFile> file;
+	try {
+		file = std::make_unique<CFile>();
+	} catch (...) {
+		return fail(ese::web::WebFileErrorStatus::InternalServerError);
+	}
+	if (!file->Open(
+			filePath,
+			CFile::modeRead |
+				(allowConcurrentWrite
+					? CFile::shareDenyNone
+					: CFile::shareDenyWrite) |
+				CFile::typeBinary)) {
+		return fail(ese::web::WebFileErrorStatus::NotFound);
+	}
+	ULONGLONG representationSize = 0;
+	try {
+		representationSize = file->GetLength();
+	} catch (...) {
+		return fail(ese::web::WebFileErrorStatus::InternalServerError);
+	}
+	if (representationSize > effectiveMaximum ||
+		(!allowEmpty && representationSize == 0u)) {
+		return fail(ese::web::WebFileErrorStatus::Forbidden);
+	}
+	try {
+		prepared.plan = ese::web::WebStaticAssets::PlanResponse(
+			std::string((LPCSTR)publicPath, publicPath.GetLength()),
+			std::string((LPCSTR)rangeHeader, rangeHeader.GetLength()),
+			static_cast<std::uint64_t>(representationSize), options);
+		if (!prepared.plan.IsSuccess() || prepared.plan.length == 0u)
+			return prepared.Ready();
+		if (prepared.plan.length > hardMaximum)
+			return fail(ese::web::WebFileErrorStatus::Forbidden);
+		prepared.bodyReservation =
+			ese::web::WebStaticAssets::ReservePreparedBody(
+				prepared.plan.length);
+		if (!prepared.bodyReservation)
+			return fail(ese::web::WebFileErrorStatus::ServiceUnavailable);
+		prepared.body.resize(
+			static_cast<std::size_t>(prepared.plan.length));
+		if (file->Seek(
+				static_cast<LONGLONG>(prepared.plan.offset), CFile::begin) !=
+				prepared.plan.offset) {
+			return fail(ese::web::WebFileErrorStatus::InternalServerError);
+		}
+		std::size_t total = 0;
+		while (total < prepared.body.size()) {
+			const std::size_t remaining = prepared.body.size() - total;
+			const UINT requested = static_cast<UINT>(
+				std::min<std::size_t>(remaining, UINT_MAX));
+			const UINT read = file->Read(prepared.body.data() + total, requested);
+			if (read == 0u)
+				return fail(ese::web::WebFileErrorStatus::InternalServerError);
+			total += read;
+		}
+	} catch (...) {
+		return fail(ese::web::WebFileErrorStatus::InternalServerError);
+	}
+	return prepared.Ready();
+}
+
+bool CWebSocket::SendPreparedFileResponse(
+	ese::web::WebPreparedFileResponse&& prepared)
+{
+	if (!prepared.Ready())
+		return false;
+	const std::uint64_t bodySize = prepared.body.size();
+	std::unique_ptr<ese::web::IWebResponseSource> source;
+	if (bodySize != 0u) {
+		try {
+			source.reset(new WebMemoryResponseSource(
+				std::move(prepared.body)));
+		} catch (...) {
+			return false;
+		}
+	}
+	SendData(
+		prepared.plan.headers.data(),
+		static_cast<DWORD>(prepared.plan.headers.size()));
+	if (!m_bValid)
+		return false;
+	if (source && !m_response.AttachSource(
+			std::move(source), bodySize,
+			std::move(prepared.bodyReservation))) {
+		m_bValid = false;
+		return false;
+	}
+	if (source || m_response.Pending())
+		FlushResponseQueue();
+	return m_bValid;
+}
+
 void CWebSocket::SendFileResponse(
 	const CString& filePath,
 	const CStringA& publicPath,
@@ -438,9 +660,8 @@ void CWebSocket::SendFileResponse(
 	try {
 		file = std::make_unique<CFile>();
 	} catch (...) {
-		SendReply(
-			"HTTP/1.1 500 Internal Server Error\r\n"
-			"Connection: close\r\nContent-Length: 0\r\n");
+		SendWebFileError(
+			*this, ese::web::WebFileErrorStatus::InternalServerError, options);
 		return;
 	}
 	if (!file->Open(
@@ -450,9 +671,8 @@ void CWebSocket::SendFileResponse(
 				? CFile::shareDenyNone
 				: CFile::shareDenyWrite) |
 			CFile::typeBinary)) {
-		SendReply(
-			"HTTP/1.1 404 Not Found\r\n"
-			"Connection: close\r\nContent-Length: 0\r\n");
+		SendWebFileError(
+			*this, ese::web::WebFileErrorStatus::NotFound, options);
 		return;
 	}
 
@@ -460,16 +680,14 @@ void CWebSocket::SendFileResponse(
 	try {
 		representationSize = file->GetLength();
 	} catch (...) {
-		SendReply(
-			"HTTP/1.1 500 Internal Server Error\r\n"
-			"Connection: close\r\nContent-Length: 0\r\n");
+		SendWebFileError(
+			*this, ese::web::WebFileErrorStatus::InternalServerError, options);
 		return;
 	}
 	if ((maximumBytes != 0u && representationSize > maximumBytes) ||
 		(!allowEmpty && representationSize == 0u)) {
-		SendReply(
-			"HTTP/1.1 403 Forbidden\r\n"
-			"Connection: close\r\nContent-Length: 0\r\n");
+		SendWebFileError(
+			*this, ese::web::WebFileErrorStatus::Forbidden, options);
 		return;
 	}
 
@@ -542,6 +760,47 @@ void CWebSocket::Disconnect()
 	}
 }
 
+static bool SetupWebSocketTls(
+	SOCKET& socket,
+	HANDLE eventHandle,
+	DWORD workerStartTick,
+	mbedtls_ssl_context& ssl)
+{
+	if (!thePrefs.GetWebUseHttps())
+		return true;
+	mbedtls_ssl_init(&ssl);
+	int result = mbedtls_ssl_setup(&ssl, &conf);
+	if (result)
+		return false;
+	mbedtls_ssl_set_bio(
+		&ssl, static_cast<void*>(&socket),
+		mbedtls_net_send, mbedtls_net_recv, NULL);
+	while ((result = mbedtls_ssl_handshake(&ssl)) != 0) {
+		if (result != MBEDTLS_ERR_SSL_WANT_READ &&
+			result != MBEDTLS_ERR_SSL_WANT_WRITE) {
+			DebugLogWarning(
+				_T("Web Interface handshake failed: %s"),
+				(LPCTSTR)SSLerror(result));
+			return false;
+		}
+		if (::GetTickCount() - workerStartTick >
+			WEBSOCKET_MAX_LIFETIME_MS)
+			return false;
+		const DWORD waitResult = ::WaitForSingleObject(
+			eventHandle, WEBSOCKET_WAIT_SLICE_MS);
+		if (waitResult == WAIT_FAILED)
+			return false;
+		if (waitResult == WAIT_OBJECT_0) {
+			WSANETWORKEVENTS handshakeEvents;
+			if (WSAEnumNetworkEvents(
+					socket, NULL, &handshakeEvents) ||
+				(handshakeEvents.lNetworkEvents & FD_CLOSE))
+				return false;
+		}
+	}
+	return true;
+}
+
 UINT AFX_CDECL WebSocketAcceptedFunc(LPVOID pD)
 {
 	DbgSetThreadName("WebSocketAccepted");
@@ -584,36 +843,9 @@ UINT AFX_CDECL WebSocketAcceptedFunc(LPVOID pD)
 			// below don't jump into the scope of an initialized variable.
 			const DWORD dwWorkerStartTick = ::GetTickCount();
 
-			if (thePrefs.GetWebUseHttps()) {
-				mbedtls_ssl_init(&ssl);
-				int ret = mbedtls_ssl_setup(&ssl, &conf);
-				if (ret)
-					goto thread_exit;
-				mbedtls_ssl_set_bio(&ssl, (void*)&hSocket, mbedtls_net_send, mbedtls_net_recv, NULL);
-				while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
-					if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
-						DebugLogWarning(_T("Web Interface handshake failed: %s"), (LPCTSTR)SSLerror(ret));
-						goto thread_exit;
-					}
-					if (::GetTickCount() - dwWorkerStartTick >
-						WEBSOCKET_MAX_LIFETIME_MS)
-						goto thread_exit;
-					const DWORD waitResult = ::WaitForSingleObject(
-						hEvent,
-						WEBSOCKET_WAIT_SLICE_MS);
-					if (waitResult == WAIT_FAILED)
-						goto thread_exit;
-					if (waitResult == WAIT_OBJECT_0) {
-						WSANETWORKEVENTS handshakeEvents;
-						if (WSAEnumNetworkEvents(
-							hSocket,
-							NULL,
-							&handshakeEvents) ||
-							(handshakeEvents.lNetworkEvents & FD_CLOSE))
-							goto thread_exit;
-					}
-				}
-			}
+			if (!SetupWebSocketTls(
+					hSocket, hEvent, dwWorkerStartTick, ssl))
+				goto thread_exit;
 			HANDLE pWait[] = {hEvent, s_hTerminate};
 
 			for (;;) {

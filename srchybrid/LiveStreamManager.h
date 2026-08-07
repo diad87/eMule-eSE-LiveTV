@@ -15,6 +15,7 @@
 #include "LiveMeshManager.h"
 #include "LiveBroadcastSession.h"
 #include "LiveViewerSession.h"
+#include "LiveHlsReadLease.h"
 #include "LivePeerSet.h"
 #include "LiveDebugLog.h"        // V2-S05: LatencyHistogram
 #include "RTMPIngest.h"
@@ -340,21 +341,16 @@ public:
     // Returns true and fills outPubkey if a pin exists for streamKey.
     bool GetPinnedPubkey(const uchar streamKey[16], uchar outPubkey[32]) const;
 
-    // Coherent key snapshots for worker threads and UI consumers.
-    bool CopyBroadcastStreamKey(uchar outKey[16]) const {
-        if (outKey == NULL) return false;
-        CSingleLock lock(&m_lock, TRUE);
-        if (!m_broadcastSession.IsActive()) return false;
-        memcpy(outKey, m_broadcastStreamInfo.streamKey, 16);
-        return true;
-    }
-    bool CopyViewerStreamKey(uchar outKey[16]) const {
-        if (outKey == NULL) return false;
-        CSingleLock lock(&m_lock, TRUE);
-        if (!m_viewerSession.IsActive()) return false;
-        memcpy(outKey, m_streamInfo.streamKey, 16);
-        return true;
-    }
+    // Coherent worker snapshots and exact HLS read lease.
+    bool CopyBroadcastStreamKey(uchar outKey[16]) const;
+    bool CopyViewerStreamKey(uchar outKey[16]) const;
+    bool CopyHlsSourceSnapshot(
+        const uchar streamKey[16], LiveHlsSourceSnapshot& out) const;
+    // Callback: policy Commit + bounded local capture; no manager/socket calls.
+    LiveHlsReadExecution ExecuteHlsReadIfCurrent(
+        const LiveHlsSourceSnapshot& expected,
+        LiveHlsReadPrepareCallback prepare,
+        void* context);
     uint32 GetBroadcastBitrate() const { return m_broadcastStreamInfo.bitrate; }
     uint32 GetBroadcastStartTime() const { return m_broadcastStreamInfo.startedAt; }
     bool IsEmergencyMode() const { return m_streamRecovery.IsEmergencyMode(); }
@@ -372,10 +368,8 @@ public:
     // watchdog and is only called for web-originated joins (OnLiveWebJoin)
     // so MFC/VLC-from-disk flows, which produce no HTTP fetches, are never
     // auto-left. Process() leaves the stream after 60 s of player silence.
-    void NotePlayerFetch()
-        { m_viewerSession.NotePlayerFetch(static_cast<std::uint32_t>(::GetTickCount())); }
-    void MarkWebPlayerSession()
-        { m_viewerSession.MarkWebPlayerSession(static_cast<std::uint32_t>(::GetTickCount())); }
+    void NotePlayerFetch();
+    void MarkWebPlayerSession();
 
     // Thread-safe debug snapshot (takes m_lock, copies all state)
     LiveDebugSnapshot BuildDebugSnapshot() const;
@@ -439,6 +433,10 @@ public:
     int    EffectiveMaxConcurrentUploads() const;   // S13 + S16 broadcaster cap
 
 private:
+    bool RunHlsReadLeaseSelfTest(const uchar streamKey[16], CString& outFailure);
+    bool CopyHlsSourceSnapshotLocked(
+        const uchar streamKey[16], LiveHlsSourceSnapshot& out) const;
+
     // Stream state
     ese::live::LiveBroadcastSession m_broadcastSession;
     ese::live::LiveViewerSession    m_viewerSession;

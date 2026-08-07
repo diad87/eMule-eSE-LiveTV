@@ -8,6 +8,7 @@ namespace ese {
 namespace web {
 struct ParsedRequest;
 struct WebFileResponseOptions;
+struct WebPreparedFileResponse;
 }
 }
 
@@ -48,6 +49,17 @@ public:
 		ULONGLONG maximumBytes,
 		bool allowConcurrentWrite,
 		bool allowEmpty);
+	bool PrepareBufferedFileResponse(
+		const CString& filePath,
+		const CStringA& publicPath,
+		const CStringA& rangeHeader,
+		const ese::web::WebFileResponseOptions& options,
+		ULONGLONG maximumBytes,
+		bool allowConcurrentWrite,
+		bool allowEmpty,
+		ese::web::WebPreparedFileResponse& prepared);
+	bool SendPreparedFileResponse(
+		ese::web::WebPreparedFileResponse&& prepared);
 	void FlushResponseQueue();
 	void SendReply(LPCSTR szReply);
 	void Disconnect();

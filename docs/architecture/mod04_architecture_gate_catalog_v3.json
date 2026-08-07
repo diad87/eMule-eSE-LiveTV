@@ -1,0 +1,51 @@
+{
+  "schema": "ese.mod04.architecture-gate-catalog/v3",
+  "status": "PRE-A",
+  "scope": "Closed W12 and reach-observability gate catalogue; v1 baseline and v2 catalogue remain binding historical inputs.",
+  "supersedes": ["docs/architecture/mod04_architecture_gate_baseline_v1.json", "docs/architecture/mod04_architecture_gate_catalog_v2.json"],
+  "supersedes_for_card": "M2A-W12",
+  "change_scope": "W12 plus reviewed reach-status and advertised-bind-port PRE-A/A/H/R gates, not a global MOD-0.4 replacement.",
+  "historical_evidence": {
+    "v1_path": "docs/architecture/mod04_architecture_gate_baseline_v1.json",
+    "v1_sha256": "6d5708dcd3ac5cc7379918e4e5e4b9296a624a77c3bf20861e094a62c537a6e0",
+    "v2_path": "docs/architecture/mod04_architecture_gate_catalog_v2.json"
+  },
+  "catalogue_source": "docs/architecture/mod52_migration_matrix_v2.json",
+  "card_prerequisites": ["closed CARD_PATHS", "matrix and ownership contracts parse", "Sol independent PRE-A review", "all W12-COV PRE-A gates pass"],
+  "additional_modules": ["WebServerFacade", "WebHlsCapabilityController"],
+  "approved_header_only_ports": {"entries": [], "policy": "LiveHlsReadLease is a governed h/cpp partition."},
+  "coordinator_limits": {"WebServer": {"combined_add_max": 500, "combined_delete_min": 120, "combined_net_max": 300, "cpp_target_loc_max": 2100, "cpp_hard_loc_max": 3500, "header_hard_loc_max": 300, "new_mutable_fields": 0}, "LiveStreamManager": {"header_hard_loc_max": 700, "cpp_growth_max": 0}},
+  "coverage_requirements": ["card:W12", "module:WebServerFacade", "binding:WebServerFacade", "module:WebHlsCapabilityController", "port:LiveHlsReadLease", "finding:W7-SEC-02", "contract:W12-HLS-SECURITY", "endpoint:reach-status", "snapshot:direct-reachability", "security:reach-status-boundary", "contract:advertised-bind-ports"],
+  "coverage_map": {
+    "card:W12": ["W12-COV-01", "W12-COV-02", "W12-COV-03", "W12-COV-04", "W12-COV-05", "W12-COV-06", "W12-COV-07", "W12-COV-08", "W12-COV-09", "W12-COV-10", "W12-COV-11"],
+    "module:WebServerFacade": ["W12-COV-01", "W12-COV-05", "W12-COV-07"],
+    "binding:WebServerFacade": ["W12-COV-06"],
+    "module:WebHlsCapabilityController": ["W12-COV-03"],
+    "port:LiveHlsReadLease": ["W12-COV-04"],
+    "finding:W7-SEC-02": ["W12-COV-01", "W12-COV-07"],
+    "contract:W12-HLS-SECURITY": ["W12-COV-01", "W12-COV-02", "W12-COV-03", "W12-COV-04", "W12-COV-05", "W12-COV-06", "W12-COV-07"],
+    "endpoint:reach-status": ["W12-COV-08", "W12-COV-09", "W12-COV-10"],
+    "snapshot:direct-reachability": ["W12-COV-08", "W12-COV-09"],
+    "security:reach-status-boundary": ["W12-COV-09", "W12-COV-10"],
+    "contract:advertised-bind-ports": ["W12-COV-11"]
+  },
+  "gates": [
+    {"id": "W12-COV-01", "stage": "PRE-A", "assertion": "digest-only cookie authentication; numeric ses and remote /s locator never authenticate", "evidence": "native + structural tests"},
+    {"id": "W12-COV-02", "stage": "PRE-A", "assertion": "only canonical producer HLS names route; malformed /h fails closed before static assets", "evidence": "native + structural tests"},
+    {"id": "W12-COV-03", "stage": "PRE-A", "assertion": "capability binds owner, scope, role, stream and generation; revocation and expiry reject with zero IO/Note", "evidence": "native concurrency tests"},
+    {"id": "W12-COV-04", "stage": "PRE-A", "assertion": "exact generation lease prevents rollover/role reuse TOCTOU and preserves Broadcast-first", "evidence": "native controlled transition test"},
+    {"id": "W12-COV-05", "stage": "PRE-A", "assertion": "per-response and aggregate buffer caps reject saturation with hardened 503 and release on every completion path", "evidence": "native response-lifetime tests"},
+    {"id": "W12-COV-06", "stage": "A/H", "assertion": "closed CARD_PATHS, LOC/field budgets, dependency limits, no SCC growth and no oversized-function regression", "evidence": "MOD-5.2 ratchet + clean build"},
+    {"id": "W12-COV-07", "stage": "R", "assertion": "final binary has no secret/log leak and real browser sends no Referer on protected media request", "evidence": "A-hash-bound collector v3, proxy-derived CDP-shaped capture, normalized trace and canary scan; only five R artifacts persist"},
+    {"id": "W12-COV-08", "stage": "PRE-A", "assertion": "the diagnostics adapter serializes the frozen direct-reachability snapshot without adding reachability or wire behavior", "evidence": "source-bound Node regression and route inventory"},
+    {"id": "W12-COV-09", "stage": "PRE-A", "assertion": "main-thread snapshot formatting is published through a thread-safe string cache and omits nonce, full address and monotonic timestamp", "evidence": "source-bound Node privacy and concurrency regression"},
+    {"id": "W12-COV-10", "stage": "PRE-A", "assertion": "the exact read-only reach-status route is admin authorized, deny-listed from remote live/holepunch access, query-stable and non-cacheable", "evidence": "MOD-2.3 inventory plus native and Node route/auth regressions"},
+    {"id": "W12-COV-11", "stage": "PRE-A", "assertion": "Kad6 source-bind publication uses family-correct advertised TCP and UDP ports and fails closed when either is unavailable", "evidence": "K03 source-bound regression and direct-port audit"}
+  ],
+  "stop_conditions": [
+    "Any P0/P1 review finding or failed coverage ID returns the card to PRE-A.",
+    "Any changed or unlisted CARD_PATH requires governance revision before implementation.",
+    "A production edit after A invalidates A and H evidence."
+  ],
+  "approval": "All eleven IDs are mandatory; source inspection alone cannot satisfy W12-COV-07."
+}

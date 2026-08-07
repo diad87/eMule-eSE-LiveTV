@@ -902,6 +902,12 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
+    <ClCompile Include="WebHlsCapabilityController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="WebRouteTable.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
@@ -994,6 +1000,12 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
+    <ClCompile Include="WebServerFacade.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="WebSharedController.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
@@ -1080,6 +1092,12 @@
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <ClCompile Include="LiveStreamManager.cpp" />
+    <ClCompile Include="LiveHlsReadLease.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="RTMPIngest.cpp" />
     <ClCompile Include="ListViewSearchDlg.cpp" />
     <ClCompile Include="ListViewWalkerPropertySheet.cpp" />
@@ -1481,6 +1499,7 @@
     <ClInclude Include="LiveTunnelMetrics.h" />
     <ClInclude Include="WebRequestParser.h" />
     <ClInclude Include="WebAuthPolicy.h" />
+    <ClInclude Include="WebHlsCapabilityController.h" />
     <ClInclude Include="WebRouteTable.h" />
     <ClInclude Include="WebRequestDispatch.h" />
     <ClInclude Include="WebTemplateRenderer.h" />
@@ -1498,6 +1517,7 @@
     <ClInclude Include="WebLiveApiSettingsController.h" />
     <ClInclude Include="WebLiveApiDiagnosticsController.h" />
     <ClInclude Include="WebLiveApiLegacyController.h" />
+    <ClInclude Include="WebServerFacade.h" />
     <ClInclude Include="WebSharedController.h" />
     <ClInclude Include="WebStaticAssets.h" />
     <ClInclude Include="WebDiagnostics.h" />
@@ -1521,6 +1541,7 @@
     <ClInclude Include="LiveProtocol.h" />
     <ClInclude Include="LiveBroadcastSession.h" />
     <ClInclude Include="LiveViewerSession.h" />
+    <ClInclude Include="LiveHlsReadLease.h" />
     <ClInclude Include="LivePeerSet.h" />
     <ClInclude Include="LiveStreamDlg.h" />
     <ClInclude Include="LiveStreamManager.h" />

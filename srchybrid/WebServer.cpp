@@ -11,6 +11,8 @@
 #include "OtherFunctions.h"
 #include "WebApiSerializer.h"
 #include "WebDiagnostics.h"
+#include "WebHlsCapabilityController.h"
+#include "WebServerFacade.h"
 #include "M2ABindingPort.h"
 #include "WebRequestParser.h"
 #include "WebRouteTable.h"
@@ -67,6 +69,7 @@
 #include "KadKeepalive.h"      // R.2: keepalive control + stats for /api/keepalive and /api/status
 #include "LiveBuddyRelay.h"    // R.3: relay accept/egress/viewer-connect for /api/relay/*
 #include "RelayClient.h"       // P3: read-only KRP state cache; no worker-thread eMule access
+#include "DirectReachabilityManager.h"
 #include "QArray.h"
 #include "TransferDlg.h"
 #include "UploadQueue.h"
@@ -287,7 +290,7 @@ struct W10SettingsResponse { unsigned status = 200; std::string reason = "OK", h
 struct W10SettingsPort { void* context = nullptr; bool (*read_netlab)(void*, W10NetlabSnapshot&) = nullptr; bool (*netlab_consent_accepted)(void*) = nullptr; void (*apply_netlab)(void*, bool) = nullptr; void (*refresh_preview_caps)(void*) = nullptr; void (*request_keepalive)(void*, bool) = nullptr; bool (*persist_disable_and_verify)(void*) = nullptr; bool (*save_preferences)(void*) = nullptr; void (*post_krp_event)(void*) = nullptr; bool (*read_privacy_policy)(void*, W10PrivacySnapshot&) = nullptr; void (*set_privacy_mode)(void*, const std::string&) = nullptr; void (*set_fallback)(void*, const std::string&) = nullptr; void (*add_sensitive)(void*, const std::string&) = nullptr; void (*remove_sensitive)(void*, const std::string&) = nullptr; void (*mirror_privacy_preferences)(void*) = nullptr; bool (*read_privacy_runtime)(void*, W10PrivacySnapshot&) = nullptr; bool test_hooks_enabled = false; void (*set_edge_sabotage)(void*, bool, int, std::uint32_t) = nullptr; };
 bool RunW10LiveSettingsApi(const W10SettingsRequest&, const W10SettingsPort&, W10SettingsResponse&); bool RunW10LiveSettingsCharacterizationSelfTest(std::string& failure);
 namespace ese { namespace web {
-enum class W10DiagnosticsOperation { KrpStatus, Preflight, Metrics, Log, Debug, Ipv6Echo };
+enum class W10DiagnosticsOperation { KrpStatus, Preflight, Metrics, Log, Debug, Ipv6Echo, ReachStatus };
 struct W10DiagnosticsRequest { W10DiagnosticsOperation operation = W10DiagnosticsOperation::KrpStatus; int log_n = 100, tcp_port = 0, udp_port = 0, timeout_ms = 5000; std::string target, nonce; };
 struct W10Ipv6EchoResult { bool success = false; std::string error, target, nonce; int tcp_port = 0, udp_port = 0, tcp_error = 0, udp_error = 0; std::uint32_t tcp_bytes = 0, udp_bytes = 0; };
 struct W10PreflightSnapshot { bool kad_connected = false, high_id = false, kad_firewalled = false, ed2k_lowid = false, firewall_checking = false, ffmpeg_found = false; std::uint32_t max_upload_kbs = 0; std::uint16_t port = 0; std::string public_ip, public_ip_v6, ffmpeg_path; };
@@ -295,7 +298,7 @@ struct W10MetricsSnapshot { long chunks_received = 0, chunks_requested = 0, chun
 struct W10DebugPeer { std::string ip; std::uint16_t port = 0; std::int64_t level = 0, fail_count = 0, response_percent = 0; std::uint32_t rtt_ms = 0; };
 struct W10DebugSnapshot { bool available = false, broadcasting = false, viewing = false, emergency_mode = false, kad_connected = false; std::uint32_t uptime_ms = 0, now_ms = 0, last_publish_time = 0, last_search_time = 0, last_result_time = 0, last_result_ip = 0, last_chunk_received_at = 0, hls_segments_written = 0, hls_playlist_refreshes = 0, kad_publishes = 0, kad_searches = 0, kad_results_accepted = 0, kad_results_rejected = 0, source_dial_attempts = 0, subscribe_sent = 0, subscribe_accepted = 0, chunks_requested = 0, chunks_received = 0, chunks_missing = 0, duplicate_chunks_received = 0, requests_suppressed_inflight = 0, peer_disconnects = 0, skipped_initial_pushes = 0, subscribes_rate_limited = 0, requests_rate_limited = 0, ends_rejected_no_auth = 0, tombstones_evicted = 0, oldest_sequence = 0, newest_sequence = 0; std::uint64_t total_redistributed = 0; std::uint16_t last_result_port = 0, chunk_bitmap = 0; std::int64_t known_streams = 0, known_streams_clean = 0, known_streams_legacy = 0, view_peers = 0, broadcast_peers = 0, mesh_peers = 0, pending_requests = 0, chunks_served = 0, super_seeders = 0, middle_peers = 0, leaf_peers = 0, chunk_count = 0, missing_chunks = 0, max_capacity = 15, segment_duration_seconds = 2; std::vector<W10DebugPeer> peer_detail; };
 struct W10DiagnosticsResponse { std::string header, body; };
-struct W10DiagnosticsPort { void* context = nullptr; bool (*read_krp_json)(void*, std::string&) = nullptr; bool (*read_preflight)(void*, W10PreflightSnapshot&) = nullptr; bool (*read_metrics)(void*, W10MetricsSnapshot&) = nullptr; void (*read_percentiles)(void*, std::uint32_t&, std::uint32_t&, std::uint32_t&) = nullptr; std::uint32_t (*read_latency_mean)(void*) = nullptr; int (*read_latency_samples)(void*) = nullptr; bool (*read_kad6_metrics)(void*, std::string&) = nullptr; bool (*read_log)(void*, int, std::vector<std::string>&) = nullptr; bool (*read_debug)(void*, W10DebugSnapshot&) = nullptr; bool (*run_ipv6_echo)(void*, const W10DiagnosticsRequest&, W10Ipv6EchoResult&) = nullptr; };
+struct W10DiagnosticsPort { void* context = nullptr; bool (*read_krp_json)(void*, std::string&) = nullptr; bool (*read_preflight)(void*, W10PreflightSnapshot&) = nullptr; bool (*read_metrics)(void*, W10MetricsSnapshot&) = nullptr; void (*read_percentiles)(void*, std::uint32_t&, std::uint32_t&, std::uint32_t&) = nullptr; std::uint32_t (*read_latency_mean)(void*) = nullptr; int (*read_latency_samples)(void*) = nullptr; bool (*read_kad6_metrics)(void*, std::string&) = nullptr; bool (*read_log)(void*, int, std::vector<std::string>&) = nullptr; bool (*read_debug)(void*, W10DebugSnapshot&) = nullptr; bool (*run_ipv6_echo)(void*, const W10DiagnosticsRequest&, W10Ipv6EchoResult&) = nullptr; bool (*read_reach_json)(void*,std::string&) = nullptr; };
 bool RunW10LiveDiagnosticsApi(const W10DiagnosticsRequest&, const W10DiagnosticsPort&, W10DiagnosticsResponse&); bool RunW10LiveDiagnosticsCharacterizationSelfTest(std::string& failure);
 } }
 namespace ese { namespace web {
@@ -315,24 +318,33 @@ struct W11HardeningSnapshot { std::uint64_t revision = 0, active_leases = 0, act
 struct W11LegacyPort { void* context = nullptr; bool (*resolve_hls)(void*, const W11LegacyRequest&, W11HlsSnapshot&) = nullptr; void (*note_player_fetch)(void*) = nullptr; bool (*read_netlab_report)(void*, W11NetlabReportSnapshot&) = nullptr; bool (*run_tunnel_echo)(void*, const std::vector<std::uint8_t>&, std::vector<std::uint8_t>&) = nullptr; bool (*run_tunnel_ping)(void*, const std::string&, std::string&) = nullptr; bool (*read_circuits)(void*, std::vector<W11CircuitSnapshot>&) = nullptr; bool (*read_peers)(void*, std::vector<W11PeerSnapshot>&, std::size_t&) = nullptr; bool (*request_test_circuit)(void*, unsigned, std::uint32_t&) = nullptr; bool (*consume_release_challenge)(void*, const std::string&) = nullptr; bool (*request_release)(void*, bool, const W11ReleaseEvidence*, std::uint32_t) = nullptr; bool (*read_release)(void*, bool, W11ReleaseSnapshot&) = nullptr; bool (*request_hardening)(void*, const std::string&, bool, std::uint32_t) = nullptr; bool (*read_hardening)(void*, W11HardeningSnapshot&) = nullptr; };
 bool RunW11LiveLegacyApi(const W11LegacyRequest&, const W11LegacyPort&, W11LegacyResponse&); bool BuildW11LegacyStaticFile(const W11StaticFileRequest&, W11LegacyResponse&); bool RunW11LiveLegacyCharacterizationSelfTest(std::string&);
 } }
-namespace eSELive { M2AModuleHandle M2A_BIND_W8_4974C0F316(const M2AParentPort&); void M2A_UNBIND_W8_4974C0F316(const M2AParentPort&); M2AModuleHandle M2A_BIND_W8_E988965D5A(const M2AParentPort&); void M2A_UNBIND_W8_E988965D5A(const M2AParentPort&); M2AModuleHandle M2A_BIND_W9_52CC9DEBDD(const M2AParentPort&); void M2A_UNBIND_W9_52CC9DEBDD(const M2AParentPort&); M2AModuleHandle M2A_BIND_W9_3B359EBB1A(const M2AParentPort&); void M2A_UNBIND_W9_3B359EBB1A(const M2AParentPort&); M2AModuleHandle M2A_BIND_W10_E9722EA045(const M2AParentPort&); void M2A_UNBIND_W10_E9722EA045(const M2AParentPort&); M2AModuleHandle M2A_BIND_W10_47570D3256(const M2AParentPort&); void M2A_UNBIND_W10_47570D3256(const M2AParentPort&); M2AModuleHandle M2A_BIND_W11_55908BF94D(const M2AParentPort&); void M2A_UNBIND_W11_55908BF94D(const M2AParentPort&); }
+namespace eSELive {
+M2AModuleHandle M2A_BIND_W8_4974C0F316(const M2AParentPort&); void M2A_UNBIND_W8_4974C0F316(const M2AParentPort&);
+M2AModuleHandle M2A_BIND_W8_E988965D5A(const M2AParentPort&); void M2A_UNBIND_W8_E988965D5A(const M2AParentPort&);
+M2AModuleHandle M2A_BIND_W9_52CC9DEBDD(const M2AParentPort&); void M2A_UNBIND_W9_52CC9DEBDD(const M2AParentPort&);
+M2AModuleHandle M2A_BIND_W9_3B359EBB1A(const M2AParentPort&); void M2A_UNBIND_W9_3B359EBB1A(const M2AParentPort&);
+M2AModuleHandle M2A_BIND_W10_E9722EA045(const M2AParentPort&); void M2A_UNBIND_W10_E9722EA045(const M2AParentPort&);
+M2AModuleHandle M2A_BIND_W10_47570D3256(const M2AParentPort&); void M2A_UNBIND_W10_47570D3256(const M2AParentPort&);
+M2AModuleHandle M2A_BIND_W11_55908BF94D(const M2AParentPort&); void M2A_UNBIND_W11_55908BF94D(const M2AParentPort&);
+M2AModuleHandle M2A_BIND_W12_B26D83D73F(const M2AParentPort&); void M2A_UNBIND_W12_B26D83D73F(const M2AParentPort&);
+}
 namespace eSELive {
 enum class WebClassicView : std::uint8_t { Unknown = 0, Login, RemoteLinkAdded, RemoteLinkFailed, CommentList, Header, Footer, Server, Shared, Transfer, Search, Graphs, Log, ServerInfo, DebugLog, MyInfo, Stats, Kad, Options };
 enum class WebAdminAction : std::uint8_t { Close, Shutdown, Reboot };
 struct WebClassicInput {
-	const void* legacy = nullptr; CString url; CString ip_text; CStringA csrf_token; CStringA fetch_site; CString admin_password_hash; CString guest_password_hash; CString access_denied_text;
-	std::uint32_t ip = 0; int default_category = 0; bool loopback = false; bool app_running = false; bool use_gzip = false; bool guest_enabled = false; bool allow_high_level = false;
+	const void* legacy = nullptr; CString url; CString ip_text; CStringA csrf_token; CStringA fetch_site; CStringA browser_session_token; CString admin_password_hash; CString guest_password_hash; CString access_denied_text;
+	std::uint32_t ip = 0; int default_category = 0; bool loopback = false; bool app_running = false; bool use_gzip = false; bool guest_enabled = false; bool allow_high_level = false; bool secure_transport = false;
 };
 struct WebClassicPort {
 	void* context = nullptr; CString (*parse_url)(const CString&, const CString&) = nullptr; bool (*validate_challenge)(const void*, const CString&, const CString&, bool&) = nullptr;
-	bool (*login_blocked)(void*, std::uint32_t, std::uint64_t) = nullptr; bool (*add_session)(void*, std::uint32_t, bool, int, std::uint64_t, const CStringA&) = nullptr; bool (*validate_csrf)(void*, std::uint32_t, const CStringA&, const CStringA&) = nullptr;
+	bool (*login_blocked)(void*, std::uint32_t, std::uint64_t) = nullptr; bool (*add_session)(void*, std::uint32_t, bool, int, std::uint64_t, const CStringA&, const CStringA&) = nullptr; bool (*resolve_browser_session)(void*, const CStringA&, std::uint64_t, std::uint64_t, std::uint32_t&) = nullptr; bool (*validate_csrf)(void*, std::uint32_t, const CStringA&, const CStringA&) = nullptr;
 	void (*record_login_failure)(void*, std::uint32_t, std::uint64_t) = nullptr; void (*record_login_success)(void*, std::uint32_t) = nullptr; bool (*remove_session)(const void*, long) = nullptr; bool (*is_logged_in)(const void*, long) = nullptr; bool (*is_admin)(const void*, const CString&) = nullptr;
 	void (*send_content)(const void*, const CStringA&, const CString&) = nullptr; void (*send_binary)(const void*, const CStringA&, const void*, unsigned long) = nullptr; void (*send_reply)(const void*, const char*) = nullptr;
 	void (*notify_login)(bool, const CString&) = nullptr; void (*notify_bad_login)(const CString&) = nullptr; void (*perform_admin_action)(WebAdminAction) = nullptr; bool (*send_requested_file)(const void*, const CString&) = nullptr; CString (*render)(WebClassicView, const void*, long) = nullptr;
 	bool Complete() const noexcept;
 };
 M2AModuleHandle M2A_BIND_W1_EC6846B80E(const M2AParentPort&); void M2A_UNBIND_W1_EC6846B80E(const M2AParentPort&);
-void RunWebClassicRequest(const M2AParentPort&, const WebClassicInput&, const WebClassicPort&); bool RunWebClassicRequestCharacterizationSelfTest(); std::uint64_t WebRequestAuthNowMs() noexcept; std::uint64_t WebRequestSessionTimeoutMs() noexcept; CStringA GenerateWebRequestHexToken(); std::uint32_t GenerateWebRequestWord32(); bool ValidateWebChallengeDigest(const CStringA&, const CStringA&, const CString&, bool, const CString&, bool&); int CompressWebGzip(unsigned char*, unsigned long*, const unsigned char*, unsigned long, int); enum class WebTemplateId : std::uint8_t { Header, HeaderStylesheet, Footer, ServerList, ServerLine, TransferImages, TransferList, TransferDownHeader, TransferDownFooter, TransferDownLine, TransferUpHeader, TransferUpFooter, TransferUpLine, TransferUpQueueShow, TransferUpQueueHide, TransferUpQueueLine, TransferUpQueueBannedShow, TransferUpQueueBannedHide, TransferUpQueueBannedLine, TransferUpQueueFriendShow, TransferUpQueueFriendHide, TransferUpQueueFriendLine, SharedList, SharedLine, Graphs, Log, ServerInfo, DebugLog, Stats, Preferences, Login, AddServerBox, Search, ProgressbarWidth, SearchHeader, SearchResultLine, ProgressbarImgs, ProgressbarImgsPercent, CatArrow, DownArrow, UpArrow, DownDoubleArrow, UpDoubleArrow, Kad, BootstrapLine, MyInfoLog, CommentList, CommentListLine, Count }; enum class WebTemplateLogView : std::uint8_t { Log, ServerInfo, DebugLog }; struct WebHeaderRuntime { CString version, serverName; std::uint32_t serverUsers = 0, serverMaxUsers = 0, serverFiles = 0; std::uint32_t allUsers = 0, allFiles = 0, openSockets = 0; double downloadRate = 0.0, uploadRate = 0.0; bool serverConnecting = false, serverConnected = false, highId = false; bool kad2Connected = false, kadFirewalled = false; bool kad6Connected = false, kadRunning = false; }; struct WebCommentRow { CString user, file, text, rating; }; struct WebCommentListInput { bool found = false; CString fileName; std::vector<WebCommentRow> rows; }; M2AModuleHandle M2A_BIND_W2_071B3D442B(const M2AParentPort&); void M2A_UNBIND_W2_071B3D442B(const M2AParentPort&); M2AModuleHandle M2A_BIND_W2_9330EBAD15(const M2AParentPort&); void M2A_UNBIND_W2_9330EBAD15(const M2AParentPort&); bool ReloadWebTemplates(const M2AParentPort&, const CString&, bool, bool, bool&); CString GetWebTemplate(const M2AParentPort&, WebTemplateId); CString GetWebTemplateLastModified(const M2AParentPort&); CString GetWebTemplateETag(const M2AParentPort&); M2AModuleHandle CaptureWebTemplateSnapshot(const M2AParentPort&); CString EscapeWebTemplateText(const CString&, bool); CString GetWebPlainResource(UINT, bool); bool RunWebTemplateCharacterizationSelfTest(); CString RenderWebHeader(const M2AParentPort&, const CString&, const CString&, const CString&, long, bool, std::uint32_t, const CString&, const CString&, const CString&, const WebHeaderRuntime&); CString RenderWebFooter(const M2AParentPort&, const CString&); CString RenderWebLogin(const M2AParentPort&, const CString&, const CStringA&, bool, const CString&); CString RenderWebLogView(WebTemplateLogView, const CString&, const CString&, const CString&); CString RenderWebMyInfo(const CString&, const CString&); CString RenderWebStats(const CString&, const CString&); CString RenderWebCommentList(const WebCommentListInput&, const CString&, const CString&); void InsertWebCategoryBox(CString&, int, LPCTSTR, bool, bool, const CString&, const CString&, int, bool); bool RunWebPageChromeCharacterizationSelfTest();
+void RunWebClassicRequest(const M2AParentPort&, const WebClassicInput&, const WebClassicPort&); bool RunWebClassicRequestCharacterizationSelfTest(); std::uint64_t WebRequestAuthNowMs() noexcept; std::uint64_t WebRequestSessionTimeoutMs() noexcept; CStringA GenerateWebRequestHexToken(); CStringA DigestWebRequestToken(const CStringA&); std::uint32_t GenerateWebRequestWord32(); bool ValidateWebChallengeDigest(const CStringA&, const CStringA&, const CString&, bool, const CString&, bool&); int CompressWebGzip(unsigned char*, unsigned long*, const unsigned char*, unsigned long, int); enum class WebTemplateId : std::uint8_t { Header, HeaderStylesheet, Footer, ServerList, ServerLine, TransferImages, TransferList, TransferDownHeader, TransferDownFooter, TransferDownLine, TransferUpHeader, TransferUpFooter, TransferUpLine, TransferUpQueueShow, TransferUpQueueHide, TransferUpQueueLine, TransferUpQueueBannedShow, TransferUpQueueBannedHide, TransferUpQueueBannedLine, TransferUpQueueFriendShow, TransferUpQueueFriendHide, TransferUpQueueFriendLine, SharedList, SharedLine, Graphs, Log, ServerInfo, DebugLog, Stats, Preferences, Login, AddServerBox, Search, ProgressbarWidth, SearchHeader, SearchResultLine, ProgressbarImgs, ProgressbarImgsPercent, CatArrow, DownArrow, UpArrow, DownDoubleArrow, UpDoubleArrow, Kad, BootstrapLine, MyInfoLog, CommentList, CommentListLine, Count }; enum class WebTemplateLogView : std::uint8_t { Log, ServerInfo, DebugLog }; struct WebHeaderRuntime { CString version, serverName; std::uint32_t serverUsers = 0, serverMaxUsers = 0, serverFiles = 0; std::uint32_t allUsers = 0, allFiles = 0, openSockets = 0; double downloadRate = 0.0, uploadRate = 0.0; bool serverConnecting = false, serverConnected = false, highId = false; bool kad2Connected = false, kadFirewalled = false; bool kad6Connected = false, kadRunning = false; }; struct WebCommentRow { CString user, file, text, rating; }; struct WebCommentListInput { bool found = false; CString fileName; std::vector<WebCommentRow> rows; }; M2AModuleHandle M2A_BIND_W2_071B3D442B(const M2AParentPort&); void M2A_UNBIND_W2_071B3D442B(const M2AParentPort&); M2AModuleHandle M2A_BIND_W2_9330EBAD15(const M2AParentPort&); void M2A_UNBIND_W2_9330EBAD15(const M2AParentPort&); bool ReloadWebTemplates(const M2AParentPort&, const CString&, bool, bool, bool&); CString GetWebTemplate(const M2AParentPort&, WebTemplateId); CString GetWebTemplateLastModified(const M2AParentPort&); CString GetWebTemplateETag(const M2AParentPort&); M2AModuleHandle CaptureWebTemplateSnapshot(const M2AParentPort&); CString EscapeWebTemplateText(const CString&, bool); CString GetWebPlainResource(UINT, bool); bool RunWebTemplateCharacterizationSelfTest(); CString RenderWebHeader(const M2AParentPort&, const CString&, const CString&, const CString&, long, bool, std::uint32_t, const CString&, const CString&, const CString&, const WebHeaderRuntime&); CString RenderWebFooter(const M2AParentPort&, const CString&); CString RenderWebLogin(const M2AParentPort&, const CString&, const CStringA&, bool, const CString&); CString RenderWebLogView(WebTemplateLogView, const CString&, const CString&, const CString&); CString RenderWebMyInfo(const CString&, const CString&); CString RenderWebStats(const CString&, const CString&); CString RenderWebCommentList(const WebCommentListInput&, const CString&, const CString&); void InsertWebCategoryBox(CString&, int, LPCTSTR, bool, bool, const CString&, const CString&, int, bool); bool RunWebPageChromeCharacterizationSelfTest();
 enum class WebServerAction : std::uint8_t { Connect, Disconnect, Remove, AddStatic, RemoveStatic, PriorityLow, PriorityNormal, PriorityHigh }; struct WebServerRow { CString description, fullIp, ip, name, priorityText, state, version; std::uint32_t files = 0, hardLimit = 0, maxUsers = 0, ping = 0; std::uint32_t softLimit = 0, users = 0; int failed = 0, port = 0; std::uint8_t priority = 0; bool isStatic = false; }; struct WebServerPageInput { CString url, pageTemplate, rowTemplate, addTemplate, upArrow, downArrow; bool admin = false; unsigned sort = 0; bool reverse = false; std::array<bool, 10> hidden{}; }; struct WebServerPageResult { CString html; unsigned sort = 0; bool reverse = false; std::array<bool, 10> hidden{}; }; struct WebServerGuiPort { void* context = nullptr; CString (*parse)(void*, const CString&, const CString&) = nullptr; CString (*plain)(void*, unsigned) = nullptr; void (*action)(void*, WebServerAction, const CString&, int) = nullptr; bool (*addServer)(void*, const CString&, int, const CString&, const CString&, bool, bool, CString&) = nullptr; void (*updateServerMet)(void*, const CString&, CString&) = nullptr; void (*saveHidden)(void*, const std::array<bool, 10>&) = nullptr; void (*snapshot)(void*, std::vector<WebServerRow>&) = nullptr; bool Complete() const noexcept; }; M2AModuleHandle M2A_BIND_W3_F05B56128F(const M2AParentPort&); void M2A_UNBIND_W3_F05B56128F(const M2AParentPort&); WebServerPageResult RunWebServerPage(const M2AParentPort&, const WebServerPageInput&, const WebServerGuiPort&); bool RunWebServerPageCharacterizationSelfTest();
 enum class WebTransferTemplate : std::uint8_t { Images, List, DownHeader, DownFooter, DownLine, UpHeader, UpFooter, UpLine, QueueShow, QueueHide, QueueLine, QueueBannedShow, QueueBannedHide, QueueBannedLine, QueueFriendShow, QueueFriendHide, QueueFriendLine, ProgressbarWidth, CatArrow, DownArrow, UpArrow };
 struct WebTransferProjectionInput { CString url, session, categorySuffix, selectedFile; int category = 0; bool admin = false; unsigned downloadSort = 0, uploadSort = 0, queueSort = 0; bool downloadReverse = false, uploadReverse = false, queueReverse = false; bool showQueue = false, showBanned = false, showFriend = false; unsigned maxWebUploadFileSizeMB = 0; std::array<bool, 8> downloadHidden{}; std::array<bool, 5> uploadHidden{}; std::array<bool, 4> queueHidden{}; };
@@ -361,7 +373,9 @@ static void SendWebForbidden(CWebSocket* socket, const char* hint)
 		"Cache-Control: no-store\r\n"
 		"Content-Length: %d\r\n\r\n",
 		body.GetLength());
-	socket->SendData(header, header.GetLength());
+	const std::string hardened = ese::web::HardenLiveResponseHeaders(
+		std::string(header.GetString(), header.GetLength()), true);
+	socket->SendData(hardened.data(), static_cast<int>(hardened.size()));
 	socket->SendData(body, body.GetLength());
 }
 
@@ -373,7 +387,7 @@ struct W8StatusContext { bool loopback; static bool ReadStatus(void*, ese::web::
 bool W8StatusContext::ReadStatus(void* raw, ese::web::W8LiveStatusSnapshot& out) { const W8StatusContext& context = *static_cast<W8StatusContext*>(raw); const char* forwarded = "unknown"; if (theApp.m_pUPnPFinder && theApp.m_pUPnPFinder->GetImplementation()) { const TRISTATE state = theApp.m_pUPnPFinder->GetImplementation()->ArePortsForwarded(); forwarded = state == TRIS_TRUE ? "true" : state == TRIS_FALSE ? "false" : "unknown"; } out.upnp_critical_error = thePrefs.GetUPnPCriticalError(); out.utp_hole_punch_enabled = thePrefs.GetUtpHolePunchEnabled(); out.web_upnp_active = thePrefs.GetWSUseUPnP(); out.upnp_ports_forwarded = forwarded; out.kad_connected = Kademlia::CKademlia::IsAnyConnected(); out.kad_configured_mask = thePrefs.GetKadNetworkMask(); out.kad_running_mask = Kademlia::CKademlia::GetRunningNetworkMask(); out.kad2_running = Kademlia::CKademlia::IsKad2Running(); out.kad2_connected = Kademlia::CKademlia::IsKad2Connected(); out.kad6_running = Kademlia::CKademlia::IsKad6Running(); out.kad6_connected = Kademlia::CKademlia::IsKad6Connected(); out.kad6_verified_contacts = Kademlia::CKademlia::GetKad6VerifiedContacts(); out.ed2k_connected = theApp.serverconnect && theApp.serverconnect->IsConnected(); if (context.loopback) { out.user_hash = W8Legacy(md4str(thePrefs.GetUserHash())); out.connecting_client_count = theApp.clientlist ? theApp.clientlist->GetConnectingClientCount() : 0; out.connecting_client_adds = theApp.clientlist ? theApp.clientlist->GetConnectingClientAdds() : 0; out.connecting_client_high_water = theApp.clientlist ? theApp.clientlist->GetConnectingClientHighWater() : 0; out.connecting_client_duplicate_adds = theApp.clientlist ? theApp.clientlist->GetConnectingClientDuplicateAdds() : 0; } const CKadKeepalive::Stats keepalive = CKadKeepalive::Instance().GetStats(); out.hole_punch_attempts=CStatistics::m_dwHolePunchAttempts; out.hole_punch_success=CStatistics::m_dwHolePunchSuccess; out.hole_punch_sym_nat_fail=CStatistics::m_dwHolePunchSymNATFail; out.hole_punch_encrypted=CStatistics::m_dwHolePunchEncrypted; out.hole_punch_plaintext=CStatistics::m_dwHolePunchPlaintext; out.hole_punch_req_recv=CStatistics::m_dwHolePunchReqRecv; out.hole_punch_challenge_sent=CStatistics::m_dwHolePunchChallengeSent; out.kad3_rdv_req_sent=CStatistics::m_dwKad3RdvReqSent; out.kad3_rdv_req_recv=CStatistics::m_dwKad3RdvReqRecv; out.kad3_rdv_challenge_sent=CStatistics::m_dwKad3RdvChallengeSent; out.kad3_rdv_fwd=CStatistics::m_dwKad3RdvFwd; out.kad3_rdv_success=CStatistics::m_dwKad3RdvSuccess; out.keepalive_running=CKadKeepalive::Instance().IsRunning(); out.keepalive_pings_sent=keepalive.pingsSent; out.keepalive_pongs_recv=keepalive.pongsReceived; out.keepalive_supernodes=keepalive.supernodesActive; out.netlab_consent=thePrefs.GetEseNetLabConsent()==CPreferences::EseNetLabAccepted?"accepted":thePrefs.GetEseNetLabConsent()==CPreferences::EseNetLabDeclined?"declined":"undecided"; out.netlab_advanced_consent=thePrefs.GetEseNetLabAdvancedConsent()==CPreferences::EseNetLabAccepted?"accepted":thePrefs.GetEseNetLabAdvancedConsent()==CPreferences::EseNetLabDeclined?"declined":"undecided"; out.netlab_contribution_consent=thePrefs.GetEseNetLabContributionConsent()==CPreferences::EseNetLabAccepted?"accepted":thePrefs.GetEseNetLabContributionConsent()==CPreferences::EseNetLabDeclined?"declined":"undecided"; out.netlab_enabled=thePrefs.IsEseNetLabActive(); return true; }
 bool W8StatusContext::ReadChannel(void*, ese::web::W8LiveChannelSnapshot& out) { if (theApp.liveStreamManager == NULL) return true; const LiveChannelSnapshot snapshot = theApp.liveStreamManager->GetChannelSnapshot(); out.broadcasting=snapshot.broadcasting; memcpy(out.stream_key.data(), snapshot.streamKey, 16); out.title=W8Legacy(snapshot.title); out.category=W8Legacy(snapshot.category); out.language=W8Legacy(snapshot.language); out.started_at=snapshot.startedAt; out.viewer_count=snapshot.viewerCount; out.bitrate=snapshot.bitrate; return true; }
 bool W8StatusContext::ReadMesh(void*, ese::web::W8LiveMeshSnapshot& out) { if (theApp.liveStreamManager == NULL) return true; const LiveDebugSnapshot snapshot = theApp.liveStreamManager->BuildDebugSnapshot(); out.mesh_peers=snapshot.meshPeers; out.pending_requests=snapshot.pendingRequests; out.chunks_served=snapshot.chunksServed; out.total_redistributed=snapshot.totalRedistributed; out.super_seeders=snapshot.superSeeders; out.middle_peers=snapshot.middlePeers; out.leaf_peers=snapshot.leafPeers; out.upload_floor=snapshot.minUploadRequired; out.emergency_mode=snapshot.emergencyMode; return true; }
-void W8StatusContext::Send(CWebSocket* socket, const std::string& header, const std::string& body) { const CStringA h(header.data(), static_cast<int>(header.size())), b(body.data(), static_cast<int>(body.size())); socket->SendData(h, h.GetLength()); socket->SendData(b, b.GetLength()); }
+void W8StatusContext::Send(CWebSocket* socket, const std::string& header, const std::string& body) { const std::string hardened=ese::web::HardenLiveResponseHeaders(header,true); const CStringA h(hardened.data(),static_cast<int>(hardened.size())),b(body.data(),static_cast<int>(body.size())); socket->SendData(h,h.GetLength()); socket->SendData(b,b.GetLength()); }
 struct W9TransferContext { ese::web::WebAuthPolicy* auth; CUpDownClient* target; static std::uint64_t Now(void*); static W9LiveTransferRateDecision Rate(void*,W9LiveTransferRate,std::uint64_t,std::uint64_t); static bool ParseIPv4(void*,const std::string&,std::uint32_t&); static bool Read(void*,W9LiveTransferSnapshot&); static void Network(void*,bool,bool,bool&,bool&); static W9LiveTransferGuard Rendezvous(void*,std::uint32_t,std::uint16_t,std::uint32_t,std::uint16_t); static W9LiveTransferGuard Keepalive(void*,bool); static void Relay(void*,W9LiveRelayToggle,bool); static void RelayConnect(void*,const std::array<unsigned char,16>&,std::uint32_t,std::uint16_t); static W9LiveHolePunchResult HolePunch(void*,std::uint32_t,std::uint16_t,bool,int); };
 std::uint64_t W9TransferContext::Now(void*) { return eSELive::WebRequestAuthNowMs(); }
 W9LiveTransferRateDecision W9TransferContext::Rate(void* raw,W9LiveTransferRate action,std::uint64_t now,std::uint64_t interval) { ese::web::WebAction native=ese::web::WebAction::NetworkConnect; switch(action){case W9LiveTransferRate::NetworkConnect:break;case W9LiveTransferRate::ManualRendezvous:native=ese::web::WebAction::ManualRendezvous;break;case W9LiveTransferRate::KeepaliveToggle:native=ese::web::WebAction::KeepaliveToggle;break;case W9LiveTransferRate::ManualHolePunch:native=ese::web::WebAction::ManualHolePunch;break;} const ese::web::WebRateDecision result=static_cast<W9TransferContext*>(raw)->auth->CheckRateLimit(native,now,interval); return {result.allowed,result.retry_after_ms}; }
@@ -424,8 +438,9 @@ W10SettingsPort W10SettingsContext::Port() { W10SettingsPort p={nullptr,W10Setti
 p.test_hooks_enabled=true;p.set_edge_sabotage=W10SettingsContext::Edge;
 #endif
 return p; }
-struct W10DiagnosticsContext { bool metrics_available=false; static bool Krp(void*,std::string&); static bool Preflight(void*,ese::web::W10PreflightSnapshot&); static bool Metrics(void*,ese::web::W10MetricsSnapshot&); static void Percentiles(void*,std::uint32_t&,std::uint32_t&,std::uint32_t&); static std::uint32_t Mean(void*); static int Samples(void*); static bool Kad6(void*,std::string&); static bool Log(void*,int,std::vector<std::string>&); static bool Debug(void*,ese::web::W10DebugSnapshot&); static bool Ipv6Echo(void*,const ese::web::W10DiagnosticsRequest&,ese::web::W10Ipv6EchoResult&); };
+struct W10DiagnosticsContext { bool metrics_available=false; static bool Krp(void*,std::string&); static bool Reach(void*,std::string&); static bool Preflight(void*,ese::web::W10PreflightSnapshot&); static bool Metrics(void*,ese::web::W10MetricsSnapshot&); static void Percentiles(void*,std::uint32_t&,std::uint32_t&,std::uint32_t&); static std::uint32_t Mean(void*); static int Samples(void*); static bool Kad6(void*,std::string&); static bool Log(void*,int,std::vector<std::string>&); static bool Debug(void*,ese::web::W10DebugSnapshot&); static bool Ipv6Echo(void*,const ese::web::W10DiagnosticsRequest&,ese::web::W10Ipv6EchoResult&); };
 bool W10DiagnosticsContext::Krp(void*,std::string& o) { if(theApp.relayclient==NULL)return false;CStringA json;theApp.relayclient->GetStatusJson(json);o=W9Bytes(json);return true; }
+bool W10DiagnosticsContext::Reach(void*,std::string& o) { if(theApp.directreachability==NULL)return false;CStringA json;theApp.directreachability->GetStatusJson(json);if(json.IsEmpty())return false;o=W9Bytes(json);return true; }
 bool W10DiagnosticsContext::Preflight(void*,ese::web::W10PreflightSnapshot& o) { o=ese::web::W10PreflightSnapshot();o.kad_connected=Kademlia::CKademlia::IsConnected();const bool verified=Kademlia::CUDPFirewallTester::IsVerified();o.kad_firewalled=theApp.IsFirewalled();o.ed2k_lowid=!theApp.HasVerifiedEd2kHighId();o.high_id=!o.ed2k_lowid;o.firewall_checking=!verified&&o.kad_connected&&o.ed2k_lowid;o.max_upload_kbs=thePrefs.GetMaxUpload();o.port=theApp.GetAdvertisedTcpPort();const std::uint32_t ip=theApp.GetPublicIP();if(ip!=0)o.public_ip=W8Legacy(ipstr(ip));const CString ffmpeg=CRTMPIngest::FindFFmpeg();o.ffmpeg_found=GetFileAttributes(ffmpeg)!=INVALID_FILE_ATTRIBUTES;o.ffmpeg_path=W8Legacy(ffmpeg);try{const CAddress v6=CFirewallProberV6::Instance().GetDetectedV6IP();if(!v6.IsNull())o.public_ip_v6=W9Bytes(CStringA(v6.ToStringC()));}catch(...){ }return true; }
 bool W10DiagnosticsContext::Metrics(void* raw,ese::web::W10MetricsSnapshot& o) { W10DiagnosticsContext& c=*static_cast<W10DiagnosticsContext*>(raw);o=ese::web::W10MetricsSnapshot();c.metrics_available=theApp.liveStreamManager!=NULL;if(!c.metrics_available)return true;const LiveDebugSnapshot s=theApp.liveStreamManager->BuildDebugSnapshot();o.chunks_received=s.counters.chunksReceived;o.chunks_requested=s.counters.chunksRequested;o.chunks_missing=s.counters.chunksMissing;o.chunks_served=s.chunksServed;o.kad_publishes=s.counters.kadPublishes;o.kad_searches=s.counters.kadSearches;o.peer_disconnects=s.counters.peerDisconnects;o.view_peers=s.viewPeers;o.broadcast_peers=s.broadcastPeers;o.mesh_peers=s.meshPeers;o.buffer_count=s.bufCount;o.pending_requests=s.pendingRequests;o.broadcasting=s.broadcasting;o.viewing=s.viewing;o.kad_searches_empty=s.counters.kadSearchesEmpty;o.kad_searches_rate_limited=s.counters.kadSearchesRateLimited;o.pending_dials_dropped=s.counters.pendingDialsDropped;o.join_first_count=s.counters.joinToFirstChunkSamples;o.join_first_sum=s.counters.joinToFirstChunkSumMs;return true; }
 void W10DiagnosticsContext::Percentiles(void* raw,std::uint32_t& p50,std::uint32_t& p95,std::uint32_t& p99) { if(static_cast<W10DiagnosticsContext*>(raw)->metrics_available){DWORD a=0,b=0,c=0;theApp.liveStreamManager->ChunkArrivalLatency().Percentiles(a,b,c);p50=a;p95=b;p99=c;} }
@@ -462,7 +477,7 @@ struct W11LegacyContext {
 	static bool ReadHardening(void*,ese::web::W11HardeningSnapshot& o){o=ese::web::W11HardeningSnapshot();eSELive::CLiveTunnel::K6HardeningRuntimeSnapshot s;try{eSELive::CLiveTunnel::Get().GetK6HardeningSnapshot(s);}catch(...){}o.revision=s.control.revision;o.active_leases=s.active_leases;o.active_publishes=s.active_publishes;o.dial_streams=s.dial_streams;o.full_streams=s.full_streams;o.shaping_exposed_circuits=s.shaping_exposed_circuits;o.origin_advertise_success_total=s.origin_advertise_success_total;o.origin_source_recovered_total=s.origin_source_recovered_total;o.source_epoch_store_failed=s.source_epoch_store_failed;o.metrics_ready=s.metrics.ready;o.metrics_start=s.metrics.start;o.metrics_end=s.metrics.end;o.metrics_fixed_series=s.metrics.fixed_series;o.metrics_exported_series=s.metrics.exported_series;o.economy_measurement_ready=s.economy_measurement_ready;o.strict_recommended=s.strict_recommended;for(size_t i=0;i<s.control.services.size();++i){const kad6::K6ServiceSnapshot& x=s.control.services[i];o.services.push_back({kad6::K6ServiceName(x.service),kad6::K6ServiceStateName(x.state),x.changed_at,x.drain_deadline,(s.control.admission_mask&kad6::K6ServiceBit(x.service))!=0});}for(size_t i=0;i<s.economy.size();++i){const kad6::K6EconomyWindowSnapshot& x=s.economy[i];o.economy.push_back({kad6::K6ServiceName(static_cast<kad6::K6Service>(i)),s.economy_measurement_ready&&std::isfinite(s.rho[i]),x.sealed,s.rho[i],x.admission_ratio,x.rho_p50,x.rho_p95,x.starts_at,x.ends_at,x.samples,x.admission_attempts,x.admission_successes});}K6ExitNoticeServerSnapshot n;try{n=eSELive::CLiveTunnel::Get().GetK6ExitNoticeSnapshot();}catch(...){}o.exit_notice_running=n.running;o.exit_notice_port=n.port;o.exit_notice_requests=n.requests;o.exit_notice_rejected=n.rejected;o.exit_notice_bytes_sent=n.bytes_sent;return true;}
 	static ese::web::W11LegacyPort Port(){return {NULL,Hls,Note,Netlab,Echo,Ping,Circuits,Peers,Test,Consume,Release,ReadRelease,Hardening,ReadHardening};}
 };
-static void SendW11Response(const ThreadData& d,const ese::web::W11LegacyResponse& r){if(r.file_response){ese::web::WebFileResponseOptions o;o.lastModified=r.last_modified;o.etag=r.etag;o.corsOrigin=r.cors_origin;d.pSocket->SendFileResponse(OptUtf8ToStr(r.file_path.c_str(),static_cast<int>(r.file_path.size())),CStringA(r.public_path.c_str()),CStringA(r.file_range.c_str()),o,r.maximum_bytes,r.concurrent,r.allow_empty);return;}d.pSocket->SendData(r.header.data(),static_cast<int>(r.header.size()));d.pSocket->SendData(r.body.data(),static_cast<int>(r.body.size()));}
+static void SendW11Response(const ThreadData& d,const ese::web::W11LegacyResponse& r){if(r.file_response){ese::web::WebFileResponseOptions o;o.lastModified=r.last_modified;o.etag=r.etag;o.corsOrigin=r.cors_origin;d.pSocket->SendFileResponse(OptUtf8ToStr(r.file_path.c_str(),static_cast<int>(r.file_path.size())),CStringA(r.public_path.c_str()),CStringA(r.file_range.c_str()),o,r.maximum_bytes,r.concurrent,r.allow_empty);return;}const std::string h=ese::web::HardenLiveResponseHeaders(r.header,true);d.pSocket->SendData(h.data(),static_cast<int>(h.size()));d.pSocket->SendData(r.body.data(),static_cast<int>(r.body.size()));}
 static bool RunW11LiveLegacyStaticFile(const ThreadData& d){const CWebServer* pThis=reinterpret_cast<CWebServer*>(d.pThis);if(pThis==NULL)return false;M2AModuleHandle snapshot=CaptureWebTemplateSnapshot(WebTemplateParent(pThis));(void)snapshot;const CStringA lastModified(GetWebTemplateLastModified(WebTemplateParent(pThis))),etag(GetWebTemplateETag(WebTemplateParent(pThis)));ese::web::W11StaticFileRequest q;q.web_root=W8Utf8(thePrefs.GetMuleDirectory(EMULE_WEBSERVERDIR));q.url=W8Utf8(d.sURL);q.public_path=W8Legacy(d.sURL);q.range=W9Bytes(d.sRange);q.last_modified=W9Bytes(lastModified);q.etag=W9Bytes(etag);q.maximum_bytes=static_cast<std::uint64_t>(thePrefs.GetMaxWebUploadFileSizeMB())*1024ull*1024ull;ese::web::W11LegacyResponse r;if(!ese::web::BuildW11LegacyStaticFile(q,r))return false;SendW11Response(d,r);return true;}
 
 #ifdef _DEBUG
@@ -565,9 +580,10 @@ CWebServer::~CWebServer()
 	ini.WriteInt(_T("QueueSort"), m_Params.QueueSort);
 	ini.WriteInt(_T("ServerSort"), m_Params.ServerSort);
 	ini.WriteInt(_T("SharedSort"), m_Params.SharedSort);
+	m_authPolicy.RevokeAllHlsCapabilities();
 	if (m_bServerWorking)
 		StopSockets();
-	M2A_UNBIND_W11_55908BF94D(M2AParentPort{this}); M2A_UNBIND_W10_E9722EA045(M2AParentPort{this}); M2A_UNBIND_W10_47570D3256(M2AParentPort{this}); M2A_UNBIND_W9_52CC9DEBDD(M2AParentPort{this}); M2A_UNBIND_W9_3B359EBB1A(M2AParentPort{this}); M2A_UNBIND_W8_4974C0F316(M2AParentPort{this}); M2A_UNBIND_W8_E988965D5A(M2AParentPort{this}); M2A_UNBIND_W1_EC6846B80E(M2AParentPort{this}); M2A_UNBIND_W2_9330EBAD15(M2AParentPort{this}); M2A_UNBIND_W2_071B3D442B(M2AParentPort{this}); M2A_UNBIND_W3_F05B56128F(M2AParentPort{this}); M2A_UNBIND_W4_AD763A5EE0(M2AParentPort{this}); M2A_UNBIND_W5_095B87253F(M2AParentPort{this}); M2A_UNBIND_W6_64C04005E2(M2AParentPort{this}); M2A_UNBIND_W6_B161DA740E(M2AParentPort{this});
+	M2A_UNBIND_W12_B26D83D73F(M2AParentPort{this}); M2A_UNBIND_W11_55908BF94D(M2AParentPort{this}); M2A_UNBIND_W10_E9722EA045(M2AParentPort{this}); M2A_UNBIND_W10_47570D3256(M2AParentPort{this}); M2A_UNBIND_W9_52CC9DEBDD(M2AParentPort{this}); M2A_UNBIND_W9_3B359EBB1A(M2AParentPort{this}); M2A_UNBIND_W8_4974C0F316(M2AParentPort{this}); M2A_UNBIND_W8_E988965D5A(M2AParentPort{this}); M2A_UNBIND_W1_EC6846B80E(M2AParentPort{this}); M2A_UNBIND_W2_9330EBAD15(M2AParentPort{this}); M2A_UNBIND_W2_071B3D442B(M2AParentPort{this}); M2A_UNBIND_W3_F05B56128F(M2AParentPort{this}); M2A_UNBIND_W4_AD763A5EE0(M2AParentPort{this}); M2A_UNBIND_W5_095B87253F(M2AParentPort{this}); M2A_UNBIND_W6_64C04005E2(M2AParentPort{this}); M2A_UNBIND_W6_B161DA740E(M2AParentPort{this});
 }
 
 void CWebServer::_SaveWIConfigArray(BOOL *array, int size, LPCTSTR key)
@@ -583,14 +599,16 @@ bool CWebServer::ReloadTemplates()
 //Cax2 - restarts the server with the new port settings
 void CWebServer::RestartSockets()
 {
-	M2AModuleHandle headerBinding = M2A_BIND_W2_9330EBAD15(M2AParentPort{this}); if (!headerBinding) return; StopSockets();
+	M2AModuleHandle headerBinding = M2A_BIND_W2_9330EBAD15(M2AParentPort{this}); if (!headerBinding) return;
+	m_authPolicy.RevokeAllHlsCapabilities();
+	StopSockets();
 	if (m_bServerWorking)
 		StartSockets(this);
 }
 
 void CWebServer::StartServer()
 {
-	M2AModuleHandle requestDispatchBinding = M2A_BIND_W1_EC6846B80E(M2AParentPort{this}); if (!requestDispatchBinding) return; M2AModuleHandle templateBinding = M2A_BIND_W2_071B3D442B(M2AParentPort{this}); M2AModuleHandle headerBinding = M2A_BIND_W2_9330EBAD15(M2AParentPort{this}); if (!templateBinding || !headerBinding) return;
+	M2AModuleHandle facadeBinding = M2A_BIND_W12_B26D83D73F(M2AParentPort{this}); if (!facadeBinding) return; M2AModuleHandle requestDispatchBinding = M2A_BIND_W1_EC6846B80E(M2AParentPort{this}); if (!requestDispatchBinding) return; M2AModuleHandle templateBinding = M2A_BIND_W2_071B3D442B(M2AParentPort{this}); M2AModuleHandle headerBinding = M2A_BIND_W2_9330EBAD15(M2AParentPort{this}); if (!templateBinding || !headerBinding) return;
 	bool wsPrefEnabled = thePrefs.GetWSIsEnabled();
 	LIVE_LOG("WS", "StartServer entry: pref.Enabled=%d  pref.Port=%u  serverWorking=%d  template=\"%S\"",
 		(int)wsPrefEnabled, (unsigned)thePrefs.GetWSPort(),
@@ -599,6 +617,7 @@ void CWebServer::StartServer()
 		LIVE_LOG("WS", "StartServer SKIP: already in target state (%d)", (int)wsPrefEnabled);
 		return;
 	}
+	m_authPolicy.RevokeAllHlsCapabilities();
 	m_bServerWorking = wsPrefEnabled;
 	if (m_bServerWorking) {
 		LIVE_LOG("WS", "StartServer: calling ReloadTemplates()");
@@ -628,11 +647,13 @@ void CWebServer::StartServer()
 
 void CWebServer::StopServer()
 {
+	m_authPolicy.RevokeAllHlsCapabilities();
 	M2AModuleHandle statusBinding = M2A_BIND_W8_E988965D5A(M2AParentPort{this}); if (!statusBinding) return; if (m_bServerWorking) {
 		StopSockets();
 		m_bServerWorking = false;
 	}
 	thePrefs.SetWSIsEnabled(false);
+	M2A_UNBIND_W12_B26D83D73F(M2AParentPort{this});
 }
 
 void CWebServer::AddStatsLine(const UpDown &line)
@@ -665,6 +686,14 @@ bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 			authFailure.data(), static_cast<int>(authFailure.size()));
 		return false;
 	}
+	std::string hlsCapabilityFailure;
+	if (!ese::web::RunWebHlsCapabilityControllerSelfTest(
+			hlsCapabilityFailure)) {
+		outFailure = OptUtf8ToStr(
+			hlsCapabilityFailure.data(),
+			static_cast<int>(hlsCapabilityFailure.size()));
+		return false;
+	}
 	std::string routeFailure;
 	if (!ese::web::RunWebRouteTableSelfTest(routeFailure)) {
 		outFailure = OptUtf8ToStr(routeFailure.data(), static_cast<int>(routeFailure.size()));
@@ -672,7 +701,7 @@ bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 	}
 	if (!RunWebClassicRequestCharacterizationSelfTest()) { outFailure = _T("web request dispatch route table changed"); return false; } if (!RunWebTemplateCharacterizationSelfTest() || !RunWebPageChromeCharacterizationSelfTest()) { outFailure = _T("web template/header rendering changed"); return false; } if (!RunWebServerPageCharacterizationSelfTest()) { outFailure = _T("web server-list rendering changed"); return false; } if (!RunWebTransferProjectionCharacterizationSelfTest()) { outFailure = _T("web transfer projection changed"); return false; } if (!RunWebTransferActionsCharacterizationSelfTest()) { outFailure = _T("web transfer actions changed"); return false; } if (!RunWebSearchProjectionCharacterizationSelfTest()) { outFailure = _T("web search projection changed"); return false; } if (!RunWebSharedFilesControllerCharacterizationSelfTest()) { outFailure = _T("web shared-files projection changed"); return false; } const ese::web::WebSharedComparison sharedCompatibility{0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}; const ese::web::WebSharedRowProjection sharedProjection = ese::web::WebSharedController::ProjectRow(false, ese::web::WebSharedPriority::Normal, false, 1024, 1, 1, 1); if (ese::web::WebSharedController::Compare(2, false, sharedCompatibility) != -1 || std::string(sharedProjection.priority_token) != "Normal" || !sharedProjection.downloadable || sharedProjection.complete_sources != "1") { outFailure = _T("web shared policy compatibility changed"); return false; }
 	std::string serializerFailure;
-	std::string w8Failure; const CString w8Unicode(_T("\x0416")); if (W8Text(W8Utf8(w8Unicode)) != w8Unicode || W10Text(W8Utf8(w8Unicode)) != w8Unicode) { outFailure = _T("web Live API UTF-8 boundary changed"); return false; } std::string w8Wire, w8Ui, w8Encoded; W8Assign(_T("A b!"),w8Wire,w8Ui,&w8Encoded); if(w8Wire!="A b!" || w8Ui!="A b!" || w8Encoded!="A+b%21") { outFailure = _T("web Live API legacy wire boundary changed"); return false; } if (!RunW8LiveStreamCharacterizationSelfTest(w8Failure) || !ese::web::RunW8LiveStatusCharacterizationSelfTest(w8Failure) || !RunW9LiveTransferCharacterizationSelfTest(w8Failure) || !ese::web::RunW9LiveSearchCharacterizationSelfTest(w8Failure) || !RunW10LiveSettingsCharacterizationSelfTest(w8Failure) || !ese::web::RunW10LiveDiagnosticsCharacterizationSelfTest(w8Failure) || !ese::web::RunW11LiveLegacyCharacterizationSelfTest(w8Failure)) { outFailure = OptUtf8ToStr(w8Failure.data(), static_cast<int>(w8Failure.size())); return false; }
+	std::string w8Failure; const CString w8Unicode(_T("\x0416")); if (W8Text(W8Utf8(w8Unicode)) != w8Unicode || W10Text(W8Utf8(w8Unicode)) != w8Unicode) { outFailure = _T("web Live API UTF-8 boundary changed"); return false; } std::string w8Wire, w8Ui, w8Encoded; W8Assign(_T("A b!"),w8Wire,w8Ui,&w8Encoded); if(w8Wire!="A b!" || w8Ui!="A b!" || w8Encoded!="A+b%21") { outFailure = _T("web Live API legacy wire boundary changed"); return false; } if (!RunW8LiveStreamCharacterizationSelfTest(w8Failure) || !ese::web::RunW8LiveStatusCharacterizationSelfTest(w8Failure) || !RunW9LiveTransferCharacterizationSelfTest(w8Failure) || !ese::web::RunW9LiveSearchCharacterizationSelfTest(w8Failure) || !RunW10LiveSettingsCharacterizationSelfTest(w8Failure) || !ese::web::RunW10LiveDiagnosticsCharacterizationSelfTest(w8Failure) || !ese::web::RunW11LiveLegacyCharacterizationSelfTest(w8Failure) || !ese::web::RunWebServerFacadeCharacterizationSelfTest(w8Failure)) { outFailure = OptUtf8ToStr(w8Failure.data(), static_cast<int>(w8Failure.size())); return false; }
 	if (!ese::web::RunWebApiSerializerSelfTest(serializerFailure)) {
 		outFailure = OptUtf8ToStr(
 			serializerFailure.data(),
@@ -754,8 +783,10 @@ void CWebServer::_ProcessURL(const ThreadData &Data)
 	port.parse_url = [](const CString& url, const CString& field) { return _ParseURL(url, field); };
 	port.validate_challenge = [](const void* raw, const CString& nonce, const CString& response, bool& admin) { return _ValidateChallengeResponse(*static_cast<const ThreadData*>(raw), nonce, response, admin); };
 	port.login_blocked = [](void* raw, std::uint32_t ip, std::uint64_t now) { return static_cast<CWebServer*>(raw)->m_authPolicy.IsLoginBlocked(ip, now); };
-	port.add_session = [](void* raw, std::uint32_t id, bool admin, int category, std::uint64_t now, const CStringA& csrf) {
-		return static_cast<CWebServer*>(raw)->m_authPolicy.AddSession(id, admin ? ese::web::WebRole::Admin : ese::web::WebRole::Guest, category, now, std::string((LPCSTR)csrf, csrf.GetLength())); };
+	port.add_session = [](void* raw, std::uint32_t id, bool admin, int category, std::uint64_t now, const CStringA& csrf, const CStringA& bearer) {
+		const CStringA digest=DigestWebRequestToken(bearer);return static_cast<CWebServer*>(raw)->m_authPolicy.AddSession(id, admin ? ese::web::WebRole::Admin : ese::web::WebRole::Guest, category, now, std::string((LPCSTR)csrf, csrf.GetLength()), std::string((LPCSTR)digest, digest.GetLength())); };
+	port.resolve_browser_session = [](void* raw, const CStringA& bearer, std::uint64_t now, std::uint64_t timeout, std::uint32_t& id) {
+		const CStringA digest=DigestWebRequestToken(bearer);ese::web::WebSessionSnapshot session; if (!static_cast<CWebServer*>(raw)->m_authPolicy.ResolveBrowserSessionDigest(std::string((LPCSTR)digest, digest.GetLength()), now, timeout, &session)) return false; id = session.id; return true; };
 	port.validate_csrf = [](void* raw, std::uint32_t id, const CStringA& token, const CStringA& fetchSite) {
 		ese::web::WebSessionSnapshot session; CWebServer* server = static_cast<CWebServer*>(raw); if (!server->m_authPolicy.GetSession(id, session)) return true;
 		return ese::web::WebAuthPolicy::ValidateCsrfRequest(session, std::string((LPCSTR)token, token.GetLength()), std::string((LPCSTR)fetchSite, fetchSite.GetLength())); };
@@ -785,9 +816,9 @@ void CWebServer::_ProcessURL(const ThreadData &Data)
 		default: return CString();
 		}
 	};
-	WebClassicInput input; input.legacy = &Data; input.url = Data.sURL; input.ip_text = ipstr(Data.inadr); input.csrf_token = Data.sCsrfToken; input.fetch_site = Data.sFetchSite;
+	WebClassicInput input; input.legacy = &Data; input.url = Data.sURL; input.ip_text = ipstr(Data.inadr); input.csrf_token = Data.sCsrfToken; input.fetch_site = Data.sFetchSite; input.browser_session_token = Data.sBrowserSessionToken;
 	input.admin_password_hash = thePrefs.GetWSPass(); input.guest_password_hash = thePrefs.GetWSLowPass(); input.access_denied_text = _GetPlainResString(IDS_ACCESSDENIED); input.ip = inet_addr(ipstrA(Data.inadr));
-	input.default_category = -thePrefs.GetCatFilter(0); input.loopback = Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK); input.app_running = theApp.IsRunning(); input.use_gzip = thePrefs.GetWebUseGzip(); input.guest_enabled = thePrefs.GetWSIsLowUserEnabled(); input.allow_high_level = thePrefs.GetWebAdminAllowedHiLevFunc();
+	input.default_category = -thePrefs.GetCatFilter(0); input.loopback = Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK); input.app_running = theApp.IsRunning(); input.use_gzip = thePrefs.GetWebUseGzip(); input.guest_enabled = thePrefs.GetWSIsLowUserEnabled(); input.allow_high_level = thePrefs.GetWebAdminAllowedHiLevFunc(); input.secure_transport = Data.bSecureTransport;
 	M2AModuleHandle templateSnapshot = CaptureWebTemplateSnapshot(WebTemplateParent(owner)); RunWebClassicRequest(M2AParentPort{owner}, input, port);
 }
 
@@ -1491,6 +1522,339 @@ int CWebServer::_GetLastUserCat(const ThreadData &Data, long lSession)
 
 static CStringA W8JsonA(const CStringA& input) { const std::string escaped = W8EscapeJson(std::string((LPCSTR)input, input.GetLength())); return CStringA(escaped.data(), static_cast<int>(escaped.size())); }
 static CStringA W8KeyA(const uchar* key) { std::array<unsigned char, 16> value; memcpy(value.data(), key, value.size()); const std::string encoded = W8EncodeKey16(value); return CStringA(encoded.data(), static_cast<int>(encoded.size())); }
+static bool W12CopyHlsSource(
+	const std::string& streamHash,
+	LiveHlsSourceSnapshot& source)
+{
+	source = LiveHlsSourceSnapshot();
+	std::array<unsigned char, 16> key{};
+	return theApp.liveStreamManager != NULL &&
+		W8DecodeKey16(streamHash, key) &&
+		theApp.liveStreamManager->CopyHlsSourceSnapshot(key.data(), source);
+}
+
+static ese::web::WebHlsSourceRole W12PolicyHlsRole(
+	const LiveHlsSourceSnapshot& source)
+{
+	return source.broadcast
+		? ese::web::WebHlsSourceRole::Broadcast
+		: ese::web::WebHlsSourceRole::Viewer;
+}
+
+static bool W12CopyWebHlsSource(
+	void* raw,
+	const std::string& streamHash,
+	ese::web::WebHlsLiveSourceSnapshot& output)
+{
+	if (raw == nullptr || raw != theApp.liveStreamManager)
+		return false;
+	LiveHlsSourceSnapshot source;
+	if (!W12CopyHlsSource(streamHash, source))
+		return false;
+	std::array<unsigned char, 16> key{};
+	memcpy(key.data(), source.streamKey, key.size());
+	output.stream_key = W8EncodeKey16(key);
+	output.generation = source.generation;
+	output.role = W12PolicyHlsRole(source);
+	return true;
+}
+
+static bool W12BuildWebHlsFilePath(
+	const ese::web::WebHlsLiveSourceSnapshot& source,
+	const std::string& resourceBytes,
+	CString& filePath)
+{
+	TCHAR temporaryRoot[MAX_PATH] = {};
+	const DWORD temporaryLength =
+		GetTempPath(_countof(temporaryRoot), temporaryRoot);
+	if (temporaryLength == 0 || temporaryLength >= _countof(temporaryRoot))
+		return false;
+	const CString resource = OptUtf8ToStr(
+		resourceBytes.data(), static_cast<int>(resourceBytes.size()));
+	const CString streamHash = OptUtf8ToStr(
+		source.stream_key.data(), static_cast<int>(source.stream_key.size()));
+	if (source.role == ese::web::WebHlsSourceRole::Broadcast) {
+		filePath.Format(
+			_T("%seMule_RTMP\\%s"), temporaryRoot, (LPCTSTR)resource);
+	} else {
+		filePath.Format(
+			_T("%seMule_RTMP\\%s\\%s"), temporaryRoot,
+			(LPCTSTR)streamHash, (LPCTSTR)resource);
+	}
+	return true;
+}
+
+struct W12HlsLeaseContext {
+	ese::web::WebAuthPolicy* policy = nullptr;
+	CWebSocket* socket = nullptr;
+	ese::web::WebHlsCapabilityReadRequest request;
+	ese::web::WebHlsLiveSourceSnapshot source;
+	ese::web::WebPreparedFileResponse prepared;
+	bool commit_rejected = false;
+};
+
+static LiveHlsReadPreparation W12PrepareWebHlsRead(void* raw)
+{
+	W12HlsLeaseContext& context =
+		*static_cast<W12HlsLeaseContext*>(raw);
+	if (context.policy == nullptr || context.socket == nullptr)
+		return LiveHlsReadPreparation::Failed;
+	// The request may have waited for the manager lease.  Commit must use a
+	// fresh clock so an expired owner/capability cannot pass with Inspect time.
+	const std::uint64_t commitNowMs = eSELive::WebRequestAuthNowMs();
+	if (!ese::web::CommitWebHlsCapabilityRead(
+			*context.policy, context.request, context.source, commitNowMs)) {
+		context.commit_rejected = true;
+		return LiveHlsReadPreparation::Failed;
+	}
+	CString filePath;
+	if (!W12BuildWebHlsFilePath(
+			context.source, context.request.resource, filePath))
+		return LiveHlsReadPreparation::Failed;
+	ese::web::WebFileResponseOptions options;
+	options.cacheControl = "no-store";
+	options.noReferrer = true;
+	if (!context.socket->PrepareBufferedFileResponse(
+		filePath,
+		CStringA(
+			context.request.resource.data(),
+			static_cast<int>(context.request.resource.size())),
+		CStringA(
+			context.request.range.data(),
+			static_cast<int>(context.request.range.size())),
+		options,
+		ese::web::WebPreparedFileResponse::kMaximumBodyBytes,
+		true,
+		false,
+		context.prepared))
+		return LiveHlsReadPreparation::Failed;
+	const bool successfulBody =
+		context.prepared.plan.IsSuccess() &&
+		context.prepared.plan.length != 0u &&
+		context.prepared.plan.length == context.prepared.body.size();
+	return successfulBody
+		? LiveHlsReadPreparation::PreparedWithBody
+		: LiveHlsReadPreparation::PreparedWithoutBody;
+}
+
+static bool W12MakeLiveHlsLeaseSnapshot(
+	const ese::web::WebHlsLiveSourceSnapshot& source,
+	LiveHlsSourceSnapshot& expected)
+{
+	std::array<unsigned char, 16> key{};
+	if (!W8DecodeKey16(source.stream_key, key) || source.generation == 0)
+		return false;
+	memcpy(expected.streamKey, key.data(), key.size());
+	expected.generation = source.generation;
+	expected.broadcast =
+		source.role == ese::web::WebHlsSourceRole::Broadcast;
+	return true;
+}
+
+enum class W12HlsDispatchResult { NotCapability, Handled };
+
+static W12HlsDispatchResult W12ProcessHlsCapability(
+	ese::web::WebAuthPolicy& policy,
+	const ThreadData& data,
+	const CStringA& url)
+{
+	const std::string target((LPCSTR)url, url.GetLength());
+	ese::web::WebHlsCapabilityPath path;
+	if (!ese::web::ParseWebHlsCapabilityPath(target, path)) {
+		if (target.compare(0, 3, "/h/") != 0)
+			return W12HlsDispatchResult::NotCapability;
+		data.pSocket->SendReply(
+			"HTTP/1.1 404 Not Found\r\nCache-Control: no-store\r\n"
+			"Referrer-Policy: no-referrer\r\nContent-Length: 0\r\n\r\n");
+		return W12HlsDispatchResult::Handled;
+	}
+	const CStringA raw(path.token.c_str());
+	const CStringA digest = eSELive::DigestWebRequestToken(raw);
+	ese::web::WebHlsCapabilityReadRequest request;
+	request.token_digest.assign((LPCSTR)digest, digest.GetLength());
+	request.path_generation = path.generation;
+	request.stream_key = path.stream_hash;
+	request.resource = path.resource;
+	request.range.assign((LPCSTR)data.sRange, data.sRange.GetLength());
+	request.now_ms = eSELive::WebRequestAuthNowMs();
+	request.session_timeout_ms = eSELive::WebRequestSessionTimeoutMs();
+	const ese::web::WebHlsCapabilityReadPort port{
+		theApp.liveStreamManager, W12CopyWebHlsSource};
+	const ese::web::WebHlsCapabilityReadDecision decision =
+		ese::web::RunWebHlsCapabilityRead(policy, request, port);
+	if (decision.status == ese::web::WebHlsCapabilityReadStatus::Rejected) {
+		SendWebForbidden(data.pSocket, "access denied");
+		const std::string rejection = ese::web::BuildRejectedHlsCapabilityLog(
+			data.inadr.S_un.S_addr);
+		LIVE_LOG("SEC", "%s", rejection.c_str());
+		return W12HlsDispatchResult::Handled;
+	}
+	LiveHlsSourceSnapshot expected;
+	CLiveStreamManager* const manager = theApp.liveStreamManager;
+	if (manager == NULL ||
+		!W12MakeLiveHlsLeaseSnapshot(decision.source, expected)) {
+		SendWebForbidden(data.pSocket, "access denied");
+		return W12HlsDispatchResult::Handled;
+	}
+	W12HlsLeaseContext context;
+	context.policy = &policy;
+	context.socket = data.pSocket;
+	context.request = request;
+	context.source = decision.source;
+	const LiveHlsReadExecution executed = manager->ExecuteHlsReadIfCurrent(
+		expected, W12PrepareWebHlsRead, &context);
+	if (executed == LiveHlsReadExecution::Stale) {
+		policy.RevokeHlsCapabilityDigest(request.token_digest);
+		SendWebForbidden(data.pSocket, "access denied");
+		return W12HlsDispatchResult::Handled;
+	}
+	if (executed == LiveHlsReadExecution::Failed) {
+		if (context.commit_rejected) {
+			SendWebForbidden(
+				data.pSocket, "access denied");
+			return W12HlsDispatchResult::Handled;
+		}
+		data.pSocket->SendReply(
+			"HTTP/1.1 500 Internal Server Error\r\n"
+			"Cache-Control: no-store\r\nReferrer-Policy: no-referrer\r\n"
+			"Content-Length: 0\r\n\r\n");
+		return W12HlsDispatchResult::Handled;
+	}
+	// Socket queuing is deliberately outside CLiveStreamManager::m_lock.  The
+	// response owns immutable captured bytes plus its aggregate reservation.
+	if (!data.pSocket->SendPreparedFileResponse(std::move(context.prepared))) {
+		data.pSocket->Disconnect();
+	}
+	return W12HlsDispatchResult::Handled;
+}
+
+struct W12LiveAuthorization {
+	CStringA url;
+	bool token_auth = false;
+	bool token_admin = false;
+	std::uint32_t session_id = 0;
+	ese::web::WebSessionSnapshot session;
+};
+
+static bool W12AuthorizeLiveRequest(
+	ese::web::WebAuthPolicy& policy,
+	const ThreadData& data,
+	const CStringA& inputUrl,
+	W12LiveAuthorization& output)
+{
+	output = W12LiveAuthorization();
+	output.url = inputUrl;
+	const bool loopback =
+		data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK);
+	const std::uint64_t nowMs = eSELive::WebRequestAuthNowMs();
+	const std::uint64_t timeoutMs = eSELive::WebRequestSessionTimeoutMs();
+	auto resolve = [&policy, &data, nowMs, timeoutMs](
+		std::uint32_t expected, ese::web::WebSessionSnapshot& session) {
+		if (data.sBrowserSessionToken.IsEmpty())
+			return false;
+		const CStringA digest =
+			eSELive::DigestWebRequestToken(data.sBrowserSessionToken);
+		return policy.ResolveBrowserSessionDigest(
+			std::string((LPCSTR)digest, digest.GetLength()),
+			nowMs, timeoutMs, &session, expected);
+	};
+	if (output.url.GetLength() > 3 && strncmp(output.url, "/s/", 3) == 0) {
+		const int slash = output.url.Find('/', 3);
+		const long locator = slash > 3 ? atol((LPCSTR)output.url + 3) : 0;
+		if (!loopback || locator <= 0 ||
+			!resolve(static_cast<std::uint32_t>(locator), output.session)) {
+			SendWebForbidden(data.pSocket, "invalid or expired token");
+			const std::string rejection = ese::web::BuildRejectedLiveSessionLog(
+				data.inadr.S_un.S_addr);
+			LIVE_LOG("SEC", "%s", rejection.c_str());
+			return false;
+		}
+		output.url.Delete(0, slash);
+		output.token_auth = true;
+	} else if (resolve(0, output.session)) {
+		output.token_auth = true;
+	}
+	if (output.token_auth) {
+		output.token_admin = output.session.role == ese::web::WebRole::Admin;
+		output.session_id = output.session.id;
+	}
+	if (!loopback &&
+		(data.webRoute == ese::web::WebRouteId::ApiLiveStream ||
+		 data.webRoute == ese::web::WebRouteId::LegacyHls)) {
+		SendWebForbidden(data.pSocket, "HLS capability required");
+		return false;
+	}
+	const std::string path((LPCSTR)output.url, output.url.GetLength());
+	const ese::web::WebSessionSnapshot* session =
+		output.token_auth ? &output.session : nullptr;
+	if (!ese::web::WebAuthPolicy::AuthorizeLiveRequest(
+			path, loopback, session,
+			std::string((LPCSTR)data.sCsrfToken, data.sCsrfToken.GetLength()),
+			std::string((LPCSTR)data.sFetchSite, data.sFetchSite.GetLength()),
+			std::string((LPCSTR)data.sHost, data.sHost.GetLength()),
+			std::string((LPCSTR)data.sOrigin, data.sOrigin.GetLength()))) {
+		SendWebForbidden(
+			data.pSocket, "trusted origin or session CSRF required");
+		return false;
+	}
+	const ese::web::WebRole role = output.token_admin
+		? ese::web::WebRole::Admin : ese::web::WebRole::Guest;
+	const ese::web::WebRole required =
+		ese::web::WebAuthPolicy::RequiredRoleForLivePath(path);
+	if (output.token_auth &&
+		!ese::web::WebAuthPolicy::HasPermission(role, required)) {
+		SendWebForbidden(data.pSocket, "admin session required");
+		return false;
+	}
+	return true;
+}
+
+enum class W12PlayerCapabilityResult { Rewritten, NoLiveSource, Failed };
+
+static W12PlayerCapabilityResult W12RewritePlayerCapability(
+	ese::web::WebAuthPolicy& policy,
+	std::uint32_t sessionId,
+	const std::string& requestedStream,
+	std::string& header,
+	std::string& body)
+{
+	std::string streamHash = requestedStream;
+	std::transform(
+		streamHash.begin(), streamHash.end(), streamHash.begin(),
+		[](unsigned char character) {
+			return static_cast<char>(std::tolower(character));
+		});
+	LiveHlsSourceSnapshot source;
+	if (!W12CopyHlsSource(streamHash, source))
+		return W12PlayerCapabilityResult::NoLiveSource;
+	ese::web::WebHlsCapabilitySnapshot capability;
+	CStringA raw;
+	bool issued = false;
+	for (unsigned attempt = 0; attempt < 16 && !issued; ++attempt) {
+		const CStringA candidate = eSELive::GenerateWebRequestHexToken();
+		const CStringA digest = eSELive::DigestWebRequestToken(candidate);
+		issued = policy.IssueHlsReadCapability(
+			sessionId, streamHash, W12PolicyHlsRole(source), source.generation,
+			std::string((LPCSTR)digest, digest.GetLength()),
+			eSELive::WebRequestAuthNowMs(),
+			eSELive::WebRequestSessionTimeoutMs(), capability);
+		if (issued)
+			raw = candidate;
+	}
+	const std::string playlist = issued
+		? ese::web::BuildHlsCapabilityPlaylistPath(
+			std::string((LPCSTR)raw, raw.GetLength()),
+			capability.generation, streamHash)
+		: std::string();
+	if (!issued || playlist.empty() ||
+		!ese::web::RewriteLivePlayerForHlsCapability(
+			header, body, streamHash, playlist)) {
+		if (issued)
+			policy.RevokeHlsCapabilityDigest(capability.token_digest);
+		return W12PlayerCapabilityResult::Failed;
+	}
+	return W12PlayerCapabilityResult::Rewritten;
+}
 
 // eSE Live Streaming & Network Status API
 void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
@@ -1500,71 +1864,19 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		return;
 	CStringA sURL(CT2A(Data.sURL));
 
-	// --- M1 (mobile track): token-prefixed remote access ---------------------
-	// Remote HLS players (Media3/VLC/Safari) resolve segment URIs relative to
-	// the playlist URL and drop query strings, so the session token travels as
-	// a path prefix instead: /s/{ses}/api/live/{hash}/stream.m3u8. The token is
-	// a live webserver session id obtained through the password-gated login in
-	// _ProcessURL; _IsLoggedIn() both validates it and renews its expiry, so an
-	// actively playing stream keeps its own session alive. Bad or expired
-	// tokens get a 403 but are NOT added to badlogins: a player left paused
-	// past the session timeout would otherwise ban its own IP.
-	bool bTokenAuth = false;
-	bool bTokenAdmin = false;
-	ese::web::WebSessionSnapshot tokenSession;
-	if (sURL.GetLength() > 3 && strncmp(sURL, "/s/", 3) == 0) {
-		const int iSlash = sURL.Find('/', 3);
-		const long lToken = (iSlash > 3) ? atol((LPCSTR)sURL + 3) : 0;
-		if (lToken != 0 && _IsLoggedIn(Data, lToken) &&
-			pThis->m_authPolicy.GetSession(
-				static_cast<std::uint32_t>(lToken), tokenSession)) {
-			bTokenAuth = true;
-			bTokenAdmin = tokenSession.role == ese::web::WebRole::Admin;
-			sURL.Delete(0, iSlash); // strip prefix; routing below sees the bare path
-		} else {
-			SendWebForbidden(Data.pSocket, "invalid or expired token");
-			const uint32 clientIP = Data.inadr.S_un.S_addr; // network order
-			LIVE_LOG("SEC", "Rejected /s/ request with bad token from %lu.%lu.%lu.%lu  url=%s",
-				(unsigned long)(clientIP & 0xFF),
-				(unsigned long)((clientIP >> 8) & 0xFF),
-				(unsigned long)((clientIP >> 16) & 0xFF),
-				(unsigned long)((clientIP >> 24) & 0xFF),
-				(LPCSTR)sURL);
-			return;
-		}
-	}
-
-	const std::string livePath((LPCSTR)sURL, sURL.GetLength());
-	const ese::web::WebSessionSnapshot* mutationSession =
-		bTokenAuth ? &tokenSession : nullptr;
-	if (!ese::web::WebAuthPolicy::AuthorizeLiveRequest(
-		livePath,
-		Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK),
-		mutationSession,
-		std::string((LPCSTR)Data.sCsrfToken, Data.sCsrfToken.GetLength()),
-		std::string((LPCSTR)Data.sFetchSite, Data.sFetchSite.GetLength()),
-		std::string((LPCSTR)Data.sHost, Data.sHost.GetLength()),
-		std::string((LPCSTR)Data.sOrigin, Data.sOrigin.GetLength()))) {
-		SendWebForbidden(
-			Data.pSocket, "trusted origin or session CSRF required");
+	// W12 owns authentication via WebAuthPolicy::AuthorizeLiveRequest, followed
+	// by WebAuthPolicy::RequiredRoleForLivePath.  The controller then confirms
+	// role/key/generation and commits before any fetch or filesystem touch.
+	if (W12ProcessHlsCapability(pThis->m_authPolicy, Data, sURL) ==
+			W12HlsDispatchResult::Handled)
 		return;
-	}
-
-	// Guest (low-user) tokens are viewers only. WebAuthPolicy owns the complete
-	// permission matrix so newly extracted operator families cannot silently
-	// bypass this boundary. Loopback keeps today's full-trust behavior.
-	const ese::web::WebRole tokenRole = bTokenAdmin
-		? ese::web::WebRole::Admin
-		: ese::web::WebRole::Guest;
-	const ese::web::WebRole requiredRole =
-		ese::web::WebAuthPolicy::RequiredRoleForLivePath(
-			std::string((LPCSTR)sURL, sURL.GetLength()));
-	if (bTokenAuth && !ese::web::WebAuthPolicy::HasPermission(
-		tokenRole, requiredRole)) {
-		SendWebForbidden(Data.pSocket, "admin session required");
+	W12LiveAuthorization authorization;
+	if (!W12AuthorizeLiveRequest(
+			pThis->m_authPolicy, Data, sURL, authorization))
 		return;
-	}
-
+	sURL = authorization.url;
+	const bool bTokenAuth = authorization.token_auth;
+	const std::uint32_t authenticatedSessionId = authorization.session_id;
 	// W8 dispatch stays below the common session/CSRF/role gate above.  The
 	// app adapter owns GUI marshalling, time, sockets and the HLS filesystem.
 	ese::web::W8LiveStatusOperation statusOperation; bool hasStatus=false; switch(Data.webRoute) { case ese::web::WebRouteId::ApiStatus: statusOperation=ese::web::W8LiveStatusOperation::Status; hasStatus=true; break; case ese::web::WebRouteId::ApiLiveChannels: statusOperation=ese::web::W8LiveStatusOperation::Channels; hasStatus=true; break; case ese::web::WebRouteId::ApiLiveMesh: statusOperation=ese::web::W8LiveStatusOperation::Mesh; hasStatus=true; break; default: break; }
@@ -1584,8 +1896,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	case ese::web::WebRouteId::ApiLiveEdgeSabotage:settings.operation=W10SettingsOperation::EdgeSabotage;settings.loopback=Data.inadr.S_un.S_addr==htonl(INADDR_LOOPBACK);settings.on=W8Legacy(_ParseURL(Data.sURL,_T("on")));settings.mode=W8Legacy(_ParseURL(Data.sURL,_T("mode")));settings.delay=W8Legacy(_ParseURL(Data.sURL,_T("delay")));hasSettings=true;break;
 #endif
 	default:break;}if(hasSettings){const W10SettingsPort port=W10SettingsContext::Port();W10SettingsResponse response;if(RunW10LiveSettingsApi(settings,port,response)){W8StatusContext::Send(Data.pSocket,response.header,response.body);return;}}
-	ese::web::W10DiagnosticsRequest diagnostics;bool hasDiagnostics=false;switch(Data.webRoute){case ese::web::WebRouteId::ApiKrpStatus:diagnostics.operation=ese::web::W10DiagnosticsOperation::KrpStatus;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLivePreflight:diagnostics.operation=ese::web::W10DiagnosticsOperation::Preflight;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLiveMetrics:diagnostics.operation=ese::web::W10DiagnosticsOperation::Metrics;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLiveLog:diagnostics.operation=ese::web::W10DiagnosticsOperation::Log;diagnostics.log_n=_ttoi(_ParseURL(Data.sURL,_T("n")));hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLiveDebug:diagnostics.operation=ese::web::W10DiagnosticsOperation::Debug;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiEseNetlabIpv6Echo:diagnostics.operation=ese::web::W10DiagnosticsOperation::Ipv6Echo;diagnostics.target=W8Utf8(_ParseURL(Data.sURL,_T("target")));diagnostics.tcp_port=_ttoi(_ParseURL(Data.sURL,_T("tcp_port")));diagnostics.udp_port=_ttoi(_ParseURL(Data.sURL,_T("udp_port")));diagnostics.nonce=W8Legacy(_ParseURL(Data.sURL,_T("nonce")));diagnostics.timeout_ms=_ttoi(_ParseURL(Data.sURL,_T("timeout_ms")));if(diagnostics.timeout_ms==0)diagnostics.timeout_ms=5000;hasDiagnostics=true;break;default:break;}
-	if(hasDiagnostics){W10DiagnosticsContext context;const ese::web::W10DiagnosticsPort port{&context,W10DiagnosticsContext::Krp,W10DiagnosticsContext::Preflight,W10DiagnosticsContext::Metrics,W10DiagnosticsContext::Percentiles,W10DiagnosticsContext::Mean,W10DiagnosticsContext::Samples,W10DiagnosticsContext::Kad6,W10DiagnosticsContext::Log,W10DiagnosticsContext::Debug,W10DiagnosticsContext::Ipv6Echo};ese::web::W10DiagnosticsResponse response;if(ese::web::RunW10LiveDiagnosticsApi(diagnostics,port,response)){W8StatusContext::Send(Data.pSocket,response.header,response.body);return;}}
+	ese::web::W10DiagnosticsRequest diagnostics;bool hasDiagnostics=false;switch(Data.webRoute){case ese::web::WebRouteId::ApiKrpStatus:diagnostics.operation=ese::web::W10DiagnosticsOperation::KrpStatus;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiReachStatus:diagnostics.operation=ese::web::W10DiagnosticsOperation::ReachStatus;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLivePreflight:diagnostics.operation=ese::web::W10DiagnosticsOperation::Preflight;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLiveMetrics:diagnostics.operation=ese::web::W10DiagnosticsOperation::Metrics;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLiveLog:diagnostics.operation=ese::web::W10DiagnosticsOperation::Log;diagnostics.log_n=_ttoi(_ParseURL(Data.sURL,_T("n")));hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLiveDebug:diagnostics.operation=ese::web::W10DiagnosticsOperation::Debug;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiEseNetlabIpv6Echo:diagnostics.operation=ese::web::W10DiagnosticsOperation::Ipv6Echo;diagnostics.target=W8Utf8(_ParseURL(Data.sURL,_T("target")));diagnostics.tcp_port=_ttoi(_ParseURL(Data.sURL,_T("tcp_port")));diagnostics.udp_port=_ttoi(_ParseURL(Data.sURL,_T("udp_port")));diagnostics.nonce=W8Legacy(_ParseURL(Data.sURL,_T("nonce")));diagnostics.timeout_ms=_ttoi(_ParseURL(Data.sURL,_T("timeout_ms")));if(diagnostics.timeout_ms==0)diagnostics.timeout_ms=5000;hasDiagnostics=true;break;default:break;}
+	if(hasDiagnostics){W10DiagnosticsContext context;const ese::web::W10DiagnosticsPort port{&context,W10DiagnosticsContext::Krp,W10DiagnosticsContext::Preflight,W10DiagnosticsContext::Metrics,W10DiagnosticsContext::Percentiles,W10DiagnosticsContext::Mean,W10DiagnosticsContext::Samples,W10DiagnosticsContext::Kad6,W10DiagnosticsContext::Log,W10DiagnosticsContext::Debug,W10DiagnosticsContext::Ipv6Echo,W10DiagnosticsContext::Reach};ese::web::W10DiagnosticsResponse response;if(ese::web::RunW10LiveDiagnosticsApi(diagnostics,port,response)){W8StatusContext::Send(Data.pSocket,response.header,response.body);return;}}
 	// W11 owns the remaining compatibility pages, media files and privacy operations.
 	ese::web::W11LegacyRequest legacy;legacy.loopback=Data.inadr.S_un.S_addr==htonl(INADDR_LOOPBACK);bool hasLegacy=false;
 	switch(Data.webRoute){
@@ -1602,7 +1914,30 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	case ese::web::WebRouteId::LiveIndex:legacy.operation=ese::web::W11LegacyOperation::LiveIndex;hasLegacy=true;break;
 	case ese::web::WebRouteId::LivePlayer:legacy.operation=ese::web::W11LegacyOperation::LivePlayer;legacy.resource=W9Bytes(sURL.Mid(6,32));hasLegacy=true;break;
 	default:break;}
-	if(hasLegacy){const ese::web::W11LegacyPort port=W11LegacyContext::Port();ese::web::W11LegacyResponse response;if(ese::web::RunW11LiveLegacyApi(legacy,port,response)){SendW11Response(Data,response);return;}}
+	if(hasLegacy){const ese::web::W11LegacyPort port=W11LegacyContext::Port();ese::web::W11LegacyResponse response;if(ese::web::RunW11LiveLegacyApi(legacy,port,response)){
+		if (bTokenAuth && legacy.operation == ese::web::W11LegacyOperation::LiveIndex &&
+			!ese::web::RewriteLiveIndexForCookieSession(response.header,response.body)) { Data.pSocket->SendReply("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n");return; }
+		if (bTokenAuth &&
+			legacy.operation == ese::web::W11LegacyOperation::LivePlayer) {
+			const W12PlayerCapabilityResult result = W12RewritePlayerCapability(
+				pThis->m_authPolicy, authenticatedSessionId, legacy.resource,
+				response.header, response.body);
+			if (result == W12PlayerCapabilityResult::NoLiveSource) {
+				Data.pSocket->SendReply(
+					"HTTP/1.1 409 Conflict\r\nCache-Control: no-store\r\n"
+					"Referrer-Policy: no-referrer\r\nContent-Length: 0\r\n\r\n");
+				return;
+			}
+			if (result == W12PlayerCapabilityResult::Failed) {
+				Data.pSocket->SendReply(
+					"HTTP/1.1 500 Internal Server Error\r\n"
+					"Cache-Control: no-store\r\n"
+					"Referrer-Policy: no-referrer\r\n"
+					"Content-Length: 0\r\n\r\n");
+				return;
+			}
+		}
+		SendW11Response(Data,response);return;}}
 
 	// Fallback 404
 	Data.pSocket->SendReply("HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot found");
@@ -1710,47 +2045,4 @@ CString CWebServer::_GetCommentlist(const ThreadData &Data)
 	const CWebServer* owner = reinterpret_cast<CWebServer*>(Data.pThis); if (owner == NULL) return CString(); uchar hash[MDX_DIGEST_SIZE]; if (!strmd4(_ParseURL(Data.sURL, _T("filehash")), hash)) return CString();
 	WebCommentListInput input; input.found = theApp.downloadqueue->WithFileByID(hash, [&](CPartFile* file) { input.fileName = file->GetFileName(); for (POSITION position = file->srclist.GetHeadPosition(); position != NULL;) { const CUpDownClient* client = file->srclist.GetNext(position); if (client->HasFileRating() || !client->GetFileComment().IsEmpty()) input.rows.push_back({client->GetUserName(), client->GetClientFilename(), client->GetFileComment(), GetRateString(client->GetFileRating())}); } const CTypedPtrList<CPtrList, Kademlia::CEntry*>& entries = file->getNotes(); for (POSITION position = entries.GetHeadPosition(); position != NULL;) { const Kademlia::CEntry* entry = entries.GetNext(position); input.rows.push_back({_T(""), entry->GetCommonFileName(), entry->GetStrTagValue(Kademlia::CKadTagNameString(TAG_DESCRIPTION)), GetRateString(static_cast<UINT>(entry->GetIntTagValue(Kademlia::CKadTagNameString(TAG_FILERATING))))}); } });
 	return RenderWebCommentList(input, GetWebTemplate(WebTemplateParent(owner), WebTemplateId::CommentList), GetWebTemplate(WebTemplateParent(owner), WebTemplateId::CommentListLine));
-}
-int AFX_CDECL CWebServer::_DownloadCmp(void *prm, void const *pv1, void const *pv2)
-{
-	const DownloadFiles &p1 = *reinterpret_cast<const DownloadFiles*>(pv1);
-	const DownloadFiles &p2 = *reinterpret_cast<const DownloadFiles*>(pv2);
-	const auto compare = [](const auto& left, const auto& right) {
-		return left < right ? -1 : (left > right ? 1 : 0);
-	};
-	const ese::web::WebTransferDownloadComparison comparison{
-		compare(p1.iFileState, p2.iFileState),
-		p1.sFileType.CompareNoCase(p2.sFileType),
-		p1.sFileName.CompareNoCase(p2.sFileName),
-		compare(p1.m_qwFileSize, p2.m_qwFileSize),
-		compare(p1.m_qwFileTransferred, p2.m_qwFileTransferred),
-		compare(p1.lFileSpeed, p2.lFileSpeed),
-		compare(p1.m_dblCompleted, p2.m_dblCompleted),
-		compare(p1.lSourceCount, p2.lSourceCount),
-		compare(p1.nFilePrio, p2.nFilePrio),
-		p1.sCategory.CompareNoCase(p2.sCategory)
-	};
-	const SortParams* sort = static_cast<const SortParams*>(prm);
-	return ese::web::WebTransferController::CompareDownload(
-		static_cast<unsigned>(sort->eSort), sort->bReverse, comparison);
-}
-
-int AFX_CDECL CWebServer::_UploadCmp(void *prm, void const *pv1, void const *pv2)
-{
-	const UploadUsers &p1 = *reinterpret_cast<const UploadUsers*>(pv1);
-	const UploadUsers &p2 = *reinterpret_cast<const UploadUsers*>(pv2);
-	const auto compare = [](const auto& left, const auto& right) {
-		return left < right ? -1 : (left > right ? 1 : 0);
-	};
-	const ese::web::WebTransferUploadComparison comparison{
-		compare(*p1.sClientSoft, *p2.sClientSoft),
-		p1.sUserName.CompareNoCase(p2.sUserName),
-		p1.sClientNameVersion.CompareNoCase(p2.sClientNameVersion),
-		p1.sFileName.CompareNoCase(p2.sFileName),
-		compare(p1.nTransferredUp, p2.nTransferredUp),
-		compare(p1.nDataRate, p2.nDataRate)
-	};
-	const SortParams* sort = static_cast<const SortParams*>(prm);
-	return ese::web::WebTransferController::CompareUpload(
-		static_cast<unsigned>(sort->eSort), sort->bReverse, comparison);
 }

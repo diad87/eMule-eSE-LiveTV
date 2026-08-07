@@ -8,7 +8,7 @@
 
 namespace ese { namespace web {
 
-enum class W10DiagnosticsOperation { KrpStatus, Preflight, Metrics, Log, Debug, Ipv6Echo };
+enum class W10DiagnosticsOperation { KrpStatus, Preflight, Metrics, Log, Debug, Ipv6Echo, ReachStatus };
 struct W10DiagnosticsRequest {
 	W10DiagnosticsOperation operation = W10DiagnosticsOperation::KrpStatus;
 	int log_n = 100, tcp_port = 0, udp_port = 0, timeout_ms = 5000;
@@ -37,6 +37,7 @@ struct W10DiagnosticsPort {
 	bool (*read_log)(void*, int, std::vector<std::string>&) = nullptr;
 	bool (*read_debug)(void*, W10DebugSnapshot&) = nullptr;
 	bool (*run_ipv6_echo)(void*, const W10DiagnosticsRequest&, W10Ipv6EchoResult&) = nullptr;
+	bool (*read_reach_json)(void*, std::string&) = nullptr;
 };
 
 bool RunW10LiveDiagnosticsApi(const W10DiagnosticsRequest&, const W10DiagnosticsPort&, W10DiagnosticsResponse&);

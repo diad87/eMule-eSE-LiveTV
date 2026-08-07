@@ -903,13 +903,28 @@ foreach ($invalidSuccess in @(
 $script:soapSlots = @{}
 $script:soapDeleteCount = 0
 $script:soapFaultBody = [string]$faultResponse.body
+$script:soapActions = [Collections.ArrayList]::new()
+$script:soapFailAdd = $false
+$script:soapFailDelete = $false
 function Invoke-R01UpnpSoapAction {
     param($Backend, $Action, $Arguments)
     $serviceType = [string]$Backend.service_type
+    $protocol = if ($Arguments.Contains('NewProtocol')) {
+        [string]$Arguments['NewProtocol']
+    } else { '' }
+    $null = $script:soapActions.Add([pscustomobject]@{
+            action = $Action; protocol = $protocol
+        })
     switch ($Action) {
         'AddPortMapping' {
+            if ($script:soapFailAdd) {
+                return [pscustomobject]@{
+                    status_code = 500
+                    body = $script:soapFaultBody.Replace('714', '501')
+                }
+            }
             $port = [int]$Arguments['NewExternalPort']
-            $script:soapSlots["$port/TCP"] = [pscustomobject]@{
+            $script:soapSlots["$port/$protocol"] = [pscustomobject]@{
                 internal_port = [int]$Arguments['NewInternalPort']
                 internal_client = [string]$Arguments['NewInternalClient']
                 enabled = [string]$Arguments['NewEnabled']
@@ -924,7 +939,7 @@ function Invoke-R01UpnpSoapAction {
         }
         'GetSpecificPortMappingEntry' {
             $port = [int]$Arguments['NewExternalPort']
-            $slot = $script:soapSlots["$port/TCP"]
+            $slot = $script:soapSlots["$port/$protocol"]
             if ($null -eq $slot) {
                 return [pscustomobject]@{
                     status_code = 500; body = $script:soapFaultBody
@@ -956,8 +971,14 @@ function Invoke-R01UpnpSoapAction {
             }
         }
         'DeletePortMapping' {
+            if ($script:soapFailDelete) {
+                return [pscustomobject]@{
+                    status_code = 500
+                    body = $script:soapFaultBody.Replace('714', '501')
+                }
+            }
             $port = [int]$Arguments['NewExternalPort']
-            $null = $script:soapSlots.Remove("$port/TCP")
+            $null = $script:soapSlots.Remove("$port/$protocol")
             $script:soapDeleteCount++
             return [pscustomobject]@{
                 status_code = 200
@@ -995,6 +1016,121 @@ Assert-R01 -Condition ([bool]$soapRemoved.resolved -and
     [string]$soapOwned.backend -ceq 'soap' -and
     [string]$soapOwned.backend_identity_sha256 -match '^[0-9a-f]{64}$') `
     -Message 'Mocked SOAP exact Add/Get/Delete lifecycle is invalid.'
+
+# Exercise the protocol-aware primitives directly. The higher-level owned
+# mapping wrapper is intentionally TCP-only in v9.1 and is outside this delta.
+$udpDescription = Get-R01UpnpOwnershipDescription -Nonce $nonce `
+    -Role PROBE -ExternalPort 51908 -InternalPort 51908 `
+    -InternalClient '192.168.1.2' -Protocol UDP
+$udpTcpDescription = Get-R01UpnpOwnershipDescription -Nonce $nonce `
+    -Role PROBE -ExternalPort 51908 -InternalPort 51908 `
+    -InternalClient '192.168.1.2' -Protocol TCP
+Assert-R01 -Condition ($udpDescription -cne $udpTcpDescription -and
+    $udpDescription.Length -le 32) `
+    -Message 'UDP ownership description is not protocol-bound and bounded.'
+
+$script:soapActions.Clear()
+$udpCreated = Add-R01UpnpMapping -Backend $soapLifecycleBackend `
+    -ExternalPort 51908 -InternalPort 51908 `
+    -InternalClient '192.168.1.2' -Description $udpDescription `
+    -Protocol UDP
+$udpRead = Get-R01UpnpMapping -Backend $soapLifecycleBackend `
+    -ExternalPort 51908 -Protocol UDP
+Remove-R01UpnpMapping -Backend $soapLifecycleBackend `
+    -ExternalPort 51908 -Protocol UDP
+$udpAfterDelete = Get-R01UpnpMapping -Backend $soapLifecycleBackend `
+    -ExternalPort 51908 -Protocol UDP
+$udpMappingActions = @($script:soapActions | Where-Object {
+        $_.action -in @('AddPortMapping', 'GetSpecificPortMappingEntry',
+            'DeletePortMapping')
+    })
+Assert-R01 -Condition ($null -ne $udpCreated -and $null -ne $udpRead -and
+    $null -eq $udpAfterDelete -and
+    @($udpMappingActions | Where-Object {
+            [string]$_.protocol -cne 'UDP'
+        }).Count -eq 0 -and
+    @($udpMappingActions | Select-Object -ExpandProperty action -Unique).Count `
+        -eq 3) `
+    -Message 'UDP SOAP Add/Get/Delete did not preserve NewProtocol.'
+
+$script:soapFailAdd = $true
+$udp501Raised = $false
+try {
+    $null = Add-R01UpnpMapping -Backend $soapLifecycleBackend `
+        -ExternalPort 51909 -InternalPort 51909 `
+        -InternalClient '192.168.1.2' -Description $udpDescription `
+        -Protocol UDP
+} catch { $udp501Raised = $_.Exception.Message -match 'fault 501' }
+$script:soapFailAdd = $false
+$udp501Remaining = Get-R01UpnpMapping -Backend $soapLifecycleBackend `
+    -ExternalPort 51909 -Protocol UDP
+Assert-R01 -Condition ($udp501Raised -and $null -eq $udp501Remaining) `
+    -Message 'UDP fault 501 was not fail-closed with absence proven.'
+
+$null = Add-R01UpnpMapping -Backend $soapLifecycleBackend `
+    -ExternalPort 51910 -InternalPort 51910 `
+    -InternalClient '192.168.1.2' -Description $udpDescription `
+    -Protocol UDP
+$script:soapFailDelete = $true
+$udpDeleteRaised = $false
+try {
+    Remove-R01UpnpMapping -Backend $soapLifecycleBackend `
+        -ExternalPort 51910 -Protocol UDP
+} catch { $udpDeleteRaised = $_.Exception.Message -match 'fault 501' }
+$script:soapFailDelete = $false
+$udpDeleteRemaining = Get-R01UpnpMapping -Backend $soapLifecycleBackend `
+    -ExternalPort 51910 -Protocol UDP
+Remove-R01UpnpMapping -Backend $soapLifecycleBackend `
+    -ExternalPort 51910 -Protocol UDP
+Assert-R01 -Condition ($udpDeleteRaised -and
+    $null -ne $udpDeleteRemaining) `
+    -Message 'UDP delete failure did not preserve the mapping fail-closed.'
+
+$fakeMappings.return_created = $true
+$comUdp = Add-R01UpnpMapping -Backend $fakeBackend `
+    -ExternalPort 51911 -InternalPort 51911 `
+    -InternalClient '192.168.1.2' -Description $udpDescription `
+    -Protocol UDP
+$comUdpRead = Get-R01UpnpMapping -Backend $fakeBackend `
+    -ExternalPort 51911 -Protocol UDP
+Remove-R01UpnpMapping -Backend $fakeBackend `
+    -ExternalPort 51911 -Protocol UDP
+Assert-R01 -Condition ($null -ne $comUdp -and $null -ne $comUdpRead -and
+    -not $fakeMappings.slots.ContainsKey('51911/UDP')) `
+    -Message 'UDP COM Add/Get/Delete did not use the selected protocol.'
+
+$probeAst = $asts[$paths[8]]
+foreach ($name in @('Get-R01IPv4Class', 'Get-R01StringSha256',
+        'New-R01UpnpProbeResult')) {
+    Import-R01Function -Ast $probeAst -Name $name
+}
+$privateLocal = '192.168.77.23'
+$privateExternal = '198.51.100.77'
+$probePass = New-R01UpnpProbeResult -BackendKind soap -Protocol UDP `
+    -LocalAddress $privateLocal -ExternalAddress $privateExternal `
+    -MappingOnly $true -MappingCreated $true -CleanupComplete $true `
+    -MappingRemaining $false -DescriptionLength 31 `
+    -OperationSucceeded $true
+$probeFalsePass = New-R01UpnpProbeResult -BackendKind soap -Protocol UDP `
+    -LocalAddress $privateLocal -MappingOnly $true -MappingCreated $false `
+    -CleanupComplete $true -MappingRemaining $false -DescriptionLength 31 `
+    -OperationSucceeded $true
+$probeCleanupFail = New-R01UpnpProbeResult -BackendKind soap -Protocol UDP `
+    -LocalAddress $privateLocal -MappingOnly $true -MappingCreated $true `
+    -CleanupComplete $false -MappingRemaining $true -DescriptionLength 31 `
+    -OperationSucceeded $true
+$probeOperationFail = New-R01UpnpProbeResult -BackendKind soap -Protocol UDP `
+    -LocalAddress $privateLocal -MappingOnly $true -MappingCreated $true `
+    -CleanupComplete $true -MappingRemaining $false -DescriptionLength 31 `
+    -OperationSucceeded $false
+$probeJson = $probePass | ConvertTo-Json -Compress
+Assert-R01 -Condition ([string]$probePass.status -ceq 'MAPPING_PASS' -and
+    [string]$probeFalsePass.status -ceq 'FAIL' -and
+    [string]$probeCleanupFail.status -ceq 'FAIL' -and
+    [string]$probeOperationFail.status -ceq 'FAIL' -and
+    -not $probeJson.Contains($privateLocal) -and
+    -not $probeJson.Contains($privateExternal)) `
+    -Message 'Probe JSON status or address privacy projection is invalid.'
 
 $remoteText = Get-Content -LiteralPath $remotePath -Raw
 $controllerText = Get-Content -LiteralPath $controllerPath -Raw

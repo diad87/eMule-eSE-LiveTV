@@ -1,12 +1,14 @@
 [CmdletBinding()]
 param(
     [string]$ObservedExternalAddress = '',
-    [switch]$MappingOnly
+    [switch]$MappingOnly,
+    [ValidateSet('TCP', 'UDP')][string]$Protocol = 'TCP'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'v91_r01_upnp.ps1')
+$canonicalProtocol = $Protocol.ToUpperInvariant()
 
 function Get-R01IPv4Class {
     param([Parameter(Mandatory = $true)][string]$Address)
@@ -44,6 +46,46 @@ function Get-R01StringSha256 {
         return (($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Value)) |
                     ForEach-Object { $_.ToString('x2') }) -join '')
     } finally { $sha.Dispose() }
+}
+
+function New-R01UpnpProbeResult {
+    param(
+        [Parameter(Mandatory = $true)][string]$BackendKind,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('TCP', 'UDP')][string]$Protocol,
+        [Parameter(Mandatory = $true)][string]$LocalAddress,
+        [string]$ExternalAddress = '',
+        [Parameter(Mandatory = $true)][bool]$MappingOnly,
+        [Parameter(Mandatory = $true)][bool]$MappingCreated,
+        [Parameter(Mandatory = $true)][bool]$CleanupComplete,
+        [AllowNull()][Nullable[bool]]$MappingRemaining,
+        [Parameter(Mandatory = $true)][int]$DescriptionLength,
+        [Parameter(Mandatory = $true)][bool]$OperationSucceeded
+    )
+    $passed = $OperationSucceeded -and $MappingCreated -and $CleanupComplete
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.r01-upnp-preflight/v2'
+        status = if ($passed) {
+            if ($MappingOnly) { 'MAPPING_PASS' } else { 'PASS' }
+        } else { 'FAIL' }
+        formal_endpoint_validated = -not $MappingOnly
+        backend = $BackendKind
+        protocol = $Protocol.ToUpperInvariant()
+        physical_adapter = $true
+        local_ipv4_class = Get-R01IPv4Class -Address $LocalAddress
+        external_ipv4_class = if ([string]::IsNullOrWhiteSpace(
+                $ExternalAddress)) { 'unreported' } else {
+            Get-R01IPv4Class -Address $ExternalAddress
+        }
+        external_ipv4_sha256 = if ([string]::IsNullOrWhiteSpace(
+                $ExternalAddress)) { $null } else {
+            Get-R01StringSha256 -Value $ExternalAddress
+        }
+        exact_nonce_mapping_created = $MappingCreated
+        ownership_description_length = $DescriptionLength
+        cleanup_complete = $CleanupComplete
+        mapping_remaining = $MappingRemaining
+    }
 }
 
 $defaultRoutes = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' `
@@ -87,10 +129,16 @@ try {
         $rng.GetBytes($portBytes)
         $candidatePort = 49152 + (
             [BitConverter]::ToUInt16($portBytes, 0) % 16384)
-        if (@(Get-NetTCPConnection -LocalPort $candidatePort `
-                    -ErrorAction SilentlyContinue).Count -ne 0) { continue }
+        $portInUse = if ($canonicalProtocol -ceq 'TCP') {
+            @(Get-NetTCPConnection -LocalPort $candidatePort `
+                    -ErrorAction SilentlyContinue).Count -ne 0
+        } else {
+            @(Get-NetUDPEndpoint -LocalPort $candidatePort `
+                    -ErrorAction SilentlyContinue).Count -ne 0
+        }
+        if ($portInUse) { continue }
         $existing = Get-R01UpnpMapping -Backend $backend `
-            -ExternalPort $candidatePort
+            -ExternalPort $candidatePort -Protocol $canonicalProtocol
         if ($null -eq $existing) {
             $externalPort = $candidatePort
             break
@@ -102,19 +150,28 @@ if ($externalPort -eq 0) { throw 'No clean UPnP probe port was found.' }
 $nonce = [Guid]::NewGuid().ToString('N')
 $description = Get-R01UpnpOwnershipDescription -Nonce $nonce `
     -Role PREFLIGHT -ExternalPort $externalPort `
-    -InternalPort $externalPort -InternalClient $localAddress
+    -InternalPort $externalPort -InternalClient $localAddress `
+    -Protocol $canonicalProtocol
 $mappingCreated = $false
 $cleanupComplete = $false
+$mappingRemaining = $null
+$operationError = $null
 $externalAddress = ''
-$listener = [Net.Sockets.TcpListener]::new(
-    [Net.IPAddress]::Parse($localAddress), $externalPort)
+$listener = if ($canonicalProtocol -ceq 'TCP') {
+    [Net.Sockets.TcpListener]::new(
+        [Net.IPAddress]::Parse($localAddress), $externalPort)
+} else {
+    [Net.Sockets.UdpClient]::new([Net.IPEndPoint]::new(
+            [Net.IPAddress]::Parse($localAddress), $externalPort))
+}
 try {
-    $listener.Start(1)
+    if ($canonicalProtocol -ceq 'TCP') { $listener.Start(1) }
     $created = Add-R01UpnpMapping -Backend $backend `
         -ExternalPort $externalPort -InternalPort $externalPort `
-        -InternalClient $localAddress -Description $description
+        -InternalClient $localAddress -Description $description `
+        -Protocol $canonicalProtocol
     $current = Get-R01UpnpMapping -Backend $backend `
-        -ExternalPort $externalPort
+        -ExternalPort $externalPort -Protocol $canonicalProtocol
     $mappingCreated = $null -ne $created -and $null -ne $current -and
         [string]$created.Description -ceq $description -and
         [string]$created.InternalClient -ceq $localAddress -and
@@ -139,11 +196,13 @@ try {
         (Get-R01IPv4Class -Address $externalAddress) -cne 'global') {
         throw 'No globally routable H1 IPv4 was supplied or reported.'
     }
+} catch {
+    $operationError = $_
 } finally {
     $currentReadComplete = $true
     try {
         $current = Get-R01UpnpMapping -Backend $backend `
-            -ExternalPort $externalPort
+            -ExternalPort $externalPort -Protocol $canonicalProtocol
     } catch {
         $current = $null
         $currentReadComplete = $false
@@ -153,42 +212,41 @@ try {
         [string]$current.InternalClient -ceq $localAddress -and
         [int]$current.InternalPort -eq $externalPort -and
         [bool]$current.Enabled) {
-        Remove-R01UpnpMapping -Backend $backend `
-            -ExternalPort $externalPort
+        try {
+            Remove-R01UpnpMapping -Backend $backend `
+                -ExternalPort $externalPort -Protocol $canonicalProtocol
+        } catch {
+            if ($null -eq $operationError) { $operationError = $_ }
+        }
     }
     $remainingReadComplete = $true
     try {
         $remaining = Get-R01UpnpMapping -Backend $backend `
-            -ExternalPort $externalPort
+            -ExternalPort $externalPort -Protocol $canonicalProtocol
     } catch {
         $remaining = $null
         $remainingReadComplete = $false
     }
     $cleanupComplete = $currentReadComplete -and
         $remainingReadComplete -and $null -eq $remaining
-    try { $listener.Stop() } catch {}
+    $mappingRemaining = if ($remainingReadComplete) {
+        $null -ne $remaining
+    } else { $null }
+    try {
+        if ($canonicalProtocol -ceq 'TCP') { $listener.Stop() }
+        else { $listener.Dispose() }
+    } catch {}
 }
+
+$result = New-R01UpnpProbeResult -BackendKind ([string]$backend.kind) `
+    -Protocol $canonicalProtocol -LocalAddress $localAddress `
+    -ExternalAddress $externalAddress -MappingOnly ([bool]$MappingOnly) `
+    -MappingCreated $mappingCreated -CleanupComplete $cleanupComplete `
+    -MappingRemaining $mappingRemaining `
+    -DescriptionLength $description.Length `
+    -OperationSucceeded ($null -eq $operationError)
+$result | ConvertTo-Json -Compress
+if ($null -ne $operationError) { throw $operationError }
 if (-not $mappingCreated -or -not $cleanupComplete) {
     throw 'UPnP preflight ownership or cleanup was not complete.'
 }
-
-[pscustomobject][ordered]@{
-    schema = 'ese.v91.r01-upnp-preflight/v2'
-    status = if ($MappingOnly) { 'MAPPING_PASS' } else { 'PASS' }
-    formal_endpoint_validated = -not $MappingOnly
-    backend = [string]$backend.kind
-    physical_adapter = $true
-    local_ipv4_class = Get-R01IPv4Class -Address $localAddress
-    external_ipv4_class = if ([string]::IsNullOrWhiteSpace(
-            $externalAddress)) { 'unreported' } else {
-        Get-R01IPv4Class -Address $externalAddress
-    }
-    external_ipv4_sha256 = if ([string]::IsNullOrWhiteSpace(
-            $externalAddress)) { $null } else {
-        Get-R01StringSha256 -Value $externalAddress
-    }
-    exact_nonce_mapping_created = $mappingCreated
-    ownership_description_length = $description.Length
-    cleanup_complete = $cleanupComplete
-    mapping_remaining = $false
-} | ConvertTo-Json -Compress

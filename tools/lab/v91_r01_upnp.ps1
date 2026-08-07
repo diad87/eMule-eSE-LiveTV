@@ -8,7 +8,8 @@ function Get-R01UpnpOwnershipDescription {
         [ValidateRange(1, 65535)][int]$ExternalPort,
         [Parameter(Mandatory = $true)]
         [ValidateRange(1, 65535)][int]$InternalPort,
-        [Parameter(Mandatory = $true)][string]$InternalClient
+        [Parameter(Mandatory = $true)][string]$InternalClient,
+        [ValidateSet('TCP', 'UDP')][string]$Protocol = 'TCP'
     )
     $canonicalRole = $Role.ToUpperInvariant()
     $clientAddress = $null
@@ -25,8 +26,9 @@ function Get-R01UpnpOwnershipDescription {
         'PREFLIGHT' { 'F' }
         default { throw 'Unsupported R01 UPnP ownership role.' }
     }
-    $canonical = 'ese.v91.r01-upnp/v1|{0}|{1}|TCP|{2}|{3}|{4}' -f
-        $Nonce.ToLowerInvariant(), $canonicalRole, $ExternalPort,
+    $canonicalProtocol = $Protocol.ToUpperInvariant()
+    $canonical = 'ese.v91.r01-upnp/v1|{0}|{1}|{2}|{3}|{4}|{5}' -f
+        $Nonce.ToLowerInvariant(), $canonicalRole, $canonicalProtocol, $ExternalPort,
         $InternalPort, $clientAddress.ToString()
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
@@ -504,10 +506,15 @@ function Get-R01UpnpMapping {
     param(
         [Parameter(Mandatory = $true)]$Backend,
         [Parameter(Mandatory = $true)]
-        [ValidateRange(1, 65535)][int]$ExternalPort
+        [ValidateRange(1, 65535)][int]$ExternalPort,
+        [ValidateSet('TCP', 'UDP')][string]$Protocol = 'TCP'
     )
+    $canonicalProtocol = $Protocol.ToUpperInvariant()
     if ([string]$Backend.kind -ceq 'com') {
-        try { $mapping = $Backend.mappings.Item($ExternalPort, 'TCP') }
+        try {
+            $mapping = $Backend.mappings.Item(
+                $ExternalPort, $canonicalProtocol)
+        }
         catch {
             throw 'UPnP COM mapping lookup failed; absence is unproven.'
         }
@@ -527,7 +534,7 @@ function Get-R01UpnpMapping {
         -Action GetSpecificPortMappingEntry -Arguments ([ordered]@{
             NewRemoteHost = ''
             NewExternalPort = $ExternalPort
-            NewProtocol = 'TCP'
+            NewProtocol = $canonicalProtocol
         })
     if ([int]$response.status_code -ne 200) {
         if ((Get-R01UpnpSoapFaultCode -Response $response) -eq 714) {
@@ -593,14 +600,17 @@ function Add-R01UpnpMapping {
         [Parameter(Mandatory = $true)]
         [ValidateRange(1, 65535)][int]$InternalPort,
         [Parameter(Mandatory = $true)][string]$InternalClient,
-        [Parameter(Mandatory = $true)][string]$Description
+        [Parameter(Mandatory = $true)][string]$Description,
+        [ValidateSet('TCP', 'UDP')][string]$Protocol = 'TCP'
     )
+    $canonicalProtocol = $Protocol.ToUpperInvariant()
     if ($Description.Length -gt 32) {
         throw 'R01 refuses UPnP descriptions longer than 32 characters.'
     }
     if ([string]$Backend.kind -ceq 'com') {
         $created = $Backend.mappings.Add(
-            $ExternalPort, 'TCP', $InternalPort, $InternalClient, $true,
+            $ExternalPort, $canonicalProtocol, $InternalPort,
+            $InternalClient, $true,
             $Description)
         if ($null -eq $created) { return $null }
         return [pscustomobject][ordered]@{
@@ -618,7 +628,7 @@ function Add-R01UpnpMapping {
         -Action AddPortMapping -Arguments ([ordered]@{
             NewRemoteHost = ''
             NewExternalPort = $ExternalPort
-            NewProtocol = 'TCP'
+            NewProtocol = $canonicalProtocol
             NewInternalPort = $InternalPort
             NewInternalClient = $InternalClient
             NewEnabled = '1'
@@ -630,7 +640,7 @@ function Add-R01UpnpMapping {
         throw "UPnP AddPortMapping failed with fault $fault."
     }
     $created = Get-R01UpnpMapping -Backend $Backend `
-        -ExternalPort $ExternalPort
+        -ExternalPort $ExternalPort -Protocol $canonicalProtocol
     if ($null -ne $created) {
         $created.ExternalIPAddress = Get-R01UpnpSoapExternalAddress `
             -Backend $Backend
@@ -642,10 +652,12 @@ function Remove-R01UpnpMapping {
     param(
         [Parameter(Mandatory = $true)]$Backend,
         [Parameter(Mandatory = $true)]
-        [ValidateRange(1, 65535)][int]$ExternalPort
+        [ValidateRange(1, 65535)][int]$ExternalPort,
+        [ValidateSet('TCP', 'UDP')][string]$Protocol = 'TCP'
     )
+    $canonicalProtocol = $Protocol.ToUpperInvariant()
     if ([string]$Backend.kind -ceq 'com') {
-        $Backend.mappings.Remove($ExternalPort, 'TCP')
+        $Backend.mappings.Remove($ExternalPort, $canonicalProtocol)
         return
     }
     if ([string]$Backend.kind -cne 'soap') {
@@ -655,7 +667,7 @@ function Remove-R01UpnpMapping {
         -Action DeletePortMapping -Arguments ([ordered]@{
             NewRemoteHost = ''
             NewExternalPort = $ExternalPort
-            NewProtocol = 'TCP'
+            NewProtocol = $canonicalProtocol
         })
     if ([int]$response.status_code -ne 200) {
         $fault = Get-R01UpnpSoapFaultCode -Response $response

@@ -77,6 +77,9 @@ function Start-ReachMock {
                     if ($path -eq '/api/reach/status') {
                         switch ($ModeName) {
                             'candidate' { $body = $Candidate }
+                            'candidate-envelope' { $body = '{"available":true,"data":' + $Candidate + '}' }
+                            'candidate-envelope-unavailable' { $body = '{"available":false,"data":' + $Candidate + '}' }
+                            'candidate-envelope-error' { $body = '{"available":true,"data":' + $Candidate + ',"error":"mock nested failure"}' }
                             'lookalike' { $body = $Lookalike }
                             'unavailable-contract' { $body = $UnavailableContract }
                             'absent' { $body = '{}' }
@@ -149,6 +152,27 @@ try {
             -BaseUrl "http://127.0.0.1:$($golden.port)" | Out-Null
     }
     Stop-ReachMock -Mock $golden
+
+    $nestedGolden = Start-ReachMock -Mode candidate-envelope -Requests 1
+    Invoke-ExpectExit -Expected 0 -Name 'candidate nested envelope Live validation' -Action {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $validator -Live `
+            -BaseUrl "http://127.0.0.1:$($nestedGolden.port)" | Out-Null
+    }
+    Stop-ReachMock -Mock $nestedGolden
+
+    $nestedUnavailable = Start-ReachMock -Mode candidate-envelope-unavailable -Requests 1
+    Invoke-ExpectExit -Expected 1 -Name 'candidate unavailable nested envelope Live validation' -Action {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $validator -Live `
+            -BaseUrl "http://127.0.0.1:$($nestedUnavailable.port)" | Out-Null
+    }
+    Stop-ReachMock -Mock $nestedUnavailable
+
+    $nestedError = Start-ReachMock -Mode candidate-envelope-error -Requests 1
+    Invoke-ExpectExit -Expected 1 -Name 'candidate error nested envelope Live validation' -Action {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $validator -Live `
+            -BaseUrl "http://127.0.0.1:$($nestedError.port)" | Out-Null
+    }
+    Stop-ReachMock -Mock $nestedError
 
     $transport = Start-ReachMock -Mode transport -Requests 1
     Invoke-ExpectExit -Expected 1 -Name 'unavailable transport Live validation' -Action {

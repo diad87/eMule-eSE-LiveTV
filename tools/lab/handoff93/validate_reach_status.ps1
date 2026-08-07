@@ -274,6 +274,22 @@ function Get-LiveReachData {
             $null = $problems.Add('Invoke-LabApi envelope has no reach-status data payload')
         } else {
             $data = $Envelope.data
+            if ($null -ne $data -and $data -isnot [string] -and
+                $data -isnot [Collections.IEnumerable]) {
+                $dataNames = @($data.PSObject.Properties | ForEach-Object { $_.Name })
+                $isNestedEnvelope = $dataNames -contains 'available' -and
+                    $data.available -is [bool] -and $dataNames -contains 'data'
+                if ($isNestedEnvelope) {
+                    if (-not [bool]$data.available) {
+                        $null = $problems.Add('reach-status payload envelope is unavailable')
+                    }
+                    if ($dataNames -contains 'error' -and
+                        -not [string]::IsNullOrWhiteSpace([string]$data.error)) {
+                        $null = $problems.Add('reach-status payload envelope records an error')
+                    }
+                    $data = $data.data
+                }
+            }
         }
         if ($null -eq $data) {
             $null = $problems.Add('Invoke-LabApi envelope has no reach-status data payload')

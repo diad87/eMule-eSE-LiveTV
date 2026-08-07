@@ -4,10 +4,14 @@ Fixture for the 9.2 → 9.3 technical handoff gate (`HG01`–`HG08`,
 `H93-01`–`H93-16`). It builds on the WP0 toolkit in the parent directory and
 reuses its helpers, artifact schemas and canonical report collector.
 
-Read the gate-readiness material supplied with the handoff
-first. **`HG06` is not runnable today** — not for lack of hardware, but because
-per-plane mapping state is not observable from outside the process. Run
-`reach_probe.ps1` to confirm that on your own build before booking a session.
+Read the gate-readiness material supplied with the handoff first. The read-only
+reach-status adapter is present in the A4 binary and its isolated runtime probe
+reports `gate_readiness = READY`, so the observability prerequisite for `HG03`
+and `HG06` is unlocked. **This does not make `HG06` a PASS.** Adjudication still
+requires a physical router session that records the real
+`CANDIDATE -> VERIFIED -> WITHDRAWN` transition. Run `reach_probe.ps1` against
+the exact binary before booking that session; `READY` only says that the
+required states can be captured without reading logs.
 
 Like the rest of the toolkit, these scripts are passive: they never enable a
 feature, never launch eMule, never overwrite recorded evidence, and redact
@@ -24,7 +28,7 @@ powershell -ExecutionPolicy Bypass -File tools\lab\handoff93\reach_probe.ps1 `
 admissible. `INSUFFICIENT_OBSERVABILITY` names each gap and the gate rows it
 blocks. Do not book the router session until this reads `READY`.
 
-## 0b. The contract the adapter must satisfy
+## 0b. The contract implemented by the adapter
 
 `goldens/` holds the five reference payloads `HG03` asks to distinguish —
 `empty`, `candidate`, `verified`, `expired`, `stale` — and they double as the
@@ -37,7 +41,7 @@ structure, semantics and privacy:
 # self-check the reference payloads
 powershell -ExecutionPolicy Bypass -File tools\lab\handoff93\validate_reach_status.ps1 -Goldens
 
-# check a running node once the adapter exists
+# check the exact running node selected for evidence
 powershell -ExecutionPolicy Bypass -File tools\lab\handoff93\validate_reach_status.ps1 -Live
 ```
 
@@ -65,6 +69,12 @@ admissible evidence: it requires a validator-pass payload, `available: true`,
 and all three named planes. A contract-valid unavailable snapshot therefore
 passes `validate_reach_status.ps1` but remains `INSUFFICIENT_OBSERVABILITY` in
 the probe.
+
+The A4 HG03 closure is recorded in
+`artifacts/hg03-reach-observability-2f00a5e2/summary.json`. It binds the exact
+source, executable and sanitized probe hashes and records the 5/5 goldens,
+adversarial mock and isolated runtime results without copying the runtime
+payload, process identifiers or machine-local paths.
 
 ## 1. HG07 — physical path and network change
 
@@ -130,7 +140,8 @@ powershell -ExecutionPolicy Bypass -File tools\lab\collect_report.ps1 `
 
 ## Boundary
 
-These scripts decide and record; they do not implement the missing read
-adapter. That adapter touches `WebServer.cpp`, which the `M2A-W10` programme is
-modularizing right now, so it belongs in the 9.2 branch — building it on `main`
-guarantees a merge conflict.
+These scripts decide and record; they do not mutate reachability state. The
+read-only adapter now exposes the frozen, privacy-bounded snapshot needed for
+observation. `HG06` remains a physical gate: neither the adapter, the five
+goldens nor a loopback `READY` probe substitutes for the router-driven
+`CANDIDATE -> VERIFIED -> WITHDRAWN` evidence.

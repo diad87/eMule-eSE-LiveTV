@@ -1,0 +1,58 @@
+{
+  "schema": "ese.v92.hg03.reach-observability/v1",
+  "case": "HG03",
+  "verdict": "PASS",
+  "adjudication": "The A4 binary exposes the frozen reach-status contract and the sanitized runtime probe is READY. This closes the HG03 observability prerequisite only; HG06 remains pending a physical CANDIDATE -> VERIFIED -> WITHDRAWN router session.",
+  "binding": {
+    "code_commit": "2f00a5e287c2ce26abb8322500d295693f93f0d3",
+    "production_commit_a4": "d534405890a1bd2e7c6060601f75ad2c5821206a",
+    "source_identity_sha256": "ea83aa982fb069403ca0e0d7018ea85b63257a1f3e5c48ba3df225c0c19512f8",
+    "executable_sha256": "5218543cf6e2ed5daf4ff1eacca1621c123c4534d0e16160b4dafb03d617adc7",
+    "runtime_scripts_byte_identical_to_code_commit": true
+  },
+  "checks": {
+    "goldens": {
+      "command": "powershell -ExecutionPolicy Bypass -File tools\\lab\\handoff93\\validate_reach_status.ps1 -Goldens",
+      "result": "PASS",
+      "passed": 5,
+      "total": 5
+    },
+    "adversarial_mock": {
+      "command": "powershell -ExecutionPolicy Bypass -File tools\\lab\\handoff93\\test_reach_envelope_mock.ps1",
+      "result": "PASS",
+      "covers": [
+        "transport envelope validation",
+        "READY and INSUFFICIENT_OBSERVABILITY boundary",
+        "strict auxiliary value types",
+        "sensitive marker non-persistence"
+      ]
+    },
+    "runtime": {
+      "command": "powershell -ExecutionPolicy Bypass -File tools\\lab\\handoff93\\reach_probe.ps1 -NodeRole A",
+      "result": "READY",
+      "schema": "ese.lab.reach-probe/v1",
+      "node_role": "A",
+      "captured_at_utc": "2026-08-07T11:30:00.062Z",
+      "probe_sha256": "bf3222bbb1a23289b422c7e359b90144e0ca79408f7478b2d03227d26d53314a",
+      "payload_persisted_here": false
+    }
+  },
+  "privacy": {
+    "marker_scan_result": "PASS",
+    "markers_checked": 7,
+    "marker_hits": 0,
+    "personal_paths_persisted": false,
+    "full_runtime_payload_persisted": false
+  },
+  "process_isolation": {
+    "isolated_probe_pid_closed": true,
+    "pre_existing_user_pid_unchanged": true,
+    "pid_values_persisted": false
+  },
+  "remaining_gate": {
+    "case": "HG06",
+    "verdict": "PENDING_PHYSICAL_SESSION",
+    "required_transition": ["CANDIDATE", "VERIFIED", "WITHDRAWN"],
+    "loopback_ready_is_not_physical_pass": true
+  }
+}

@@ -78,6 +78,65 @@ function Get-LabEnvelopeProjection {
     return [pscustomobject]([ordered]@{ data = $data; problems = @($problems) })
 }
 
+function Get-LabReachStatusProjection {
+    param([object]$Payload)
+
+    $projection = [ordered]@{}
+    if ($null -ne $Payload -and
+        @($Payload.PSObject.Properties.Name) -contains 'upnp_ports_forwarded' -and
+        $Payload.upnp_ports_forwarded -is [string]) {
+        $value = [string]$Payload.upnp_ports_forwarded
+        if (@('true', 'false', 'unknown') -ccontains $value) {
+            $projection.upnp_ports_forwarded = $value
+        }
+    }
+    if ($projection.Count -eq 0) { return $null }
+    return [pscustomobject]$projection
+}
+
+function Get-LabPreflightProjection {
+    param([object]$Payload)
+
+    # This evidence only needs coarse capability/result flags.  Keep this an
+    # explicit allowlist so newly added paths, addresses or identifiers cannot
+    # silently enter persisted lab artifacts.
+    $projection = [ordered]@{}
+    if ($null -eq $Payload) { return $null }
+    $names = @($Payload.PSObject.Properties.Name)
+    foreach ($field in @('ok', 'ready', 'ffmpeg_available')) {
+        if ($names -contains $field -and $Payload.$field -is [bool]) {
+            $projection[$field] = [bool]$Payload.$field
+        }
+    }
+    if ($projection.Count -eq 0) { return $null }
+    return [pscustomobject]$projection
+}
+
+function Get-LabEnvelopeMetadata {
+    param([object]$Envelope)
+
+    $names = @()
+    if ($null -ne $Envelope) { $names = @($Envelope.PSObject.Properties.Name) }
+    $available = $false
+    if ($names -contains 'available' -and $Envelope.available -is [bool]) {
+        $available = [bool]$Envelope.available
+    }
+    $path = ''
+    if ($names -contains 'path') { $path = [string]$Envelope.path }
+    $capturedAt = ''
+    if ($names -contains 'captured_at_utc') { $capturedAt = [string]$Envelope.captured_at_utc }
+    $errorPresent = $false
+    if ($names -contains 'error') {
+        $errorPresent = -not [string]::IsNullOrWhiteSpace([string]$Envelope.error)
+    }
+    return [pscustomobject]([ordered]@{
+        available     = $available
+        path          = $path
+        captured_at   = $capturedAt
+        error_present = $errorPresent
+    })
+}
+
 function Test-ReachObservabilityContract {
     param([object]$Payload)
 
@@ -117,6 +176,8 @@ $preflightProjection = Get-LabEnvelopeProjection -Envelope $preflightEnvelope -N
 $reach = $reachProjection.data
 $status = $statusProjection.data
 $preflight = $preflightProjection.data
+$safeStatus = Get-LabReachStatusProjection -Payload $status
+$safePreflight = Get-LabPreflightProjection -Payload $preflight
 $hasReach = $reachProjection.problems.Count -eq 0 -and (Test-ReachObservabilityContract -Payload $reach)
 $hasStatus = $statusProjection.problems.Count -eq 0
 
@@ -126,8 +187,9 @@ $observed = [ordered]@{
     generation_readable    = $hasReach
     legacy_upnp_tristate   = ''
 }
-if ($hasStatus -and (@($status.PSObject.Properties.Name) -contains 'upnp_ports_forwarded')) {
-    $observed.legacy_upnp_tristate = [string]$status.upnp_ports_forwarded
+if ($null -ne $safeStatus -and
+    @($safeStatus.PSObject.Properties | ForEach-Object { $_.Name }) -contains 'upnp_ports_forwarded') {
+    $observed.legacy_upnp_tristate = [string]$safeStatus.upnp_ports_forwarded
 }
 
 $gaps = New-Object System.Collections.ArrayList
@@ -177,12 +239,12 @@ $probe = [ordered]@{
     observability    = $observed
     gaps             = @($gaps)
     reach            = $reach
-    status           = $status
-    live_preflight   = $preflight
+    status           = $safeStatus
+    live_preflight   = $safePreflight
     api_envelopes    = [ordered]@{
-        reach = $reachEnvelope
-        status = $statusEnvelope
-        live_preflight = $preflightEnvelope
+        reach = Get-LabEnvelopeMetadata -Envelope $reachEnvelope
+        status = Get-LabEnvelopeMetadata -Envelope $statusEnvelope
+        live_preflight = Get-LabEnvelopeMetadata -Envelope $preflightEnvelope
     }
 }
 

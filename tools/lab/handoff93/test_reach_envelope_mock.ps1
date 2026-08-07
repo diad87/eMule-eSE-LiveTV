@@ -31,6 +31,13 @@ $unavailableContractJson = @'
   "planes": {}
 }
 '@
+$sensitiveUserHash = 'HG02_USER_HASH_MUST_NOT_PERSIST_7f5d9c'
+$sensitiveFfmpegPath = 'C:\Users\hg02-privacy-marker\Desktop\ffmpeg.exe'
+$sensitivePublicIp = '2001:db8:dead:beef::92'
+$adversarialPcpNonce = 'PCP_NONCE_MUST_NOT_PERSIST_92'
+$adversarialOkSecret = 'OK_OBJECT_SECRET_MUST_NOT_PERSIST_92'
+$adversarialReadyPath = 'C:\Users\private\token.txt'
+$adversarialFfmpegIpv6 = '2001:db8:cafe::92'
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('reach-envelope-' + [Guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $testRoot -Force
 $activeMocks = New-Object System.Collections.ArrayList
@@ -52,8 +59,8 @@ function Start-ReachMock {
     )
 
     $port = Get-FreeLoopbackPort
-    $job = Start-Job -ArgumentList $port, $Mode, $Requests, $candidateJson, $lookalikeJson, $unavailableContractJson -ScriptBlock {
-        param($Port, $ModeName, $ExpectedRequests, $Candidate, $Lookalike, $UnavailableContract)
+    $job = Start-Job -ArgumentList $port, $Mode, $Requests, $candidateJson, $lookalikeJson, $unavailableContractJson, $sensitiveUserHash, $sensitiveFfmpegPath, $sensitivePublicIp, $adversarialPcpNonce, $adversarialOkSecret, $adversarialReadyPath, $adversarialFfmpegIpv6 -ScriptBlock {
+        param($Port, $ModeName, $ExpectedRequests, $Candidate, $Lookalike, $UnavailableContract, $UserHash, $FfmpegPath, $PublicIp, $PcpNonce, $OkSecret, $ReadyPath, $FfmpegIpv6)
 
         # HttpListener may be unavailable or ACL-restricted on lab hosts.  A
         # tiny TCP HTTP responder keeps this test PowerShell 5.1-compatible
@@ -77,6 +84,7 @@ function Start-ReachMock {
                     if ($path -eq '/api/reach/status') {
                         switch ($ModeName) {
                             'candidate' { $body = $Candidate }
+                            'candidate-adversarial' { $body = $Candidate }
                             'candidate-envelope' { $body = '{"available":true,"data":' + $Candidate + '}' }
                             'candidate-envelope-unavailable' { $body = '{"available":false,"data":' + $Candidate + '}' }
                             'candidate-envelope-error' { $body = '{"available":true,"data":' + $Candidate + ',"error":"mock nested failure"}' }
@@ -88,9 +96,32 @@ function Start-ReachMock {
                             'transport' { $body = '{"error":"mock unavailable"}'; $statusCode = 503 }
                         }
                     } elseif ($path -eq '/api/status') {
-                        $body = '{"upnp_ports_forwarded":"unknown"}'
+                        if ($ModeName -eq 'candidate-adversarial') {
+                            $body = [ordered]@{
+                                upnp_ports_forwarded = [ordered]@{ credential = $PcpNonce }
+                            } | ConvertTo-Json -Compress
+                        } else {
+                            $body = [ordered]@{
+                                upnp_ports_forwarded = 'unknown'
+                                user_hash = $UserHash
+                                public_ip = $PublicIp
+                            } | ConvertTo-Json -Compress
+                        }
                     } elseif ($path -eq '/api/live/preflight') {
-                        $body = '{"ok":true}'
+                        if ($ModeName -eq 'candidate-adversarial') {
+                            $body = [ordered]@{
+                                ok = [ordered]@{ secret = $OkSecret }
+                                ready = $ReadyPath
+                                ffmpeg_available = $FfmpegIpv6
+                            } | ConvertTo-Json -Compress
+                        } else {
+                            $body = [ordered]@{
+                                ok = $true
+                                ffmpeg_available = $true
+                                ffmpeg_path = $FfmpegPath
+                                public_ip = $PublicIp
+                            } | ConvertTo-Json -Compress
+                        }
                     }
                     $bytes = [Text.Encoding]::UTF8.GetBytes($body)
                     $reason = if ($statusCode -eq 200) { 'OK' } else { 'Service Unavailable' }
@@ -218,6 +249,66 @@ try {
     Stop-ReachMock -Mock $ready
     $readyProbe = Get-Content -LiteralPath $readyOut -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($readyProbe.gate_readiness -ne 'READY') { throw 'candidate reach probe was not READY' }
+    $readyRaw = Get-Content -LiteralPath $readyOut -Raw -Encoding UTF8
+    foreach ($forbiddenName in @('user_hash', 'ffmpeg_path', 'public_ip')) {
+        if ($readyRaw -match ('"' + [regex]::Escape($forbiddenName) + '"\s*:')) {
+            throw "candidate reach probe persisted forbidden field '$forbiddenName'"
+        }
+    }
+    foreach ($forbiddenValue in @($sensitiveUserHash, $sensitiveFfmpegPath, $sensitivePublicIp)) {
+        $encodedValue = (($forbiddenValue | ConvertTo-Json -Compress).Trim('"'))
+        if ($readyRaw.Contains($forbiddenValue) -or $readyRaw.Contains($encodedValue)) {
+            throw "candidate reach probe persisted forbidden marker '$forbiddenValue'"
+        }
+    }
+    if ($readyProbe.status.upnp_ports_forwarded -ne 'unknown') {
+        throw 'candidate reach probe lost the legacy UPnP tri-state projection'
+    }
+    if ((@($readyProbe.status.PSObject.Properties.Name) -join ',') -ne 'upnp_ports_forwarded') {
+        throw 'candidate reach probe status projection contains fields outside its allowlist'
+    }
+    if ((@($readyProbe.live_preflight.PSObject.Properties.Name) -join ',') -ne 'ok,ffmpeg_available') {
+        throw 'candidate reach probe preflight projection contains fields outside its allowlist'
+    }
+    foreach ($envelopeName in @('reach', 'status', 'live_preflight')) {
+        $envelopeFields = @($readyProbe.api_envelopes.$envelopeName.PSObject.Properties.Name)
+        if (($envelopeFields -join ',') -ne 'available,path,captured_at,error_present') {
+            throw "candidate reach probe envelope '$envelopeName' contains unsafe or missing metadata fields"
+        }
+    }
+
+    $adversarial = Start-ReachMock -Mode candidate-adversarial -Requests 3
+    $adversarialOut = Join-Path $testRoot 'probe-adversarial-values.json'
+    Invoke-ExpectExit -Expected 0 -Name 'candidate adversarial-value reach probe' -Action {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $probe -NodeRole A `
+            -BaseUrl "http://127.0.0.1:$($adversarial.port)" -OutFile $adversarialOut | Out-Null
+    }
+    Stop-ReachMock -Mock $adversarial
+    $adversarialProbe = Get-Content -LiteralPath $adversarialOut -Raw -Encoding UTF8 | ConvertFrom-Json
+    $adversarialRaw = Get-Content -LiteralPath $adversarialOut -Raw -Encoding UTF8
+    if ($adversarialProbe.gate_readiness -ne 'READY') {
+        throw 'adversarial auxiliary values changed reach-contract readiness'
+    }
+    foreach ($forbiddenValue in @($adversarialPcpNonce, $adversarialOkSecret, $adversarialReadyPath, $adversarialFfmpegIpv6)) {
+        $encodedValue = (($forbiddenValue | ConvertTo-Json -Compress).Trim('"'))
+        if ($adversarialRaw.Contains($forbiddenValue) -or $adversarialRaw.Contains($encodedValue)) {
+            throw "candidate reach probe persisted adversarial allowed-field value '$forbiddenValue'"
+        }
+    }
+    $adversarialStatusFields = @()
+    if ($null -ne $adversarialProbe.status) {
+        $adversarialStatusFields = @($adversarialProbe.status.PSObject.Properties | ForEach-Object { $_.Name })
+    }
+    if ($adversarialStatusFields.Count -ne 0) {
+        throw "invalid UPnP tri-state was not omitted from the safe status projection: $($adversarialStatusFields -join ',')"
+    }
+    $adversarialPreflightFields = @()
+    if ($null -ne $adversarialProbe.live_preflight) {
+        $adversarialPreflightFields = @($adversarialProbe.live_preflight.PSObject.Properties | ForEach-Object { $_.Name })
+    }
+    if ($adversarialPreflightFields.Count -ne 0) {
+        throw "non-boolean preflight values were not omitted from the safe projection: $($adversarialPreflightFields -join ',')"
+    }
 
     $deceptive = Start-ReachMock -Mode deceptive -Requests 3
     $deceptiveOut = Join-Path $testRoot 'probe-deceptive.json'

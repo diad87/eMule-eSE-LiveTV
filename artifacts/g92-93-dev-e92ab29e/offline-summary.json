@@ -1,0 +1,132 @@
+{
+  "schema": "ese.v92.g92-93-dev.offline-summary/v1",
+  "commit": "e92ab29e2bdddd1fa68da0f5aa841f068fa5f462",
+  "scope": "H93-01..H93-14 offline evidence; H93-15 and H93-16 are excluded physical gates",
+  "binding": {
+    "production_commit_a4": "d534405890a1bd2e7c6060601f75ad2c5821206a",
+    "source_identity_sha256": "ea83aa982fb069403ca0e0d7018ea85b63257a1f3e5c48ba3df225c0c19512f8",
+    "executable_sha256": "5218543cf6e2ed5daf4ff1eacca1621c123c4534d0e16160b4dafb03d617adc7",
+    "package_lock_sha256": "0d5f46ff0e004c43c7511ce1f31367469d989746c4c1725fc5131b6d04c0eeaf",
+    "cryptlib_sha256": "3c69550a1722178f9623ef2c967251199b046cf19374ee69dd4f088306e8aef7"
+  },
+  "toolchains": {
+    "compiler": "VS2022 17.x / MSVC 14.44 / Release x64",
+    "python": "3.12.10",
+    "node": "22.23.2",
+    "npm": "10.9.8",
+    "node_portable_zip_sha256": "1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97"
+  },
+  "runs": [
+    {
+      "id": "mx01-mx05",
+      "command": "python -m unittest tests.test_v92_mx01_direct_candidate_snapshot tests.test_v92_mx02_mapped_adapter tests.test_v92_mx03_pcp_upstream tests.test_v92_mx04_ipv6_scope tests.test_v92_mx05_handoff -v",
+      "exit_code": 0,
+      "passed": 84,
+      "failed": 0,
+      "covers": ["H93-03", "H93-04", "H93-05", "H93-07", "H93-09", "H93-11", "H93-12", "H93-14"]
+    },
+    {
+      "id": "host-focal",
+      "command": "python -m unittest tests.test_v92_mx01_direct_candidate_snapshot tests.test_v92_mx02_mapped_adapter tests.test_v92_mx03_pcp_upstream tests.test_v92_mx05_handoff tests.test_v92_m04_network_change tests.test_v92_m05_backoff tests.test_v92_m06_ipv6_priority tests.test_v92_l05_false_highid tests.test_v92_l06_double_evidence tests.test_v92_l07_hostile_corpus tests.test_v92_k05_mappings_off tests.test_v92_l02_pcp_ownership tests.test_v92_l03_natpmp_ownership -v",
+      "exit_code": 0,
+      "passed": 122,
+      "failed": 0,
+      "covers": ["H93-06", "H93-07", "H93-08", "H93-09", "H93-10", "H93-11", "H93-13", "H93-14"]
+    },
+    {
+      "id": "libnatmap-pass-1",
+      "command": "cmd /c libnatmap\\make.bat",
+      "exit_code": 0,
+      "result": "PASS",
+      "key_check_counts": {
+        "state_machine": 182840,
+        "hostile_mapper_corpus": 2245,
+        "direct_route_selection": 153,
+        "ipv6_scope_policy": 92,
+        "false_highid": 33,
+        "double_evidence": 45
+      }
+    },
+    {
+      "id": "libnatmap-pass-2",
+      "command": "cmd /c libnatmap\\make.bat",
+      "exit_code": 0,
+      "result": "PASS"
+    },
+    {
+      "id": "libreach",
+      "command": "cmd /c libreach\\make.bat",
+      "exit_code": 0,
+      "passed_checks": 206,
+      "failed_checks": 0
+    },
+    {
+      "id": "nat-gateway-node22",
+      "command": "npm ci --ignore-scripts && npm audit --audit-level=high && node --test test/*.test.js",
+      "working_directory": "tools/lab/nat_gateway",
+      "exit_code": 0,
+      "passed": 295,
+      "skipped": 1,
+      "failed": 0,
+      "skip_scope": "physical miniupnpc HTTP lifecycle only; not used to satisfy H93-06 simulated-mapper coverage"
+    },
+    {
+      "id": "srchybrid-native-pass-1",
+      "command": "cmd /c srchybrid\\tests\\make.bat",
+      "exit_code": 0,
+      "result": "PASS",
+      "key_check_counts": {"livefec": 21659, "livebulk": 183}
+    },
+    {
+      "id": "srchybrid-native-pass-2",
+      "command": "cmd /c srchybrid\\tests\\make.bat",
+      "exit_code": 0,
+      "result": "PASS",
+      "dependency_sha256": "3c69550a1722178f9623ef2c967251199b046cf19374ee69dd4f088306e8aef7"
+    },
+    {
+      "id": "web-regression",
+      "command": "node srchybrid\\eSE\\test\\live_tv_regression.test.js",
+      "exit_code": 0,
+      "passed": 42,
+      "failed": 0
+    },
+    {
+      "id": "reach-goldens",
+      "command": "powershell -ExecutionPolicy Bypass -File tools\\lab\\handoff93\\validate_reach_status.ps1 -Goldens",
+      "exit_code": 0,
+      "passed": 5,
+      "failed": 0
+    },
+    {
+      "id": "reach-adversarial-mock",
+      "command": "powershell -ExecutionPolicy Bypass -File tools\\lab\\handoff93\\test_reach_envelope_mock.ps1",
+      "exit_code": 0,
+      "result": "PASS"
+    },
+    {
+      "id": "m2a-ratchet",
+      "command": "python tools\\architecture\\verify_m2a00_migration_ratchet.py --verify",
+      "exit_code": 0,
+      "result": "PASS"
+    }
+  ],
+  "rows": {
+    "H93-01": "PASS", "H93-02": "PASS", "H93-03": "PASS", "H93-04": "PASS",
+    "H93-05": "PASS", "H93-06": "PASS", "H93-07": "PASS", "H93-08": "PASS",
+    "H93-09": "PASS", "H93-10": "PASS", "H93-11": "PASS", "H93-12": "PASS",
+    "H93-13": "PASS", "H93-14": "PASS"
+  },
+  "privacy": {
+    "summary_contains_runtime_payload": false,
+    "summary_contains_personal_path": false,
+    "summary_contains_sensitive_values": false,
+    "adversarial_persistence_checks": "PASS"
+  },
+  "physical": {
+    "H93-15": "PENDING",
+    "H93-16": "PENDING",
+    "simulated": false
+  },
+  "verdict": "OFFLINE_PASS_PHYSICAL_PENDING"
+}

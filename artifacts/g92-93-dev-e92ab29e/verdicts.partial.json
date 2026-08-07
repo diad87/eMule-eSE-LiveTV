@@ -1,0 +1,22 @@
+{
+  "gate": "G92-93-DEV",
+  "commit": "e92ab29e2bdddd1fa68da0f5aa841f068fa5f462",
+  "rows": [
+    {"id":"H93-01","verdict":"PASS","note":"clean final source checkout and exact toolchains recorded","artifacts":["offline-summary.json"]},
+    {"id":"H93-02","verdict":"PASS","note":"two complete native passes from the final offline HEAD","artifacts":["offline-summary.json"]},
+    {"id":"H93-03","verdict":"PASS","note":"five snapshot goldens and frozen schema/manifest hashes","artifacts":["offline-summary.json"]},
+    {"id":"H93-04","verdict":"PASS","note":"additive compatibility and unknown values fail closed","artifacts":["offline-summary.json"]},
+    {"id":"H93-05","verdict":"PASS","note":"contract-only fake consumer remains mapper-independent","artifacts":["offline-summary.json"]},
+    {"id":"H93-06","verdict":"PASS","note":"simulated UPnP, PCP and NAT-PMP MAP/readback/failure coverage; physical skip excluded","artifacts":["offline-summary.json"]},
+    {"id":"H93-07","verdict":"PASS","note":"only current correlated proof promotes exactly once","artifacts":["offline-summary.json"]},
+    {"id":"H93-08","verdict":"PASS","note":"TCP/UDP atomic pair and partial-failure cases pass","artifacts":["offline-summary.json"]},
+    {"id":"H93-09","verdict":"PASS","note":"renewal, expiry, ownership, gateway change and shutdown pass","artifacts":["offline-summary.json"]},
+    {"id":"H93-10","verdict":"PASS","note":"native, overlay, unknown and CGNAT route policy pass","artifacts":["offline-summary.json"]},
+    {"id":"H93-11","verdict":"PASS","note":"generation transition and stale-callback isolation pass","artifacts":["offline-summary.json"]},
+    {"id":"H93-12","verdict":"PASS","note":"global IPv6 firewall/proof/expiry lifecycle passes","artifacts":["offline-summary.json"]},
+    {"id":"H93-13","verdict":"PASS","note":"classic, wire, native and web integration gates pass twice where required","artifacts":["offline-summary.json"]},
+    {"id":"H93-14","verdict":"PASS","note":"hostile corpus and privacy-bound evidence gates pass","artifacts":["offline-summary.json"]},
+    {"id":"H93-15","verdict":"PENDING","simulated":false,"note":"requires physical router CANDIDATE to VERIFIED to WITHDRAWN cycles","artifacts":[]},
+    {"id":"H93-16","verdict":"PENDING","simulated":false,"note":"requires physical H1-H2 and LAN-hotspot-LAN route evidence","artifacts":[]}
+  ]
+}

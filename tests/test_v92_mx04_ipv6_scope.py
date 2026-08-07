@@ -246,7 +246,7 @@ class Mx04Ipv6ScopeRedContract(unittest.TestCase):
         header = (ROOT / "srchybrid/FirewallProberV6.h").read_text(encoding="utf-8")
         base = (ROOT / "srchybrid/BaseClient.cpp").read_text(encoding="utf-8")
         kad = (ROOT / "srchybrid/Kademlia/net/KademliaUDPListener.cpp").read_text(encoding="utf-8")
-        tunnel = (ROOT / "srchybrid/LiveTunnel.cpp").read_text(encoding="utf-8")
+        gateway = (ROOT / "srchybrid/Kad6GatewaySocket.cpp").read_text(encoding="utf-8")
         dlg = (ROOT / "srchybrid/EmuleDlg.cpp").read_text(encoding="utf-8")
         native_test = (ROOT / "libnatmap/tests/test_ipv6_scope_policy.cpp").read_text(
             encoding="utf-8"
@@ -284,8 +284,14 @@ class Mx04Ipv6ScopeRedContract(unittest.TestCase):
         self.assertIn("TAG_ESE_KADIP_V6", kad)
         self.assertIn("natmap::Transport::Udp", kad)
         self.assertIn("v6UdpObservation.IsVerifiedFor", kad)
-        self.assertIn("natmap::Transport::Tcp", tunnel)
-        self.assertIn("v6TcpObservation.IsVerifiedFor", tunnel)
+        self.assertIn("natmap::Transport::Tcp", gateway)
+        self.assertIn("v6TcpObservation.IsVerifiedFor", gateway)
+        ipv6_gateway = gateway[
+            gateway.index("ticket.target_endpoint.addr.family == kad6::Kad6Address::Family::IPv6") :
+            gateway.index("apparent.addr.family = kad6::Kad6Address::Family::IPv6")
+        ]
+        self.assertIn("!v6TcpObservation.IsVerifiedFor(topologyGeneration)", ipv6_gateway)
+        self.assertIn("reject(kad6::K6DialStatus::PolicyDenied)", ipv6_gateway)
         self.assertGreaterEqual(dlg.count("OnTopologyGenerationChanged("), 2)
 
     def test_build_wiring_contains_the_policy_and_native_gate(self) -> None:

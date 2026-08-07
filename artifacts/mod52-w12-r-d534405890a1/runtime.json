@@ -1,0 +1,177 @@
+{
+    "schema":  "ese.v92.w12.security-runtime/v2",
+    "candidate":  {
+                      "build_commit":  "d534405890a1bd2e7c6060601f75ad2c5821206a",
+                      "emule_sha256":  "5218543cf6e2ed5daf4ff1eacca1621c123c4534d0e16160b4dafb03d617adc7",
+                      "build_info_sha256":  "b8c5de6d5a327757ec48c18637d8c28e2a6fb15fd7ffc2aa98d3f6399ecc97e4",
+                      "release":  "v0.70b-eSE9.2.0-pre-R"
+                  },
+    "execution":  {
+                      "loopback_only":  true,
+                      "portable":  true,
+                      "headless":  true,
+                      "process_termination_confirmed":  true,
+                      "scratch_removed":  true
+                  },
+    "cases":  [
+                  {
+                      "id":  "W12-RUNTIME-READY",
+                      "status":  "PASS",
+                      "http_status":  200,
+                      "checks":  [
+                                     "final portable binary answered",
+                                     "web listener was loopback-only",
+                                     "isolated ports were active"
+                                 ]
+                  },
+                  {
+                      "id":  "W12-RUNTIME-LOGIN",
+                      "status":  "PASS",
+                      "http_status":  200,
+                      "checks":  [
+                                     "classic loopback login succeeded",
+                                     "cookie was 256-bit HttpOnly SameSite Strict",
+                                     "CSRF was 256-bit"
+                                 ]
+                  },
+                  {
+                      "id":  "W12-RUNTIME-BROADCAST",
+                      "status":  "PASS",
+                      "http_status":  200,
+                      "checks":  [
+                                     "testpattern start succeeded",
+                                     "at least three real HLS chunks existed",
+                                     "stream key was canonical"
+                                 ]
+                  },
+                  {
+                      "id":  "W12-RUNTIME-PLAYER-CAPABILITY",
+                      "status":  "PASS",
+                      "http_status":  200,
+                      "checks":  [
+                                     "cookie-authenticated player issued one capability",
+                                     "numeric session path was absent",
+                                     "response was hardened"
+                                 ]
+                  },
+                  {
+                      "id":  "W12-RUNTIME-PLAYLIST",
+                      "status":  "PASS",
+                      "http_status":  200,
+                      "checks":  [
+                                     "capability playlist was fetched",
+                                     "resource grammar was canonical",
+                                     "non-empty segment was fetched"
+                                 ]
+                  },
+                  {
+                      "id":  "W12-RUNTIME-RANGE",
+                      "status":  "PASS",
+                      "http_status":  206,
+                      "checks":  [
+                                     "range returned 206",
+                                     "range matched full-body prefix byte-for-byte",
+                                     "retry bytes and metadata were exact"
+                                 ]
+                  },
+                  {
+                      "id":  "W12-RUNTIME-FORGED-CAPABILITY",
+                      "status":  "PASS",
+                      "http_status":  403,
+                      "checks":  [
+                                     "canonical forged capability was rejected",
+                                     "rejection was no-store",
+                                     "rejection was no-referrer"
+                                 ]
+                  },
+                  {
+                      "id":  "W12-RUNTIME-LOG-CANARY",
+                      "status":  "PASS",
+                      "http_status":  200,
+                      "checks":  [
+                                     "application log was queried after rejection",
+                                     "raw canary had zero log hits"
+                                 ]
+                  },
+                  {
+                      "id":  "W12-RUNTIME-LOGOUT-REVOCATION",
+                      "status":  "PASS",
+                      "http_status":  403,
+                      "checks":  [
+                                     "logout cleared the owner session",
+                                     "pre-logout capability was rejected",
+                                     "revocation response was hardened"
+                                 ]
+                  },
+                  {
+                      "id":  "W12-RUNTIME-STOP-REVOCATION",
+                      "status":  "PASS",
+                      "http_status":  403,
+                      "checks":  [
+                                     "broadcast stop succeeded",
+                                     "pre-stop capability was rejected",
+                                     "stale source caused no HLS success"
+                                 ]
+                  },
+                  {
+                      "id":  "W12-RUNTIME-ROLLOVER-REVOCATION",
+                      "status":  "PASS",
+                      "http_status":  403,
+                      "checks":  [
+                                     "new generation issued a working capability",
+                                     "old generation remained rejected",
+                                     "both responses were hardened"
+                                 ]
+                  },
+                  {
+                      "id":  "W12-RUNTIME-RESTART-REVOCATION",
+                      "status":  "PASS",
+                      "http_status":  403,
+                      "checks":  [
+                                     "same portable node restarted",
+                                     "pre-restart capability was rejected",
+                                     "restart rejection was hardened"
+                                 ]
+                  },
+                  {
+                      "id":  "W12-RUNTIME-TERMINATION",
+                      "status":  "PASS",
+                      "http_status":  null,
+                      "checks":  [
+                                     "primary process exited",
+                                     "portable-node child processes exited"
+                                 ]
+                  },
+                  {
+                      "id":  "W12-RUNTIME-ARTIFACT-SCAN",
+                      "status":  "PASS",
+                      "http_status":  null,
+                      "checks":  [
+                                     "raw credential and capability hits were zero",
+                                     "raw canary hits were zero",
+                                     "sensitive URL hits were zero"
+                                 ]
+                  }
+              ],
+    "canary":  {
+                   "sha256":  "a67280b5cb409a006b4ffd97c8046dc5f21ad6d0cfa732466dac407a1edb2165",
+                   "log_hits":  0,
+                   "artifact_hits":  0,
+                   "forged_body_hits":  0
+               },
+    "privacy":  {
+                    "no_store_all_sensitive_responses":  true,
+                    "no_referrer_all_sensitive_responses":  true,
+                    "secrets_persisted":  false,
+                    "sensitive_urls_persisted":  false
+                },
+    "binding":  {
+                    "activation_commit":  "d534405890a1bd2e7c6060601f75ad2c5821206a",
+                    "production_tree_sha256":  "6182f362ec507c0821e8d04cad6624e8fdfe763e1b0fb2214376cc62b334673c",
+                    "toolset_sha256":  "7ed188a3c9e0d87c8784f91bd1ee340b4dcf3adba32a5e350ffeea35a6b71fc4",
+                    "run_id_sha256":  "3a3fd934623d2749bf7dc3c22e5194af82acd1394d366f809ca56c0f1caa8dfe",
+                    "challenge_nonce_sha256":  "990a0ee1923daee8a3bdce09e4c650e4d9faf01c48552e3587f37eb3ec63061e",
+                    "canary_sha256":  "a67280b5cb409a006b4ffd97c8046dc5f21ad6d0cfa732466dac407a1edb2165"
+                },
+    "verdict":  "PASS"
+}

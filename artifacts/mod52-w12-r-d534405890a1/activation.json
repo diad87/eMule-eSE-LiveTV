@@ -1,0 +1,13 @@
+{
+    "schema":  "ese.v92.w12.activation/v2",
+    "activation_commit":  "d534405890a1bd2e7c6060601f75ad2c5821206a",
+    "production_tree_sha256":  "6182f362ec507c0821e8d04cad6624e8fdfe763e1b0fb2214376cc62b334673c",
+    "production_path_count":  1372,
+    "tool_sha256":  {
+                        "runner":  "5422fb6397300a7ec800380fce4d6681b106c5d1dd18c3a56607b99bd9832121",
+                        "verifier":  "66602b4ed5d7345a967d813aedc830caa5cd10c8a5600fe213dd0f9e6fdca670",
+                        "collector":  "51ffa2110cb48a4eec01c844ed6aafde435769b344e0d7364969c2a8ffa0d610",
+                        "test":  "fd8d5860ed4ed442f3d1ea774622d86ee68a12e39dd099201b43f52e6867e703",
+                        "ratchet":  "d1971d9ebc83e0e74f3b5ac14d57d2e8940e47183d84faad620ea2c0df310214"
+                    }
+}

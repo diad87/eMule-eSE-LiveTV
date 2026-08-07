@@ -1,0 +1,17 @@
+{
+    "schema":  "ese.v92.w12.browser-challenge/v2",
+    "candidate":  {
+                      "build_commit":  "d534405890a1bd2e7c6060601f75ad2c5821206a",
+                      "emule_sha256":  "5218543cf6e2ed5daf4ff1eacca1621c123c4534d0e16160b4dafb03d617adc7",
+                      "build_info_sha256":  "b8c5de6d5a327757ec48c18637d8c28e2a6fb15fd7ffc2aa98d3f6399ecc97e4",
+                      "release":  "v0.70b-eSE9.2.0-pre-R"
+                  },
+    "binding":  {
+                    "activation_commit":  "d534405890a1bd2e7c6060601f75ad2c5821206a",
+                    "production_tree_sha256":  "6182f362ec507c0821e8d04cad6624e8fdfe763e1b0fb2214376cc62b334673c",
+                    "toolset_sha256":  "7ed188a3c9e0d87c8784f91bd1ee340b4dcf3adba32a5e350ffeea35a6b71fc4",
+                    "run_id_sha256":  "3a3fd934623d2749bf7dc3c22e5194af82acd1394d366f809ca56c0f1caa8dfe",
+                    "challenge_nonce_sha256":  "990a0ee1923daee8a3bdce09e4c650e4d9faf01c48552e3587f37eb3ec63061e",
+                    "canary_sha256":  "a67280b5cb409a006b4ffd97c8046dc5f21ad6d0cfa732466dac407a1edb2165"
+                }
+}

@@ -1,3 +1,6 @@
 # Quality evidence is hashed byte-for-byte by its manifest. Do not apply
 # line-ending conversion or other text filters on checkout.
 quality/** -text
+
+# Generated handoff matrices are JSON text and must stay diff-check clean.
+artifacts/**/handoff-9.3/gate-matrix.json text eol=lf

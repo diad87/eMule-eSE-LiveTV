@@ -88,6 +88,37 @@ function New-R01UpnpProbeResult {
     }
 }
 
+function New-R01BoundProbeListener {
+    param(
+        [Parameter(Mandatory = $true)][string]$LocalAddress,
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, 65535)][int]$Port,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('TCP', 'UDP')][string]$Protocol
+    )
+    $listener = $null
+    try {
+        $endpoint = [Net.IPEndPoint]::new(
+            [Net.IPAddress]::Parse($LocalAddress), $Port)
+        if ($Protocol.ToUpperInvariant() -ceq 'TCP') {
+            $listener = [Net.Sockets.TcpListener]::new($endpoint)
+            $listener.Start(1)
+        } else {
+            $listener = [Net.Sockets.UdpClient]::new($endpoint)
+        }
+        return $listener
+    } catch {
+        if ($null -ne $listener) {
+            try {
+                if ($Protocol.ToUpperInvariant() -ceq 'TCP') {
+                    $listener.Stop()
+                } else { $listener.Dispose() }
+            } catch {}
+        }
+        return $null
+    }
+}
+
 $defaultRoutes = @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' `
     -AddressFamily IPv4 -ErrorAction Stop | Sort-Object RouteMetric)
 if ($defaultRoutes.Count -lt 1) { throw 'No IPv4 default route.' }
@@ -124,6 +155,7 @@ $backend = New-R01UpnpBackend -LocalAddress $localAddress `
 $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
 $portBytes = New-Object byte[] 2
 $externalPort = 0
+$listener = $null
 try {
     for ($attempt = 0; $attempt -lt 64; $attempt++) {
         $rng.GetBytes($portBytes)
@@ -140,6 +172,11 @@ try {
         $existing = Get-R01UpnpMapping -Backend $backend `
             -ExternalPort $candidatePort -Protocol $canonicalProtocol
         if ($null -eq $existing) {
+            $candidateListener = New-R01BoundProbeListener `
+                -LocalAddress $localAddress -Port $candidatePort `
+                -Protocol $canonicalProtocol
+            if ($null -eq $candidateListener) { continue }
+            $listener = $candidateListener
             $externalPort = $candidatePort
             break
         }
@@ -157,15 +194,7 @@ $cleanupComplete = $false
 $mappingRemaining = $null
 $operationError = $null
 $externalAddress = ''
-$listener = if ($canonicalProtocol -ceq 'TCP') {
-    [Net.Sockets.TcpListener]::new(
-        [Net.IPAddress]::Parse($localAddress), $externalPort)
-} else {
-    [Net.Sockets.UdpClient]::new([Net.IPEndPoint]::new(
-            [Net.IPAddress]::Parse($localAddress), $externalPort))
-}
 try {
-    if ($canonicalProtocol -ceq 'TCP') { $listener.Start(1) }
     $created = Add-R01UpnpMapping -Backend $backend `
         -ExternalPort $externalPort -InternalPort $externalPort `
         -InternalClient $localAddress -Description $description `

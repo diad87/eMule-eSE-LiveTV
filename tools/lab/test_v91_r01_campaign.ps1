@@ -1101,9 +1101,50 @@ Assert-R01 -Condition ($null -ne $comUdp -and $null -ne $comUdpRead -and
 
 $probeAst = $asts[$paths[8]]
 foreach ($name in @('Get-R01IPv4Class', 'Get-R01StringSha256',
-        'New-R01UpnpProbeResult')) {
+        'New-R01UpnpProbeResult', 'New-R01BoundProbeListener')) {
     Import-R01Function -Ast $probeAst -Name $name
 }
+$loopback = [Net.IPAddress]::Loopback
+$occupiedTcp = [Net.Sockets.TcpListener]::new($loopback, 0)
+$occupiedTcp.Start(1)
+$tcpPort = ([Net.IPEndPoint]$occupiedTcp.LocalEndpoint).Port
+try {
+    $tcpRejected = New-R01BoundProbeListener -LocalAddress '127.0.0.1' `
+        -Port $tcpPort -Protocol TCP
+    Assert-R01 -Condition ($null -eq $tcpRejected) `
+        -Message 'TCP selection accepted a port that could not be bound.'
+} finally { $occupiedTcp.Stop() }
+$tcpHeld = New-R01BoundProbeListener -LocalAddress '127.0.0.1' `
+    -Port $tcpPort -Protocol TCP
+Assert-R01 -Condition ($null -ne $tcpHeld) `
+    -Message 'TCP selection did not return a live bound listener.'
+$tcpHeld.Stop()
+
+$occupiedUdp = [Net.Sockets.UdpClient]::new()
+$occupiedUdp.ExclusiveAddressUse = $true
+$occupiedUdp.Client.Bind([Net.IPEndPoint]::new($loopback, 0))
+$udpPort = ([Net.IPEndPoint]$occupiedUdp.Client.LocalEndPoint).Port
+try {
+    $udpRejected = New-R01BoundProbeListener -LocalAddress '127.0.0.1' `
+        -Port $udpPort -Protocol UDP
+    Assert-R01 -Condition ($null -eq $udpRejected) `
+        -Message 'UDP selection accepted a port that could not be bound.'
+} finally { $occupiedUdp.Dispose() }
+$udpHeld = New-R01BoundProbeListener -LocalAddress '127.0.0.1' `
+    -Port $udpPort -Protocol UDP
+Assert-R01 -Condition ($null -ne $udpHeld) `
+    -Message 'UDP selection did not return a live bound socket.'
+$udpHeld.Dispose()
+
+$probeSource = Get-Content -LiteralPath $paths[8] -Raw
+$bindIndex = $probeSource.IndexOf(
+    '$candidateListener = New-R01BoundProbeListener')
+$selectIndex = $probeSource.IndexOf('$externalPort = $candidatePort')
+$cleanupIndex = $probeSource.LastIndexOf('$listener.Dispose()')
+Assert-R01 -Condition ($bindIndex -ge 0 -and $selectIndex -gt $bindIndex -and
+    $cleanupIndex -gt $selectIndex -and
+    $probeSource.Contains('if ($null -eq $candidateListener) { continue }')) `
+    -Message 'Probe does not retry failed binds or retain the winner to cleanup.'
 $privateLocal = '192.168.77.23'
 $privateExternal = '198.51.100.77'
 $probePass = New-R01UpnpProbeResult -BackendKind soap -Protocol UDP `

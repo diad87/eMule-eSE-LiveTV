@@ -56,7 +56,8 @@ $paths = @(
     (Join-Path $PSScriptRoot 'control_ese_lab_smallframe_agent.ps1'),
     (Join-Path $PSScriptRoot 'test_v91_r01_remote.ps1'),
     (Join-Path $PSScriptRoot 'v91_r01_upnp.ps1'),
-    (Join-Path $PSScriptRoot 'probe_v91_r01_upnp.ps1')
+    (Join-Path $PSScriptRoot 'probe_v91_r01_upnp.ps1'),
+    (Join-Path $PSScriptRoot 'diagnose_v91_r01_upnp_capacity.ps1')
 )
 $asts = @{}
 foreach ($path in $paths) {
@@ -78,6 +79,7 @@ foreach ($name in @(
     'ConvertFrom-R01UpnpXml', 'Get-R01UpnpSoapFaultCode',
     'Get-R01UpnpSoapResponseElement', 'Get-R01UpnpSoapChildValue',
     'Get-R01UpnpSoapExternalAddress',
+    'Get-R01UpnpGenericMappingEntry',
     'Get-R01UpnpMapping',
     'Add-R01UpnpMapping', 'Remove-R01UpnpMapping'
 )) { Import-R01Function -Ast $upnpAst -Name $name }
@@ -1172,6 +1174,178 @@ Assert-R01 -Condition ([string]$probePass.status -ceq 'MAPPING_PASS' -and
     -not $probeJson.Contains($privateLocal) -and
     -not $probeJson.Contains($privateExternal)) `
     -Message 'Probe JSON status or address privacy projection is invalid.'
+
+$script:genericMode = 'success'
+function Invoke-R01UpnpSoapAction {
+    param($Backend, $Action, $Arguments)
+    if ($Action -cne 'GetGenericPortMappingEntry' -or
+        @($Arguments.Keys).Count -ne 1 -or
+        -not $Arguments.Contains('NewPortMappingIndex')) {
+        throw 'Generic mapping diagnostic issued an unexpected SOAP action.'
+    }
+    if ($script:genericMode -ceq '713') {
+        return [pscustomobject]@{
+            status_code = 500
+            body = $script:soapFaultBody.Replace('714', '713')
+        }
+    }
+    if ($script:genericMode -ceq '501') {
+        return [pscustomobject]@{
+            status_code = 500
+            body = $script:soapFaultBody.Replace('714', '501')
+        }
+    }
+    $body = '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">' +
+        '<s:Body><u:GetGenericPortMappingEntryResponse xmlns:u="' +
+        [string]$Backend.service_type + '">' +
+        '<NewRemoteHost></NewRemoteHost><NewExternalPort>50001</NewExternalPort>' +
+        '<NewProtocol>UDP</NewProtocol><NewInternalPort>50001</NewInternalPort>' +
+        '<NewInternalClient>192.168.1.2</NewInternalClient><NewEnabled>1</NewEnabled>' +
+        '<NewPortMappingDescription>tailscale-portmap-sensitive</NewPortMappingDescription>' +
+        '<NewLeaseDuration>3600</NewLeaseDuration>' +
+        '</u:GetGenericPortMappingEntryResponse></s:Body></s:Envelope>'
+    switch ($script:genericMode) {
+        'missing' {
+            $body = $body.Replace('<NewProtocol>UDP</NewProtocol>', '')
+        }
+        'extra' {
+            $body = $body.Replace('</u:GetGenericPortMappingEntryResponse>',
+                '<NewExtra>value</NewExtra></u:GetGenericPortMappingEntryResponse>')
+        }
+        'duplicate' {
+            $body = $body.Replace('<NewProtocol>UDP</NewProtocol>',
+                '<NewProtocol>UDP</NewProtocol><NewProtocol>UDP</NewProtocol>')
+        }
+        'namespaced' {
+            $body = $body.Replace('<NewProtocol>UDP</NewProtocol>',
+                '<u:NewProtocol>UDP</u:NewProtocol>')
+        }
+        'external-port' { $body = $body.Replace('>50001</NewExternalPort>',
+                '>0</NewExternalPort>') }
+        'internal-port' { $body = $body.Replace('>50001</NewInternalPort>',
+                '>65536</NewInternalPort>') }
+        'protocol' { $body = $body.Replace('>UDP</NewProtocol>',
+                '>SCTP</NewProtocol>') }
+        'enabled' { $body = $body.Replace('>1</NewEnabled>',
+                '>yes</NewEnabled>') }
+        'lease' { $body = $body.Replace('>3600</NewLeaseDuration>',
+                '>-1</NewLeaseDuration>') }
+        'client' { $body = $body.Replace('>192.168.1.2</NewInternalClient>',
+                '>not-an-address</NewInternalClient>') }
+    }
+    return [pscustomobject]@{ status_code = 200; body = $body }
+}
+$genericBackend = [pscustomobject]@{
+    kind = 'soap'
+    service_type = 'urn:schemas-upnp-org:service:WANIPConnection:1'
+}
+$genericEntry = Get-R01UpnpGenericMappingEntry -Backend $genericBackend `
+    -Index 0
+Assert-R01 -Condition ([string]$genericEntry.Protocol -ceq 'UDP' -and
+    [uint32]$genericEntry.LeaseDuration -eq 3600 -and
+    [string]$genericEntry.Description -ceq 'tailscale-portmap-sensitive') `
+    -Message 'Strict generic mapping SOAP 200 response was not parsed.'
+$script:genericMode = '713'
+$genericEnd = Get-R01UpnpGenericMappingEntry -Backend $genericBackend -Index 1
+Assert-R01 -Condition ($null -eq $genericEnd) `
+    -Message 'SOAP 713 did not terminate generic mapping enumeration.'
+$script:genericMode = '501'
+$generic501Raised = $false
+try {
+    $null = Get-R01UpnpGenericMappingEntry -Backend $genericBackend -Index 0
+} catch { $generic501Raised = $_.Exception.Message -match 'fault 501' }
+Assert-R01 -Condition $generic501Raised `
+    -Message 'SOAP 501 was not handled fail-closed by generic enumeration.'
+foreach ($invalidGenericMode in @('missing', 'extra', 'duplicate',
+        'namespaced', 'external-port', 'internal-port', 'protocol',
+        'enabled', 'lease', 'client')) {
+    $script:genericMode = $invalidGenericMode
+    $genericMalformedRaised = $false
+    try {
+        $null = Get-R01UpnpGenericMappingEntry `
+            -Backend $genericBackend -Index 0
+    } catch { $genericMalformedRaised = $true }
+    Assert-R01 -Condition $genericMalformedRaised `
+        -Message "Invalid generic mapping case accepted: $invalidGenericMode"
+}
+
+$capacityAst = $asts[$paths[9]]
+foreach ($name in @('New-R01UpnpCapacitySummary',
+        'Invoke-R01UpnpCapacityEnumeration')) {
+    Import-R01Function -Ast $capacityAst -Name $name
+}
+$sensitiveDescription = 'tailscale-portmap-sensitive-private-value'
+$capacitySummary = New-R01UpnpCapacitySummary -Entries @(
+    [pscustomobject]@{
+        Protocol = 'TCP'; LeaseDuration = [uint32]0
+        Description = $sensitiveDescription
+    },
+    [pscustomobject]@{
+        Protocol = 'UDP'; LeaseDuration = [uint32]120
+        Description = 'eR01-P-private-value'
+    },
+    [pscustomobject]@{
+        Protocol = 'UDP'; LeaseDuration = [uint32]0
+        Description = 'unclassified-private-value'
+    }
+) -EnumerationComplete $true -LimitReached $false
+$capacityJson = $capacitySummary | ConvertTo-Json -Depth 4 -Compress
+Assert-R01 -Condition ([string]$capacitySummary.status -ceq 'PASS' -and
+    [int]$capacitySummary.total -eq 3 -and
+    [int]$capacitySummary.protocols.TCP -eq 1 -and
+    [int]$capacitySummary.protocols.UDP -eq 2 -and
+    [int]$capacitySummary.leases.finite -eq 1 -and
+    [int]$capacitySummary.leases.permanent -eq 2 -and
+    [int]$capacitySummary.descriptions.tailscale_tag_prefix -eq 1 -and
+    [int]$capacitySummary.descriptions.ese_tag_prefix -eq 1 -and
+    [int]$capacitySummary.descriptions.other -eq 1 -and
+    -not $capacityJson.Contains($sensitiveDescription) -and
+    -not $capacityJson.Contains('private-value')) `
+    -Message 'Capacity aggregation leaked raw mapping data or miscounted.'
+$limitSummary = New-R01UpnpCapacitySummary -Entries @() `
+    -EnumerationComplete $false -LimitReached $true `
+    -FailureClass ENUMERATION_LIMIT_REACHED
+$failureSummary = New-R01UpnpCapacitySummary -Entries @() `
+    -EnumerationComplete $false -LimitReached $false `
+    -FailureClass ENUMERATION_FAILED_CLOSED
+Assert-R01 -Condition ([string]$limitSummary.status -ceq 'FAIL' -and
+    [string]$failureSummary.status -ceq 'FAIL') `
+    -Message 'Incomplete capacity summaries were not marked FAIL.'
+
+$script:genericMode = 'success'
+$cappedSummary = Invoke-R01UpnpCapacityEnumeration `
+    -Backend $genericBackend -MaxEntries 256
+$script:genericMode = '501'
+$failedEnumerationSummary = Invoke-R01UpnpCapacityEnumeration `
+    -Backend $genericBackend -MaxEntries 256
+Assert-R01 -Condition ([string]$cappedSummary.status -ceq 'FAIL' -and
+    [bool]$cappedSummary.limit_reached -and
+    [int]$cappedSummary.total -eq 256 -and
+    [string]$failedEnumerationSummary.status -ceq 'FAIL' -and
+    [string]$failedEnumerationSummary.failure_class -ceq
+        'ENUMERATION_FAILED_CLOSED') `
+    -Message 'Enumeration cap or fail-closed orchestration is invalid.'
+
+$orchestrators = @($capacityAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] `
+                -and $node.Name -ceq 'Invoke-R01UpnpCapacityEnumeration'
+        }, $true))
+$orchestratorCommands = @($orchestrators[0].FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst]
+        }, $true) | ForEach-Object { $_.GetCommandName() } |
+        Sort-Object -Unique)
+$allowedOrchestratorCommands = @(
+    'Get-R01UpnpGenericMappingEntry', 'New-R01UpnpCapacitySummary')
+Assert-R01 -Condition ($orchestrators.Count -eq 1 -and
+    @(Compare-Object -ReferenceObject $allowedOrchestratorCommands `
+        -DifferenceObject $orchestratorCommands).Count -eq 0) `
+    -Message 'Capacity orchestrator command allowlist was violated.'
+$capacitySource = Get-Content -LiteralPath $paths[9] -Raw
+Assert-R01 -Condition ($capacitySource -notmatch
+    '(?i)(Add|Remove)-R01Upnp|AddPortMapping|DeletePortMapping') `
+    -Message 'Read-only capacity diagnostic contains a mutating SOAP action.'
 
 $remoteText = Get-Content -LiteralPath $remotePath -Raw
 $controllerText = Get-Content -LiteralPath $controllerPath -Raw

@@ -502,6 +502,90 @@ function Get-R01UpnpSoapExternalAddress {
         -Name NewExternalIPAddress -AllowEmpty
 }
 
+function Get-R01UpnpGenericMappingEntry {
+    param(
+        [Parameter(Mandatory = $true)]$Backend,
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(0, 255)][int]$Index
+    )
+    if ([string]$Backend.kind -cne 'soap') {
+        throw 'Generic UPnP mapping enumeration requires the SOAP backend.'
+    }
+    $response = Invoke-R01UpnpSoapAction -Backend $Backend `
+        -Action GetGenericPortMappingEntry -Arguments ([ordered]@{
+            NewPortMappingIndex = $Index
+        })
+    if ([int]$response.status_code -ne 200) {
+        $fault = Get-R01UpnpSoapFaultCode -Response $response
+        if ($fault -eq 713) { return $null }
+        throw "UPnP GetGenericPortMappingEntry failed with fault $fault."
+    }
+    $element = Get-R01UpnpSoapResponseElement -Backend $Backend `
+        -Action GetGenericPortMappingEntry -Response $response
+    $children = @($element.element.ChildNodes | Where-Object {
+            $_.NodeType -eq [Xml.XmlNodeType]::Element
+        })
+    $expectedNames = @(
+        'NewEnabled', 'NewExternalPort', 'NewInternalClient',
+        'NewInternalPort', 'NewLeaseDuration',
+        'NewPortMappingDescription', 'NewProtocol', 'NewRemoteHost'
+    )
+    $actualNames = @($children | ForEach-Object {
+            if ([string]$_.NamespaceURI -cne '') {
+                throw 'UPnP generic mapping field namespace is invalid.'
+            }
+            [string]$_.LocalName
+        } | Sort-Object)
+    if ($children.Count -ne $expectedNames.Count -or
+        @(Compare-Object -ReferenceObject $expectedNames `
+            -DifferenceObject $actualNames).Count -ne 0) {
+        throw 'UPnP generic mapping fields are invalid or ambiguous.'
+    }
+    $externalPortText = Get-R01UpnpSoapChildValue `
+        -ResponseElement $element -Name NewExternalPort
+    $internalPortText = Get-R01UpnpSoapChildValue `
+        -ResponseElement $element -Name NewInternalPort
+    $externalPort = 0
+    $internalPort = 0
+    if (-not [int]::TryParse($externalPortText, [ref]$externalPort) -or
+        $externalPort -lt 1 -or $externalPort -gt 65535 -or
+        -not [int]::TryParse($internalPortText, [ref]$internalPort) -or
+        $internalPort -lt 1 -or $internalPort -gt 65535) {
+        throw 'UPnP generic mapping returned an invalid port.'
+    }
+    $protocol = Get-R01UpnpSoapChildValue `
+        -ResponseElement $element -Name NewProtocol
+    if ($protocol -cnotin @('TCP', 'UDP')) {
+        throw 'UPnP generic mapping returned an invalid protocol.'
+    }
+    $enabled = Get-R01UpnpSoapChildValue `
+        -ResponseElement $element -Name NewEnabled
+    if ($enabled -cnotin @('0', '1', 'false', 'true')) {
+        throw 'UPnP generic mapping returned an invalid enabled value.'
+    }
+    $leaseText = Get-R01UpnpSoapChildValue `
+        -ResponseElement $element -Name NewLeaseDuration
+    $lease = [uint32]0
+    if (-not [uint32]::TryParse($leaseText, [ref]$lease)) {
+        throw 'UPnP generic mapping returned an invalid lease duration.'
+    }
+    $internalClient = Get-R01UpnpSoapChildValue `
+        -ResponseElement $element -Name NewInternalClient
+    $clientAddress = $null
+    if (-not [Net.IPAddress]::TryParse($internalClient, [ref]$clientAddress) -or
+        $clientAddress.AddressFamily -ne
+            [Net.Sockets.AddressFamily]::InterNetwork) {
+        throw 'UPnP generic mapping returned an invalid internal client.'
+    }
+    return [pscustomobject][ordered]@{
+        Protocol = $protocol
+        LeaseDuration = $lease
+        Description = Get-R01UpnpSoapChildValue `
+            -ResponseElement $element -Name NewPortMappingDescription `
+            -AllowEmpty
+    }
+}
+
 function Get-R01UpnpMapping {
     param(
         [Parameter(Mandatory = $true)]$Backend,

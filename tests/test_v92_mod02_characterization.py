@@ -244,6 +244,55 @@ class Mod02CharacterizationTest(unittest.TestCase):
             VERIFIER.normalize_source_bytes(cr),
         )
 
+    def test_verifier_and_runtime_critical_sources_are_exactly_paired(self) -> None:
+        runner_paths = VERIFIER.runtime_runner_critical_source_paths()
+        VERIFIER.validate_critical_source_contract(
+            VERIFIER.CRITICAL_SOURCE_PATHS, runner_paths
+        )
+        self.assertEqual(len(runner_paths), 157)
+        self.assertEqual(
+            runner_paths[:13], VERIFIER.EXPECTED_CRITICAL_SOURCE_PREFIX
+        )
+        self.assertEqual(
+            len({path.casefold() for path in runner_paths}), len(runner_paths)
+        )
+
+    def test_critical_source_contract_rejects_add_remove_reorder_and_casefold(self) -> None:
+        paths = list(VERIFIER.CRITICAL_SOURCE_PATHS)
+        with self.assertRaisesRegex(ValueError, "count drift"):
+            VERIFIER.validate_critical_source_contract(paths + ["extra.cpp"], paths)
+        with self.assertRaisesRegex(ValueError, "count drift"):
+            VERIFIER.validate_critical_source_contract(paths[:-1], paths[:-1])
+        reordered = list(paths)
+        reordered[2], reordered[3] = reordered[3], reordered[2]
+        with self.assertRaisesRegex(ValueError, "prefix/order drift"):
+            VERIFIER.validate_critical_source_contract(reordered, reordered)
+        duplicate = list(paths)
+        duplicate[-1] = paths[0].upper()
+        with self.assertRaisesRegex(ValueError, "casefold duplicate"):
+            VERIFIER.validate_critical_source_contract(duplicate, duplicate)
+        runner_reordered = list(paths)
+        runner_reordered[-1], runner_reordered[-2] = (
+            runner_reordered[-2], runner_reordered[-1]
+        )
+        with self.assertRaisesRegex(ValueError, "parity drift"):
+            VERIFIER.validate_critical_source_contract(paths, runner_reordered)
+
+    def test_critical_source_lf_identity_is_independently_recomputed_and_pinned(self) -> None:
+        paths = VERIFIER.runtime_runner_critical_source_paths()
+        lines = []
+        for path in paths:
+            raw = (ROOT / path).read_bytes()
+            normalized = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            lines.append(f"{path}={hashlib.sha256(normalized).hexdigest()}")
+        identity = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+        self.assertEqual(
+            identity,
+            "036c7d8ac161431b5ddf1133cefd2a09b793fd6471cc1cc76088976e0a68a9e5",
+        )
+        header = IDENTITY_HEADER.read_text(encoding="utf-8")
+        self.assertIn(identity, header)
+
     def test_runtime_runner_parses_in_windows_powershell(self) -> None:
         runner_path = str(RUNTIME_RUNNER).replace("'", "''")
         command = (

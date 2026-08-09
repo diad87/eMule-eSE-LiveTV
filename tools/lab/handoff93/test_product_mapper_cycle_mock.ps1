@@ -7,6 +7,10 @@ $path=Join-Path $PSScriptRoot 'run_product_mapper_cycle.ps1';$tok=$null;$err=$nu
 $ast=[Management.Automation.Language.Parser]::ParseFile($path,[ref]$tok,[ref]$err)
 Assert-T ($err.Count-eq 0) 'parser errors'
 foreach($n in @('Assert-R93NoReparseChain','Set-R93ProductIni',
+        'Get-R93ProductProcessInventory','Get-R93LockedExecutableSha256',
+        'Assert-R93LaunchedProcessHandleIdentity',
+        'Read-R93PreexistingProcessAllowlist',
+        'Assert-R93ExactProcessIdentitySet','Assert-R93OneNewCandidateProcess',
         'Restore-R93IniBytes','Invoke-R93AuthenticatedWebClose',
         'Invoke-R93AccreditedWebShutdown',
         'Get-R93CandidateProjection',
@@ -190,14 +194,15 @@ function New-Adapters([scriptblock]$sample,[bool]$wait=$true,[bool]$absent=$true
     $state=[pscustomobject]@{configured=$false;started=$false;closed=$false
         restored=$false;alive=$false;upnp=$null
         bytes=[byte[]]$original.Clone();original=[byte[]]$original.Clone()
-        order=[Collections.ArrayList]::new();start_saw_upnp=$false}
+        order=[Collections.ArrayList]::new();closed_tokens=[Collections.ArrayList]::new()
+        start_saw_upnp=$false}
     $a=[pscustomobject]@{
         Configure={ $null=$state.order.Add('Configure');$state.configured=$true
             $state.upnp='1';$state.bytes=[byte[]](9,9,9) }
         Start={ $null=$state.order.Add('Start');$state.started=$true
             $state.start_saw_upnp=($state.upnp-ceq '1');$state.alive=$true;return 77 }
         Exists={param($t) $state.alive}; IsAccredited={param($t) $accredited}; Sample=$sample; Pause={}
-        Close={param($t)$state.closed=$true}; WaitForExit={param($t)if($wait){$state.alive=$false};return $wait}
+        Close={param($t)$state.closed=$true;$null=$state.closed_tokens.Add([int]$t)}; WaitForExit={param($t)if($wait){$state.alive=$false};return $wait}
         MappingsAbsent={return $absent}; RestoreIni={
             $state.bytes=[byte[]]$state.original.Clone()
             $state.restored=[Collections.StructuralComparisons]::StructuralEqualityComparer.Equals(
@@ -233,6 +238,177 @@ Assert-T ($remainingResult.status-ceq 'BLOCKED' -and $remainingResult.failure_cl
 $untrusted=New-Adapters { throw 'must not sample' } $true $true $false
 $untrustedResult=Invoke-R93PartialCycle $untrusted.adapters 1
 Assert-T ($untrustedResult.status-ceq 'BLOCKED' -and $untrustedResult.intervention_required -and -not $untrustedResult.graceful_exit -and -not $untrusted.state.closed -and -not $untrusted.state.restored) 'unaccredited live PID was closed or recovery configuration destroyed'
+
+# Explicit preexisting identities are an exact immutable set. PID reuse,
+# extras, missing entries and any identity-field drift fail closed.
+function New-ProcessIdentity($processId,$path,$sha,$creation,$session){
+    [pscustomobject]@{pid=$processId;canonical_path=$path;sha256=$sha
+        creation_time_utc=$creation;session_id=$session}
+}
+$creation='2026-08-09T10:00:00.0000000Z'
+$shaA='a'*64;$shaB='b'*64;$candidateSha='c'*64
+$allowed=@(
+    (New-ProcessIdentity 101 'C:\Product\emule.exe' $shaA $creation 1),
+    (New-ProcessIdentity 202 'C:\Lab\emule.exe' $shaB $creation 2))
+
+# The production reader accepts only its closed schema and canonical identity
+# fields; hostile/duplicate entries cannot silently widen the allowlist.
+$allowlistPath=Join-Path ([IO.Path]::GetTempPath()) `
+    ('r93-process-allowlist-'+[Guid]::NewGuid().ToString('N')+'.json')
+$allowlistStream=$null
+function Read-TestAllowlist($path){
+    $stream=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,
+        [IO.FileShare]::Read)
+    try{return @(Read-R93PreexistingProcessAllowlist $stream)}
+    finally{$stream.Dispose()}
+}
+try{
+    [pscustomobject][ordered]@{schema='ese.lab.preexisting-process-allowlist/v1'
+        processes=$allowed}|ConvertTo-Json -Depth 4|Set-Content -LiteralPath $allowlistPath -Encoding UTF8
+    $readAllowed=@(Read-TestAllowlist $allowlistPath)
+    Assert-T (Assert-R93ExactProcessIdentitySet $allowed $readAllowed) `
+        'production allowlist reader changed an exact identity'
+    [pscustomobject][ordered]@{schema='ese.lab.preexisting-process-allowlist/v1'
+        processes=@($allowed[0],$allowed[0])}|ConvertTo-Json -Depth 4|
+        Set-Content -LiteralPath $allowlistPath -Encoding UTF8
+    $duplicateRejected=$false
+    try{$null=Read-TestAllowlist $allowlistPath}catch{$duplicateRejected=$true}
+    Assert-T $duplicateRejected 'duplicate allowlist PID was accepted'
+    $hostileEntry=[pscustomobject]@{pid=101;canonical_path='C:\Product\emule.exe'
+        sha256=$shaA;creation_time_utc=$creation;session_id=1;unexpected='x'}
+    [pscustomobject][ordered]@{schema='ese.lab.preexisting-process-allowlist/v1'
+        processes=@($hostileEntry)}|ConvertTo-Json -Depth 4|
+        Set-Content -LiteralPath $allowlistPath -Encoding UTF8
+    $fieldRejected=$false
+    try{$null=Read-TestAllowlist $allowlistPath}catch{$fieldRejected=$true}
+    Assert-T $fieldRejected 'allowlist identity with extra field was accepted'
+
+    # Production-style retained handle blocks synchronized rename/replace and
+    # keeps the hash/read bound to the same native file object.
+    [pscustomobject][ordered]@{schema='ese.lab.preexisting-process-allowlist/v1'
+        processes=$allowed}|ConvertTo-Json -Depth 4|Set-Content -LiteralPath $allowlistPath -Encoding UTF8
+    $allowlistReplacement=$allowlistPath+'.replacement'
+    [IO.File]::WriteAllText($allowlistReplacement,'{}',[Text.UTF8Encoding]::new($false))
+    $allowlistStream=[IO.File]::Open($allowlistPath,[IO.FileMode]::Open,
+        [IO.FileAccess]::Read,[IO.FileShare]::Read)
+    $allowlistLockedHash=Get-R93LockedExecutableSha256 $allowlistStream
+    $null=Read-R93PreexistingProcessAllowlist $allowlistStream
+    $allowlistSwapRejected=$false
+    try{[IO.File]::Replace($allowlistReplacement,$allowlistPath,$null)}
+    catch{$allowlistSwapRejected=$true}
+    Assert-T ($allowlistSwapRejected -and
+        (Get-R93LockedExecutableSha256 $allowlistStream)-ceq $allowlistLockedHash) `
+        'retained allowlist stream permitted synchronized swap or hash drift'
+}finally{
+    if($null-ne $allowlistStream){$allowlistStream.Dispose()}
+    foreach($candidate in @($allowlistPath,$allowlistPath+'.replacement')){
+        if(Test-Path -LiteralPath $candidate){Remove-Item -LiteralPath $candidate -Force}}
+}
+Assert-T (Assert-R93ExactProcessIdentitySet $allowed @($allowed[1],$allowed[0])) `
+    'exact allowlist rejected ordering difference'
+foreach($hostile in @(
+    @($allowed[0]),
+    @($allowed+(New-ProcessIdentity 70000 'C:\Extra\emule.exe' ('d'*64) $creation 3)),
+    @($allowed[0],(New-ProcessIdentity 202 'C:\Lab\emule.exe' $shaB `
+        '2026-08-09T10:00:01.0000000Z' 2)),
+    @($allowed[0],(New-ProcessIdentity 202 'C:\Lab\emule.exe' $shaB $creation 9)),
+    @($allowed[0],(New-ProcessIdentity 202 'C:\Other\emule.exe' $shaB $creation 2)),
+    @($allowed[0],(New-ProcessIdentity 202 'C:\Lab\emule.exe' ('e'*64) $creation 2)))){
+    $rejected=$false
+    try{$null=Assert-R93ExactProcessIdentitySet $allowed $hostile}catch{$rejected=$true}
+    Assert-T $rejected 'hostile preexisting set was accepted'
+}
+$after=@($allowed+(New-ProcessIdentity 70001 'c:\candidate\EMULE.EXE' `
+    $candidateSha '2026-08-09T10:01:00.0000000Z' 4))
+$newIdentity=Assert-R93OneNewCandidateProcess $allowed $after 70001 `
+    'C:\Candidate\emule.exe' $candidateSha
+Assert-T ($newIdentity.pid-eq 70001) 'one exact new candidate was not accredited'
+foreach($badAfter in @(
+    $allowed,
+    @($after+(New-ProcessIdentity 70002 'C:\Candidate\emule.exe' $candidateSha `
+        '2026-08-09T10:01:01.0000000Z' 4)),
+    @($allowed+(New-ProcessIdentity 70001 'C:\Wrong\emule.exe' $candidateSha `
+        '2026-08-09T10:01:00.0000000Z' 4)),
+    @($allowed+(New-ProcessIdentity 70001 'C:\Candidate\emule.exe' ('f'*64) `
+        '2026-08-09T10:01:00.0000000Z' 4)))){
+    $rejected=$false
+    try{$null=Assert-R93OneNewCandidateProcess $allowed $badAfter 70001 `
+            'C:\Candidate\emule.exe' $candidateSha}catch{$rejected=$true}
+    Assert-T $rejected 'invalid new-process delta was accepted'
+}
+
+# The protected set is verified around the complete cycle. Only the newly
+# accredited token reaches Close.
+$protected=New-Adapters { [pscustomobject]@{tcp_candidate=$true;udp_candidate=$true;same_generation=$true;generation=5} }
+$protectedState=[pscustomobject]@{checks=0;accreditedPid=0}
+$protected.adapters|Add-Member NoteProperty VerifyPreexisting ({
+    $protectedState.checks++;return $true}.GetNewClosure())
+$protected.adapters|Add-Member NoteProperty AccreditNewProcess ({param($token)
+    $protectedState.accreditedPid=$token;return $true}.GetNewClosure())
+$protectedResult=Invoke-R93PartialCycle $protected.adapters 1
+Assert-T ($protectedResult.status-ceq 'MAPPING_OBSERVED_CLEAN_EXIT' -and
+    $protectedState.checks-ge 4 -and $protectedState.accreditedPid-eq 77 -and
+    $protected.state.closed_tokens.Count-eq 1 -and
+    $protected.state.closed_tokens[0]-eq 77 -and
+    $protected.state.closed_tokens -notcontains 101 -and
+    $protected.state.closed_tokens -notcontains 202) `
+    'preexisting process checks did not surround the full cycle'
+$changed=New-Adapters { $null }
+$changedState=[pscustomobject]@{checks=0}
+$changed.adapters|Add-Member NoteProperty VerifyPreexisting ({
+    $changedState.checks++;if($changedState.checks-ge 2){throw 'identity drift'}
+    return $true}.GetNewClosure())
+$changed.adapters|Add-Member NoteProperty AccreditNewProcess ({param($token)return $true})
+$changedResult=Invoke-R93PartialCycle $changed.adapters 1
+$changedJson=$changedResult|ConvertTo-Json -Compress
+Assert-T ($changedResult.status-ceq 'BLOCKED' -and
+    $changedResult.failure_class-ceq 'PREEXISTING_PROCESS_CHANGED' -and
+    $changedResult.intervention_required -and $changed.state.closed) `
+    'preexisting drift did not fail closed without closing only the launched PID'
+Assert-T ($changedJson -notmatch '(?i)pid|process_id|canonical_path|sha256|creation_time|session_id|[A-Z]:\\') `
+    'process allowlist identity leaked into result JSON'
+
+# If creation succeeds and the very next identity capture throws, the published
+# token is recovered by finally. The live unaccredited child is neither closed
+# nor allowed to overwrite a restored INI.
+$spawnThrowRoot=Join-Path 'C:\tmp' ('r93-spawn-throw-'+[Guid]::NewGuid().ToString('N'))
+$spawnThrowState=[pscustomobject]@{process=$null;token=$null}
+try{
+    [IO.Directory]::CreateDirectory($spawnThrowRoot)|Out-Null
+    $spawnThrowExe=Join-Path $spawnThrowRoot 'r93_spawn_throw.exe'
+    [IO.File]::Copy((Join-Path $env:WINDIR 'System32\ping.exe'),$spawnThrowExe)
+    $spawnThrow=New-Adapters {throw 'must not sample'}
+    $spawnThrowToken=$null
+    $spawnThrow.adapters.Start={
+        $spawnThrowState.process=Start-Process -FilePath $spawnThrowExe `
+            -ArgumentList @('-n','30','127.0.0.1') -WindowStyle Hidden -PassThru
+        $spawnThrowState.token=[int]$spawnThrowState.process.Id
+        throw 'injected capture failure after ownership publication'
+    }.GetNewClosure()
+    $spawnThrow.adapters|Add-Member NoteProperty GetSpawnedToken ({
+        return $spawnThrowState.token}.GetNewClosure())
+    $spawnThrow.adapters.Exists={param($token)
+        return $null-ne $spawnThrowState.process -and
+            [int]$spawnThrowState.process.Id-eq [int]$token -and
+            -not $spawnThrowState.process.HasExited}.GetNewClosure()
+    $spawnThrowResult=Invoke-R93PartialCycle $spawnThrow.adapters 1
+    Assert-T ($spawnThrowResult.status-ceq 'BLOCKED' -and
+        $spawnThrowResult.failure_class-ceq 'IDENTITY_NOT_ACCREDITED' -and
+        $spawnThrowResult.intervention_required -and
+        $spawnThrow.state.closed_tokens.Count-eq 0 -and
+        -not $spawnThrow.state.restored -and
+        $null-ne $spawnThrowState.process -and
+        -not $spawnThrowState.process.HasExited) `
+        'spawn-then-throw lost ownership or touched an unaccredited live child'
+}finally{
+    if($null-ne $spawnThrowState.process -and
+        -not $spawnThrowState.process.HasExited){
+        Stop-Process -Id $spawnThrowState.process.Id -Force -ErrorAction SilentlyContinue
+        $spawnThrowState.process.WaitForExit(5000)|Out-Null}
+    if($null-ne $spawnThrowState.process){$spawnThrowState.process.Dispose()}
+    if(Test-Path -LiteralPath $spawnThrowRoot){
+        Remove-Item -LiteralPath $spawnThrowRoot -Recurse -Force}
+}
 
 function New-Plane($transport,$configuredPort,$grantedPort,$generation){[pscustomobject]@{
     gate_state='CANDIDATE';generation=$generation
@@ -272,5 +448,71 @@ $startProcessIndex=$source.IndexOf('Start-Process -FilePath $exe')
 Assert-T ($upnpConfigIndex-ge 0 -and $startProcessIndex-gt $upnpConfigIndex) 'real UPnP=1 configuration is not before Start'
 foreach($needle in @("-Path '/api/reach/status'",'/?w=password&n=','&r=','/?w=close','X-CSRF-Token','Sec-Fetch-Site','[IO.File]::ReadAllBytes($ini)','Restore-R93IniBytes $ini $iniBytes $iniHash','satisfies_h93_15 = $false')){Assert-T $source.Contains($needle) "missing $needle"}
 Assert-T ($source -notmatch '\?w=password&p=|AdminPassword|adminSecret') 'reversible credential login remains present'
+Assert-T ($source -notmatch 'PreexistingProcessAllowlistPath' -and
+    $source.Contains("Join-Path `$config 'preexisting-process-allowlist.json'") -and
+    $source -match 'Assert-R93OneNewCandidateProcess') `
+    'fixed-name preexisting-process allowlist is not wired into production'
+
+# A real Windows process proves that the production handle identity accepts a
+# live instance and rejects that same PID token after the retained handle dies.
+$identityProcess=$null
+$identityRoot=Join-Path 'C:\tmp' ('r93-process-identity-'+[Guid]::NewGuid().ToString('N'))
+try{
+    [IO.Directory]::CreateDirectory($identityRoot)|Out-Null
+    $identityExe=Join-Path $identityRoot 'r93_identity_wait.exe'
+    [IO.File]::Copy((Join-Path $env:WINDIR 'System32\ping.exe'),$identityExe)
+    $identityProcess=Start-Process -FilePath $identityExe -ArgumentList @(
+        '-n','30','127.0.0.1') -WindowStyle Hidden -PassThru
+    $null=$identityProcess.Handle
+    $identityInventory=@(Get-R93ProductProcessInventory 'r93_identity_wait.exe'|
+        Where-Object{[int]$_.pid-eq [int]$identityProcess.Id})
+    Assert-T ($identityInventory.Count-eq 1) 'real process identity was not observable'
+    $identityPath=[string]$identityInventory[0].canonical_path
+    $identitySha=[string]$identityInventory[0].sha256
+    Assert-T (Assert-R93LaunchedProcessHandleIdentity $identityProcess `
+        $identityInventory[0] $identityPath $identitySha) `
+        'live retained process handle was not accredited'
+    $commandLine=[string](Get-CimInstance Win32_Process `
+        -Filter "ProcessId=$($identityProcess.Id)").CommandLine
+    Assert-T ($commandLine -notmatch '(?i)preexisting-process-allowlist|[0-9a-f]{64}|C:\\Users\\') `
+        'test launch command line exposed allowlist identity material'
+    Stop-Process -Id $identityProcess.Id -Force
+    $identityProcess.WaitForExit(5000)|Out-Null
+    $deadRejected=$false
+    try{$null=Assert-R93LaunchedProcessHandleIdentity $identityProcess `
+            $identityInventory[0] $identityPath $identitySha}catch{$deadRejected=$true}
+    Assert-T $deadRejected 'dead retained handle permitted PID-reuse accreditation'
+}finally{
+    if($null-ne $identityProcess -and -not $identityProcess.HasExited){
+        Stop-Process -Id $identityProcess.Id -Force -ErrorAction SilentlyContinue}
+    if($null-ne $identityProcess){$identityProcess.Dispose()}
+    if(Test-Path -LiteralPath $identityRoot){
+        Remove-Item -LiteralPath $identityRoot -Recurse -Force}
+}
+
+# Hashing and execution share one read handle that denies write/delete. A real
+# rename/swap attempt against the locked image must fail until the handle closes.
+$lockRoot=Join-Path ([IO.Path]::GetTempPath()) ('r93-exe-lock-'+[Guid]::NewGuid().ToString('N'))
+[IO.Directory]::CreateDirectory($lockRoot)|Out-Null
+$lockImage=Join-Path $lockRoot 'candidate.exe';$replacement=Join-Path $lockRoot 'replacement.exe'
+$lockStream=$null
+try{
+    [IO.File]::Copy((Join-Path $env:WINDIR 'System32\where.exe'),$lockImage)
+    [IO.File]::Copy((Join-Path $env:WINDIR 'System32\where.exe'),$replacement)
+    $lockStream=[IO.File]::Open($lockImage,[IO.FileMode]::Open,
+        [IO.FileAccess]::Read,[IO.FileShare]::Read)
+    $lockedHash=Get-R93LockedExecutableSha256 $lockStream
+    Assert-T ($lockedHash -match '^[0-9a-f]{64}$') 'same-stream executable hash invalid'
+    $loaderProbe=Start-Process -FilePath $lockImage -ArgumentList 'where.exe' `
+        -WindowStyle Hidden -PassThru -Wait
+    Assert-T $loaderProbe.HasExited 'read-locked verified image was not loader compatible'
+    $loaderProbe.Dispose()
+    $swapRejected=$false
+    try{[IO.File]::Replace($replacement,$lockImage,$null)}catch{$swapRejected=$true}
+    Assert-T $swapRejected 'locked executable permitted rename/replace TOCTOU'
+}finally{
+    if($null-ne $lockStream){$lockStream.Dispose()}
+    if(Test-Path -LiteralPath $lockRoot){Remove-Item -LiteralPath $lockRoot -Recurse -Force}
+}
 
 [pscustomobject]@{schema='ese.lab.product-mapper-cycle-mock/v2';status='PASS';physical_execution_performed=$false;outer_finally_close=$true;mapping_deletion_capability=$false;h93_15_satisfied=$false}|ConvertTo-Json -Compress

@@ -70,6 +70,180 @@ function Test-R93PortBindable {
     }
 }
 
+function Get-R93ProductProcessInventory {
+    param([Parameter(Mandatory = $true)][string]$ExecutableName)
+    $rows = @(Get-CimInstance Win32_Process -ErrorAction Stop |
+        Where-Object { [string]::Equals([string]$_.Name, $ExecutableName,
+                [StringComparison]::OrdinalIgnoreCase) })
+    $inventory = @()
+    foreach ($row in $rows) {
+        if ([string]::IsNullOrWhiteSpace([string]$row.ExecutablePath)) {
+            throw 'A product process has no inspectable executable path.'
+        }
+        $canonicalPath = [IO.Path]::GetFullPath([string]$row.ExecutablePath)
+        $creation = ([DateTime]$row.CreationDate).ToUniversalTime().ToString(
+            'o', [Globalization.CultureInfo]::InvariantCulture)
+        $inventory += [pscustomobject][ordered]@{
+            pid = [int]$row.ProcessId
+            canonical_path = $canonicalPath
+            sha256 = (Get-FileHash -LiteralPath $canonicalPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            creation_time_utc = $creation
+            session_id = [int]$row.SessionId
+        }
+    }
+    return @($inventory | Sort-Object pid)
+}
+
+function Get-R93LockedExecutableSha256 {
+    param([Parameter(Mandatory = $true)][IO.FileStream]$Stream)
+    if (-not $Stream.CanRead -or -not $Stream.CanSeek) {
+        throw 'Executable lock stream is not readable and seekable.'
+    }
+    $Stream.Position = 0
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($Stream))).Replace(
+            '-', '').ToLowerInvariant()
+    } finally { $sha.Dispose(); $Stream.Position = 0 }
+}
+
+function Assert-R93LaunchedProcessHandleIdentity {
+    param(
+        [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)]$ExpectedIdentity,
+        [Parameter(Mandatory = $true)][string]$ExpectedPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedSha256
+    )
+    try {
+        if ($Process.HasExited -or [int]$Process.Id -ne [int]$ExpectedIdentity.pid) {
+            throw 'Launched process handle no longer identifies a live process.'
+        }
+        $null = $Process.Handle
+        $handleCreation = $Process.StartTime.ToUniversalTime().ToString(
+            'o', [Globalization.CultureInfo]::InvariantCulture)
+        $handleSession = [int]$Process.SessionId
+    } catch { throw 'Launched process handle identity is unavailable.' }
+    $expectedCreation = [DateTime]::ParseExact(
+        [string]$ExpectedIdentity.creation_time_utc, 'o',
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    $handleCreationValue = [DateTime]::ParseExact($handleCreation, 'o',
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    # Process.StartTime and CIM are backed by the same Windows creation time,
+    # but CIM exposes microsecond precision, so conversion may differ by less
+    # than one microsecond (ten 100-ns ticks).
+    if ([Math]::Abs($handleCreationValue.Ticks - $expectedCreation.Ticks) -ge 10 -or
+        $handleSession -ne [int]$ExpectedIdentity.session_id -or
+        -not [string]::Equals([string]$ExpectedIdentity.canonical_path,
+            $ExpectedPath, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$ExpectedIdentity.sha256 -cne $ExpectedSha256) {
+        throw 'Launched process handle and system identity disagree.'
+    }
+    $current = @(Get-R93ProductProcessInventory ([IO.Path]::GetFileName(
+                    $ExpectedPath)) | Where-Object {
+                [int]$_.pid -eq [int]$Process.Id })
+    if ($current.Count -ne 1) {
+        throw 'Launched process is absent or its PID was reused.'
+    }
+    $null = Assert-R93ExactProcessIdentitySet @($ExpectedIdentity) $current
+    return $true
+}
+
+function Read-R93PreexistingProcessAllowlist {
+    param([Parameter(Mandatory = $true)][IO.FileStream]$Stream)
+    try {
+        if (-not $Stream.CanRead -or -not $Stream.CanSeek) {
+            throw 'Allowlist stream is not readable and seekable.'
+        }
+        $Stream.Position = 0
+        $reader = [IO.StreamReader]::new($Stream,
+            [Text.UTF8Encoding]::new($true), $true, 1024, $true)
+        try { $json = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        $Stream.Position = 0
+        $document = $json | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch { throw 'Preexisting process allowlist is not valid JSON.' }
+    $documentFields = @($document.PSObject.Properties.Name | Sort-Object)
+    if (($documentFields -join ',') -cne 'processes,schema' -or
+        [string]$document.schema -cne 'ese.lab.preexisting-process-allowlist/v1') {
+        throw 'Preexisting process allowlist has an unexpected schema.'
+    }
+    $result = @()
+    $seen = @{}
+    foreach ($entry in @($document.processes)) {
+        $fields = @($entry.PSObject.Properties.Name | Sort-Object)
+        if (($fields -join ',') -cne
+            'canonical_path,creation_time_utc,pid,session_id,sha256') {
+            throw 'Preexisting process identity has unexpected fields.'
+        }
+        if ([int64]$entry.pid -le 0 -or [int64]$entry.pid -gt [int]::MaxValue -or
+            [int64]$entry.session_id -lt 0 -or
+            [string]$entry.sha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'Preexisting process identity has an invalid scalar.'
+        }
+        $parsedCreation = [DateTime]::MinValue
+        if (-not [DateTime]::TryParseExact([string]$entry.creation_time_utc, 'o',
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind,
+                [ref]$parsedCreation) -or $parsedCreation.Kind -ne [DateTimeKind]::Utc) {
+            throw 'Preexisting process creation time is not canonical UTC.'
+        }
+        $canonical = [IO.Path]::GetFullPath([string]$entry.canonical_path)
+        $key = [string][int]$entry.pid
+        if ($seen.ContainsKey($key)) { throw 'Preexisting process PID is duplicated.' }
+        $seen[$key] = $true
+        $result += [pscustomobject][ordered]@{
+            pid = [int]$entry.pid; canonical_path = $canonical
+            sha256 = ([string]$entry.sha256).ToLowerInvariant()
+            creation_time_utc = $parsedCreation.ToString('o',
+                [Globalization.CultureInfo]::InvariantCulture)
+            session_id = [int]$entry.session_id
+        }
+    }
+    return @($result | Sort-Object pid)
+}
+
+function Assert-R93ExactProcessIdentitySet {
+    param([object[]]$Expected, [object[]]$Actual)
+    $expectedArray = @($Expected | Sort-Object pid)
+    $actualArray = @($Actual | Sort-Object pid)
+    if ($expectedArray.Count -ne $actualArray.Count) {
+        throw 'Product process set differs from the explicit allowlist.'
+    }
+    for ($index = 0; $index -lt $expectedArray.Count; $index++) {
+        $left = $expectedArray[$index]; $right = $actualArray[$index]
+        if ([int]$left.pid -ne [int]$right.pid -or
+            -not [string]::Equals([string]$left.canonical_path,
+                [string]$right.canonical_path,
+                [StringComparison]::OrdinalIgnoreCase) -or
+            [string]$left.sha256 -cne [string]$right.sha256 -or
+            [string]$left.creation_time_utc -cne [string]$right.creation_time_utc -or
+            [int]$left.session_id -ne [int]$right.session_id) {
+            throw 'A preexisting product process changed identity.'
+        }
+    }
+    return $true
+}
+
+function Assert-R93OneNewCandidateProcess {
+    param(
+        [object[]]$Before, [object[]]$After, [int]$LaunchedPid,
+        [string]$ExpectedPath, [string]$ExpectedSha256
+    )
+    $beforePids = @{}; foreach ($item in @($Before)) { $beforePids[[int]$item.pid] = $true }
+    $newItems = @($After | Where-Object { -not $beforePids.ContainsKey([int]$_.pid) })
+    if ($newItems.Count -ne 1 -or [int]$newItems[0].pid -ne $LaunchedPid -or
+        -not [string]::Equals([string]$newItems[0].canonical_path, $ExpectedPath,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$newItems[0].sha256 -cne $ExpectedSha256) {
+        throw 'Start did not create exactly one accredited candidate process.'
+    }
+    $survivors = @($After | Where-Object { $beforePids.ContainsKey([int]$_.pid) })
+    $null = Assert-R93ExactProcessIdentitySet $Before $survivors
+    return $newItems[0]
+}
+
 function Set-R93ProductIni {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -236,9 +410,15 @@ function Invoke-R93PartialCycle {
     $restored = $false
     $failureClass = ''
     try {
+        if ($null -ne $Adapters.PSObject.Properties['VerifyPreexisting']) {
+            $null = & $Adapters.VerifyPreexisting
+        }
         & $Adapters.Configure
         $token = & $Adapters.Start
         $started = $true
+        if ($null -ne $Adapters.PSObject.Properties['AccreditNewProcess']) {
+            $null = & $Adapters.AccreditNewProcess $token
+        }
         if (-not [bool](& $Adapters.Exists $token)) {
             throw 'Launched process no longer exists.'
         }
@@ -248,6 +428,9 @@ function Invoke-R93PartialCycle {
             throw 'Launched process identity is not accredited.'
         }
         for ($sampleIndex = 0; $sampleIndex -lt $MaxSamples; $sampleIndex++) {
+            if ($null -ne $Adapters.PSObject.Properties['VerifyPreexisting']) {
+                $null = & $Adapters.VerifyPreexisting
+            }
             $sample = & $Adapters.Sample
             if ($null -ne $sample -and [bool]$sample.tcp_candidate -and
                 [bool]$sample.udp_candidate -and [bool]$sample.same_generation -and
@@ -259,11 +442,27 @@ function Invoke-R93PartialCycle {
         }
         if (-not $observed) { $failureClass = 'CANDIDATE_PAIR_NOT_OBSERVED' }
     } catch {
+        if (-not $started -and
+            $null -ne $Adapters.PSObject.Properties['GetSpawnedToken']) {
+            try {
+                $registeredToken = & $Adapters.GetSpawnedToken
+                if ($null -ne $registeredToken) {
+                    $token = $registeredToken
+                    $started = $true
+                    $failureClass = 'IDENTITY_NOT_ACCREDITED'
+                }
+            } catch { }
+        }
         if ([string]::IsNullOrEmpty($failureClass)) {
             $failureClass = 'EXECUTION_FAILED'
         }
     }
     finally {
+        try {
+            if ($null -ne $Adapters.PSObject.Properties['VerifyPreexisting']) {
+                $null = & $Adapters.VerifyPreexisting
+            }
+        } catch { $failureClass = 'PREEXISTING_PROCESS_CHANGED' }
         if ($started) {
             try {
                 $exists = [bool](& $Adapters.Exists $token)
@@ -298,11 +497,16 @@ function Invoke-R93PartialCycle {
         } elseif ([string]::IsNullOrEmpty($failureClass)) {
             $failureClass = 'PROCESS_STILL_ALIVE'
         }
+        try {
+            if ($null -ne $Adapters.PSObject.Properties['VerifyPreexisting']) {
+                $null = & $Adapters.VerifyPreexisting
+            }
+        } catch { $failureClass = 'PREEXISTING_PROCESS_CHANGED' }
     }
     $success = $observed -and $closed -and $absent -and $restored
     $blocked = -not $success -and
         $failureClass -in @('PROCESS_STILL_ALIVE', 'IDENTITY_NOT_ACCREDITED',
-            'MAPPING_REMAINS_UNTOUCHED')
+            'MAPPING_REMAINS_UNTOUCHED', 'PREEXISTING_PROCESS_CHANGED')
     return [pscustomobject][ordered]@{
         schema = 'ese.lab.product-mapper-cycle-partial/v1'
         status = if ($success) { 'MAPPING_OBSERVED_CLEAN_EXIT' } elseif ($blocked) {
@@ -314,7 +518,8 @@ function Invoke-R93PartialCycle {
         mappings_absent = $absent
         ini_restored_byte_exact = $restored
         intervention_required = $failureClass -in @(
-            'PROCESS_STILL_ALIVE', 'IDENTITY_NOT_ACCREDITED')
+            'PROCESS_STILL_ALIVE', 'IDENTITY_NOT_ACCREDITED',
+            'PREEXISTING_PROCESS_CHANGED')
         failure_class = if ($success) { $null } else { $failureClass }
     }
 }
@@ -346,13 +551,32 @@ $ini = Assert-R93NoReparseChain -Root $config -Path $IniPath -Label IniPath
 if ($TcpPort -eq $UdpPort -or $TcpPort -eq $WebPort -or $UdpPort -eq $WebPort) {
     throw 'Explicit ports must be distinct.'
 }
-$exeHash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($exeHash -cne $ExpectedExeSha256.ToLowerInvariant()) { throw 'Executable hash mismatch.' }
-if (@(Get-CimInstance Win32_Process | Where-Object {
-            [string]::Equals([string]$_.ExecutablePath, $exe,
-                [StringComparison]::OrdinalIgnoreCase) }).Count -ne 0) {
-    throw 'Explicit executable already has a live instance.'
+$allowlistLock = $null
+$exeLock = [IO.File]::Open($exe, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+    [IO.FileShare]::Read)
+trap {
+    if ($null -ne $exeLock) { $exeLock.Dispose(); $exeLock = $null }
+    if ($null -ne $allowlistLock) {
+        $allowlistLock.Dispose(); $allowlistLock = $null
+    }
+    throw
 }
+$exeHash = Get-R93LockedExecutableSha256 $exeLock
+if ($exeHash -cne $ExpectedExeSha256.ToLowerInvariant()) { throw 'Executable hash mismatch.' }
+$productName = [IO.Path]::GetFileName($exe)
+$allowlistFixedPath = Join-Path $config 'preexisting-process-allowlist.json'
+$preexistingExpected = @()
+if (Test-Path -LiteralPath $allowlistFixedPath) {
+    $allowlistFixedPath = Assert-R93NoReparseChain -Root $config `
+        -Path $allowlistFixedPath -Label PreexistingProcessAllowlist
+    $allowlistLock = [IO.File]::Open($allowlistFixedPath,
+        [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $allowlistHash = Get-R93LockedExecutableSha256 $allowlistLock
+    $preexistingExpected = @(Read-R93PreexistingProcessAllowlist `
+        $allowlistLock)
+}
+$preexistingBaseline = @(Get-R93ProductProcessInventory $productName)
+$null = Assert-R93ExactProcessIdentitySet $preexistingExpected $preexistingBaseline
 if (-not (Test-R93PortBindable TCP $TcpPort) -or
     -not (Test-R93PortBindable UDP $UdpPort) -or
     -not (Test-R93PortBindable TCP $WebPort)) { throw 'Explicit port is unavailable.' }
@@ -366,6 +590,8 @@ finally { $credentialRng.Dispose() }
 $adminHash = (($credentialBytes | ForEach-Object { $_.ToString('x2') }) -join '')
 [Array]::Clear($credentialBytes, 0, $credentialBytes.Length)
 $process = $null
+$spawnedToken = $null
+$launchedIdentity = $null
 $backend = $null
 $baseUrl = "http://127.0.0.1:$WebPort"
 $adapters = [pscustomobject]@{
@@ -373,16 +599,44 @@ $adapters = [pscustomobject]@{
     Start = { $script:process = Start-Process -FilePath $exe `
             -WorkingDirectory $package `
             -ArgumentList @('--portable','--ignoreinstances','--headless') `
-            -WindowStyle Hidden -PassThru; return $script:process.Id }
-    Exists = { param($token) @(Get-CimInstance Win32_Process `
-            -Filter "ProcessId=$token").Count -eq 1 }
+            -WindowStyle Hidden -PassThru
+        # Register ownership before every fallible identity/property access.
+        $script:spawnedToken = [int]$script:process.Id
+        return $script:spawnedToken }
+    GetSpawnedToken = { return $script:spawnedToken }
+    VerifyPreexisting = {
+        if ($null -ne $allowlistLock -and
+            (Get-R93LockedExecutableSha256 $allowlistLock) -cne $allowlistHash) {
+            throw 'Locked preexisting-process allowlist changed content.'
+        }
+        $current = @(Get-R93ProductProcessInventory $productName)
+        if ($null -ne $script:process) {
+            $current = @($current | Where-Object {
+                    [int]$_.pid -ne [int]$script:process.Id })
+        }
+        Assert-R93ExactProcessIdentitySet $preexistingBaseline $current }
+    AccreditNewProcess = { param($token)
+        # These captures are intentionally after the token has been published.
+        $null = $script:process.Handle
+        $null = $script:process.StartTime
+        $null = $script:process.SessionId
+        $after = @(Get-R93ProductProcessInventory $productName)
+        $script:launchedIdentity = Assert-R93OneNewCandidateProcess `
+            $preexistingBaseline $after ([int]$token) $exe $exeHash
+        $null = Assert-R93LaunchedProcessHandleIdentity $script:process `
+            $script:launchedIdentity $exe $exeHash
+        return $true }
+    Exists = { param($token)
+        if ($null -eq $script:process -or
+            [int]$script:process.Id -ne [int]$token) { return $false }
+        try { return -not $script:process.HasExited } catch { return $false } }
     IsAccredited = { param($token)
-        $matches = @(Get-CimInstance Win32_Process -Filter "ProcessId=$token" |
-            Where-Object { [string]::Equals([string]$_.ExecutablePath, $exe,
-                    [StringComparison]::OrdinalIgnoreCase) })
-        $matches.Count -eq 1 -and
-            (Get-FileHash -LiteralPath ([string]$matches[0].ExecutablePath) `
-                -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $exeHash }
+        if ($null -eq $script:launchedIdentity -or
+            [int]$script:launchedIdentity.pid -ne [int]$token) { return $false }
+        try { $null = Assert-R93LaunchedProcessHandleIdentity `
+                $script:process $script:launchedIdentity $exe $exeHash }
+        catch { return $false }
+        return $true }
     Sample = { $envelope = Invoke-LabApi -BaseUrl $baseUrl `
             -Path '/api/reach/status' -Token $ApiToken -AllowUnavailable
         if (-not $envelope.available) { return $null }
@@ -408,6 +662,10 @@ try {
 }
 finally {
     $adminHash = $null
+    if ($null -ne $exeLock) { $exeLock.Dispose(); $exeLock = $null }
+    if ($null -ne $allowlistLock) {
+        $allowlistLock.Dispose(); $allowlistLock = $null
+    }
 }
 $result | ConvertTo-Json -Compress
 if ([string]$result.status -cne 'MAPPING_OBSERVED_CLEAN_EXIT') { exit 1 }

@@ -95,6 +95,10 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_ownership_ledger
 if errorlevel 1 exit /b 1
 build\test_ownership_ledger.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_ownership_cleanup_policy.exe tests\test_ownership_cleanup_policy.cpp src\ownership_cleanup_policy.cpp src\ownership_ledger.cpp
+if errorlevel 1 exit /b 1
+build\test_ownership_cleanup_policy.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\natmap_ownership_inspect.exe ..\tools\natmap_ownership_inspect.cpp src\ownership_ledger.cpp
 if errorlevel 1 exit /b 1
 build\natmap_ownership_inspect.exe --selftest

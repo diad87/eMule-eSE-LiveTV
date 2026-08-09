@@ -80,6 +80,13 @@ private:
 	void LoadOwnershipLedger();
 	bool SaveOwnershipLedger();
 	void RecoverOwnedMappings();
+	natmap::OwnershipDecision PreflightOwnedMapping(
+		const natmap::UpnpOwnershipRecord& record) const;
+	natmap::OwnershipDecision ObserveOwnedMapping(
+		const natmap::UpnpOwnershipRecord& record, bool& absent) const;
+	bool CleanupOwnedRecordAttempt(
+		const natmap::UpnpOwnershipRecord& record,
+		bool& deleteSucceeded, bool& absenceVerified);
 	bool RecordOwnedMapping(uint16 nLocalPort, uint16 nExternalPort,
 		bool bTCP, const char* pachLANIP, uint32 nLifetimeSeconds,
 		const natmap::OwnershipDescription& description);

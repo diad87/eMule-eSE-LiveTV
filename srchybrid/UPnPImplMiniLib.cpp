@@ -18,6 +18,7 @@
 #include "emule.h"
 #include "preferences.h"
 #include "UPnPImplMiniLib.h"
+#include "natmap/ownership_cleanup_policy.h"
 #include "natmap/upnp_discovery.h"
 #include "natmap/upnp_lease_policy.h"
 #include "natmap/upnp_mapping_result.h"
@@ -651,11 +652,145 @@ bool CUPnPImplMiniLib::DeleteEphemeralOwnedMapping(
 void CUPnPImplMiniLib::RecoverOwnedMappings()
 {
 	const natmap::OwnershipLedger pending = m_ownershipLedger;
-	for (size_t i = 0; i < pending.count; ++i) {
-		const natmap::UpnpOwnershipRecord& record = pending.records[i];
-		DeletePort(record.external_port,
-			record.transport == natmap::Transport::Tcp ? sTCP : sUDP);
+	// A single record is the durable marker of a previously partial pair
+	// cleanup. Retry it independently, still behind the exact product gate.
+	if (pending.count == 1) {
+		natmap::OwnershipCleanupSnapshot cleanup{};
+		cleanup.state = natmap::OwnershipCleanupState::Partial;
+		const int pendingIndex = pending.records[0].transport
+			== natmap::Transport::Tcp ? 0 : 1;
+		cleanup.absent[1 - pendingIndex] = true;
+		while (cleanup.may_delete()
+			&& cleanup.delete_attempts[pendingIndex] < 2) {
+			bool deleted = false;
+			bool absent = false;
+			CleanupOwnedRecordAttempt(
+				pending.records[0], deleted, absent);
+			natmap::RecordOwnershipCleanupAttempt(cleanup,
+				pending.records[0].transport, deleted, absent);
+		}
+		return;
 	}
+	if (pending.count != 2) {
+		DebugLogWarning(_T("UPNP ownership: cleanup pair preflight blocked by journal cardinality"));
+		return;
+	}
+	if (!natmap::IsCoherentOwnershipPair(pending)) {
+		DebugLogWarning(_T("UPNP ownership: cleanup pair identity mismatch; zero mappings removed"));
+		return;
+	}
+	std::array<natmap::OwnershipCleanupAuthorization, 2> authorizations{};
+	for (size_t i = 0; i < pending.count; ++i) {
+		authorizations[i].transport = pending.records[i].transport;
+		authorizations[i].decision = PreflightOwnedMapping(pending.records[i]);
+	}
+	natmap::OwnershipCleanupSnapshot cleanup =
+		natmap::BeginOwnershipCleanup(authorizations);
+	if (!cleanup.may_delete()) {
+		DebugLogWarning(_T("UPNP ownership: cleanup pair preflight rejected; zero mappings removed"));
+		return;
+	}
+	for (size_t i = 0; i < pending.count && cleanup.may_delete(); ++i) {
+		const natmap::UpnpOwnershipRecord& record = pending.records[i];
+		const int index = record.transport == natmap::Transport::Tcp ? 0 : 1;
+		while (cleanup.may_delete() && cleanup.delete_attempts[index] < 2) {
+			bool deleted = false;
+			bool absent = false;
+			CleanupOwnedRecordAttempt(record, deleted, absent);
+			natmap::RecordOwnershipCleanupAttempt(
+				cleanup, record.transport, deleted, absent);
+		}
+	}
+	if (cleanup.state == natmap::OwnershipCleanupState::Partial)
+		DebugLogWarning(_T("UPNP ownership: cleanup pair partial; durable retry retained"));
+	else if (cleanup.state == natmap::OwnershipCleanupState::RetryExhausted)
+		DebugLogWarning(_T("UPNP ownership: cleanup pair retry exhausted; durable proof retained"));
+}
+
+natmap::OwnershipDecision CUPnPImplMiniLib::PreflightOwnedMapping(
+	const natmap::UpnpOwnershipRecord& record) const
+{
+	bool absent = false;
+	return ObserveOwnedMapping(record, absent);
+}
+
+natmap::OwnershipDecision CUPnPImplMiniLib::ObserveOwnedMapping(
+	const natmap::UpnpOwnershipRecord& record, bool& absent) const
+{
+	absent = false;
+	if (!record.IsStructurallyValid() || m_pURLs == NULL
+		|| m_pURLs->controlURL == NULL || m_pIGDData == NULL)
+		return natmap::OwnershipDecision::InvalidRecord;
+	const std::uint64_t gateway = CurrentGatewayFingerprint();
+	if (gateway == 0 || record.gateway_fingerprint != gateway)
+		return natmap::OwnershipDecision::GatewayMismatch;
+	char externalPort[8] = {};
+	char internalClient[40] = {};
+	char internalPort[8] = {};
+	char description[80] = {};
+	char leaseDuration[16] = {};
+	_snprintf_s(externalPort, _countof(externalPort), _TRUNCATE,
+		"%hu", record.external_port);
+	const int query = UPNP_GetSpecificPortMappingEntryChecked(
+		m_pURLs->controlURL, m_pIGDData->first.servicetype,
+		externalPort,
+		record.transport == natmap::Transport::Tcp ? sTCPa : sUDPa,
+		NULL, internalClient, _countof(internalClient),
+		internalPort, _countof(internalPort),
+		description, _countof(description), NULL, 0,
+		leaseDuration, _countof(leaseDuration));
+	if (query == 714) {
+		absent = true;
+		return natmap::OwnershipDecision::Owned;
+	}
+	if (query != UPNPCOMMAND_SUCCESS)
+		return natmap::OwnershipDecision::InvalidObservation;
+	natmap::ObservedUpnpMapping observed{};
+	observed.transport = record.transport;
+	observed.external_port = record.external_port;
+	if (!natmap::ParseUpnpDecimalPort(internalPort, observed.local_port)
+		|| !ParseIPv4(internalClient, observed.local_address)
+		|| !natmap::ParseOwnershipDescription(description,
+			_countof(description), observed.description))
+		return natmap::OwnershipDecision::InvalidObservation;
+	return natmap::EvaluateOwnershipForDeletion(record, gateway, observed);
+}
+
+bool CUPnPImplMiniLib::CleanupOwnedRecordAttempt(
+	const natmap::UpnpOwnershipRecord& record,
+	bool& deleteSucceeded, bool& absenceVerified)
+{
+	deleteSucceeded = false;
+	absenceVerified = false;
+	bool absent = false;
+	if (ObserveOwnedMapping(record, absent)
+		!= natmap::OwnershipDecision::Owned)
+		return false;
+	if (!absent) {
+		char externalPort[8] = {};
+		_snprintf_s(externalPort, _countof(externalPort), _TRUNCATE,
+			"%hu", record.external_port);
+		deleteSucceeded = UPNP_DeletePortMapping(
+			m_pURLs->controlURL, m_pIGDData->first.servicetype,
+			externalPort,
+			record.transport == natmap::Transport::Tcp ? sTCPa : sUDPa,
+			NULL) == UPNPCOMMAND_SUCCESS;
+		if (ObserveOwnedMapping(record, absent)
+			!= natmap::OwnershipDecision::Owned || !absent)
+			return true;
+	}
+	for (size_t i = 0; i < m_ownershipLedger.count; ++i) {
+		const natmap::UpnpOwnershipRecord& current =
+			m_ownershipLedger.records[i];
+		if (current.transport == record.transport
+			&& current.external_port == record.external_port
+			&& current.owner_token == record.owner_token
+			&& current.generation == record.generation) {
+			absenceVerified = RemoveOwnershipRecordDurably(i);
+			return true;
+		}
+	}
+	return true;
 }
 
 CUPnPImplMiniLib::CUPnPImplMiniLib()

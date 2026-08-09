@@ -1834,3 +1834,26 @@ test('ownership journal inspector is read-only and privacy-safe', () => {
   assert.match(inspector, /FILE_ATTRIBUTE_REPARSE_POINT/);
   assert.match(inspector, /nFileIndexHigh == after\.nFileIndexHigh/);
 });
+
+test('owned UPnP cleanup preflights the complete exact pair before deleting', () => {
+  const source = read(repoRoot, 'srchybrid', 'UPnPImplMiniLib.cpp');
+  const begin = source.indexOf('void CUPnPImplMiniLib::RecoverOwnedMappings()');
+  const end = source.indexOf('CUPnPImplMiniLib::CUPnPImplMiniLib()', begin);
+  const body = source.slice(begin, end);
+  assert.match(body, /pending\.count != 2/);
+  assert.match(body, /pending\.count == 1[\s\S]*CleanupOwnedRecordAttempt\([\s\S]*pending\.records\[0\][\s\S]*RecordOwnershipCleanupAttempt/);
+  assert.match(body, /PreflightOwnedMapping\(pending\.records\[i\]\)/);
+  assert.match(body, /BeginOwnershipCleanup\(authorizations\)/);
+  assert.match(body, /IsCoherentOwnershipPair\(pending\)/);
+  assert.match(body, /RecordOwnershipCleanupAttempt\([\s\S]*record\.transport, deleted, absent/);
+  assert.match(body, /if \(!cleanup\.may_delete\(\)\)[\s\S]*return;/);
+  const transactionAt = body.indexOf('BeginOwnershipCleanup(authorizations)');
+  assert.ok(transactionAt >= 0 && body.indexOf('CleanupOwnedRecordAttempt(record', transactionAt) > transactionAt);
+  const preflight = body.slice(body.indexOf('PreflightOwnedMapping('));
+  assert.match(preflight, /UPNP_GetSpecificPortMappingEntryChecked\(/);
+  assert.match(preflight, /EvaluateOwnershipForDeletion\(record, gateway, observed\)/);
+  const attempt = body.slice(body.indexOf('bool CUPnPImplMiniLib::CleanupOwnedRecordAttempt('));
+  assert.match(attempt, /UPNP_DeletePortMapping\(/);
+  assert.match(attempt, /ObserveOwnedMapping\(record, absent\)[\s\S]*!absent/);
+  assert.ok(attempt.indexOf('ObserveOwnedMapping(record, absent)', attempt.indexOf('UPNP_DeletePortMapping')) < attempt.indexOf('RemoveOwnershipRecordDurably'));
+});

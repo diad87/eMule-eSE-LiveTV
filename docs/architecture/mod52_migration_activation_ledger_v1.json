@@ -420,7 +420,7 @@
     },
     "W12": {
       "state": "active",
-      "stage": "H2",
+      "stage": "R2",
       "activation_commit": "6247075338787343872952896d25cf2e330be8ff",
       "evidence": [
         {
@@ -459,7 +459,31 @@
           ]
         }
       ],
-      "r_evidence": null,
+      "r_evidence": {
+        "candidate_commit": "6247075338787343872952896d25cf2e330be8ff",
+        "emule_sha256": "71616c54e3866e23b0b5c8b48e8e4ae3955ca4c5d3039a6b69fd78a3851d5dc1",
+        "verifier_sha256": "66602b4ed5d7345a967d813aedc830caa5cd10c8a5600fe213dd0f9e6fdca670",
+        "activation": {
+          "path": "artifacts/mod52-w12-r-624707533878/activation.json",
+          "sha256": "5f5467616f5bae277bf38ea8f40e302c7f716ec740bf4a6904268b9bceb5ba13"
+        },
+        "runtime": {
+          "path": "artifacts/mod52-w12-r-624707533878/runtime.json",
+          "sha256": "1fb59aa7328d57be6f98bb9c97b11f905c5967b31fbd0a1355ee936518eca1aa"
+        },
+        "browser_challenge": {
+          "path": "artifacts/mod52-w12-r-624707533878/browser-challenge.json",
+          "sha256": "65f37f1bcf8516763db0c8da75ea758ad122418793d3aa616b361cc4429d0920"
+        },
+        "browser_cdp_trace": {
+          "path": "artifacts/mod52-w12-r-624707533878/browser-cdp-trace.json",
+          "sha256": "9b1811c546fbd92621581974d5e6f6bf6ff97c4d65b0d14bc7e6e5bfc150083d"
+        },
+        "verdict": {
+          "path": "artifacts/mod52-w12-r-624707533878/verdict.json",
+          "sha256": "34346bdd33a23425b0e380b8d887683fdf80948aa2a6e64e14d35d4ed72abcaa"
+        }
+      },
       "reseal": {
         "schema": "ese.mod52.w12-reseal-activation/v1",
         "payload_sha256": "a555bc2ed2df12537f47808baf4e0172c9322f56a39aaac83be47ef1e993b8cb",
@@ -534,11 +558,37 @@
           {
             "id": "W12-COV-07",
             "stage": "R2",
-            "verdict": "PENDING",
+            "verdict": "PASS",
             "summary_path": "artifacts/mod52-w12-h2-reseal/coverage-summary.json",
             "summary_sha256": "e6425a11104cf9c07f5a45a6003ead9e082f028ca8b9a2d4024f26f16ca51eb3",
             "summary_entry": null,
-            "r2_artifacts": []
+            "r2_artifacts": [
+              {
+                "key": "activation",
+                "path": "artifacts/mod52-w12-r-624707533878/activation.json",
+                "sha256": "5f5467616f5bae277bf38ea8f40e302c7f716ec740bf4a6904268b9bceb5ba13"
+              },
+              {
+                "key": "runtime",
+                "path": "artifacts/mod52-w12-r-624707533878/runtime.json",
+                "sha256": "1fb59aa7328d57be6f98bb9c97b11f905c5967b31fbd0a1355ee936518eca1aa"
+              },
+              {
+                "key": "browser_challenge",
+                "path": "artifacts/mod52-w12-r-624707533878/browser-challenge.json",
+                "sha256": "65f37f1bcf8516763db0c8da75ea758ad122418793d3aa616b361cc4429d0920"
+              },
+              {
+                "key": "browser_cdp_trace",
+                "path": "artifacts/mod52-w12-r-624707533878/browser-cdp-trace.json",
+                "sha256": "9b1811c546fbd92621581974d5e6f6bf6ff97c4d65b0d14bc7e6e5bfc150083d"
+              },
+              {
+                "key": "verdict",
+                "path": "artifacts/mod52-w12-r-624707533878/verdict.json",
+                "sha256": "34346bdd33a23425b0e380b8d887683fdf80948aa2a6e64e14d35d4ed72abcaa"
+              }
+            ]
           },
           {
             "id": "W12-COV-08",

@@ -70,6 +70,30 @@ function Test-R93PortBindable {
     }
 }
 
+function Set-R93ProductIni {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][int]$TcpPort,
+        [Parameter(Mandatory = $true)][int]$UdpPort,
+        [Parameter(Mandatory = $true)][int]$WebPort
+    )
+    Set-LabIniValue $Path UPnP EnableUPnP 1 | Out-Null
+    Set-LabIniValue $Path eMule Port $TcpPort | Out-Null
+    Set-LabIniValue $Path eMule UDPPort $UdpPort | Out-Null
+    Set-LabIniValue $Path WebServer Enabled 1 | Out-Null
+    Set-LabIniValue $Path WebServer Port $WebPort | Out-Null
+}
+
+function Restore-R93IniBytes {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [Parameter(Mandatory = $true)][string]$ExpectedSha256
+    )
+    [IO.File]::WriteAllBytes($Path, $Bytes)
+    return (Get-FileHash $Path -Algorithm SHA256).Hash -ceq $ExpectedSha256
+}
+
 function Get-R93CandidateProjection {
     param(
         [Parameter(Mandatory = $true)]$Envelope,
@@ -268,10 +292,7 @@ $process = $null
 $backend = $null
 $baseUrl = "http://127.0.0.1:$WebPort"
 $adapters = [pscustomobject]@{
-    Configure = { Set-LabIniValue $ini Connection Port $TcpPort | Out-Null
-        Set-LabIniValue $ini Connection UDPPort $UdpPort | Out-Null
-        Set-LabIniValue $ini WebServer Enabled 1 | Out-Null
-        Set-LabIniValue $ini WebServer Port $WebPort | Out-Null }
+    Configure = { Set-R93ProductIni $ini $TcpPort $UdpPort $WebPort }
     Start = { $script:process = Start-Process -FilePath $exe `
             -WorkingDirectory $package `
             -ArgumentList @('--portable','--ignoreinstances','--headless') `
@@ -298,8 +319,7 @@ $adapters = [pscustomobject]@{
             $script:backend = Get-R93PhysicalSoapBackend }
         $null -eq (Get-R01UpnpMapping $script:backend $TcpPort TCP) -and
         $null -eq (Get-R01UpnpMapping $script:backend $UdpPort UDP) }
-    RestoreIni = { [IO.File]::WriteAllBytes($ini, $iniBytes)
-        (Get-FileHash $ini -Algorithm SHA256).Hash -ceq $iniHash }
+    RestoreIni = { Restore-R93IniBytes $ini $iniBytes $iniHash }
 }
 $result = Invoke-R93PartialCycle -Adapters $adapters `
     -MaxSamples $ObservationTimeoutSec

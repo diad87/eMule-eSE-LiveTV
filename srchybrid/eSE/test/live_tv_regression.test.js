@@ -2002,3 +2002,81 @@ test('owned UPnP cleanup preflights the complete exact pair before deleting', ()
   assert.match(attempt, /ObserveOwnedMapping\(record, absent\)[\s\S]*!absent/);
   assert.ok(attempt.indexOf('ObserveOwnedMapping(record, absent)', attempt.indexOf('UPNP_DeletePortMapping')) < attempt.indexOf('RemoveOwnershipRecordDurably'));
 });
+
+test('shutdown progress is privacy-safe, ordered and observable before webserver deletion', () => {
+  const dialog = read(repoRoot, 'srchybrid', 'EmuleDlg.cpp');
+  const begin = dialog.indexOf('void CemuleDlg::OnClose()');
+  const end = dialog.indexOf('\nvoid CemuleDlg::', begin + 1);
+  const close = dialog.slice(begin, end < 0 ? dialog.length : end);
+  const helperBegin = dialog.indexOf('void RecordShutdownStage(');
+  const helperEnd = dialog.indexOf('\n}', helperBegin) + 2;
+  const helper = dialog.slice(helperBegin, helperEnd);
+
+  assert.match(helper, /LiveShutdownStage stage\) noexcept/);
+  assert.match(helper, /try \{[\s\S]*CLiveDebugLog::Get\(\)\.TryAppendShutdownStage\(stage\)[\s\S]*catch \(\.\.\.\)/);
+  assert.doesNotMatch(helper, /LIVE_LOG|CString|CSingleLock/);
+
+  const ordered = [
+    'RecordShutdownStage(LiveShutdownStage::Entry)',
+    'RecordShutdownStage(LiveShutdownStage::CanClosePass)',
+    'RecordShutdownStage(LiveShutdownStage::KadStopBegin)',
+    'Kademlia::CKademlia::Stop()',
+    'RecordShutdownStage(LiveShutdownStage::KadStopped)',
+    'RecordShutdownStage(LiveShutdownStage::DiskThreadsStopBegin)',
+    'm_pUploadDiskIOThread->EndThread()',
+    'm_pPartFileWriteThread->EndThread()',
+    'm_pPartHashThread->EndThread()',
+    'RecordShutdownStage(LiveShutdownStage::DiskThreadsStopped)',
+    'RecordShutdownStage(LiveShutdownStage::SavesBegin)',
+    'RecordShutdownStage(LiveShutdownStage::SavesComplete)',
+    'RecordShutdownStage(LiveShutdownStage::StopUpnpBegin)',
+    'mappingImpl->StopAsyncFind()',
+    'RecordShutdownStage(LiveShutdownStage::StopUpnpComplete)',
+    'RecordShutdownStage(LiveShutdownStage::MappedCleanupBegin)',
+    'RecordShutdownStage(LiveShutdownStage::MappedCleanupComplete)',
+    'RecordShutdownStage(LiveShutdownStage::PrefsSaveBegin)',
+    'thePrefs.Save()',
+    'RecordShutdownStage(LiveShutdownStage::PrefsSaved)',
+    'RecordShutdownStage(LiveShutdownStage::NetworkThreadsDeleteBegin)',
+    'RecordShutdownStage(LiveShutdownStage::NetworkThreadsDeleted)',
+    'RecordShutdownStage(LiveShutdownStage::WebserverDeleteImminent)',
+    'delete theApp.webserver'
+  ];
+  let cursor = -1;
+  for (const needle of ordered) {
+    const found = close.indexOf(needle, cursor + 1);
+    assert.ok(found > cursor, `shutdown marker/action out of order: ${needle}`);
+    cursor = found;
+  }
+
+  const liveLogHeader = read(repoRoot, 'srchybrid', 'LiveDebugLog.h');
+  const liveLogSource = read(repoRoot, 'srchybrid', 'LiveDebugLog.cpp');
+  const webServer = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const routeTable = read(repoRoot, 'srchybrid', 'WebRouteTable.cpp');
+  assert.match(liveLogHeader, /mutable CCriticalSection m_lock/);
+  assert.match(liveLogHeader, /TryAppendShutdownStage\(LiveShutdownStage stage\) noexcept/);
+  const tryBegin = liveLogSource.indexOf('void CLiveDebugLog::TryAppendShutdownStageImpl(');
+  const tryEnd = liveLogSource.indexOf('\nstruct CLiveDebugLog::ShutdownStageLockTestContext', tryBegin + 1);
+  const tryAppend = liveLogSource.slice(tryBegin, tryEnd);
+  const lockAt = tryAppend.indexOf('TryEnterCriticalSection(&m_lock.m_sect)');
+  assert.ok(lockAt >= 0);
+  assert.ok(tryAppend.indexOf('time(NULL)') > lockAt);
+  assert.ok(tryAppend.indexOf('CStringA(lineBuffer)') > lockAt);
+  assert.match(tryAppend, /catch \(\.\.\.\)[\s\S]*LeaveCriticalSection\(&m_lock\.m_sect\)/);
+  assert.doesNotMatch(tryAppend, /CSingleLock|\.Lock\(|Sleep|WaitFor/);
+  assert.doesNotMatch(tryAppend, /\b(?:path|port|address|nonce|count)\b/i);
+  const selfTestAt = liveLogSource.indexOf('bool CLiveDebugLog::RunShutdownStageSelfTest()');
+  const selfTest = liveLogSource.slice(selfTestAt);
+  assert.match(selfTest, /ShutdownStageLockTestProc[\s\S]*WaitForSingleObject\(entered, 1000\)/);
+  assert.match(selfTest, /GetTickCount\(\)[\s\S]*TryAppendShutdownStage[\s\S]*< 100/);
+  assert.match(selfTest, /GetCount\(\) != beforeLockedAttempt/);
+  assert.match(selfTest, /TryAppendShutdownStageImpl\(LiveShutdownStage::Entry, true\)[\s\S]*GetCount\(\) != before/);
+  assert.match(selfTest, /new \(std::nothrow\)[\s\S]*ShutdownStageLockTestContext/);
+  assert.doesNotMatch(selfTest, /ShutdownStageLockTestContext context\s*=/);
+  assert.match(selfTest, /if \(!joined\)[\s\S]*return false;[\s\S]*CloseHandle\(thread\)[\s\S]*delete context/);
+  assert.match(selfTest, /1250[\s\S]*WaitForSingleObject\(delayedThread, 25\) != WAIT_TIMEOUT[\s\S]*WaitForSingleObject\(delayedThread, 2000\)/);
+  assert.match(dialog, /RunShutdownStageSelfTest\(\)[\s\S]*ScheduleSelfTestExit\(2\)/);
+  assert.match(liveLogSource, /CLiveDebugLog::GetRecent[\s\S]*CSingleLock guard\(&m_lock, TRUE\)/);
+  assert.match(webServer, /W10DiagnosticsContext::Log[\s\S]*CLiveDebugLog::Get\(\)\.GetRecent/);
+  assert.match(routeTable, /\{"\/api\/live\/log", WebRouteId::ApiLiveLog\}/);
+});

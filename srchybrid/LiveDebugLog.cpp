@@ -5,6 +5,7 @@
 #include <stdarg.h>
 #include <time.h>
 #include <algorithm>
+#include <new>
 #include <vector>
 
 #ifdef _DEBUG
@@ -73,6 +74,168 @@ void CLiveDebugLog::AppendW(LPCSTR tag, LPCWSTR fmt, ...)
 
 	CSingleLock guard(&m_lock, TRUE);
 	AppendLineLocked(line);
+}
+
+void CLiveDebugLog::TryAppendShutdownStage(LiveShutdownStage stage) noexcept
+{
+	TryAppendShutdownStageImpl(stage, false);
+}
+
+void CLiveDebugLog::TryAppendShutdownStageImpl(LiveShutdownStage stage,
+	bool simulateAllocationFailure) noexcept
+{
+	static const char* const names[] = {
+		"ENTRY", "CAN_CLOSE_REJECTED", "CAN_CLOSE_PASS",
+		"KAD_STOP_BEGIN", "KAD_STOPPED",
+		"DISK_THREADS_STOP_BEGIN", "DISK_THREADS_STOPPED",
+		"SAVES_BEGIN", "SAVES_COMPLETE",
+		"STOP_UPNP_BEGIN", "STOP_UPNP_COMPLETE",
+		"MAPPED_CLEANUP_BEGIN", "MAPPED_CLEANUP_COMPLETE",
+		"PREFS_SAVE_BEGIN", "PREFS_SAVED",
+		"NETWORK_THREADS_DELETE_BEGIN", "NETWORK_THREADS_DELETED",
+		"WEBSERVER_DELETE_IMMINENT"
+	};
+	const unsigned index = static_cast<unsigned>(stage);
+	if (index >= _countof(names) ||
+		!::TryEnterCriticalSection(&m_lock.m_sect))
+		return;
+	try {
+		time_t now = time(NULL);
+		struct tm tmv = {};
+		localtime_s(&tmv, &now);
+		char lineBuffer[96] = {};
+		_snprintf_s(lineBuffer, _countof(lineBuffer), _TRUNCATE,
+			"%02d:%02d:%02d [SHUTDOWN] stage=%s",
+			tmv.tm_hour, tmv.tm_min, tmv.tm_sec, names[index]);
+		if (simulateAllocationFailure)
+			throw std::bad_alloc();
+		AppendLineLocked(CStringA(lineBuffer));
+	}
+	catch (...) {
+		// Diagnostic loss is preferable to delaying or failing shutdown.
+	}
+	::LeaveCriticalSection(&m_lock.m_sect);
+}
+
+struct CLiveDebugLog::ShutdownStageLockTestContext
+{
+	CLiveDebugLog* log;
+	HANDLE entered;
+	HANDLE release;
+	DWORD exitDelayMilliseconds;
+};
+
+DWORD WINAPI CLiveDebugLog::ShutdownStageLockTestProc(LPVOID raw) noexcept
+{
+	ShutdownStageLockTestContext* context =
+		static_cast<ShutdownStageLockTestContext*>(raw);
+	context->log->m_lock.Lock();
+	::SetEvent(context->entered);
+	::WaitForSingleObject(context->release, 2000);
+	context->log->m_lock.Unlock();
+	if (context->exitDelayMilliseconds != 0)
+		::Sleep(context->exitDelayMilliseconds);
+	return 0;
+}
+
+bool CLiveDebugLog::RunShutdownStageSelfTest() noexcept
+{
+	const int beforeLockedAttempt = GetCount();
+	HANDLE entered = ::CreateEvent(NULL, TRUE, FALSE, NULL);
+	HANDLE release = ::CreateEvent(NULL, TRUE, FALSE, NULL);
+	if (entered == NULL || release == NULL) {
+		if (entered != NULL) ::CloseHandle(entered);
+		if (release != NULL) ::CloseHandle(release);
+		return false;
+	}
+	ShutdownStageLockTestContext* context = new (std::nothrow)
+		ShutdownStageLockTestContext{ this, entered, release, 0 };
+	if (context == NULL) {
+		::CloseHandle(release);
+		::CloseHandle(entered);
+		return false;
+	}
+	HANDLE thread = ::CreateThread(NULL, 0, ShutdownStageLockTestProc,
+		context, 0, NULL);
+	if (thread == NULL) {
+		delete context;
+		::CloseHandle(release);
+		::CloseHandle(entered);
+		return false;
+	}
+	bool passed = ::WaitForSingleObject(entered, 1000) == WAIT_OBJECT_0;
+	if (passed) {
+		const DWORD started = ::GetTickCount();
+		TryAppendShutdownStage(LiveShutdownStage::Entry);
+		passed = ::GetTickCount() - started < 100;
+	}
+	::SetEvent(release);
+	const bool joined = ::WaitForSingleObject(thread, 1000) == WAIT_OBJECT_0;
+	passed = joined && passed;
+	if (!joined) {
+		// Context and handles remain owned by the live helper. Never close/free
+		// objects it can still address; this test failure is a bounded safe leak.
+		return false;
+	}
+	::CloseHandle(thread);
+	::CloseHandle(release);
+	::CloseHandle(entered);
+	delete context;
+	if (!passed || GetCount() != beforeLockedAttempt)
+		return false;
+
+	// Exercise the timeout ownership rule with a helper which deliberately
+	// outlives the first join. The later join is test-only and outside shutdown.
+	ShutdownStageLockTestContext* delayed = new (std::nothrow)
+		ShutdownStageLockTestContext{ this,
+			::CreateEvent(NULL, TRUE, FALSE, NULL),
+			::CreateEvent(NULL, TRUE, FALSE, NULL), 1250 };
+	if (delayed == NULL || delayed->entered == NULL || delayed->release == NULL) {
+		if (delayed != NULL) {
+			if (delayed->entered != NULL) ::CloseHandle(delayed->entered);
+			if (delayed->release != NULL) ::CloseHandle(delayed->release);
+			delete delayed;
+		}
+		return false;
+	}
+	HANDLE delayedThread = ::CreateThread(NULL, 0, ShutdownStageLockTestProc,
+		delayed, 0, NULL);
+	if (delayedThread == NULL) {
+		::CloseHandle(delayed->release);
+		::CloseHandle(delayed->entered);
+		delete delayed;
+		return false;
+	}
+	if (::WaitForSingleObject(delayed->entered, 1000) != WAIT_OBJECT_0) {
+		::SetEvent(delayed->release);
+		return false; // live helper retains its heap context and handles
+	}
+	::SetEvent(delayed->release);
+	if (::WaitForSingleObject(delayedThread, 25) != WAIT_TIMEOUT)
+		passed = false;
+	if (::WaitForSingleObject(delayedThread, 2000) != WAIT_OBJECT_0)
+		return false; // live helper retains its heap context and handles
+	::CloseHandle(delayedThread);
+	::CloseHandle(delayed->release);
+	::CloseHandle(delayed->entered);
+	delete delayed;
+	if (!passed)
+		return false;
+
+	const int before = GetCount();
+	TryAppendShutdownStageImpl(LiveShutdownStage::Entry, true);
+	if (GetCount() != before)
+		return false;
+	TryAppendShutdownStage(LiveShutdownStage::Entry);
+	try {
+		std::deque<CStringA> recent;
+		GetRecent(1, recent);
+		return !recent.empty() && recent.back().Find(
+			"[SHUTDOWN] stage=ENTRY") >= 0;
+	}
+	catch (...) {
+		return false;
+	}
 }
 
 void CLiveDebugLog::GetRecent(int maxItems, std::deque<CStringA>& out) const

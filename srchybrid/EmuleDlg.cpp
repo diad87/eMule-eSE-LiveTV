@@ -1220,6 +1220,11 @@ void CemuleDlg::RunHeadlessAction() noexcept
 		// V2 segment through an isolated viewer's production ingest path.
 		if (theApp.m_bSelfTest) {
 			LIVE_LOG("HEADLESS", "Selftest: testpattern + signed chunk loopback");
+			if (!CLiveDebugLog::Get().RunShutdownStageSelfTest()) {
+				AppendMod02SelfTestMarker("FAIL CLiveDebugLog shutdown stage\n");
+				ScheduleSelfTestExit(2);
+				return;
+			}
 			AppendMod02SelfTestMarker("BEGIN CUPnPImplMiniLib deferred reaper\n");
 			if (!CUPnPImplMiniLib::RunDeferredReaperSelfTest()) {
 				AppendMod02SelfTestMarker("FAIL CUPnPImplMiniLib deferred reaper\n");
@@ -2630,15 +2635,30 @@ bool CemuleDlg::CanClose()
 	return true;
 }
 
+namespace
+{
+void RecordShutdownStage(LiveShutdownStage stage) noexcept
+{
+	try {
+		CLiveDebugLog::Get().TryAppendShutdownStage(stage);
+	}
+	catch (...) {
+	}
+}
+}
+
 void CemuleDlg::OnClose()
 {
 	static LONG closing = 0;
 	if (::InterlockedExchange(&closing, 1))
 		return; //already closing
+	RecordShutdownStage(LiveShutdownStage::Entry);
 	if (!CanClose()) {
+		RecordShutdownStage(LiveShutdownStage::CanCloseRejected);
 		::InterlockedExchange(&closing, 0);
 		return;
 	}
+	RecordShutdownStage(LiveShutdownStage::CanClosePass);
 	InvalidateLocalUPnPFailure();
 	theApp.m_app_state = APP_STATE_SHUTTINGDOWN;
 	notifierenabled = false;
@@ -2695,7 +2715,9 @@ void CemuleDlg::OnClose()
 		}
 	}
 
+	RecordShutdownStage(LiveShutdownStage::KadStopBegin);
 	Kademlia::CKademlia::Stop();	// couple of data files are written
+	RecordShutdownStage(LiveShutdownStage::KadStopped);
 
 	// try to wait until the hashing thread notices that we are shutting down
 	CSingleLock sLock1(&theApp.hashing_mut); // only one file hash at a time
@@ -2731,13 +2753,16 @@ void CemuleDlg::OnClose()
 		}
 	}
 
+	RecordShutdownStage(LiveShutdownStage::DiskThreadsStopBegin);
 	theApp.m_pUploadDiskIOThread->EndThread();
 	theApp.m_pPartFileWriteThread->EndThread();
 	// eSE H1: stop BEFORE the downloadqueue dtor (below) so ~CPartFile re-verifies
 	// leftover parts synchronously and the final .met never holds unverified parts
 	theApp.m_pPartHashThread->EndThread();
+	RecordShutdownStage(LiveShutdownStage::DiskThreadsStopped);
 
 	// saving data & stuff
+	RecordShutdownStage(LiveShutdownStage::SavesBegin);
 	theApp.emuledlg->preferenceswnd->m_wndSecurity.DeleteDDB();
 
 	theApp.knownfiles->Save();
@@ -2750,6 +2775,7 @@ void CemuleDlg::OnClose()
 	theApp.searchlist->SaveSpamFilter();
 	if (thePrefs.IsStoringSearchesEnabled())
 		theApp.searchlist->StoreSearches();
+	RecordShutdownStage(LiveShutdownStage::SavesComplete);
 
 	// close uPnP Ports
 	if (m_hUPnPLeaseTimer != 0) {
@@ -2768,7 +2794,9 @@ void CemuleDlg::OnClose()
 	CUPnPImpl *mappingImpl =
 		theApp.m_pUPnPFinder->GetImplementation();
 	mappingImpl->SetMessageOnResult(NULL, 0);
+	RecordShutdownStage(LiveShutdownStage::StopUpnpBegin);
 	mappingImpl->StopAsyncFind();
+	RecordShutdownStage(LiveShutdownStage::StopUpnpComplete);
 	m_mappingResultGate.CancelPending();
 	InvalidateLocalUPnPFailure();
 	if (theApp.directreachability != NULL)
@@ -2779,13 +2807,17 @@ void CemuleDlg::OnClose()
 	while (::PeekMessage(&mapperMessage, GetSafeHwnd(),
 			UM_UPNP_RESULT, UM_UPNP_RESULT, PM_REMOVE)) {
 	}
+	RecordShutdownStage(LiveShutdownStage::MappedCleanupBegin);
 	if (thePrefs.CloseUPnPOnExit()) {
 		const uint64 generation = theApp.directreachability != NULL
 			? theApp.directreachability->GetTopologyGeneration() : 0;
 		mappingImpl->DeletePortsForGeneration(generation);
 	}
+	RecordShutdownStage(LiveShutdownStage::MappedCleanupComplete);
 
+	RecordShutdownStage(LiveShutdownStage::PrefsSaveBegin);
 	thePrefs.Save();
+	RecordShutdownStage(LiveShutdownStage::PrefsSaved);
 	thePerfLog.Shutdown();
 
 	// explicitly delete all listview items which may hold ptrs to objects which will get deleted
@@ -2805,6 +2837,7 @@ void CemuleDlg::OnClose()
 	CPartFileConvert::CloseGUI();
 	CPartFileConvert::RemoveAllJobs();
 
+	RecordShutdownStage(LiveShutdownStage::NetworkThreadsDeleteBegin);
 	theApp.uploadBandwidthThrottler->EndThread();
 	theApp.lastCommonRouteFinder->EndThread();
 
@@ -2836,6 +2869,8 @@ void CemuleDlg::OnClose()
 		delete theApp.relayclient;
 		theApp.relayclient = NULL;
 	}
+	RecordShutdownStage(LiveShutdownStage::NetworkThreadsDeleted);
+	RecordShutdownStage(LiveShutdownStage::WebserverDeleteImminent);
 	delete theApp.webserver;				theApp.webserver = NULL;
 	delete theApp.m_pFirewallOpener;		theApp.m_pFirewallOpener = NULL;
 	delete theApp.uploadBandwidthThrottler;	theApp.uploadBandwidthThrottler = NULL;

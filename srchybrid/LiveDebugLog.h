@@ -16,6 +16,28 @@
 
 #include <deque>
 
+enum class LiveShutdownStage
+{
+	Entry,
+	CanCloseRejected,
+	CanClosePass,
+	KadStopBegin,
+	KadStopped,
+	DiskThreadsStopBegin,
+	DiskThreadsStopped,
+	SavesBegin,
+	SavesComplete,
+	StopUpnpBegin,
+	StopUpnpComplete,
+	MappedCleanupBegin,
+	MappedCleanupComplete,
+	PrefsSaveBegin,
+	PrefsSaved,
+	NetworkThreadsDeleteBegin,
+	NetworkThreadsDeleted,
+	WebserverDeleteImminent
+};
+
 class CLiveDebugLog
 {
 public:
@@ -25,6 +47,10 @@ public:
 	// Tag is a short uppercase prefix shown like "[TAG] message...".
 	void Append(LPCSTR tag, LPCSTR fmt, ...);
 	void AppendW(LPCSTR tag, LPCWSTR fmt, ...);
+	// Shutdown-only, non-blocking and best-effort. Drops the marker if another
+	// reader/writer owns the ring or if formatting/storage fails.
+	void TryAppendShutdownStage(LiveShutdownStage stage) noexcept;
+	bool RunShutdownStageSelfTest() noexcept;
 
 	// Snapshot of the last N entries (oldest first).
 	// Each entry is "HH:MM:SS [TAG] message".
@@ -38,6 +64,10 @@ public:
 private:
 	CLiveDebugLog() = default;
 	void AppendLineLocked(const CStringA& line);
+	void TryAppendShutdownStageImpl(LiveShutdownStage stage,
+		bool simulateAllocationFailure) noexcept;
+	struct ShutdownStageLockTestContext;
+	static DWORD WINAPI ShutdownStageLockTestProc(LPVOID context) noexcept;
 
 	mutable CCriticalSection m_lock;
 	std::deque<CStringA>     m_lines;     // capacity 500

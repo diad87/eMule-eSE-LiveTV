@@ -1,0 +1,9 @@
+{
+  "schema": "ese.mod52.w12-reseal-review/v1",
+  "role": "Terra",
+  "verdict": "APPROVE",
+  "payload_sha256": "a555bc2ed2df12537f47808baf4e0172c9322f56a39aaac83be47ef1e993b8cb",
+  "reviewed_commit": "6247075338787343872952896d25cf2e330be8ff",
+  "reviewed_tree": "326e5da6ac8ea2e146dc9d75d8c9e47123f760da",
+  "findings": []
+}

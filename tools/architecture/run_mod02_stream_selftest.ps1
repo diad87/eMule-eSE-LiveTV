@@ -20,6 +20,14 @@ if (Test-Path -LiteralPath $markerPath) { throw 'MOD-0.2 marker file unexpectedl
 
 $criticalSourceRelativePaths = @(
     'srchybrid/EmuleDlg.cpp', 'srchybrid/EmuleDlg.h',
+    'srchybrid/UPnPImpl.cpp', 'srchybrid/UPnPImpl.h',
+    'srchybrid/UPnPImplMiniLib.cpp', 'srchybrid/UPnPImplMiniLib.h',
+    'srchybrid/UPnPImplWrapper.cpp', 'srchybrid/UPnPImplWrapper.h',
+    'srchybrid/UPnPWorkerLifecycle.h',
+    'srchybrid/UPnPDeferredReaperCore.h',
+    'srchybrid/tests/test_upnp_worker_lifecycle.cpp',
+    'srchybrid/tests/make.bat',
+    'srchybrid/eSE/test/live_tv_regression.test.js',
     'srchybrid/LiveTunnel.cpp', 'srchybrid/LiveTunnel.h', 'srchybrid/LiveTunnelBulkFacade.inl', 'srchybrid/LiveTunnelBulkStatePort.h', 'srchybrid/LiveTunnelBulkProxy.cpp', 'srchybrid/LiveTunnelBulkProxy.h', 'srchybrid/LiveTunnelBulkTransportAdapter.cpp', 'srchybrid/LiveTunnelBulkTransportAdapter.h', 'srchybrid/LiveTunnelSearchFacade.inl', 'srchybrid/LiveTunnelSearchPort.h', 'srchybrid/LiveTunnelSearchService.cpp', 'srchybrid/LiveTunnelSearchService.h', 'srchybrid/LiveTunnelCoordinatorFacade.cpp', 'srchybrid/LiveTunnelCoordinatorFacade.h', 'srchybrid/LiveTunnelCoordinatorMethods.inl', 'srchybrid/LiveTunnelCoordinatorPort.h',
     'srchybrid/LiveCellQueue.cpp', 'srchybrid/LiveCellQueue.h',
     'srchybrid/LiveTunnelFraming.cpp', 'srchybrid/LiveTunnelFraming.h',
@@ -221,6 +229,8 @@ if ($timedOut) {
 }
 $exitCode = if ($timedOut -or -not $terminationConfirmed) { $null } else { [int]$process.ExitCode }
 $expectedMarkers = @(
+    'BEGIN CUPnPImplMiniLib deferred reaper',
+    'PASS CUPnPImplMiniLib deferred reaper',
     "SOURCE $sourceIdentity",
     'BEGIN CLiveTunnel', 'PASS CLiveTunnel',
     'BEGIN CWebServer', 'PASS CWebServer',

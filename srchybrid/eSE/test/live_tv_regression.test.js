@@ -1861,6 +1861,99 @@ test('exhausted mapper chain leaves one terminal generation, never discovering',
   assert.match(stopBody, /DisableMappingsByPreference\(\)/);
 });
 
+test('MiniLib worker shutdown is cooperative, bounded and publication-fenced', () => {
+  const impl = read(repoRoot, 'srchybrid', 'UPnPImplMiniLib.cpp');
+  const header = read(repoRoot, 'srchybrid', 'UPnPImplMiniLib.h');
+  const lifecycle = read(repoRoot, 'srchybrid', 'UPnPWorkerLifecycle.h');
+  const wrapper = read(repoRoot, 'srchybrid', 'UPnPImplWrapper.cpp');
+  assert.doesNotMatch(impl, /TerminateThread|SuspendThread/);
+  const stopAt = impl.indexOf('void CUPnPImplMiniLib::StopAsyncFind()');
+  const stopEnd = impl.indexOf('\nvoid CUPnPImplMiniLib::', stopAt + 10);
+  const stop = impl.slice(stopAt, stopEnd);
+  assert.match(stop, /RequestCooperativeUPnPWorkerStop/);
+  assert.match(stop, /m_stopTimeoutMilliseconds/);
+  assert.match(impl, /m_stopTimeoutMilliseconds\(kUPnPWorkerStopBoundMilliseconds\)/);
+  assert.doesNotMatch(stop, /m_mutBusy|CSingleLock|INFINITE/);
+  assert.match(stop, /SetMessageOnResult\(NULL, 0\)/);
+  assert.match(stop, /cancellation remains asserted/);
+  assert.match(lifecycle,
+    /fenceCallback\(\);[\s\S]*cancelled\.store\(true, std::memory_order_release\)/);
+  assert.match(lifecycle, /WaitForSingleObject\(worker, timeoutMilliseconds\)/);
+  assert.match(lifecycle, /UI patience bound only/);
+  assert.doesNotMatch(lifecycle, /TerminateThread|WaitForSingleObject\([^,]+, INFINITE/);
+  assert.match(header, /Owned raw Win32 worker handle/);
+  assert.doesNotMatch(impl, /DuplicateHandle/);
+  assert.doesNotMatch(impl, /AfxBeginThread|CWinThread|ResumeThread/);
+  assert.match(impl, /new \(std::nothrow\) CStartDiscoveryThread\(this\)[\s\S]*CreateThread/);
+  assert.match(impl, /ReapCompletedWorker\(\)/);
+  assert.match(impl, /DiscoverIgdDevice\([\s\S]*400/);
+  assert.match(impl, /DiscoverIgdDevice\([\s\S]*250/);
+  assert.match(impl, /DiscoverIgdDevice\("ssdp:all"[\s\S]*600/);
+  assert.match(impl, /CountReadablePortMappings\([\s\S]*m_bAbortDiscovery/);
+  assert.match(impl, /UPNP_GetValidIGD\(device/);
+  assert.doesNotMatch(impl, /UPNP_GetValidIGD\(devices/);
+  const openAt = impl.indexOf(
+    'bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(');
+  const cleanupAt = impl.indexOf('\nvoid CUPnPImplMiniLib::Cleanup()', openAt);
+  const openPort = impl.slice(openAt, cleanupAt);
+  const firstAdd = openPort.indexOf('nResult = addFixedMapping("7200")');
+  const verify = openPort.indexOf('// Query up to three times', firstAdd);
+  assert.ok(firstAdd >= 0 && verify > firstAdd);
+  assert.match(openPort.slice(firstAdd, verify),
+    /rollbackExactMappingAfterCancel\(requestedLifetime\)/,
+    'every post-Add cancellation must enter exact compensation');
+  assert.doesNotMatch(openPort, /UPNP_AddAnyPortMapping/,
+    'a lost AddAny response cannot reveal the external port to roll back');
+  assert.match(impl, /RecordOwnedMapping\([\s\S]*UPNP_DeletePortMapping\([\s\S]*UPNP_GetSpecificPortMappingEntryChecked\([\s\S]*verify != 714[\s\S]*RemoveOwnershipRecordDurably/);
+  assert.doesNotMatch(impl, /WaitForSingleObject\([^;]*INFINITE/);
+  assert.doesNotMatch(impl, /RaiseFailFastException|FailFast|TerminateProcess/);
+  assert.match(wrapper, /ReleaseUPnPOwnedImplementation\(impl\)/);
+  assert.match(impl, /class CUPnPMiniLibDeferredReaper[\s\S]*new \(std::nothrow\) CUPnPMiniLibDeferredReaper/);
+  assert.match(impl, /TryInstance\(\) noexcept/);
+  assert.match(impl, /DeferDestructionIfWorkerActive\(\)[\s\S]*StopAsyncFind\(\)[\s\S]*reaper == NULL \|\| reaper->Adopt\(this\)/);
+  assert.match(impl, /m_core\.PollOnce\(\)/);
+  assert.match(impl, /m_bindAddressSnapshot[\s\S]*m_journalPathSnapshot/);
+  assert.doesNotMatch(impl.slice(impl.indexOf('void CUPnPImplMiniLib::LoadOwnershipLedger()'),
+    impl.indexOf('void CUPnPImplMiniLib::RemoveOwnershipRecord(')), /thePrefs|theApp/);
+  const runAt = impl.indexOf('DWORD CUPnPImplMiniLib::CStartDiscoveryThread::Run()');
+  const runEnd = impl.indexOf(
+    '\nbool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(', runAt);
+  const run = impl.slice(runAt, runEnd);
+  assert.doesNotMatch(run, /thePrefs|theApp|CString|AfxBeginThread|CWinThread|CSingleLock|ASSERT/,
+    'worker-reachable code must not depend on application or MFC globals');
+  assert.match(run,
+    /if \(m_pOwner->m_bAbortDiscovery\)\s*bSucceeded = false;[\s\S]*ShouldRollbackUpnpMappingAfterAtomicFailure/);
+  assert.match(impl, /UPnPWorkerGlobalAccess globalAccess;[\s\S]*SendFailure/);
+  const destructorAt = impl.indexOf('CUPnPImplMiniLib::~CUPnPImplMiniLib()');
+  const deferAt = impl.indexOf(
+    'bool CUPnPImplMiniLib::DeferDestructionIfWorkerActive()', destructorAt);
+  const destructor = impl.slice(destructorAt, deferAt);
+  assert.match(destructor, /if \(!m_bDeferredReap\)[\s\S]*StopAsyncFind\(\)[\s\S]*else[\s\S]*ReapCompletedWorker\(\)/);
+  assert.match(impl, /#define DebugLog\(\.\.\.\) ESE_UPNP_GATED_LOG/);
+  assert.match(stop, /EnterCriticalSection\(&m_workerGlobalGate\)[\s\S]*m_bAbortDiscovery\.store\(true/);
+  const reachableNames = [
+    'void CUPnPImplMiniLib::DeletePort(',
+    'bool CUPnPImplMiniLib::SaveOwnershipLedger()',
+    'bool CUPnPImplMiniLib::RecordOwnedMapping(',
+    'bool CUPnPImplMiniLib::DeleteEphemeralOwnedMapping(',
+    'natmap::OwnershipDecision CUPnPImplMiniLib::ObserveOwnedMapping(',
+    'bool CUPnPImplMiniLib::CleanupOwnedRecordAttempt('
+  ];
+  for (const name of reachableNames) {
+    const begin = impl.indexOf(name);
+    assert.ok(begin >= 0, `missing reachable body ${name}`);
+    const next = impl.indexOf('\nvoid CUPnPImplMiniLib::', begin + name.length);
+    const nextBool = impl.indexOf('\nbool CUPnPImplMiniLib::', begin + name.length);
+    const candidates = [next, nextBool].filter((value) => value > begin);
+    const end = candidates.length ? Math.min(...candidates) : impl.length;
+    const body = impl.slice(begin, end);
+    assert.doesNotMatch(body,
+      /thePrefs|theApp|CString|CException|Afx|CWinThread|CSingleLock|CMutex|ASSERT|VERIFY|TRACE/,
+      `post-cancel reachable body must be global/MFC-free: ${name}`);
+  }
+  assert.match(impl, /RunDeferredReaperSelfTest\(\)[\s\S]*ReleaseUPnPOwnedImplementation\(owned\)[\s\S]*notDeletedWhileActive[\s\S]*deletedOnceSignalled/);
+});
+
 test('ownership journal inspector is read-only and privacy-safe', () => {
   const inspector = read(repoRoot, 'tools', 'natmap_ownership_inspect.cpp');
   assert.match(inspector, /DecodeOwnershipLedger\(/);

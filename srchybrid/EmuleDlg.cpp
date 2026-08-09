@@ -126,6 +126,7 @@
 #include "VisualStylesXP.h"
 #include "UPnPImpl.h"
 #include "UPnPImplWrapper.h"
+#include "UPnPImplMiniLib.h"
 #include "ExitBox.h"
 #include "UploadDiskIOThread.h"
 #include "PartFileWriteThread.h"
@@ -1219,6 +1220,14 @@ void CemuleDlg::RunHeadlessAction() noexcept
 		// V2 segment through an isolated viewer's production ingest path.
 		if (theApp.m_bSelfTest) {
 			LIVE_LOG("HEADLESS", "Selftest: testpattern + signed chunk loopback");
+			AppendMod02SelfTestMarker("BEGIN CUPnPImplMiniLib deferred reaper\n");
+			if (!CUPnPImplMiniLib::RunDeferredReaperSelfTest()) {
+				AppendMod02SelfTestMarker("FAIL CUPnPImplMiniLib deferred reaper\n");
+				LIVE_LOG("HEADLESS", "Selftest FAIL: UPnP deferred ownership");
+				ScheduleSelfTestExit(2);
+				return;
+			}
+			AppendMod02SelfTestMarker("PASS CUPnPImplMiniLib deferred reaper\n");
 			bool passed = false;
 			CString failure;
 			AppendMod02SelfTestMarker("SOURCE " ESE_MOD02_CRITICAL_SOURCE_SHA256 "\n");

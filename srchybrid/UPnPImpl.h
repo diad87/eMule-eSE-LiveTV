@@ -82,6 +82,9 @@ public:
 	virtual void StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nTCPWebPort) = 0;
 	virtual bool CheckAndRefresh() = 0;
 	virtual void StopAsyncFind() = 0;
+	// Called only by the owning wrapper immediately before delete. Returning
+	// true transfers destruction ownership to a process-wide deferred reaper.
+	virtual bool DeferDestructionIfWorkerActive() { return false; }
 	virtual void DeletePorts() = 0;
 	virtual void DeletePortsForGeneration(std::uint64_t generation)
 		{ (void)generation; DeletePorts(); }

@@ -18,6 +18,8 @@
 #include "emule.h"
 #include "preferences.h"
 #include "UPnPImplMiniLib.h"
+#include "UPnPWorkerLifecycle.h"
+#include "UPnPDeferredReaperCore.h"
 #include "natmap/ownership_cleanup_policy.h"
 #include "natmap/upnp_discovery.h"
 #include "natmap/upnp_lease_policy.h"
@@ -47,7 +49,106 @@
 static char THIS_FILE[] = __FILE__;
 #endif
 
-CMutex CUPnPImplMiniLib::m_mutBusy;
+namespace {
+thread_local std::atomic_bool* g_upnpWorkerCancelled = NULL;
+thread_local CRITICAL_SECTION* g_upnpWorkerGlobalGate = NULL;
+
+class UPnPWorkerGlobalAccess
+{
+public:
+	UPnPWorkerGlobalAccess() : m_locked(false), m_allowed(true)
+	{
+		if (g_upnpWorkerGlobalGate != NULL) {
+			::EnterCriticalSection(g_upnpWorkerGlobalGate);
+			m_locked = true;
+			m_allowed = g_upnpWorkerCancelled != NULL
+				&& !g_upnpWorkerCancelled->load(std::memory_order_acquire);
+		}
+	}
+	~UPnPWorkerGlobalAccess()
+	{
+		if (m_locked)
+			::LeaveCriticalSection(g_upnpWorkerGlobalGate);
+	}
+	operator bool() const { return m_allowed; }
+private:
+	bool m_locked;
+	bool m_allowed;
+};
+}
+
+// On the UI thread these remain ordinary diagnostics. On the worker they are
+// serialized with the cancellation fence and become inert after it.
+#define ESE_UPNP_GATED_LOG(call) do { UPnPWorkerGlobalAccess access; \
+	if (access) { call; } } while (0)
+#define DebugLog(...) ESE_UPNP_GATED_LOG(DebugLog(__VA_ARGS__))
+#define DebugLogWarning(...) ESE_UPNP_GATED_LOG(DebugLogWarning(__VA_ARGS__))
+#define DebugLogError(...) ESE_UPNP_GATED_LOG(DebugLogError(__VA_ARGS__))
+
+class CUPnPMiniLibDeferredReaper
+{
+public:
+	static CUPnPMiniLibDeferredReaper* TryInstance() noexcept
+	{
+		// Deliberately never destroyed: static destruction order must not race a
+		// worker retained for process teardown.
+		static CUPnPMiniLibDeferredReaper* const instance =
+			new (std::nothrow) CUPnPMiniLibDeferredReaper();
+		return instance;
+	}
+
+	bool Adopt(CUPnPImplMiniLib* impl)
+	{
+		if (impl == NULL)
+			return false;
+		if (m_core.Adopt(impl, impl->m_hThreadHandle, Destroy)) {
+			if (m_wake != NULL)
+				::SetEvent(m_wake);
+			return true;
+		}
+		// Capacity exhaustion is fail-safe: wrapper ownership was transferred,
+		// so the still-active object becomes an intentional process-lifetime leak.
+		return true;
+	}
+
+private:
+	CUPnPMiniLibDeferredReaper() noexcept : m_wake(), m_thread()
+	{
+		if (StartUPnPDeferredReaperThread(
+				m_wake, m_thread, ThreadProc, this)) {
+			::CloseHandle(m_thread);
+			m_thread = NULL;
+		}
+	}
+
+	static DWORD WINAPI ThreadProc(void* context) noexcept
+	{
+		try {
+			return static_cast<CUPnPMiniLibDeferredReaper*>(context)->Run();
+		} catch (...) {
+			// Never unwind through the Win32 thread ABI. Retained entries remain
+			// safely process-lifetime owned if the reaper itself cannot continue.
+			return ERROR_UNHANDLED_EXCEPTION;
+		}
+	}
+
+	DWORD Run()
+	{
+		for (;;) {
+			::WaitForSingleObject(m_wake, 250);
+			m_core.PollOnce();
+		}
+	}
+
+	static void Destroy(void* value)
+	{
+		delete static_cast<CUPnPImplMiniLib*>(value);
+	}
+
+	HANDLE m_wake;
+	HANDLE m_thread;
+	UPnPDeferredReaperCore<8> m_core;
+};
 
 static LPCSTR const sTCPa = "TCP";
 static LPCSTR const sUDPa = "UDP";
@@ -79,7 +180,7 @@ static std::uint64_t MonotonicMilliseconds()
 }
 
 struct DiscoveryTarget {
-	CStringA address;
+	std::string address;
 };
 
 class SelectedIgd {
@@ -113,7 +214,8 @@ public:
 
 static void ConsiderDiscoveredDevices(UPNPDev* devices,
 	SelectedIgd& selected,
-	natmap::UpnpDiscoverySelection& selection)
+	natmap::UpnpDiscoverySelection& selection,
+	const std::atomic_bool& cancelled)
 {
 	if (devices == NULL)
 		return;
@@ -122,51 +224,56 @@ static void ConsiderDiscoveredDevices(UPNPDev* devices,
 	for (UPNPDev* device = devices; device != NULL; device = device->pNext)
 		DebugLog(_T("Desc: %S, st: %S"), device->descURL, device->st);
 
-	UPNPUrls candidateUrls = {};
-	IGDdatas candidateData = {};
-	char candidateLan[40] = {};
-	char candidateWan[40] = {};
-	const int candidateState = UPNP_GetValidIGD(devices, &candidateUrls,
-		&candidateData, candidateLan, sizeof candidateLan,
-		candidateWan, sizeof candidateWan);
-	const natmap::UpnpIgdObservation observation = {
-		static_cast<natmap::UpnpIgdQuality>(candidateState),
-		candidateUrls.controlURL != NULL,
-		candidateData.first.servicetype[0] != 0
-	};
-	if (selection.Consider(observation)) {
-		FreeUPNPUrls(&selected.urls);
-		selected.urls = candidateUrls;
-		memset(&candidateUrls, 0, sizeof candidateUrls);
-		selected.data = candidateData;
-		strncpy_s(selected.lanAddress, candidateLan, _TRUNCATE);
-		strncpy_s(selected.wanAddress, candidateWan, _TRUNCATE);
-		selected.state = candidateState;
+	// UPNP_GetValidIGD can perform several HTTP requests per device. Feed one
+	// node at a time so cancellation is observed between bounded HTTP groups
+	// instead of after an unbounded device list.
+	for (UPNPDev* device = devices;
+		device != NULL && !cancelled && selection.should_continue();) {
+		UPNPDev* const next = device->pNext;
+		device->pNext = NULL;
+		UPNPUrls candidateUrls = {};
+		IGDdatas candidateData = {};
+		char candidateLan[40] = {};
+		char candidateWan[40] = {};
+		const int candidateState = UPNP_GetValidIGD(device, &candidateUrls,
+			&candidateData, candidateLan, sizeof candidateLan,
+			candidateWan, sizeof candidateWan);
+		device->pNext = next;
+		const natmap::UpnpIgdObservation observation = {
+			static_cast<natmap::UpnpIgdQuality>(candidateState),
+			candidateUrls.controlURL != NULL,
+			candidateData.first.servicetype[0] != 0
+		};
+		if (selection.Consider(observation)) {
+			FreeUPNPUrls(&selected.urls);
+			selected.urls = candidateUrls;
+			memset(&candidateUrls, 0, sizeof candidateUrls);
+			selected.data = candidateData;
+			strncpy_s(selected.lanAddress, candidateLan, _TRUNCATE);
+			strncpy_s(selected.wanAddress, candidateWan, _TRUNCATE);
+			selected.state = candidateState;
+		}
+		FreeUPNPUrls(&candidateUrls);
+		device = next;
 	}
-	FreeUPNPUrls(&candidateUrls);
 }
 
-static UPNPDev* DiscoverIgdDevices(const char* multicastInterface,
-	int delayMilliseconds, int localPort, bool searchAll, int& error)
+static UPNPDev* DiscoverIgdDevice(const char* deviceType,
+	const char* multicastInterface, int delayMilliseconds, int localPort,
+	int& error)
 {
-	if (searchAll)
-		return upnpDiscoverAll(delayMilliseconds, multicastInterface, NULL,
-			localPort, 0, 2, &error);
-
-	// Some IGDv2-only devices do not answer the legacy IGD:1 search used by
-	// upnpDiscover(). Query both generations and both WAN services explicitly.
-	static const char* const deviceTypes[] = {
-		"urn:schemas-upnp-org:device:InternetGatewayDevice:2",
-		"urn:schemas-upnp-org:service:WANIPConnection:2",
-		"urn:schemas-upnp-org:device:InternetGatewayDevice:1",
-		"urn:schemas-upnp-org:service:WANIPConnection:1",
-		"urn:schemas-upnp-org:service:WANPPPConnection:1",
-		"upnp:rootdevice",
-		NULL
-	};
-	return upnpDiscoverDevices(deviceTypes, delayMilliseconds,
-		multicastInterface, NULL, localPort, 0, 2, &error, 1);
+	return upnpDiscoverDevice(deviceType, delayMilliseconds,
+		multicastInterface, NULL, localPort, 0, 2, &error);
 }
+
+static const char* const s_discoveryDeviceTypes[] = {
+	"urn:schemas-upnp-org:device:InternetGatewayDevice:2",
+	"urn:schemas-upnp-org:service:WANIPConnection:2",
+	"urn:schemas-upnp-org:device:InternetGatewayDevice:1",
+	"urn:schemas-upnp-org:service:WANIPConnection:1",
+	"urn:schemas-upnp-org:service:WANPPPConnection:1",
+	"upnp:rootdevice"
+};
 
 static void AddDiscoveryTarget(std::vector<DiscoveryTarget>& targets,
 	const char* address)
@@ -174,7 +281,7 @@ static void AddDiscoveryTarget(std::vector<DiscoveryTarget>& targets,
 	if (address == NULL || address[0] == 0)
 		return;
 	for (const DiscoveryTarget& target : targets) {
-		if (target.address.CompareNoCase(address) == 0)
+		if (_stricmp(target.address.c_str(), address) == 0)
 			return;
 	}
 	DiscoveryTarget target;
@@ -182,12 +289,12 @@ static void AddDiscoveryTarget(std::vector<DiscoveryTarget>& targets,
 	targets.push_back(target);
 }
 
-static std::vector<DiscoveryTarget> GetDiscoveryTargets()
+static std::vector<DiscoveryTarget> GetDiscoveryTargets(
+	const std::string& configuredAddress)
 {
 	std::vector<DiscoveryTarget> targets;
-	const char* const configuredAddress = thePrefs.GetBindAddrA();
-	if (configuredAddress != NULL && configuredAddress[0] != 0) {
-		AddDiscoveryTarget(targets, configuredAddress);
+	if (!configuredAddress.empty()) {
+		AddDiscoveryTarget(targets, configuredAddress.c_str());
 		return targets;
 	}
 
@@ -321,12 +428,12 @@ static bool IsTransientUpnpError(int result)
 } // namespace
 
 static unsigned CountReadablePortMappings(const UPNPUrls *pURLs,
-	const IGDdatas *pIGDData)
+	const IGDdatas *pIGDData, const std::atomic_bool& cancelled)
 {
 	if (pURLs == NULL || pURLs->controlURL == NULL || pIGDData == NULL)
 		return 0;
 	unsigned count = 0;
-	for (; count < 128; ++count) {
+	for (; count < 128 && !cancelled; ++count) {
 		char index[12] = {};
 		_snprintf_s(index, _countof(index), _TRUNCATE, "%u", count);
 		char external[8] = {}, internalClient[40] = {}, internalPort[8] = {};
@@ -398,14 +505,15 @@ void CUPnPImplMiniLib::LoadOwnershipLedger()
 		return;
 	m_bOwnershipLedgerLoaded = true;
 	m_ownershipLedger = natmap::OwnershipLedger{};
-	const CString path = thePrefs.GetMuleDirectory(EMULE_CONFIGDIR)
-		+ _T("natmap-ownership.dat");
+	if (m_journalPathSnapshot.empty())
+		return;
+	const wchar_t* const path = m_journalPathSnapshot.c_str();
 	HANDLE file = ::CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL,
 		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (file == INVALID_HANDLE_VALUE) {
 		if (::GetLastError() != ERROR_FILE_NOT_FOUND)
 			DebugLogWarning(_T("UPNP ownership: cannot open journal '%s'"),
-				(LPCTSTR)path);
+				path);
 		return;
 	}
 
@@ -435,9 +543,10 @@ void CUPnPImplMiniLib::LoadOwnershipLedger()
 
 bool CUPnPImplMiniLib::SaveOwnershipLedger()
 {
-	const CString path = thePrefs.GetMuleDirectory(EMULE_CONFIGDIR)
-		+ _T("natmap-ownership.dat");
-	const CString temporary = path + _T(".new");
+	if (m_journalPathSnapshot.empty())
+		return false;
+	const std::wstring& path = m_journalPathSnapshot;
+	const std::wstring temporary = path + L".new";
 	std::array<std::uint8_t, natmap::kOwnershipLedgerMaxEncodedSize> bytes{};
 	const size_t length = natmap::EncodeOwnershipLedger(
 		m_ownershipLedger, bytes.data(), bytes.size());
@@ -447,7 +556,7 @@ bool CUPnPImplMiniLib::SaveOwnershipLedger()
 	if (!commit.Complete(natmap::OwnershipJournalStep::Encoded))
 		return false;
 
-	HANDLE file = ::CreateFile(temporary, GENERIC_WRITE, 0, NULL,
+	HANDLE file = ::CreateFile(temporary.c_str(), GENERIC_WRITE, 0, NULL,
 		CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
 	if (file == INVALID_HANDLE_VALUE)
 		return false;
@@ -460,7 +569,7 @@ bool CUPnPImplMiniLib::SaveOwnershipLedger()
 			natmap::OwnershipJournalStep::TemporaryWritten)) {
 		commit.Fail();
 		::CloseHandle(file);
-		::DeleteFile(temporary);
+		::DeleteFile(temporary.c_str());
 		return false;
 	}
 	if (::FlushFileBuffers(file) == FALSE
@@ -468,28 +577,28 @@ bool CUPnPImplMiniLib::SaveOwnershipLedger()
 			natmap::OwnershipJournalStep::TemporaryFlushed)) {
 		commit.Fail();
 		::CloseHandle(file);
-		::DeleteFile(temporary);
+		::DeleteFile(temporary.c_str());
 		return false;
 	}
 	if (::CloseHandle(file) == FALSE
 		|| !commit.Complete(
 			natmap::OwnershipJournalStep::TemporaryClosed)) {
 		commit.Fail();
-		::DeleteFile(temporary);
+		::DeleteFile(temporary.c_str());
 		return false;
 	}
-	if (::MoveFileEx(temporary, path,
+	if (::MoveFileEx(temporary.c_str(), path.c_str(),
 			MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE
 		|| !commit.Complete(
 			natmap::OwnershipJournalStep::FinalReplaced)) {
 		commit.Fail();
-		::DeleteFile(temporary);
+		::DeleteFile(temporary.c_str());
 		return false;
 	}
 
 	std::array<std::uint8_t,
 		natmap::kOwnershipLedgerMaxEncodedSize> persistedBytes{};
-	HANDLE persisted = ::CreateFile(path, GENERIC_READ, FILE_SHARE_READ,
+	HANDLE persisted = ::CreateFile(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
 		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (persisted == INVALID_HANDLE_VALUE) {
 		commit.Fail();
@@ -636,6 +745,14 @@ bool CUPnPImplMiniLib::DeleteEphemeralOwnedMapping(
 		DebugLogWarning(_T("UPNP ownership: refusing rollback without complete ephemeral ownership proof"));
 		return false;
 	}
+	// Cancellation after Add is the one case where beginning a journal write
+	// is required: it makes the exact rollback crash-recoverable. Never issue
+	// Delete unless that proof reached durable storage.
+	if (!RecordOwnedMapping(nLocalPort, nExternalPort, bTCP, pachLANIP,
+			nLifetimeSeconds, description)) {
+		DebugLogWarning(_T("UPNP ownership: refusing rollback because durable proof could not be recorded"));
+		return false;
+	}
 
 	char externalPort[8] = {};
 	_snprintf_s(externalPort, _countof(externalPort), _TRUNCATE,
@@ -643,10 +760,35 @@ bool CUPnPImplMiniLib::DeleteEphemeralOwnedMapping(
 	const int result = UPNP_DeletePortMapping(
 		m_pURLs->controlURL, m_pIGDData->first.servicetype,
 		externalPort, bTCP ? sTCPa : sUDPa, NULL);
-	if (result != UPNPCOMMAND_SUCCESS)
+	if (result != UPNPCOMMAND_SUCCESS) {
 		DebugLogWarning(_T("UPNP ownership: strict rollback failed for %s port %hu"),
 			bTCP ? sTCP : sUDP, nExternalPort);
-	return result == UPNPCOMMAND_SUCCESS;
+		return false;
+	}
+	char verifyClient[40] = {};
+	char verifyPort[8] = {};
+	char verifyDescription[80] = {};
+	char verifyLease[16] = {};
+	const int verify = UPNP_GetSpecificPortMappingEntryChecked(
+		m_pURLs->controlURL, m_pIGDData->first.servicetype,
+		externalPort, bTCP ? sTCPa : sUDPa, NULL,
+		verifyClient, _countof(verifyClient), verifyPort,
+		_countof(verifyPort), verifyDescription,
+		_countof(verifyDescription), NULL, 0, verifyLease,
+		_countof(verifyLease));
+	if (verify != 714) {
+		DebugLogWarning(_T("UPNP ownership: rollback absence could not be verified; retaining durable proof"));
+		return false;
+	}
+	for (size_t i = 0; i < m_ownershipLedger.count; ++i) {
+		const natmap::UpnpOwnershipRecord& current = m_ownershipLedger.records[i];
+		if (current.transport == record.transport
+				&& current.external_port == record.external_port
+				&& current.owner_token == record.owner_token
+				&& current.generation == record.generation)
+			return RemoveOwnershipRecordDurably(i);
+	}
+	return false;
 }
 
 void CUPnPImplMiniLib::RecoverOwnedMappings()
@@ -660,7 +802,7 @@ void CUPnPImplMiniLib::RecoverOwnedMappings()
 		const int pendingIndex = pending.records[0].transport
 			== natmap::Transport::Tcp ? 0 : 1;
 		cleanup.absent[1 - pendingIndex] = true;
-		while (cleanup.may_delete()
+		while (!m_bAbortDiscovery && cleanup.may_delete()
 			&& cleanup.delete_attempts[pendingIndex] < 2) {
 			bool deleted = false;
 			bool absent = false;
@@ -681,6 +823,8 @@ void CUPnPImplMiniLib::RecoverOwnedMappings()
 	}
 	std::array<natmap::OwnershipCleanupAuthorization, 2> authorizations{};
 	for (size_t i = 0; i < pending.count; ++i) {
+		if (m_bAbortDiscovery)
+			return;
 		authorizations[i].transport = pending.records[i].transport;
 		authorizations[i].decision = PreflightOwnedMapping(pending.records[i]);
 	}
@@ -690,10 +834,12 @@ void CUPnPImplMiniLib::RecoverOwnedMappings()
 		DebugLogWarning(_T("UPNP ownership: cleanup pair preflight rejected; zero mappings removed"));
 		return;
 	}
-	for (size_t i = 0; i < pending.count && cleanup.may_delete(); ++i) {
+	for (size_t i = 0; i < pending.count && cleanup.may_delete()
+		&& !m_bAbortDiscovery; ++i) {
 		const natmap::UpnpOwnershipRecord& record = pending.records[i];
 		const int index = record.transport == natmap::Transport::Tcp ? 0 : 1;
-		while (cleanup.may_delete() && cleanup.delete_attempts[index] < 2) {
+		while (!m_bAbortDiscovery && cleanup.may_delete()
+			&& cleanup.delete_attempts[index] < 2) {
 			bool deleted = false;
 			bool absent = false;
 			CleanupOwnedRecordAttempt(record, deleted, absent);
@@ -739,6 +885,8 @@ natmap::OwnershipDecision CUPnPImplMiniLib::ObserveOwnedMapping(
 		internalPort, _countof(internalPort),
 		description, _countof(description), NULL, 0,
 		leaseDuration, _countof(leaseDuration));
+	if (m_bAbortDiscovery)
+		return natmap::OwnershipDecision::InvalidObservation;
 	if (query == 714) {
 		absent = true;
 		return natmap::OwnershipDecision::Owned;
@@ -775,6 +923,8 @@ bool CUPnPImplMiniLib::CleanupOwnedRecordAttempt(
 			externalPort,
 			record.transport == natmap::Transport::Tcp ? sTCPa : sUDPa,
 			NULL) == UPNPCOMMAND_SUCCESS;
+		if (m_bAbortDiscovery)
+			return true;
 		if (ObserveOwnedMapping(record, absent)
 			!= natmap::OwnershipDecision::Owned || !absent)
 			return true;
@@ -794,17 +944,23 @@ bool CUPnPImplMiniLib::CleanupOwnedRecordAttempt(
 }
 
 CUPnPImplMiniLib::CUPnPImplMiniLib()
-	: m_pURLs()
+	: m_hBusyMutex(::CreateMutex(NULL, FALSE, NULL))
+	, m_pURLs()
 	, m_pIGDData()
 	, m_hThreadHandle()
+	, m_pWorkerThread()
 	, m_ownerToken()
 	, m_mappingGeneration()
 	, m_mappingLocalAddress()
 	, m_mappingGatewayAddress()
 	, m_bOwnershipLedgerLoaded()
 	, m_bSucceededOnce()
+	, m_bDeferredReap()
+	, m_stopTimeoutMilliseconds(kUPnPWorkerStopBoundMilliseconds)
+	, m_testDeletionEvent()
 	, m_bAbortDiscovery()
 {
+	::InitializeCriticalSection(&m_workerGlobalGate);
 	m_nOldUDPPort = 0;
 	m_nOldTCPPort = 0;
 	m_nOldTCPWebPort = 0;
@@ -814,37 +970,153 @@ CUPnPImplMiniLib::CUPnPImplMiniLib()
 
 CUPnPImplMiniLib::~CUPnPImplMiniLib()
 {
+	if (!m_bDeferredReap)
+		StopAsyncFind();
+	else
+		ReapCompletedWorker();
+	// The owning wrapper transfers active instances before invoking delete.
+	// Therefore destruction is reachable only after the worker is reaped.
 	Cleanup();
+	if (m_hBusyMutex != NULL)
+		::CloseHandle(m_hBusyMutex);
+	::DeleteCriticalSection(&m_workerGlobalGate);
+	if (m_testDeletionEvent != NULL)
+		::SetEvent(m_testDeletionEvent);
+}
+
+bool CUPnPImplMiniLib::DeferDestructionIfWorkerActive()
+{
+	StopAsyncFind();
+	if (m_hThreadHandle == NULL)
+		return false;
+	// Callback fencing and cancellation happened in StopAsyncFind. Transfer
+	// the complete owner before its destructor can run.
+	m_bDeferredReap = true;
+	CUPnPMiniLibDeferredReaper* const reaper =
+		CUPnPMiniLibDeferredReaper::TryInstance();
+	return reaper == NULL || reaper->Adopt(this);
+}
+
+namespace {
+DWORD WINAPI DeferredReaperSelfTestWorker(void* eventHandle) noexcept
+{
+	for (;;) {
+		const DWORD state = ::WaitForSingleObject(
+			static_cast<HANDLE>(eventHandle), 100);
+		if (state == WAIT_OBJECT_0)
+			return 0;
+		if (state != WAIT_TIMEOUT)
+			return 1;
+	}
+}
+}
+
+bool CUPnPImplMiniLib::RunDeferredReaperSelfTest()
+{
+	HANDLE release = ::CreateEvent(NULL, TRUE, FALSE, NULL);
+	HANDLE deleted = ::CreateEvent(NULL, TRUE, FALSE, NULL);
+	if (release == NULL || deleted == NULL) {
+		if (release != NULL) ::CloseHandle(release);
+		if (deleted != NULL) ::CloseHandle(deleted);
+		return false;
+	}
+	CUPnPImplMiniLib* impl = new (std::nothrow) CUPnPImplMiniLib();
+	if (impl == NULL) {
+		::CloseHandle(release);
+		::CloseHandle(deleted);
+		return false;
+	}
+	impl->m_stopTimeoutMilliseconds = 1;
+	impl->m_testDeletionEvent = deleted;
+	impl->m_pWorkerThread = new (std::nothrow) CStartDiscoveryThread(impl);
+	impl->m_hThreadHandle = impl->m_pWorkerThread != NULL
+		? ::CreateThread(NULL, 0, DeferredReaperSelfTestWorker,
+			release, 0, NULL) : NULL;
+	if (impl->m_hThreadHandle == NULL) {
+		impl->m_testDeletionEvent = NULL;
+		delete impl;
+		::CloseHandle(release);
+		::CloseHandle(deleted);
+		return false;
+	}
+	CUPnPImpl* owned = impl;
+	ReleaseUPnPOwnedImplementation(owned);
+	const bool notDeletedWhileActive =
+		::WaitForSingleObject(deleted, 0) == WAIT_TIMEOUT;
+	const bool released = ::SetEvent(release) != FALSE;
+	const bool deletedOnceSignalled =
+		::WaitForSingleObject(deleted, SEC2MS(5)) == WAIT_OBJECT_0;
+	::CloseHandle(release);
+	::CloseHandle(deleted);
+	return notDeletedWhileActive && released && deletedOnceSignalled;
 }
 
 bool CUPnPImplMiniLib::IsReady()
 {
+	ReapCompletedWorker();
 	if (m_bAbortDiscovery)
 		return false;
 	// the only check we need to do is if we are already busy with some async/threaded function
-	CSingleLock lockTest(&m_mutBusy);
-	return lockTest.Lock(0);
+	if (m_hBusyMutex == NULL)
+		return false;
+	const DWORD acquired = ::WaitForSingleObject(m_hBusyMutex, 0);
+	if (acquired != WAIT_OBJECT_0)
+		return false;
+	::ReleaseMutex(m_hBusyMutex);
+	return true;
+}
+
+bool CUPnPImplMiniLib::ReapCompletedWorker()
+{
+	if (m_hThreadHandle == NULL)
+		return true;
+	const DWORD state = ::WaitForSingleObject(m_hThreadHandle, 0);
+	if (state == WAIT_OBJECT_0) {
+		::CloseHandle(m_hThreadHandle);
+		delete m_pWorkerThread;
+		m_pWorkerThread = NULL;
+		m_hThreadHandle = NULL;
+		m_bAbortDiscovery = false;
+		return true;
+	}
+	return false;
 }
 
 void CUPnPImplMiniLib::StopAsyncFind()
 {
-	if (m_hThreadHandle != NULL) {
-		m_bAbortDiscovery = true;	// if there is a thread, tell it to abort as soon as possible - he won't sent a Result message when aborted
-		CSingleLock lockTest(&m_mutBusy);
-		if (!lockTest.Lock(SEC2MS(7))) {	// give the thread 7 seconds to exit gracefully - it should never really take that long
-			// that is quite bad, something seems to be locked up. There isn't a good solution here, we need the thread to quit
-			// or it might try to access the object later, but terminating is quite bad too. Well.
-			DebugLogError(_T("Waiting for UPnP StartDiscoveryThread to quit failed, trying to terminate the thread..."));
-
-			if (m_hThreadHandle != NULL)
-				DebugLogError(::TerminateThread(m_hThreadHandle, 0) ? _T("...OK") : _T("...Failed"));
-			else
-				ASSERT(0);
-		} else
-			DebugLog(_T("Aborted any possible UPnP StartDiscoveryThread"));
-		m_hThreadHandle = NULL;
+	// Fence callback/mailbox publication before signalling. A delivery already
+	// queued is rejected later by the request gate/mailbox clear; no new post
+	// can acquire the cleared callback under CUPnPImpl::m_resultMutex.
+	if (ReapCompletedWorker()) {
+		SetMessageOnResult(NULL, 0);
+		return;
 	}
-	m_bAbortDiscovery = false;
+	// Never wait on the worker-owned busy mutex.
+	// SSDP waits are <=600ms and miniupnpc HTTP connect/send/receive waits are
+	// The wait is a UI patience bound, not a claim about completion time of
+	// third-party DNS/HTTP or journal I/O.
+	const UPnPWorkerStopResult result = RequestCooperativeUPnPWorkerStop(
+		m_hThreadHandle, m_bAbortDiscovery,
+		m_stopTimeoutMilliseconds,
+		[this]() {
+			::EnterCriticalSection(&m_workerGlobalGate);
+			SetMessageOnResult(NULL, 0);
+			m_bAbortDiscovery.store(true, std::memory_order_release);
+			::LeaveCriticalSection(&m_workerGlobalGate);
+		});
+	if (result == UPnPWorkerStopResult::Stopped) {
+		::CloseHandle(m_hThreadHandle);
+		delete m_pWorkerThread;
+		m_pWorkerThread = NULL;
+		m_hThreadHandle = NULL;
+		m_bAbortDiscovery = false;
+		DebugLog(_T("UPNP worker stopped cooperatively"));
+	} else {
+		// Fail safe: keep the stable join handle and cancellation asserted.
+		// Repeated StopAsyncFind calls can reap it; never kill a thread while it
+		// owns heap, mutex or durable ownership-ledger state.
+		DebugLogError(_T("UPNP worker cooperative stop timed out; cancellation remains asserted"));
+	}
 }
 
 void CUPnPImplMiniLib::DeletePorts()
@@ -942,8 +1214,9 @@ void CUPnPImplMiniLib::DeletePort(uint16 port, LPCTSTR prot)
 			DebugLog(_T("UPNP ownership: %s port %hu is already absent"),
 				prot, port);
 		} else {
-			ASSERT(recoveryAction
-				== natmap::UpnpRecoveryAction::KeepLocalProof);
+			if (recoveryAction
+					!= natmap::UpnpRecoveryAction::KeepLocalProof)
+				return;
 			DebugLogWarning(_T("UPNP ownership: cannot verify %s port %hu (%d: %S); mapping was not removed"),
 				prot, port, queryResult, strupnperror(queryResult));
 		}
@@ -976,11 +1249,13 @@ void CUPnPImplMiniLib::DeletePort(uint16 port, LPCTSTR prot)
 			RemoveOwnershipRecordDurably(index);
 		return;
 	}
-	ASSERT(recoveryAction
-		== natmap::UpnpRecoveryAction::DeleteOwnedMapping);
+	if (recoveryAction
+			!= natmap::UpnpRecoveryAction::DeleteOwnedMapping)
+		return;
 
 	const int nResult = UPNP_DeletePortMapping(m_pURLs->controlURL,
-		m_pIGDData->first.servicetype, achPort, CStringA(prot), NULL);
+		m_pIGDData->first.servicetype, achPort,
+		transport == natmap::Transport::Tcp ? sTCPa : sUDPa, NULL);
 	if (nResult == UPNPCOMMAND_SUCCESS) {
 		DebugLog(_T("Successfully removed owned mapping for %s port %hu"),
 			prot, port);
@@ -1010,11 +1285,11 @@ void CUPnPImplMiniLib::DeletePorts(bool bSkipLock)
 {
 	// this function can be blocking when called when eMule exits, and we need to wait for it to finish
 	// before going on anyway. It might be called from the non-blocking StartDiscovery() function too however
-	CSingleLock lockTest(&m_mutBusy);
-	if (bSkipLock || lockTest.Lock(0)) {
-		if (m_pURLs == NULL || m_pURLs->controlURL == NULL || m_pIGDData == NULL)
-			ASSERT(!thePrefs.IsUPnPEnabled());
-		else {
+	const DWORD acquired = bSkipLock ? WAIT_OBJECT_0
+		: ::WaitForSingleObject(m_hBusyMutex, 0);
+	if (acquired == WAIT_OBJECT_0) {
+		if (m_pURLs != NULL && m_pURLs->controlURL != NULL
+				&& m_pIGDData != NULL) {
 			DeletePort(m_nOldTCPPort, sTCP);
 			DeletePort(m_nOldUDPPort, sUDP);
 			DeletePort(m_nOldTCPWebPort, sTCP);
@@ -1025,6 +1300,8 @@ void CUPnPImplMiniLib::DeletePorts(bool bSkipLock)
 		m_nOldTCPPort = 0;
 		m_nOldUDPPort = 0;
 		m_nOldTCPWebPort = 0;
+		if (!bSkipLock)
+			::ReleaseMutex(m_hBusyMutex);
 	} else
 		DebugLogError(_T("Unable to remove port mappings - implementation still busy"));
 }
@@ -1034,6 +1311,15 @@ void CUPnPImplMiniLib::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 n
 	UNREFERENCED_PARAMETER(nTCPWebPort);
 	DebugLog(_T("Using MiniUPnPLib based implementation"));
 	DebugLog(_T("miniupnpc (c) 2005-2024 Thomas Bernard - http://miniupnp.free.fr/"));
+	// Snapshot every preference-derived input before the worker exists. These
+	// immutable standard-library values remain valid if application globals are
+	// subsequently torn down while cancellation compensation finishes.
+	const char* const bindAddress = thePrefs.GetBindAddrA();
+	m_bindAddressSnapshot = bindAddress != NULL ? bindAddress : "";
+	const CString journalPath = thePrefs.GetMuleDirectory(EMULE_CONFIGDIR)
+		+ _T("natmap-ownership.dat");
+	m_journalPathSnapshot.assign(
+		static_cast<LPCTSTR>(journalPath), journalPath.GetLength());
 	LoadOwnershipLedger();
 	if (!GenerateOwnerToken(m_ownerToken)) {
 		DebugLogError(_T("UPNP ownership: unable to generate a secure owner token"));
@@ -1089,22 +1375,42 @@ bool CUPnPImplMiniLib::CheckAndRefresh()
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 /// CUPnPImplMiniLib::CStartDiscoveryThread Implementation
 typedef CUPnPImplMiniLib::CStartDiscoveryThread CStartDiscoveryThread;
-IMPLEMENT_DYNCREATE(CStartDiscoveryThread, CWinThread)
 
-CUPnPImplMiniLib::CStartDiscoveryThread::CStartDiscoveryThread()
+CUPnPImplMiniLib::CStartDiscoveryThread::CStartDiscoveryThread(
+	CUPnPImplMiniLib* owner)
+	: m_pOwner(owner)
+	, m_operation(owner != NULL
+		? owner->CaptureMappingOperation() : MappingOperationContext())
 {
-	m_pOwner = NULL;
 }
 
-BOOL CUPnPImplMiniLib::CStartDiscoveryThread::InitInstance()
+DWORD WINAPI CUPnPImplMiniLib::CStartDiscoveryThread::ThreadProc(
+	void* context) noexcept
 {
-	InitThreadLocale();
-	return TRUE;
+	CStartDiscoveryThread* worker =
+		static_cast<CStartDiscoveryThread*>(context);
+	if (worker == NULL || worker->m_pOwner == NULL)
+		return ERROR_INVALID_PARAMETER;
+	g_upnpWorkerCancelled = &worker->m_pOwner->m_bAbortDiscovery;
+	g_upnpWorkerGlobalGate = &worker->m_pOwner->m_workerGlobalGate;
+	DWORD result = ERROR_UNHANDLED_EXCEPTION;
+	try {
+		result = worker->Run();
+	} catch (...) {
+		// No exception may cross the raw Win32 thread ABI. Cancellation/reaper
+		// ownership still keeps every referenced allocation alive.
+	}
+	g_upnpWorkerGlobalGate = NULL;
+	g_upnpWorkerCancelled = NULL;
+	return result;
 }
 
 void CUPnPImplMiniLib::CStartDiscoveryThread::SendFailure(
 	natmap::ReasonCode reason)
 {
+	UPnPWorkerGlobalAccess globalAccess;
+	if (!globalAccess || m_pOwner == NULL || m_pOwner->m_bAbortDiscovery)
+		return;
 	natmap::UpnpPairResultInput input;
 	input.request = m_operation.request;
 	input.gateway_address = m_operation.gateway_address;
@@ -1114,17 +1420,20 @@ void CUPnPImplMiniLib::CStartDiscoveryThread::SendFailure(
 		m_operation, natmap::BuildUpnpPairMapperResult(input));
 }
 
-int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
+DWORD CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 {
-	DbgSetThreadName("CUPnPImplMiniLib::CStartDiscoveryThread");
 	if (!m_pOwner)
 		return 0;
 
-	CSingleLock sLock(&m_pOwner->m_mutBusy);
-	if (!sLock.Lock(0)) {
+	const DWORD busy = ::WaitForSingleObject(m_pOwner->m_hBusyMutex, 0);
+	if (busy != WAIT_OBJECT_0) {
 		DebugLogWarning(_T("CUPnPImplMiniLib::CStartDiscoveryThread::Run, failed to acquire Lock, another Mapping try might be running already"));
 		return 0;
 	}
+	struct MutexRelease {
+		HANDLE value;
+		~MutexRelease() { if (value != NULL) ::ReleaseMutex(value); }
+	} releaseBusy = { m_pOwner->m_hBusyMutex };
 
 	if (m_pOwner->m_bAbortDiscovery)// requesting to abort ASAP?
 		return 0;
@@ -1144,7 +1453,7 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 	{
 		if (!m_pOwner->m_bCheckAndRefresh) {
 			const std::vector<DiscoveryTarget> targets =
-				GetDiscoveryTargets();
+				GetDiscoveryTargets(m_pOwner->m_bindAddressSnapshot);
 			SelectedIgd selected;
 			natmap::UpnpDiscoverySelection discoverySelection;
 			int lastError = UPNPDISCOVER_UNKNOWN_ERROR;
@@ -1156,14 +1465,19 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 				&& discoverySelection.should_continue()
 				&& !m_pOwner->m_bAbortDiscovery; ++i) {
 				const char* const multicastInterface =
-					targets[i].address.IsEmpty()
-					? NULL : targets[i].address.GetString();
-				const int delay = i == 0 ? 2500 : 1200;
-				UPNPDev* devices = DiscoverIgdDevices(multicastInterface,
-					delay, UPNP_LOCAL_PORT_ANY, false, lastError);
-				ConsiderDiscoveredDevices(
-					devices, selected, discoverySelection);
-				freeUPNPDevlist(devices);
+					targets[i].address.empty()
+						? NULL : targets[i].address.c_str();
+				for (size_t type = 0;
+					type < _countof(s_discoveryDeviceTypes)
+					&& discoverySelection.should_continue()
+					&& !m_pOwner->m_bAbortDiscovery; ++type) {
+					UPNPDev* devices = DiscoverIgdDevice(
+						s_discoveryDeviceTypes[type], multicastInterface,
+						400, UPNP_LOCAL_PORT_ANY, lastError);
+					ConsiderDiscoveredDevices(devices, selected,
+						discoverySelection, m_pOwner->m_bAbortDiscovery);
+					freeUPNPDevlist(devices);
+				}
 			}
 
 			// A minority of old IGDs reply only when M-SEARCH originates from
@@ -1173,13 +1487,19 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 				&& discoverySelection.should_continue()
 				&& !m_pOwner->m_bAbortDiscovery; ++i) {
 				const char* const multicastInterface =
-					targets[i].address.IsEmpty()
-					? NULL : targets[i].address.GetString();
-				UPNPDev* devices = DiscoverIgdDevices(multicastInterface,
-					1200, UPNP_LOCAL_PORT_SAME, false, lastError);
-				ConsiderDiscoveredDevices(
-					devices, selected, discoverySelection);
-				freeUPNPDevlist(devices);
+					targets[i].address.empty()
+						? NULL : targets[i].address.c_str();
+				for (size_t type = 0;
+					type < _countof(s_discoveryDeviceTypes)
+					&& discoverySelection.should_continue()
+					&& !m_pOwner->m_bAbortDiscovery; ++type) {
+					UPNPDev* devices = DiscoverIgdDevice(
+						s_discoveryDeviceTypes[type], multicastInterface,
+						250, UPNP_LOCAL_PORT_SAME, lastError);
+					ConsiderDiscoveredDevices(devices, selected,
+						discoverySelection, m_pOwner->m_bAbortDiscovery);
+					freeUPNPDevlist(devices);
+				}
 			}
 
 			// Broken firmware sometimes ignores every targeted ST while still
@@ -1189,12 +1509,12 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 				&& discoverySelection.should_continue()
 				&& !m_pOwner->m_bAbortDiscovery; ++i) {
 				const char* const multicastInterface =
-					targets[i].address.IsEmpty()
-					? NULL : targets[i].address.GetString();
-				UPNPDev* devices = DiscoverIgdDevices(multicastInterface,
-					1200, UPNP_LOCAL_PORT_ANY, true, lastError);
-				ConsiderDiscoveredDevices(
-					devices, selected, discoverySelection);
+					targets[i].address.empty()
+						? NULL : targets[i].address.c_str();
+				UPNPDev* devices = DiscoverIgdDevice("ssdp:all",
+					multicastInterface, 600, UPNP_LOCAL_PORT_ANY, lastError);
+				ConsiderDiscoveredDevices(devices, selected,
+					discoverySelection, m_pOwner->m_bAbortDiscovery);
 				freeUPNPDevlist(devices);
 			}
 
@@ -1329,6 +1649,8 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			tcpOwnershipMatches,
 			tcpCreatedByOperation
 		};
+		if (m_pOwner->m_bAbortDiscovery)
+			bSucceeded = false;
 		if (bSucceeded
 			&& (!tcpReadbackMatches || !tcpOwnershipMatches)) {
 			DebugLogWarning(_T("UPNP: TCP mapping is usable but lacks exact owned readback; refusing to create the UDP half"));
@@ -1352,6 +1674,8 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			udpOwnershipMatches,
 			udpCreatedByOperation
 		};
+		if (m_pOwner->m_bAbortDiscovery)
+			bSucceeded = false;
 		if (bSucceeded) {
 			natmap::UpnpPairResultInput pairInput;
 			pairInput.request = m_operation.request;
@@ -1462,8 +1786,9 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			m_pOwner->m_bSucceededOnce = true;
 		} else
 			m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-		m_pOwner->SendMapperResultMessage(
-			m_operation, pairResult);
+		UPnPWorkerGlobalAccess globalAccess;
+		if (globalAccess && !m_pOwner->m_bAbortDiscovery)
+			m_pOwner->SendMapperResultMessage(m_operation, pairResult);
 	}
 	return 0;
 }
@@ -1539,6 +1864,8 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
 	// exact same local socket. Adopting it avoids false 718 conflicts and never
 	// grants this process permission to delete that foreign rule.
 	int nResult = queryMapping();
+	if (m_pOwner->m_bAbortDiscovery)
+		return false;
 	const bool mappingProvenAbsentBeforeAdd = nResult == 714;
 	const bool existingTargetMatches =
 		nResult == UPNPCOMMAND_SUCCESS && observedTargetMatches();
@@ -1593,7 +1920,11 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
 			NULL, leaseDuration);
 	};
 	const auto adoptMappingAfterFailedAdd = [&]() {
+		if (m_pOwner->m_bAbortDiscovery)
+			return false;
 		const int queryResult = queryMapping();
+		if (m_pOwner->m_bAbortDiscovery)
+			return false;
 		if (queryResult != UPNPCOMMAND_SUCCESS || !observedTargetMatches())
 			return false;
 		const uint32 remaining = ParseLeaseDuration(achLeaseDuration, 0);
@@ -1630,19 +1961,43 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
 			*pExternalPort, nPort, (bTCP ? sTCP : sUDP));
 		return true;
 	};
+	const auto rollbackExactMappingAfterCancel = [&](uint32 lifetime) {
+		if (!m_pOwner->m_bAbortDiscovery)
+			return false;
+		// Only an external port proven absent before Add can be attributed to
+		// this attempt. The readback is intentionally allowed after cancel: it
+		// is part of the bounded Get/Delete/Get compensation transaction.
+		if (!mappingProvenAbsentBeforeAdd)
+			return true;
+		const int queryResult = queryMapping();
+		if (queryResult == UPNPCOMMAND_SUCCESS
+				&& observedTargetMatches()
+				&& strcmp(achOutDescription, pachDescription) == 0) {
+			m_pOwner->DeleteEphemeralOwnedMapping(
+				nPort, *pExternalPort, bTCP, pachLANIP, lifetime,
+				ownershipDescription, achOutIP, achOutPort,
+				achOutDescription, _countof(achOutDescription));
+		}
+		return true;
+	};
 
 	// Prefer a finite lease. A retry of the same fixed tuple is idempotent and
 	// covers routers which apply the SOAP action but lose the HTTP response.
 	uint32 requestedLifetime = kPreferredLeaseSeconds;
 	nResult = addFixedMapping("7200");
+	if (rollbackExactMappingAfterCancel(requestedLifetime))
+		return false;
 	if (IsTransientUpnpError(nResult) && !m_pOwner->m_bAbortDiscovery) {
 		::Sleep(150);
 		nResult = addFixedMapping("7200");
+		if (rollbackExactMappingAfterCancel(requestedLifetime))
+			return false;
 	}
 	if (nResult != UPNPCOMMAND_SUCCESS && adoptMappingAfterFailedAdd())
 		return true;
 
-	if (natmap::EvaluateUpnpLeaseAttempt(
+	if (!m_pOwner->m_bAbortDiscovery
+		&& natmap::EvaluateUpnpLeaseAttempt(
 			natmap::UpnpLeaseRequestKind::Finite,
 			nResult == UPNPCOMMAND_SUCCESS)
 		== natmap::UpnpLeaseAttemptAction::TryPermanent) {
@@ -1652,9 +2007,13 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
 			nResult, strupnperror(nResult));
 		requestedLifetime = 0;
 		nResult = addFixedMapping("0");
+		if (rollbackExactMappingAfterCancel(requestedLifetime))
+			return false;
 		if (IsTransientUpnpError(nResult) && !m_pOwner->m_bAbortDiscovery) {
 			::Sleep(150);
 			nResult = addFixedMapping("0");
+			if (rollbackExactMappingAfterCancel(requestedLifetime))
+				return false;
 		}
 		if (nResult != UPNPCOMMAND_SUCCESS && adoptMappingAfterFailedAdd())
 			return true;
@@ -1667,59 +2026,16 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
 			requestedLifetime = 0;
 	}
 
-	// IGDv2 can reserve a different free external port. Try both a suggested
-	// port and a true wildcard because deployed IGDv2 firmware disagrees on
-	// which form AddAnyPortMapping accepts.
-	bool addAnySucceeded = false;
-	const bool bDirectMapping = bTCP
-		? nPort == m_pOwner->m_nTCPPort : nPort == m_pOwner->m_nUDPPort;
-	if (nResult != UPNPCOMMAND_SUCCESS && bDirectMapping) {
-		DebugLog(_T("Adding fixed UPnP mapping failed (%d: %S), trying IGDv2 AddAnyPortMapping..."),
-			nResult, strupnperror(nResult));
-		const CStringA suggestedExternalPort(achExternalPort);
-		const auto addAnyMapping = [&](const char* externalPort,
-			const char* leaseDuration, uint32 lifetime) {
-			char reservedPort[8] = {};
-			int result = UPNP_AddAnyPortMapping(
-				m_pOwner->m_pURLs->controlURL,
-				m_pOwner->m_pIGDData->first.servicetype, externalPort,
-				achPort, pachLANIP, pachDescription,
-				(bTCP ? sTCPa : sUDPa), NULL, leaseDuration, reservedPort);
-			uint16 reserved = 0;
-			if (result == UPNPCOMMAND_SUCCESS
-				&& natmap::ParseUpnpDecimalPort(
-					reservedPort, reserved)) {
-				addAnySucceeded = true;
-				*pExternalPort = reserved;
-				_snprintf_s(achExternalPort, _countof(achExternalPort),
-					_TRUNCATE, "%hu", *pExternalPort);
-				requestedLifetime = lifetime;
-			} else if (result == UPNPCOMMAND_SUCCESS)
-				result = UPNPCOMMAND_INVALID_RESPONSE;
-			return result;
-		};
-
-		requestedLifetime = kPreferredLeaseSeconds;
-		nResult = addAnyMapping(suggestedExternalPort, "7200",
-			kPreferredLeaseSeconds);
-		if (nResult != UPNPCOMMAND_SUCCESS
-			&& !IsTransientUpnpError(nResult)) {
-			nResult = addAnyMapping(suggestedExternalPort, "0", 0);
-		}
-		if (nResult != UPNPCOMMAND_SUCCESS
-			&& !IsTransientUpnpError(nResult)
-			&& suggestedExternalPort != "0") {
-			nResult = addAnyMapping("0", "7200",
-				kPreferredLeaseSeconds);
-			if (nResult != UPNPCOMMAND_SUCCESS
-				&& !IsTransientUpnpError(nResult))
-				nResult = addAnyMapping("0", "0", 0);
-		}
-	}
+	// Do not use AddAnyPortMapping here. If its HTTP response is lost during
+	// cancellation, the selected external port is unknowable and therefore
+	// cannot be rolled back with exact ownership proof.
 
 	if (nResult != UPNPCOMMAND_SUCCESS) {
 		const unsigned mappingCount = CountReadablePortMappings(
-			m_pOwner->m_pURLs, m_pOwner->m_pIGDData);
+			m_pOwner->m_pURLs, m_pOwner->m_pIGDData,
+			m_pOwner->m_bAbortDiscovery);
+		if (m_pOwner->m_bAbortDiscovery)
+			return false;
 		if (mappingCount >= 64) {
 			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_TABLE_FULL;
 			DebugLogWarning(_T("UPNP: Router mapping table appears full (%u readable entries); no foreign mappings were modified"), mappingCount);
@@ -1729,9 +2045,6 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
 	}
 	if (*pExternalPort == 0)
 		*pExternalPort = nPort;
-	if (m_pOwner->m_bAbortDiscovery)
-		return false;
-
 	// Query up to three times: some routers acknowledge AddPortMapping before
 	// their mapping table becomes readable. Description changes are tolerated
 	// for reachability, but only an exact ownership description is journalled
@@ -1740,7 +2053,15 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
 	bool querySucceeded = false;
 	bool targetMatches = false;
 	for (unsigned attempt = 0; attempt < 3; ++attempt) {
+		if (m_pOwner->m_bAbortDiscovery) {
+			rollbackExactMappingAfterCancel(requestedLifetime);
+			return false;
+		}
 		nResult = queryMapping();
+		if (m_pOwner->m_bAbortDiscovery) {
+			rollbackExactMappingAfterCancel(requestedLifetime);
+			return false;
+		}
 		if (nResult == UPNPCOMMAND_SUCCESS) {
 			querySucceeded = true;
 			targetMatches = observedTargetMatches();
@@ -1753,6 +2074,8 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
 	if (querySucceeded && targetMatches) {
 		const uint32 verifiedLifetime = ParseLeaseDuration(achLeaseDuration,
 			requestedLifetime);
+		if (rollbackExactMappingAfterCancel(verifiedLifetime))
+			return false;
 		noteFiniteLease(verifiedLifetime);
 		if (strcmp(achOutDescription, pachDescription) != 0) {
 			if (pReadbackMatches != NULL)
@@ -1775,13 +2098,15 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
 				_countof(achOutDescription));
 			return false;
 		}
+		if (rollbackExactMappingAfterCancel(verifiedLifetime))
+			return false;
 		if (pReadbackMatches != NULL)
 			*pReadbackMatches = true;
 		if (pOwnershipMatches != NULL)
 			*pOwnershipMatches = true;
 		if (pCreatedByOperation != NULL)
 			*pCreatedByOperation =
-				mappingProvenAbsentBeforeAdd || addAnySucceeded;
+				mappingProvenAbsentBeforeAdd;
 		DebugLog(_T("Successfully added mapping %hu -> %hu (%s) on local IP %S"), *pExternalPort, nPort, (bTCP ? sTCP : sUDP), achOutIP);
 		return true;
 	}
@@ -1816,7 +2141,13 @@ void CUPnPImplMiniLib::Cleanup()
 
 void CUPnPImplMiniLib::StartThread()
 {
-	CStartDiscoveryThread *pStartDiscoveryThread = (CStartDiscoveryThread*)AfxBeginThread(RUNTIME_CLASS(CStartDiscoveryThread), THREAD_PRIORITY_NORMAL, 0, CREATE_SUSPENDED);
+	if (!ReapCompletedWorker() || m_hThreadHandle != NULL) {
+		m_bUPnPPortsForwarded = TRIS_FALSE;
+		m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
+		return;
+	}
+	CStartDiscoveryThread* pStartDiscoveryThread =
+		new (std::nothrow) CStartDiscoveryThread(this);
 	if (pStartDiscoveryThread == NULL) {
 		m_hThreadHandle = NULL;
 		m_bUPnPPortsForwarded = TRIS_FALSE;
@@ -1833,7 +2164,18 @@ void CUPnPImplMiniLib::StartThread()
 			operation, natmap::BuildUpnpPairMapperResult(input));
 		return;
 	}
-	m_hThreadHandle = pStartDiscoveryThread->m_hThread;
-	pStartDiscoveryThread->SetValues(this);
-	pStartDiscoveryThread->ResumeThread();
+	m_pWorkerThread = pStartDiscoveryThread;
+	m_hThreadHandle = ::CreateThread(NULL, 0,
+		&CStartDiscoveryThread::ThreadProc, pStartDiscoveryThread,
+		0, NULL);
+	if (m_hThreadHandle == NULL) {
+		delete m_pWorkerThread;
+		m_pWorkerThread = NULL;
+		m_bUPnPPortsForwarded = TRIS_FALSE;
+		m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
+		return;
+	}
+	// The heap context is owned before CreateThread; handle ownership is
+	// acquired atomically from CreateThread, with no suspended-thread failure
+	// mode and no secondary handle duplication.
 }

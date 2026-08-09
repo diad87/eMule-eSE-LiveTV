@@ -21,6 +21,7 @@
 #include "UPnPImplMiniLib.h"
 #include "UPnPImplPCP.h"
 #include "UPnPImplNATPMP.h"
+#include "UPnPDeferredReaperCore.h"
 #include "Preferences.h"
 
 #ifdef _DEBUG
@@ -47,10 +48,14 @@ CUPnPImplWrapper::CUPnPImplWrapper()
 
 CUPnPImplWrapper::~CUPnPImplWrapper()
 {
-	while (!m_liAvailable.IsEmpty())
-		delete m_liAvailable.RemoveHead();
-	while (!m_liUsed.IsEmpty())
-		delete m_liUsed.RemoveHead();
+	while (!m_liAvailable.IsEmpty()) {
+		CUPnPImpl* impl = m_liAvailable.RemoveHead();
+		ReleaseUPnPOwnedImplementation(impl);
+	}
+	while (!m_liUsed.IsEmpty()) {
+		CUPnPImpl* impl = m_liUsed.RemoveHead();
+		ReleaseUPnPOwnedImplementation(impl);
+	}
 	m_pActiveImpl = NULL;
 }
 

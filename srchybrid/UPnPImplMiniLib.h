@@ -19,6 +19,7 @@
 #include "natmap/ownership_ledger.h"
 
 #include <atomic>
+#include <string>
 
 struct UPNPUrls;
 struct IGDdatas;
@@ -32,6 +33,7 @@ public:
 	virtual void StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nTCPWebPort);
 	virtual bool CheckAndRefresh();
 	virtual void StopAsyncFind();
+	virtual bool DeferDestructionIfWorkerActive();
 	virtual void DeletePorts();
 	virtual bool IsReady();
 	virtual int GetImplementationID()				{ return UPNP_IMPL_MINIUPNPLIB; }
@@ -39,12 +41,16 @@ public:
 		{ return natmap::MapperKind::UpnpIgd; }
 	virtual natmap::MapperSource GetMapperSource() const
 		{ return natmap::MapperSource::UpnpIgd; }
+	static bool RunDeferredReaperSelfTest();
 
-	class CStartDiscoveryThread : public CWinThread
+	class CStartDiscoveryThread
 	{
-		DECLARE_DYNCREATE(CStartDiscoveryThread)
-	protected:
-		CStartDiscoveryThread();
+	public:
+		explicit CStartDiscoveryThread(CUPnPImplMiniLib* owner);
+		static DWORD WINAPI ThreadProc(void* context) noexcept;
+		DWORD Run();
+
+	private:
 		bool OpenPort(
 			uint16 nPort,
 			bool bTCP,
@@ -54,16 +60,6 @@ public:
 			bool *pOwnershipMatches = NULL,
 			bool *pCreatedByOperation = NULL);
 
-	public:
-		virtual BOOL InitInstance();
-		virtual int Run();
-		void SetValues(CUPnPImplMiniLib *pOwner)
-		{
-			m_pOwner = pOwner;
-			m_operation = pOwner->CaptureMappingOperation();
-		}
-
-	private:
 		void SendFailure(natmap::ReasonCode reason);
 		CUPnPImplMiniLib *m_pOwner;
 		MappingOperationContext m_operation;
@@ -73,7 +69,9 @@ protected:
 	void DeletePorts(bool bSkipLock);
 
 private:
+	friend class CUPnPMiniLibDeferredReaper;
 	void Cleanup();
+	bool ReapCompletedWorker();
 	void DeletePort(uint16 port, LPCTSTR prot);
 	void GetOldPorts();
 	void StartThread();
@@ -103,11 +101,14 @@ private:
 	static bool GenerateOwnerToken(std::uint64_t& token);
 	static bool ParseIPv4(const char* text, natmap::IpAddress& address);
 
-	static CMutex m_mutBusy;
+	HANDLE m_hBusyMutex;
+	CRITICAL_SECTION m_workerGlobalGate;
 
 	UPNPUrls *m_pURLs;
 	IGDdatas *m_pIGDData;
+	// Owned raw Win32 worker handle and its heap context.
 	HANDLE m_hThreadHandle;
+	CStartDiscoveryThread* m_pWorkerThread;
 	char m_achLanIP[40];
 	char m_achWanIP[40];
 	natmap::OwnershipLedger m_ownershipLedger;
@@ -116,7 +117,12 @@ private:
 	natmap::IpAddress m_mappingLocalAddress;
 	natmap::IpAddress m_mappingGatewayAddress;
 	bool m_bOwnershipLedgerLoaded;
+	std::string m_bindAddressSnapshot;
+	std::wstring m_journalPathSnapshot;
 
 	bool m_bSucceededOnce;
+	bool m_bDeferredReap;
+	DWORD m_stopTimeoutMilliseconds;
+	HANDLE m_testDeletionEvent;
 	std::atomic_bool m_bAbortDiscovery;
 };

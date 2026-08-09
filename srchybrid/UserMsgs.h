@@ -79,5 +79,8 @@ enum EUserWndMessages
 	UM_PROCESS_ED2K_LINKS, //+37
 	UM_PROCESS_STORED_SEARCHES, //+38
 	UM_PROCESS_KNOWN_MET_SAVE, //+39
-	UM_SHARED_FILES_ADJUST_DETAILS_PANEL //+40
+	UM_SHARED_FILES_ADJUST_DETAILS_PANEL, //+40
+
+	// Authenticated WebServer worker -> main thread. Carries no payload.
+	UM_AUTHENTICATED_WEB_CLOSE //+41
 };

@@ -668,9 +668,74 @@ CString CWebServer::_SpecialChars(const CString &cstr, bool noquote /*=false*/)
 	return EscapeWebTemplateText(cstr, noquote);
 }
 
+namespace
+{
+enum class AuthenticatedClosePostResult { Posted, Duplicate, Failed };
+struct AuthenticatedClosePostPort {
+	void* context;
+	bool (*isWindow)(void*, HWND);
+	DWORD (*windowProcessId)(void*, HWND);
+	bool (*post)(void*, HWND, UINT);
+};
+
+AuthenticatedClosePostResult TryPostAuthenticatedClose(
+	volatile LONG& latch, HWND window, DWORD expectedProcessId,
+	const AuthenticatedClosePostPort& port) noexcept
+{
+	if (::InterlockedCompareExchange(&latch, 1, 0) != 0)
+		return AuthenticatedClosePostResult::Duplicate;
+	if (window == NULL || port.isWindow == NULL
+		|| port.windowProcessId == NULL || port.post == NULL
+		|| !port.isWindow(port.context, window)
+		|| port.windowProcessId(port.context, window) != expectedProcessId
+		|| !port.post(port.context, window, UM_AUTHENTICATED_WEB_CLOSE)) {
+		::InterlockedExchange(&latch, 0);
+		return AuthenticatedClosePostResult::Failed;
+	}
+	return AuthenticatedClosePostResult::Posted;
+}
+
+struct AuthenticatedClosePostProbe {
+	bool valid;
+	DWORD processId;
+	bool postSucceeds;
+	unsigned posts;
+};
+bool CloseProbeIsWindow(void* raw, HWND) { return static_cast<AuthenticatedClosePostProbe*>(raw)->valid; }
+DWORD CloseProbePid(void* raw, HWND) { return static_cast<AuthenticatedClosePostProbe*>(raw)->processId; }
+bool CloseProbePost(void* raw, HWND, UINT message) { AuthenticatedClosePostProbe* p=static_cast<AuthenticatedClosePostProbe*>(raw); ++p->posts; return message == UM_AUTHENTICATED_WEB_CLOSE && p->postSucceeds; }
+bool RunAuthenticatedWebClosePostSelfTest()
+{
+	LONG latch = 0;
+	AuthenticatedClosePostProbe probe = { true, 7, false, 0 };
+	const AuthenticatedClosePostPort port = { &probe, CloseProbeIsWindow, CloseProbePid, CloseProbePost };
+	if (TryPostAuthenticatedClose(latch, reinterpret_cast<HWND>(1), 7, port)
+		!= AuthenticatedClosePostResult::Failed || latch != 0 || probe.posts != 1) return false;
+	probe.postSucceeds = true;
+	if (TryPostAuthenticatedClose(latch, reinterpret_cast<HWND>(1), 7, port)
+		!= AuthenticatedClosePostResult::Posted || latch != 1 || probe.posts != 2) return false;
+	if (TryPostAuthenticatedClose(latch, reinterpret_cast<HWND>(1), 7, port)
+		!= AuthenticatedClosePostResult::Duplicate || latch != 1 || probe.posts != 2) return false;
+	latch = 0; probe.valid = false;
+	if (TryPostAuthenticatedClose(latch, reinterpret_cast<HWND>(1), 7, port)
+		!= AuthenticatedClosePostResult::Failed || latch != 0 || probe.posts != 2) return false;
+	probe.valid = true; probe.processId = 8;
+	return TryPostAuthenticatedClose(latch, reinterpret_cast<HWND>(1), 7, port)
+		== AuthenticatedClosePostResult::Failed && latch == 0 && probe.posts == 2;
+}
+}
+
 bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 {
 	outFailure.Empty();
+	if (!RunAuthenticatedWebClosePostSelfTest()) {
+		outFailure = _T("authenticated web close post contract changed");
+		return false;
+	}
+	if (!RunAuthenticatedWebCloseUiSelfTest()) {
+		outFailure = _T("authenticated web close UI delivery changed");
+		return false;
+	}
 	if (_ParseURL(_T("/?a=one&b=two"), _T("b")) != _T("two")) {
 		outFailure = _T("web parser failed deterministic query");
 		return false;
@@ -776,6 +841,45 @@ bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 	return true;
 }
 
+namespace
+{
+volatile LONG g_authenticatedWebClosePosted = 0;
+
+void RecordWebCloseStage(LiveShutdownStage stage) noexcept
+{
+	try { CLiveDebugLog::Get().TryAppendShutdownStage(stage); }
+	catch (...) {}
+}
+
+void PostAuthenticatedWebClose() noexcept
+{
+	CemuleDlg* dialog = theApp.emuledlg;
+	const HWND window = dialog != NULL ? dialog->GetSafeHwnd() : NULL;
+	const AuthenticatedClosePostPort port = {
+		NULL,
+		[](void*, HWND value) { return ::IsWindow(value) != FALSE; },
+		[](void*, HWND value) { DWORD pid=0; return ::GetWindowThreadProcessId(value, &pid) != 0 ? pid : 0; },
+		[](void*, HWND value, UINT message) { return ::PostMessage(value, message, 0, 0) != FALSE; }
+	};
+	const AuthenticatedClosePostResult result = TryPostAuthenticatedClose(
+		g_authenticatedWebClosePosted, window, ::GetCurrentProcessId(), port);
+	if (result == AuthenticatedClosePostResult::Duplicate) {
+		RecordWebCloseStage(LiveShutdownStage::WebClosePostDuplicate);
+		return;
+	}
+	if (result == AuthenticatedClosePostResult::Failed) {
+		RecordWebCloseStage(LiveShutdownStage::WebClosePostFailed);
+		return;
+	}
+	RecordWebCloseStage(LiveShutdownStage::WebClosePosted);
+}
+}
+
+void ResetAuthenticatedWebClosePostLatch() noexcept
+{
+	::InterlockedExchange(&g_authenticatedWebClosePosted, 0);
+}
+
 void CWebServer::_ProcessURL(const ThreadData &Data)
 {
 	CWebServer* owner = reinterpret_cast<CWebServer*>(Data.pThis); if (owner == NULL) return;
@@ -800,7 +904,7 @@ void CWebServer::_ProcessURL(const ThreadData &Data)
 	port.send_reply = [](const void* raw, const char* reply) { static_cast<const ThreadData*>(raw)->pSocket->SendReply(reply); };
 	port.notify_login = [](bool admin, const CString& ip) { SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPDATEMYINFO, 0); AddLogLine(true, GetResString(admin ? IDS_WEB_ADMINLOGIN : IDS_WEB_GUESTLOGIN) + _T(" (%s)"), (LPCTSTR)ip); };
 	port.notify_bad_login = [](const CString& ip) { LogWarning(LOG_STATUSBAR, GetResString(IDS_WEB_BADLOGINATTEMPT) + _T(" (%s)"), (LPCTSTR)ip); };
-	port.perform_admin_action = [](WebAdminAction action) { if (action == WebAdminAction::Close) { theApp.m_app_state = APP_STATE_SHUTTINGDOWN; SendMessage(theApp.emuledlg->m_hWnd, WM_CLOSE, 0, 0); } else SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_WINFUNC, action == WebAdminAction::Shutdown ? 1 : 2); };
+	port.perform_admin_action = [](WebAdminAction action) { if (action == WebAdminAction::Close) PostAuthenticatedWebClose(); else SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_WINFUNC, action == WebAdminAction::Shutdown ? 1 : 2); };
 	port.send_requested_file = [](const void* raw, const CString& fileHash) {
 		const ThreadData& data = *static_cast<const ThreadData*>(raw); uchar hash[MDX_DIGEST_SIZE]; if (!strmd4(fileHash, hash)) return false;
 		CKnownFile* file = theApp.sharedfiles->GetFileByID(hash); if (file == NULL) return false; const UINT maxMb = thePrefs.GetMaxWebUploadFileSizeMB();

@@ -495,6 +495,7 @@ BEGIN_MESSAGE_MAP(CemuleDlg, CTrayDialog)
 	ON_MESSAGE(UM_LIVE_WEB_BROADCAST, OnLiveWebBroadcast)
 	ON_MESSAGE(UM_LIVE_WEB_LEAVE, OnLiveWebLeave)
 	ON_MESSAGE(UM_LIVE_HEADLESS_ACTION, OnLiveHeadlessAction)
+	ON_MESSAGE(UM_AUTHENTICATED_WEB_CLOSE, OnAuthenticatedWebClose)
 	ON_MESSAGE(UM_KRP_CLIENT_EVENT, OnKrpClientEvent)
 	ON_MESSAGE(UM_PROCESS_ED2K_LINKS, OnProcessEd2kLinks)
 	ON_MESSAGE(UM_PROCESS_STORED_SEARCHES, OnProcessStoredSearches)
@@ -554,6 +555,8 @@ CemuleDlg::CemuleDlg(CWnd *pParent /*=NULL*/)
 	, m_bKadSuspendDisconnect()
 	, m_bEd2kSuspendDisconnect()
 	, m_bInitedCOM()
+	, m_pActiveExitBox()
+	, m_bAuthenticatedWebClosePending()
 	, m_thbButtons()
 	, m_currentTBP_state(TBPF_NOPROGRESS)
 	, m_prevProgress()
@@ -1182,6 +1185,30 @@ static void ScheduleSelfTestExit(int exitCode)
 LRESULT CemuleDlg::OnLiveHeadlessAction(WPARAM, LPARAM)
 {
 	RunHeadlessAction();
+	return 0;
+}
+
+LRESULT CemuleDlg::OnAuthenticatedWebClose(WPARAM, LPARAM)
+{
+	if (theApp.m_app_state == APP_STATE_DONE)
+		return 0;
+	const AppState previousState = theApp.m_app_state;
+	m_bAuthenticatedWebClosePending = true;
+	theApp.m_app_state = APP_STATE_SHUTTINGDOWN;
+	if (m_pActiveExitBox != NULL &&
+		::IsWindow(m_pActiveExitBox->GetSafeHwnd())) {
+		m_pActiveExitBox->EndDialog(IDOK);
+		return 0;
+	}
+	if (!PostMessage(WM_CLOSE, 0, 0)) {
+		m_bAuthenticatedWebClosePending = false;
+		if (previousState != APP_STATE_SHUTTINGDOWN
+			&& theApp.m_app_state == APP_STATE_SHUTTINGDOWN)
+			theApp.m_app_state = previousState;
+		ResetAuthenticatedWebClosePostLatch();
+		try { CLiveDebugLog::Get().TryAppendShutdownStage(
+			LiveShutdownStage::WebClosePostFailed); } catch (...) {}
+	}
 	return 0;
 }
 
@@ -2619,18 +2646,86 @@ void CemuleDlg::OnDestroy()
 	CTrayDialog::OnDestroy();
 }
 
+namespace
+{
+class ActiveExitBoxScope
+{
+public:
+	ActiveExitBoxScope(ExitBox*& slot, ExitBox& value) noexcept
+		: m_slot(slot) { m_slot = &value; }
+	~ActiveExitBoxScope() noexcept { m_slot = NULL; }
+private:
+	ExitBox*& m_slot;
+};
+
+typedef bool (*RunExitBoxModal)(void*, ExitBox&);
+
+bool CoordinateExitConfirmation(ExitBox*& active, bool& authenticatedPending,
+	AppState& state, ExitBox& request, RunExitBoxModal run, void* context) noexcept
+{
+	bool cancelled = true;
+	try {
+		ActiveExitBoxScope activeScope(active, request);
+		cancelled = run == NULL || run(context, request);
+	}
+	catch (CException* error) {
+		if (error != NULL)
+			error->Delete();
+		cancelled = true;
+	}
+	catch (...) {
+		cancelled = true;
+	}
+	if (authenticatedPending) {
+		authenticatedPending = false;
+		return true;
+	}
+	if (cancelled) {
+		if (state == APP_STATE_ASKCLOSE)
+			state = APP_STATE_RUNNING;
+		return false;
+	}
+	return true;
+}
+}
+
+bool RunAuthenticatedWebCloseUiSelfTest() noexcept
+{
+	ExitBox* active = NULL;
+	bool pending = false;
+	AppState state = APP_STATE_ASKCLOSE;
+	ExitBox request;
+	struct Probe { bool throwNow; bool cancelled; };
+	Probe probe = { true, true };
+	const RunExitBoxModal runner = [](void* raw, ExitBox&) -> bool {
+		Probe* p = static_cast<Probe*>(raw);
+		if (p->throwNow)
+			throw 1;
+		return p->cancelled;
+	};
+	if (CoordinateExitConfirmation(active, pending, state, request, runner, &probe)
+		|| active != NULL || pending || state != APP_STATE_RUNNING) return false;
+	// The exact same production seam remains reusable after the throwing path.
+	probe.throwNow = false; probe.cancelled = false; state = APP_STATE_ASKCLOSE;
+	if (!CoordinateExitConfirmation(active, pending, state, request, runner, &probe)
+		|| active != NULL) return false;
+	// Simulate the authenticated handler ending the active modal immediately
+	// before the modal runner itself reports an exception.
+	pending = true; state = APP_STATE_SHUTTINGDOWN; probe.throwNow = true;
+	return CoordinateExitConfirmation(active, pending, state, request, runner, &probe)
+		&& active == NULL && !pending && state == APP_STATE_SHUTTINGDOWN;
+}
+
 bool CemuleDlg::CanClose()
 {
 	if (theApp.m_app_state == APP_STATE_RUNNING && thePrefs.IsConfirmExitEnabled()) {
 		theApp.m_app_state = APP_STATE_ASKCLOSE; //disable tray menu
 		RestoreWindow(); // make sure the window is in foreground for this prompt
 		ExitBox request;
-		request.DoModal();
-		if (request.WasCancelled()) {
-			if (theApp.m_app_state == APP_STATE_ASKCLOSE) //if the application state has not changed
-				theApp.m_app_state = APP_STATE_RUNNING; //then keep running
-			return false;
-		}
+		return CoordinateExitConfirmation(m_pActiveExitBox,
+			m_bAuthenticatedWebClosePending, theApp.m_app_state, request,
+			[](void*, ExitBox& box) { box.DoModal(); return box.WasCancelled(); },
+			NULL);
 	}
 	return true;
 }
@@ -2658,6 +2753,7 @@ void CemuleDlg::OnClose()
 		::InterlockedExchange(&closing, 0);
 		return;
 	}
+	m_bAuthenticatedWebClosePending = false;
 	RecordShutdownStage(LiveShutdownStage::CanClosePass);
 	InvalidateLocalUPnPFailure();
 	theApp.m_app_state = APP_STATE_SHUTTINGDOWN;

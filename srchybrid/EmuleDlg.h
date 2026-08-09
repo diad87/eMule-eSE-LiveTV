@@ -15,6 +15,8 @@
 //along with this program; if not, write to the Free Software
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #pragma once
+
+bool RunAuthenticatedWebCloseUiSelfTest() noexcept;
 #include "MeterIcon.h"
 #include "TaskbarNotifier.h"
 #include "TitleMenu.h"
@@ -24,6 +26,8 @@
 #include "natmap/network_signature.h"
 #include "natmap/natmap_policy.h"
 #include <memory>
+
+class ExitBox;
 
 namespace Kademlia
 {
@@ -213,6 +217,8 @@ protected:
 	bool			m_bKadSuspendDisconnect;
 	bool			m_bEd2kSuspendDisconnect;
 	bool			m_bInitedCOM;
+	ExitBox*		m_pActiveExitBox;
+	bool			m_bAuthenticatedWebClosePending;
 #ifdef HAVE_WIN7_SDK_H
 	CComPtr<ITaskbarList3>	m_pTaskbarList;
 	THUMBBUTTON		m_thbButtons[TBB_LAST + 1];
@@ -379,6 +385,7 @@ protected:
 	afx_msg LRESULT OnLiveWebBroadcast(WPARAM, LPARAM);
 	afx_msg LRESULT OnLiveWebLeave(WPARAM, LPARAM);
 	afx_msg LRESULT OnLiveHeadlessAction(WPARAM, LPARAM);
+	afx_msg LRESULT OnAuthenticatedWebClose(WPARAM, LPARAM);
 	afx_msg LRESULT OnKrpClientEvent(WPARAM, LPARAM);
 	afx_msg LRESULT OnProcessEd2kLinks(WPARAM, LPARAM);
 	afx_msg LRESULT OnProcessStoredSearches(WPARAM, LPARAM);

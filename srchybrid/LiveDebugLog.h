@@ -35,7 +35,10 @@ enum class LiveShutdownStage
 	PrefsSaved,
 	NetworkThreadsDeleteBegin,
 	NetworkThreadsDeleted,
-	WebserverDeleteImminent
+	WebserverDeleteImminent,
+	WebClosePostDuplicate,
+	WebClosePostFailed,
+	WebClosePosted
 };
 
 class CLiveDebugLog

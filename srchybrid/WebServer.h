@@ -14,6 +14,8 @@
 #define SHORT_LENGTH			40	// Max size for strings
 #define SHORT_LENGTH_MIN		30	// Max size for strings minimum
 
+void ResetAuthenticatedWebClosePostLatch() noexcept;
+
 typedef struct
 {
 	double download;

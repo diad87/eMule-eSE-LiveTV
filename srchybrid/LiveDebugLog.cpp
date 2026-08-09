@@ -93,7 +93,9 @@ void CLiveDebugLog::TryAppendShutdownStageImpl(LiveShutdownStage stage,
 		"MAPPED_CLEANUP_BEGIN", "MAPPED_CLEANUP_COMPLETE",
 		"PREFS_SAVE_BEGIN", "PREFS_SAVED",
 		"NETWORK_THREADS_DELETE_BEGIN", "NETWORK_THREADS_DELETED",
-		"WEBSERVER_DELETE_IMMINENT"
+		"WEBSERVER_DELETE_IMMINENT",
+		"WEB_CLOSE_POST_DUPLICATE", "WEB_CLOSE_POST_FAILED",
+		"WEB_CLOSE_POSTED"
 	};
 	const unsigned index = static_cast<unsigned>(stage);
 	if (index >= _countof(names) ||

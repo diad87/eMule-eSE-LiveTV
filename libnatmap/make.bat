@@ -95,6 +95,14 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_ownership_ledger
 if errorlevel 1 exit /b 1
 build\test_ownership_ledger.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\natmap_ownership_inspect.exe ..\tools\natmap_ownership_inspect.cpp src\ownership_ledger.cpp
+if errorlevel 1 exit /b 1
+build\natmap_ownership_inspect.exe --selftest
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\natmap_ownership_fixture.exe ..\tools\lab\handoff93\natmap_ownership_fixture.cpp src\ownership_ledger.cpp
+if errorlevel 1 exit /b 1
+powershell -NoProfile -ExecutionPolicy Bypass -File ..\tools\lab\handoff93\test_ownership_inspect.ps1 -Inspector build\natmap_ownership_inspect.exe -Fixture build\natmap_ownership_fixture.exe -Caller ..\tools\lab\handoff93\invoke_ownership_inspect.ps1
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_instance_isolation.exe tests\test_instance_isolation.cpp src\instance_isolation.cpp
 if errorlevel 1 exit /b 1
 build\test_instance_isolation.exe

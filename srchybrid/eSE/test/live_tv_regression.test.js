@@ -1808,3 +1808,29 @@ test('mapper delivery rejection logs stage only', () => {
   const logLine = body.match(/DebugLogWarning\([^\n]+/)[0];
   assert.doesNotMatch(logLine, /(?:ip|address|port|nonce|request|token|id)=/i);
 });
+
+test('ownership journal inspector is read-only and privacy-safe', () => {
+  const inspector = read(repoRoot, 'tools', 'natmap_ownership_inspect.cpp');
+  assert.match(inspector, /DecodeOwnershipLedger\(/);
+  assert.match(inspector, /ledger\.count != 2/);
+  assert.match(inspector, /record\.local_port != expected\.tcp_local/);
+  assert.match(inspector, /record\.external_port != expected\.tcp_external/);
+  assert.match(inspector, /record\.generation != expected\.generation/);
+  assert.match(inspector, /codec=PASS schema=PASS checksum=PASS count=%s pair=%s/);
+  assert.match(inspector, /ReadExpectedPair\(expected\)/);
+  assert.match(inspector, /argc != 3/);
+  assert.match(inspector, /IsSafeBasename\(argv\[2\]\)/);
+  assert.doesNotMatch(inspector, /DeletePorts|RemovePort|AddPort|EvaluateOwnershipForDeletion/);
+  assert.doesNotMatch(inspector, /printf\([^\n]*(?:local_port|external_port|owner_token|description|local_address)/);
+  const caller = read(repoRoot, 'tools', 'lab', 'handoff93', 'invoke_ownership_inspect.ps1');
+  assert.match(caller, /RedirectStandardError = \$true/);
+  assert.match(caller, /Arguments = '--expect-pair natmap-ownership\.dat'/);
+  assert.doesNotMatch(caller, /--expect-pair[^\n]*(?:generation|tcpLocal|tcpExternal|udpLocal|udpExternal)/);
+  assert.match(caller, /\$leaf -ne 'natmap-ownership\.dat'/);
+  assert.match(caller, /FileAttributes\]::ReparsePoint/);
+  assert.match(caller, /Get-StreamHashLower \$journalHandle/);
+  assert.match(caller, /\[IO\.FileShare\]::Read/);
+  assert.match(caller, /\$journalHandle\.Dispose\(\)/);
+  assert.match(inspector, /FILE_ATTRIBUTE_REPARSE_POINT/);
+  assert.match(inspector, /nFileIndexHigh == after\.nFileIndexHigh/);
+});

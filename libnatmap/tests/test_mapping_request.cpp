@@ -1,4 +1,5 @@
 #include "natmap/mapping_request.h"
+#include "natmap/mapping_round_failure.h"
 
 #include <cstdio>
 #include <limits>
@@ -420,6 +421,35 @@ void TestNetworkChangeRejectsOldRoute() {
     CHECK(!legacyGate.has_pending());
 }
 
+void TestMappingRoundFailureAggregation() {
+    ReasonCode aggregate = ReasonCode::None;
+    // Physical ordering: UPnP reached TCP mapping, one legacy implementation
+    // did not run, then PCP and NAT-PMP were unavailable. Later weak failures
+    // must not erase the actionable router rejection.
+    aggregate = SelectMappingRoundFailureReason(
+        aggregate, ReasonCode::MappingDenied);
+    aggregate = SelectMappingRoundFailureReason(
+        aggregate, ReasonCode::NoMappingProtocol);
+    aggregate = SelectMappingRoundFailureReason(
+        aggregate, ReasonCode::NoMappingProtocol);
+    aggregate = SelectMappingRoundFailureReason(
+        aggregate, ReasonCode::NoMappingProtocol);
+    CHECK(aggregate == ReasonCode::MappingDenied);
+
+    ReasonCode unavailable = ReasonCode::None;
+    unavailable = SelectMappingRoundFailureReason(
+        unavailable, ReasonCode::NoMappingProtocol);
+    unavailable = SelectMappingRoundFailureReason(
+        unavailable, ReasonCode::NoGateway);
+    CHECK(unavailable == ReasonCode::NoGateway);
+    CHECK(SelectMappingRoundFailureReason(
+              ReasonCode::MappingDenied, ReasonCode::InvalidResponse) ==
+          ReasonCode::InvalidResponse);
+    CHECK(SelectMappingRoundFailureReason(
+              ReasonCode::MappingConflict, ReasonCode::MappingDenied) ==
+          ReasonCode::MappingConflict);
+}
+
 } // namespace
 
 int main() {
@@ -439,6 +469,7 @@ int main() {
     TestLegacyEnvelopeRejectsMismatchWithoutDisplacement();
     TestCancellationRejectsLateCallback();
     TestNetworkChangeRejectsOldRoute();
+    TestMappingRoundFailureAggregation();
     std::printf("test_mapping_request: %d checks, %d failures\n",
                 checks, failures);
     return failures == 0 ? 0 : 1;

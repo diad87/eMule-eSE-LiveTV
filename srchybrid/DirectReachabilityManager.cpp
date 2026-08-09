@@ -312,6 +312,54 @@ bool CDirectReachabilityManager::BeginMappingAttempt()
 	return true;
 }
 
+bool CDirectReachabilityManager::CompleteMappingAttemptFailure(
+	uint64 nExpectedGeneration, natmap::ReasonCode reason)
+{
+	StatusCacheRefreshGuard guard{*this};
+	AssertMainThread();
+	if (nExpectedGeneration == 0
+		|| nExpectedGeneration != m_snapshot.topology_generation
+		|| m_snapshot.ed2k_tcp_v4.generation != nExpectedGeneration
+		|| m_snapshot.kad_udp_v4.generation != nExpectedGeneration
+		|| m_snapshot.ed2k_tcp_v4.state !=
+			natmap::ReachabilityState::Discovering
+		|| m_snapshot.kad_udp_v4.state !=
+			natmap::ReachabilityState::Discovering
+		|| m_mappedCandidates.is_closed()
+		|| m_mappedCandidates.snapshot().candidate_count() != 0
+		|| m_mappedCandidates.snapshot().topology_generation() !=
+			nExpectedGeneration)
+		return false;
+	if (reason == natmap::ReasonCode::None)
+		reason = natmap::ReasonCode::RouterRejectedAllCandidates;
+	const natmap::TransitionResult tcp = natmap::ApplyEvent(
+		m_snapshot.ed2k_tcp_v4, natmap::StateEvent{
+			natmap::EventType::RouterBlocked, nExpectedGeneration, reason});
+	const natmap::TransitionResult udp = natmap::ApplyEvent(
+		m_snapshot.kad_udp_v4, natmap::StateEvent{
+			natmap::EventType::RouterBlocked, nExpectedGeneration, reason});
+	if (tcp.disposition != natmap::TransitionDisposition::Applied
+		|| udp.disposition != natmap::TransitionDisposition::Applied)
+		return false;
+	m_snapshot.ed2k_tcp_v4 = tcp.snapshot;
+	m_snapshot.kad_udp_v4 = udp.snapshot;
+	m_tcpLease = natmap::LeaseController{};
+	m_udpLease = natmap::LeaseController{};
+	m_tcpChain = natmap::NatChainTransaction{};
+	m_udpChain = natmap::NatChainTransaction{};
+	m_mapperRouteBinding = natmap::RouteBindingIdentity{};
+	m_mapperTopologyIdentity = natmap::MapperTopologyIdentity{};
+	m_pcpCpeResult = natmap::MapperResultData{};
+	m_nAdvertisedTcpPort.store(
+		m_nLocalTcpPort.load(std::memory_order_acquire),
+		std::memory_order_release);
+	m_nAdvertisedUdpPort.store(
+		m_nLocalUdpPort.load(std::memory_order_acquire),
+		std::memory_order_release);
+	m_bEnabled.store(false, std::memory_order_release);
+	return true;
+}
+
 natmap::UpstreamGatewayCandidates
 CDirectReachabilityManager::GetUpstreamGatewayCandidates(
 	const natmap::UpstreamDiscoveryInput& authorizedEvidence) const

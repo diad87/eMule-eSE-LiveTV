@@ -63,6 +63,7 @@
 #include "Mod02BuildIdentity.h"
 #include "RelayClient.h"
 #include "DirectReachabilityManager.h"
+#include "natmap/mapping_round_failure.h"
 #include "Splashscreen.h"
 #include "PartFileConvert.h"
 #include "EnBitmap.h"
@@ -172,6 +173,29 @@ static uint64 UPnPMonotonicMilliseconds()
 	return static_cast<uint64>(std::chrono::duration_cast<
 		std::chrono::milliseconds>(std::chrono::steady_clock::now()
 			.time_since_epoch()).count());
+}
+
+static natmap::ReasonCode UPnPDiagnosticFailureReason(LONG stage)
+{
+	switch (stage) {
+	case UPNP_DIAG_NO_GATEWAY:
+		return natmap::ReasonCode::NoGateway;
+	case UPNP_DIAG_NOT_RUN:
+	case UPNP_DIAG_DISCOVERING:
+	case UPNP_DIAG_PROTOCOL_UNAVAILABLE:
+		return natmap::ReasonCode::NoMappingProtocol;
+	case UPNP_DIAG_TABLE_FULL:
+		return natmap::ReasonCode::MappingConflict;
+	case UPNP_DIAG_TCP_MAPPING:
+	case UPNP_DIAG_UDP_MAPPING:
+		return natmap::ReasonCode::MappingDenied;
+	case UPNP_DIAG_EXTERNAL_ADDRESS:
+	case UPNP_DIAG_VERIFY_MAPPING:
+	case UPNP_DIAG_OWNERSHIP_PERSISTENCE:
+		return natmap::ReasonCode::InvalidResponse;
+	default:
+		return natmap::ReasonCode::RouterRejectedAllCandidates;
+	}
 }
 
 static void ConfigureEseNetLabConsentAtStartup()
@@ -549,6 +573,8 @@ CemuleDlg::CemuleDlg(CWnd *pParent /*=NULL*/)
 	, m_bUPnPExplicitRequest()
 	, m_bUPnPRouteRecoveryPending()
 	, m_bUPnPResumeMappingRequired()
+	, m_bUPnPRoundFailureObserved()
+	, m_upnpRoundFailureReason(natmap::ReasonCode::None)
 	, m_upnpNetworkSignature()
 	, m_upnpRecoverySchedule()
 	, m_mappingResultMailbox(
@@ -5544,6 +5570,14 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 
 //>>> WiZaRd - handle "UPNP_TIMEOUT" events!
 	if (!bWasRefresh && resultCode != CUPnPImpl::UPNP_OK) {
+		natmap::ReasonCode roundReason = bMapperResult
+			&& mapperResultData.reason != natmap::ReasonCode::None
+			? mapperResultData.reason
+			: UPnPDiagnosticFailureReason(impl->GetDiagnosticStage());
+		m_upnpRoundFailureReason =
+			natmap::SelectMappingRoundFailureReason(
+				m_upnpRoundFailureReason, roundReason);
+		m_bUPnPRoundFailureObserved = true;
 		//just to be sure, stop any running services and also delete the forwarded ports (if necessary)
 		if (bTimeout) {
 			const uint64 generation =
@@ -5561,6 +5595,20 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		}
 
 		DebugLog(_T("No more available UPnP implementations left"));
+		if (theApp.directreachability != NULL) {
+			const uint64 terminalGeneration =
+				theApp.directreachability->GetTopologyGeneration();
+			const natmap::ReasonCode terminalReason =
+				m_bUPnPRoundFailureObserved
+					? m_upnpRoundFailureReason
+					: natmap::ReasonCode::RouterRejectedAllCandidates;
+			if (theApp.directreachability->CompleteMappingAttemptFailure(
+					terminalGeneration, terminalReason))
+				LIVE_LOG("NATMAP",
+					"mapper chain exhausted terminal generation=%llu reason=%u",
+					(unsigned long long)terminalGeneration,
+					(unsigned)terminalReason);
+		}
 		if (m_upnpRecoverySchedule.IsActive()) {
 			m_bUPnPRouteRecoveryPending = true;
 			if (m_upnpRecoverySchedule.IsExhausted())
@@ -5733,6 +5781,10 @@ void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort,
 				m_mappingResultGate.pending().request_id);
 		return;
 	}
+	if (bReset) {
+		m_bUPnPRoundFailureObserved = false;
+		m_upnpRoundFailureReason = natmap::ReasonCode::None;
+	}
 	m_bUPnPExplicitRequest = bExplicitRequest;
 	if (m_hUPnPLeaseTimer == 0)
 		VERIFY((m_hUPnPLeaseTimer = ::SetTimer(NULL, 0, SEC2MS(30), UPnPLeaseTimer)) != 0);
@@ -5810,6 +5862,8 @@ void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort,
 
 void CemuleDlg::StopUPnP()
 {
+	m_bUPnPRoundFailureObserved = false;
+	m_upnpRoundFailureReason = natmap::ReasonCode::None;
 	if (m_hUPnPLeaseTimer != 0) {
 		VERIFY(::KillTimer(NULL, m_hUPnPLeaseTimer));
 		m_hUPnPLeaseTimer = 0;

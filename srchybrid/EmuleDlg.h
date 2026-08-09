@@ -265,6 +265,8 @@ protected:
 	bool m_bUPnPExplicitRequest;
 	bool m_bUPnPRouteRecoveryPending;
 	bool m_bUPnPResumeMappingRequired;
+	bool m_bUPnPRoundFailureObserved;
+	natmap::ReasonCode m_upnpRoundFailureReason;
 	natmap::NetworkSignature m_upnpNetworkSignature;
 	natmap::MappingRecoverySchedule m_upnpRecoverySchedule;
 	natmap::MappingRequestSequence m_mappingRequestSequence;

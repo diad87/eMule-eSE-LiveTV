@@ -1809,6 +1809,58 @@ test('mapper delivery rejection logs stage only', () => {
   assert.doesNotMatch(logLine, /(?:ip|address|port|nonce|request|token|id)=/i);
 });
 
+test('exhausted mapper chain leaves one terminal generation, never discovering', () => {
+  const header = read(repoRoot, 'srchybrid', 'DirectReachabilityManager.h');
+  const manager = read(repoRoot, 'srchybrid', 'DirectReachabilityManager.cpp');
+  const dialog = read(repoRoot, 'srchybrid', 'EmuleDlg.cpp');
+  assert.match(header,
+    /bool CompleteMappingAttemptFailure\(uint64 nExpectedGeneration,[\s\S]*ReasonCode reason\);/);
+  const terminalAt = manager.indexOf(
+    'bool CDirectReachabilityManager::CompleteMappingAttemptFailure(');
+  const terminalEnd = manager.indexOf(
+    '\nnatmap::UpstreamGatewayCandidates', terminalAt);
+  const terminal = manager.slice(terminalAt, terminalEnd);
+  assert.match(terminal, /AssertMainThread\(\)/);
+  assert.match(terminal, /nExpectedGeneration != m_snapshot\.topology_generation/);
+  assert.equal((terminal.match(/ReachabilityState::Discovering/g) || []).length, 2);
+  assert.match(terminal, /candidate_count\(\) != 0/);
+  assert.match(terminal, /EventType::RouterBlocked/);
+  assert.match(terminal, /ed2k_tcp_v4 = tcp\.snapshot/);
+  assert.match(terminal, /kad_udp_v4 = udp\.snapshot/);
+  assert.match(terminal, /m_bEnabled\.store\(false/);
+  assert.doesNotMatch(terminal, /topology_generation\s*(?:\+\+|\+=)|Reachable|Verified/);
+
+  const failureAt = dialog.indexOf(
+    'if (!bWasRefresh && resultCode != CUPnPImpl::UPNP_OK)');
+  const exhaustionAt = dialog.indexOf(
+    'DebugLog(_T("No more available UPnP implementations left"))', failureAt);
+  const failureBlock = dialog.slice(failureAt,
+    dialog.indexOf('if (resultCode == CUPnPImpl::UPNP_OK)', exhaustionAt));
+  assert.ok(exhaustionAt > failureAt);
+  assert.match(failureBlock, /SelectMappingRoundFailureReason/);
+  assert.match(failureBlock, /SwitchImplentation\(\)/);
+  const switchAt = failureBlock.indexOf('SwitchImplentation()');
+  const completeAt = failureBlock.indexOf('CompleteMappingAttemptFailure(');
+  assert.ok(completeAt > switchAt,
+    'terminal transition must occur only after fallback exhaustion');
+  assert.equal((failureBlock.match(/CompleteMappingAttemptFailure\(/g) || []).length, 1);
+  assert.match(failureBlock, /terminalGeneration/);
+  assert.match(failureBlock, /m_upnpRoundFailureReason/);
+  assert.doesNotMatch(failureBlock, /RecordLeaseSuccess|SetLastWorkingUPnPImpl/);
+
+  const startAt = dialog.indexOf('void CemuleDlg::StartUPnP(');
+  const stopAt = dialog.indexOf('void CemuleDlg::StopUPnP(', startAt);
+  const startBody = dialog.slice(startAt, stopAt);
+  assert.match(startBody, /if \(bReset\)[\s\S]*m_bUPnPRoundFailureObserved = false/);
+  assert.doesNotMatch(failureBlock.slice(0, exhaustionAt - failureAt),
+    /CompleteMappingAttemptFailure/,
+    'an intermediate fallback must not publish a terminal state');
+  const stopBody = dialog.slice(stopAt,
+    dialog.indexOf('\nvoid CemuleDlg::', stopAt + 10));
+  assert.match(stopBody, /m_bUPnPRoundFailureObserved = false/);
+  assert.match(stopBody, /DisableMappingsByPreference\(\)/);
+});
+
 test('ownership journal inspector is read-only and privacy-safe', () => {
   const inspector = read(repoRoot, 'tools', 'natmap_ownership_inspect.cpp');
   assert.match(inspector, /DecodeOwnershipLedger\(/);

@@ -47,6 +47,8 @@ public:
 	bool HasVerifiedEd2kReachability() const;
 	uint64 GetTopologyGeneration() const;
 	bool BeginMappingAttempt();
+	bool CompleteMappingAttemptFailure(uint64 nExpectedGeneration,
+		natmap::ReasonCode reason);
 	natmap::UpstreamGatewayCandidates GetUpstreamGatewayCandidates(
 		const natmap::UpstreamDiscoveryInput& authorizedEvidence) const;
 	bool ObserveMapperResult(const natmap::MapperResult& result,

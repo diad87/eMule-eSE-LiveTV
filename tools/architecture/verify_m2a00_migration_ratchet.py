@@ -96,7 +96,7 @@ W12_HISTORICAL_HASHES: dict[str, str] = {
     "docs/architecture/mod04_architecture_gate_baseline_v1.json":
         "6d5708dcd3ac5cc7379918e4e5e4b9296a624a77c3bf20861e094a62c537a6e0",
     "docs/architecture/mod04_architecture_gate_catalog_v2.json":
-        "a977410c88a95a8d42c8f03950deb1c9d740da644bb42135df0d67d9b91bc2a4",
+        "22c261f4e302ce4862f4f6e8ac17a1525f0c1b6281d981550bf379a2339cf63d",
 }
 BASELINE_COMMIT = "8534bf9ee48a16084c0368bf33dcafb4ba12558d"
 # Deliberately held in executable code rather than in the documents they pin:
@@ -106,8 +106,21 @@ EXPECTED_DOC_HASHES: dict[str, str] = {
     "mod52_migration_matrix_v1.json": "de7e65410f34813276a3c8ef2f06a54009f2fbbf4ed2175f84eb7d33bdf91a05",
     "mod52_migration_baseline_v1.json": "4c162b457059776f13c26341fdab60778088014e183acc48926f22f5d1cbc5c3",
     "mod03_ownership_layering_contract_v2.json": "c3aa3d90bccbc63ff7a0c8ebafd199e9ed2b00acc2c2ef488c5e11515a3f28b1",
-    "mod04_architecture_gate_catalog_v2.json": "a977410c88a95a8d42c8f03950deb1c9d740da644bb42135df0d67d9b91bc2a4",
+    "mod04_architecture_gate_catalog_v2.json": "22c261f4e302ce4862f4f6e8ac17a1525f0c1b6281d981550bf379a2339cf63d",
 }
+UPNP_LIFECYCLE_HELPERS = {
+    "srchybrid/UPnPWorkerLifecycle.h": {
+        "max_loc": 40,
+        "includes": ["Windows.h", "atomic"],
+    },
+    "srchybrid/UPnPDeferredReaperCore.h": {
+        "max_loc": 150,
+        "includes": ["Windows.h", "array", "cstddef"],
+    },
+}
+UPNP_LIFECYCLE_ADR = "docs/architecture/ADR_UPNP_COOPERATIVE_WORKER_LIFECYCLE_V1.md"
+UPNP_LIFECYCLE_ADR_SHA256 = "8e4df9e64f6929c58033f71cf74c69e74c1bc2ba4c429f159d1f4651cf56b738"
+UPNP_FIRST_PARTY_SOURCE_SUFFIXES = {".h", ".hpp", ".inl", ".c", ".cc", ".cpp", ".cxx"}
 COORDINATORS = (
     ("LiveTunnel", "CLiveTunnel", "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h"),
     ("WebServer", "CWebServer", "srchybrid/WebServer.cpp", "srchybrid/WebServer.h"),
@@ -2277,6 +2290,132 @@ def validate_binding_port_contract() -> None:
         raise GateError("M2A binding-port characterization is not compiled")
 
 
+def validate_upnp_lifecycle_helpers(
+    catalogue: dict[str, Any], overrides: dict[str, bytes] | None = None
+) -> None:
+    overrides = overrides or {}
+    entries = {
+        item.get("path"): item
+        for item in catalogue.get("approved_non_module_code", [])
+        if isinstance(item, dict)
+    }
+    adr_blob = overrides.get(UPNP_LIFECYCLE_ADR)
+    if adr_blob is None:
+        adr_blob = (ROOT / UPNP_LIFECYCLE_ADR).read_bytes()
+    if hashlib.sha256(adr_blob).hexdigest() != UPNP_LIFECYCLE_ADR_SHA256:
+        raise GateError("UPnP lifecycle ADR hash drift")
+    adr_text = adr_blob.decode("utf-8", errors="strict")
+    if [line for line in adr_text.splitlines() if line.startswith("#")] != [
+        "# ADR: UPnP cooperative worker lifecycle helpers v1",
+        "## Decision",
+    ] or "Status: approved contractual boundary for the v9.2 cooperative-shutdown delta." not in adr_text:
+        raise GateError("UPnP lifecycle ADR structure drift")
+    for relative, policy in UPNP_LIFECYCLE_HELPERS.items():
+        entry = entries.get(relative)
+        if not entry or entry.get("adr") != UPNP_LIFECYCLE_ADR:
+            raise GateError(f"UPnP lifecycle helper missing from closed catalogue: {relative}")
+        blob = overrides.get(relative)
+        if blob is None:
+            blob = (ROOT / relative).read_bytes()
+        text = blob.decode("utf-8", errors="strict")
+        if len(text.splitlines()) > policy["max_loc"]:
+            raise GateError(f"UPnP lifecycle helper LOC overflow: {relative}")
+        includes = re.findall(r'^\s*#include\s*[<\"]([^>\"]+)[>\"]', text, re.MULTILINE)
+        if includes != policy["includes"]:
+            raise GateError(f"UPnP lifecycle helper include drift: {relative}")
+        if re.search(r"\b(?:CString|CException|thePrefs|theApp|ASSERT|VERIFY|TRACE)\b", text):
+            raise GateError(f"UPnP lifecycle helper concrete/global dependency: {relative}")
+        companion = relative[:-2] + ".cpp"
+        if companion in overrides or (ROOT / companion).exists():
+            raise GateError(f"UPnP lifecycle helper companion cpp forbidden: {companion}")
+    reaper = overrides.get("srchybrid/UPnPDeferredReaperCore.h")
+    if reaper is None:
+        reaper = (ROOT / "srchybrid/UPnPDeferredReaperCore.h").read_bytes()
+    if b"return false;" not in reaper:
+        raise GateError("UPnP lifecycle reaper overflow must fail closed")
+    test_relative = "srchybrid/tests/test_upnp_worker_lifecycle.cpp"
+    test_entry = entries.get(test_relative)
+    if not test_entry or test_entry.get("adr") != UPNP_LIFECYCLE_ADR:
+        raise GateError("UPnP lifecycle test missing from closed catalogue")
+    test_blob = overrides.get(test_relative)
+    if test_blob is None:
+        test_blob = (ROOT / test_relative).read_bytes()
+    test_text = test_blob.decode("utf-8", errors="strict")
+    if len(test_text.splitlines()) > 300:
+        raise GateError("UPnP lifecycle test LOC overflow")
+    test_includes = re.findall(
+        r'^\s*#include\s*[<\"]([^>\"]+)[>\"]', test_text, re.MULTILINE
+    )
+    expected_test_includes = [
+        "../UPnPWorkerLifecycle.h", "../UPnPDeferredReaperCore.h",
+        "atomic", "cstdio",
+    ]
+    if test_includes != expected_test_includes:
+        raise GateError("UPnP lifecycle test include drift")
+    for include, target in zip(test_includes[:2], UPNP_LIFECYCLE_HELPERS):
+        resolved = (PurePosixPath(test_relative).parent / include).as_posix()
+        while "/../" in resolved:
+            resolved = re.sub(r"[^/]+/\.\./", "", resolved, count=1)
+        if resolved != target:
+            raise GateError("UPnP lifecycle test local include resolution drift")
+    test_basename = PurePosixPath(test_relative).name.casefold()
+    injected = {PurePosixPath(path).as_posix(): blob for path, blob in overrides.items()}
+    source_paths = [
+        path for path in ROOT.rglob("*")
+        if path.is_file()
+        and path.suffix.casefold() in UPNP_FIRST_PARTY_SOURCE_SUFFIXES
+        and ".git" not in path.parts
+        and not path.relative_to(ROOT).as_posix().startswith("srchybrid/tests/")
+    ]
+    source_texts = {
+        path.relative_to(ROOT).as_posix(): path.read_bytes() for path in source_paths
+    }
+    source_texts.update({
+        path: blob for path, blob in injected.items()
+        if PurePosixPath(path).suffix.casefold() in UPNP_FIRST_PARTY_SOURCE_SUFFIXES
+        and not path.startswith("srchybrid/tests/")
+    })
+    include_test = re.compile(
+        rb'^\s*#\s*include\s*[<\"][^>\"\r\n]*(?:[/\\])?'
+        + re.escape(test_basename.encode()) + rb'[>\"]',
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if any(include_test.search(blob) for blob in source_texts.values()):
+        raise GateError("productive source includes UPnP lifecycle test")
+
+    membership_paths = [
+        path for path in ROOT.rglob("*")
+        if path.is_file() and (
+            path.suffix.casefold() in {".vcxproj", ".filters", ".props", ".targets"}
+            or path.name.casefold() in {"cmakelists.txt", "meson.build", "build", "build.bazel"}
+        )
+    ]
+    memberships = {
+        path.relative_to(ROOT).as_posix(): path.read_bytes() for path in membership_paths
+    }
+    memberships.update({
+        path: blob for path, blob in injected.items()
+        if PurePosixPath(path).suffix.casefold() in {".vcxproj", ".filters", ".props", ".targets"}
+        or PurePosixPath(path).name.casefold() in {"cmakelists.txt", "meson.build", "build", "build.bazel"}
+    })
+    if any(test_basename.encode() in blob.lower() for blob in memberships.values()):
+        raise GateError("UPnP lifecycle test linked into product manifest")
+    make = (ROOT / "srchybrid/tests/make.bat").read_text(encoding="utf-8")
+    compile_line = next((line for line in make.splitlines()
+                         if "test_upnp_worker_lifecycle.cpp" in line), "")
+    run_lines = [line for line in make.splitlines()
+                 if "test_upnp_worker_lifecycle.exe" in line]
+    if (not all(flag in compile_line for flag in ("/W4", "/WX", "/std:c++17"))
+            or len(run_lines) != 2):
+        raise GateError("UPnP lifecycle test standalone build contract drift")
+    mod02 = (ROOT / "tools/architecture/run_mod02_stream_selftest.ps1").read_text(
+        encoding="utf-8"
+    )
+    for path in (*UPNP_LIFECYCLE_HELPERS, test_relative):
+        if mod02.count("'" + path + "'") != 1:
+            raise GateError("MOD-0.2 UPnP lifecycle identity binding drift")
+
+
 def validate_inputs(contract: dict[str, Any], matrix: dict[str, Any], baseline: dict[str, Any], ledger: dict[str, Any] | None = None) -> None:
     ledger = load(ACTIVATION) if ledger is None else ledger
     # W12 v2 is an overlay, not a retroactive v1 module activation.  Preserve
@@ -2346,6 +2485,42 @@ def validate_inputs(contract: dict[str, Any], matrix: dict[str, Any], baseline: 
             "adr": (
                 "docs/architecture/"
                 "MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+            ),
+        },
+        {
+            "path": "srchybrid/UPnPWorkerLifecycle.h",
+            "reason": (
+                "Header-only, POD/Win32 cooperative-stop policy shared by the "
+                "existing UPnP MiniLib implementation and its native lifecycle test without "
+                "creating a module, domain state or reverse coordinator dependency."
+            ),
+            "adr": (
+                "docs/architecture/"
+                "ADR_UPNP_COOPERATIVE_WORKER_LIFECYCLE_V1.md"
+            ),
+        },
+        {
+            "path": "srchybrid/UPnPDeferredReaperCore.h",
+            "reason": (
+                "Header-only, fixed-capacity POD/Win32 deferred-destruction "
+                "holder for an active UPnP worker; it owns no domain, wire, "
+                "preference or MFC policy and has no companion source."
+            ),
+            "adr": (
+                "docs/architecture/"
+                "ADR_UPNP_COOPERATIVE_WORKER_LIFECYCLE_V1.md"
+            ),
+        },
+        {
+            "path": "srchybrid/tests/test_upnp_worker_lifecycle.cpp",
+            "reason": (
+                "Test-only native characterization of the two governed UPnP "
+                "lifecycle headers; it is compiled and executed solely by the "
+                "standalone srchybrid test gate and is never linked into the product."
+            ),
+            "adr": (
+                "docs/architecture/"
+                "ADR_UPNP_COOPERATIVE_WORKER_LIFECYCLE_V1.md"
             ),
         },
         {
@@ -2470,6 +2645,7 @@ def validate_inputs(contract: dict[str, Any], matrix: dict[str, Any], baseline: 
         },
     ]:
         raise GateError("MOD-0.4 v2 approved non-module binding drift")
+    validate_upnp_lifecycle_helpers(catalogue_v2)
     validate_binding_port_contract()
     fields: list[str] = []
     retained: list[str] = []

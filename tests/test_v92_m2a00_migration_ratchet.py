@@ -54,6 +54,104 @@ class M2A00RatchetTest(unittest.TestCase):
         self.assertIn(ratchet, workflow)
         self.assertLess(workflow.index(existing), workflow.index(ratchet))
 
+    def test_upnp_lifecycle_headers_are_closed_non_modules(self):
+        catalogue = GATE.load(GATE.MOD04V2)
+        GATE.validate_upnp_lifecycle_helpers(catalogue)
+        entries = {item["path"]: item for item in catalogue["approved_non_module_code"]}
+        self.assertEqual(
+            {path for path in entries if path in GATE.UPNP_LIFECYCLE_HELPERS},
+            set(GATE.UPNP_LIFECYCLE_HELPERS),
+        )
+        for path, policy in GATE.UPNP_LIFECYCLE_HELPERS.items():
+            text = (ROOT / path).read_text(encoding="utf-8")
+            self.assertLessEqual(len(text.splitlines()), policy["max_loc"])
+            self.assertFalse((ROOT / (path[:-2] + ".cpp")).exists())
+        test_path = ROOT / "srchybrid/tests/test_upnp_worker_lifecycle.cpp"
+        self.assertLessEqual(len(test_path.read_text(encoding="utf-8").splitlines()), 300)
+        self.assertNotIn(
+            "test_upnp_worker_lifecycle.cpp",
+            (ROOT / "srchybrid/emule.vcxproj").read_text(encoding="utf-8"),
+        )
+
+    def test_upnp_lifecycle_ratchet_rejects_removal_include_and_overflow(self):
+        catalogue = GATE.load(GATE.MOD04V2)
+        removed = copy.deepcopy(catalogue)
+        removed["approved_non_module_code"] = [
+            item for item in removed["approved_non_module_code"]
+            if item["path"] != "srchybrid/UPnPWorkerLifecycle.h"
+        ]
+        with self.assertRaisesRegex(GATE.GateError, "missing from closed catalogue"):
+            GATE.validate_upnp_lifecycle_helpers(removed)
+
+        worker = (ROOT / "srchybrid/UPnPWorkerLifecycle.h").read_bytes()
+        with self.assertRaisesRegex(GATE.GateError, "include drift"):
+            GATE.validate_upnp_lifecycle_helpers(catalogue, {
+                "srchybrid/UPnPWorkerLifecycle.h": worker.replace(
+                    b"#include <atomic>", b"#include <atomic>\n#include \"EmuleDlg.h\""
+                )
+            })
+        with self.assertRaisesRegex(GATE.GateError, "LOC overflow"):
+            GATE.validate_upnp_lifecycle_helpers(catalogue, {
+                "srchybrid/UPnPWorkerLifecycle.h": worker + (b"\n" * 7)
+            })
+
+        reaper = (ROOT / "srchybrid/UPnPDeferredReaperCore.h").read_bytes()
+        with self.assertRaisesRegex(GATE.GateError, "concrete/global dependency"):
+            GATE.validate_upnp_lifecycle_helpers(catalogue, {
+                "srchybrid/UPnPDeferredReaperCore.h": reaper.replace(
+                    b"#pragma once", b"#pragma once\n// CString"
+                )
+            })
+
+        test_path = "srchybrid/tests/test_upnp_worker_lifecycle.cpp"
+        test_blob = (ROOT / test_path).read_bytes()
+        with self.assertRaisesRegex(GATE.GateError, "test LOC overflow"):
+            GATE.validate_upnp_lifecycle_helpers(catalogue, {
+                test_path: test_blob + (b"\n" * 36)
+            })
+        with self.assertRaisesRegex(GATE.GateError, "test include drift"):
+            GATE.validate_upnp_lifecycle_helpers(catalogue, {
+                test_path: test_blob.replace(
+                    b"#include <cstdio>", b"#include <cstdio>\n#include \"../EmuleDlg.h\""
+                )
+            })
+        removed_test = copy.deepcopy(catalogue)
+        removed_test["approved_non_module_code"] = [
+            item for item in removed_test["approved_non_module_code"]
+            if item["path"] != test_path
+        ]
+        with self.assertRaisesRegex(GATE.GateError, "test missing from closed catalogue"):
+            GATE.validate_upnp_lifecycle_helpers(removed_test)
+
+    def test_upnp_lifecycle_reaper_overflow_is_fail_closed(self):
+        catalogue = GATE.load(GATE.MOD04V2)
+        reaper_path = "srchybrid/UPnPDeferredReaperCore.h"
+        reaper = (ROOT / reaper_path).read_bytes()
+        with self.assertRaisesRegex(GATE.GateError, "overflow must fail closed"):
+            GATE.validate_upnp_lifecycle_helpers(catalogue, {
+                reaper_path: reaper.replace(b"return false;", b"return true;")
+            })
+
+    def test_upnp_lifecycle_test_isolation_and_adr_are_pinned(self):
+        catalogue = GATE.load(GATE.MOD04V2)
+        test_name = b"test_upnp_worker_lifecycle.cpp"
+        hostile = (
+            ({"srchybrid/RootLeak.h": b'#include "tests/TEST_UPNP_WORKER_LIFECYCLE.CPP"\n'},
+             "productive source includes"),
+            ({"srchybrid/subdir/Leak.cpp": b'# include "test_upnp_worker_lifecycle.cpp"\n'},
+             "productive source includes"),
+            ({"other/product.vcxproj": b'<ClCompile Include="test_upnp_worker_lifecycle.cpp" />'},
+             "linked into product manifest"),
+        )
+        for overrides, message in hostile:
+            with self.subTest(message=message), self.assertRaisesRegex(GATE.GateError, message):
+                GATE.validate_upnp_lifecycle_helpers(catalogue, overrides)
+        adr = (ROOT / GATE.UPNP_LIFECYCLE_ADR).read_bytes()
+        with self.assertRaisesRegex(GATE.GateError, "ADR hash drift"):
+            GATE.validate_upnp_lifecycle_helpers(catalogue, {
+                GATE.UPNP_LIFECYCLE_ADR: adr + b"\n"
+            })
+
     def test_incomplete_or_string_budget_rows_are_rejected(self):
         for mutate, message in (
             (lambda x: x["function_matrix"][0].pop("wire"), "function row schema incomplete"),

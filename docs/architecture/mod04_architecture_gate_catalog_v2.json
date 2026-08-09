@@ -25,6 +25,21 @@
       "adr": "docs/architecture/MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
     },
     {
+      "path": "srchybrid/UPnPWorkerLifecycle.h",
+      "reason": "Header-only, POD/Win32 cooperative-stop policy shared by the existing UPnP MiniLib implementation and its native lifecycle test without creating a module, domain state or reverse coordinator dependency.",
+      "adr": "docs/architecture/ADR_UPNP_COOPERATIVE_WORKER_LIFECYCLE_V1.md"
+    },
+    {
+      "path": "srchybrid/UPnPDeferredReaperCore.h",
+      "reason": "Header-only, fixed-capacity POD/Win32 deferred-destruction holder for an active UPnP worker; it owns no domain, wire, preference or MFC policy and has no companion source.",
+      "adr": "docs/architecture/ADR_UPNP_COOPERATIVE_WORKER_LIFECYCLE_V1.md"
+    },
+    {
+      "path": "srchybrid/tests/test_upnp_worker_lifecycle.cpp",
+      "reason": "Test-only native characterization of the two governed UPnP lifecycle headers; it is compiled and executed solely by the standalone srchybrid test gate and is never linked into the product.",
+      "adr": "docs/architecture/ADR_UPNP_COOPERATIVE_WORKER_LIFECYCLE_V1.md"
+    },
+    {
       "path": "srchybrid/LiveTunnelGatewayStorePort.h",
       "reason": "Closed, storage-neutral LT3 command vocabulary shared by the domain-state owner and the Kad6 adapter without introducing a reverse dependency.",
       "adr": "docs/architecture/MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"

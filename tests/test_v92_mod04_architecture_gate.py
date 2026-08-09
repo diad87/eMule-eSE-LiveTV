@@ -755,6 +755,14 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
             any(message.startswith("slice LiveTunnelFraming:") for message in messages),
             messages,
         )
+        with self.assertRaisesRegex(
+            VERIFIER.GateError, r"new or renamed C/C\+\+ file is uncatalogued"
+        ):
+            VERIFIER.validate(
+                self.config, self.contract,
+                overrides={"srchybrid/UPnPUnexpectedLifecycleHelper.h": b"#pragma once\n"},
+                discovery_overrides={"srchybrid/UPnPUnexpectedLifecycleHelper.h"},
+            )
 
     def test_active_w12_discovery_overlay_fails_closed(self) -> None:
         cases = {

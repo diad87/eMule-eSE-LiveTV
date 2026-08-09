@@ -43,7 +43,7 @@ class M2A00RatchetTest(unittest.TestCase):
         # evidence and budget checks from that immutable base.
         GATE._validate_w12_historical_inputs()
         self.assertEqual(GATE.report(), self.baseline)
-        report = GATE.verify()
+        report = GATE.verify_w12_reseal_candidate()
         self.assertEqual(report["status"], "PASS")
 
     def test_ci_runs_the_m2a00_ratchet_after_existing_architecture_gates(self):
@@ -1007,12 +1007,14 @@ class M2A00RatchetTest(unittest.TestCase):
         fixture_relpaths = [
             "tools/architecture/verify_mod04_architecture_gate.py",
             "tools/architecture/verify_m2a00_migration_ratchet.py",
+            "tools/architecture/run_mod02_stream_selftest.ps1",
             "docs/architecture/mod03_ownership_layering_contract_v2.json",
             "docs/architecture/mod04_architecture_gate_catalog_v2.json",
             "docs/architecture/mod52_migration_activation_ledger_v1.json",
             "docs/architecture/mod52_migration_baseline_v1.json",
             "docs/architecture/mod52_migration_contract_v1.json",
             "docs/architecture/mod52_migration_matrix_v1.json",
+            "docs/architecture/ADR_UPNP_COOPERATIVE_WORKER_LIFECYCLE_V1.md",
             "srchybrid/M2ABindingPort.cpp",
             "srchybrid/M2ABindingPort.h",
             "srchybrid/LiveTunnelGatewayStorePort.h",
@@ -1020,6 +1022,10 @@ class M2A00RatchetTest(unittest.TestCase):
             "srchybrid/LiveTunnelStreamFlowPort.h", "srchybrid/LiveTunnelOriginPort.h", "srchybrid/LiveTunnelBulkStatePort.h", "srchybrid/LiveTunnelBulkFacade.inl", "srchybrid/LiveTunnelSearchPort.h", "srchybrid/LiveTunnelSearchFacade.inl", "srchybrid/LiveTunnelCoordinatorPort.h", "srchybrid/LiveTunnelCoordinatorMethods.inl",
             "srchybrid/LiveTunnelScheduler.cpp",
             "srchybrid/emule.vcxproj",
+            "srchybrid/UPnPWorkerLifecycle.h",
+            "srchybrid/UPnPDeferredReaperCore.h",
+            "srchybrid/tests/test_upnp_worker_lifecycle.cpp",
+            "srchybrid/tests/make.bat",
         ]
         with tempfile.TemporaryDirectory() as temporary:
             worktree = pathlib.Path(temporary) / "worktree"
@@ -1577,7 +1583,7 @@ class M2A00RatchetTest(unittest.TestCase):
                 encoding="utf-8",
             )
             git("add", "."); git("commit", "-q", "-m", "F forged prerequisite")
-            git("commit", "--allow-empty", "-q", "-m", "A3 dependent implementation")
+            git("commit", "--allow-empty", "-q", "-m", "A2-prime dependent implementation")
             dependent_a = git("rev-parse", "HEAD")
             dependent_state = {
                 "state": "active",
@@ -1599,7 +1605,7 @@ class M2A00RatchetTest(unittest.TestCase):
                 }),
                 encoding="utf-8",
             )
-            git("add", "."); git("commit", "-q", "-m", "H3")
+            git("add", "."); git("commit", "-q", "-m", "H2")
             with self.assertRaisesRegex(GATE.GateError, "not previously active"):
                 GATE.validate_activation_provenance(
                     dependent_state,
@@ -1933,6 +1939,523 @@ class W12OverlayRatchetTest(unittest.TestCase):
             copy.deepcopy(self.ownership if ownership is None else ownership),
             copy.deepcopy(self.catalogue if catalogue is None else catalogue),
         )
+
+    def reseal_documents(self):
+        matrix = copy.deepcopy(self.matrix)
+        contract = copy.deepcopy(self.contract)
+        catalogue = copy.deepcopy(self.catalogue)
+        return matrix, contract, catalogue
+
+    @staticmethod
+    def resign_reseal(matrix, contract, catalogue):
+        digest = GATE._w12_reseal_digest(matrix["w12_reseal"])
+        matrix["w12_reseal"]["payload_sha256"] = digest
+        contract["w12_reseal_binding"]["payload_sha256"] = digest
+        catalogue["w12_reseal_binding"]["payload_sha256"] = digest
+
+    def test_w12_a2_prime_reseal_three_sets_and_domain_digest_are_closed(self):
+        reseal = self.matrix["w12_reseal"]
+        self.assertEqual(len(reseal["functional_delta_paths"]), 13)
+        self.assertEqual(len(reseal["reseal_governance_paths"]), 5)
+        self.assertEqual(len(reseal["premerge_vm_tail"]), 1)
+        self.assertEqual(reseal["reseal_tail_path_count"], 6)
+        self.assertEqual(reseal["distinct_path_union_count"], 17)
+        self.assertEqual(GATE._w12_reseal_digest(reseal), reseal["payload_sha256"])
+        self.validate_documents()
+
+    def test_w12_a2_prime_reseal_rejects_tenth_functional_commit_and_reorder(self):
+        matrix, contract, catalogue = self.reseal_documents()
+        matrix["w12_reseal"]["functional_commits"].append(
+            copy.deepcopy(matrix["w12_reseal"]["functional_commits"][-1])
+        )
+        self.resign_reseal(matrix, contract, catalogue)
+        with self.assertRaisesRegex(GATE.GateError, "commit count"):
+            self.validate_documents(matrix=matrix, contract=contract, catalogue=catalogue)
+        matrix, contract, catalogue = self.reseal_documents()
+        rows = matrix["w12_reseal"]["functional_commits"]
+        rows[0], rows[1] = rows[1], rows[0]
+        self.resign_reseal(matrix, contract, catalogue)
+        with self.assertRaisesRegex(GATE.GateError, "projection/order"):
+            self.validate_documents(matrix=matrix, contract=contract, catalogue=catalogue)
+
+    def test_w12_a2_prime_reseal_rejects_fourteenth_functional_and_seventh_tail_path(self):
+        matrix, contract, catalogue = self.reseal_documents()
+        matrix["w12_reseal"]["functional_delta_paths"].append(
+            copy.deepcopy(matrix["w12_reseal"]["functional_delta_paths"][-1])
+        )
+        self.resign_reseal(matrix, contract, catalogue)
+        with self.assertRaisesRegex(GATE.GateError, "functional path count"):
+            self.validate_documents(matrix=matrix, contract=contract, catalogue=catalogue)
+        matrix, contract, catalogue = self.reseal_documents()
+        matrix["w12_reseal"]["premerge_vm_tail"].append(
+            {"path":"tools/architecture/unreviewed.py","pre_blob":"1"*40,"merge_target_blob":"2"*40}
+        )
+        self.resign_reseal(matrix, contract, catalogue)
+        with self.assertRaisesRegex(GATE.GateError, "tail schema/count"):
+            self.validate_documents(matrix=matrix, contract=contract, catalogue=catalogue)
+
+    def test_w12_a2_prime_reseal_rejects_functional_path_swap_case_missing_and_substitution(self):
+        mutations = []
+        matrix, contract, catalogue = self.reseal_documents()
+        rows = matrix["w12_reseal"]["functional_delta_paths"]
+        rows[0], rows[1] = rows[1], rows[0]
+        mutations.append((matrix, contract, catalogue))
+        matrix, contract, catalogue = self.reseal_documents()
+        matrix["w12_reseal"]["functional_delta_paths"][0]["path"] = matrix["w12_reseal"]["functional_delta_paths"][0]["path"].upper()
+        mutations.append((matrix, contract, catalogue))
+        matrix, contract, catalogue = self.reseal_documents()
+        matrix["w12_reseal"]["functional_delta_paths"].pop()
+        mutations.append((matrix, contract, catalogue))
+        matrix, contract, catalogue = self.reseal_documents()
+        matrix["w12_reseal"]["functional_delta_paths"][0]["path"] = "srchybrid/Unreviewed.cpp"
+        mutations.append((matrix, contract, catalogue))
+        for matrix, contract, catalogue in mutations:
+            self.resign_reseal(matrix, contract, catalogue)
+            with self.assertRaisesRegex(GATE.GateError, "functional path (set/order/case|count)"):
+                self.validate_documents(matrix=matrix, contract=contract, catalogue=catalogue)
+
+    def test_w12_a2_prime_reseal_rejects_blob_hash_union_and_budget_equation_drift(self):
+        matrix, contract, catalogue = self.reseal_documents()
+        matrix["w12_reseal"]["functional_delta_paths"][0]["post_blob"] = "0" * 40
+        self.resign_reseal(matrix, contract, catalogue)
+        with self.assertRaisesRegex(GATE.GateError, "post-blob drift"):
+            self.validate_documents(matrix=matrix, contract=contract, catalogue=catalogue)
+        matrix, contract, catalogue = self.reseal_documents()
+        matrix["w12_reseal"]["distinct_path_union_count"] = 18
+        self.resign_reseal(matrix, contract, catalogue)
+        with self.assertRaisesRegex(GATE.GateError, "distinct path union"):
+            self.validate_documents(matrix=matrix, contract=contract, catalogue=catalogue)
+        matrix, contract, catalogue = self.reseal_documents()
+        matrix["w12_reseal"]["budgets"]["card_total"]["exact_exception"]["net_over"] += 1
+        self.resign_reseal(matrix, contract, catalogue)
+        with self.assertRaisesRegex(GATE.GateError, "budget/equation"):
+            self.validate_documents(matrix=matrix, contract=contract, catalogue=catalogue)
+
+    def test_w12_a2_prime_reseal_rejects_each_budget_and_dependency_axis(self):
+        mutations = [
+            ("budgets.card_total.original_a_actual.add", lambda r: r["budgets"]["card_total"]["original_a_actual"].__setitem__("add", 11996)),
+            ("budgets.card_total.post_a_delta.delete", lambda r: r["budgets"]["card_total"]["post_a_delta"].__setitem__("delete", 13)),
+            ("budgets.card_total.resealed_actual.net", lambda r: r["budgets"]["card_total"]["resealed_actual"].__setitem__("net", 7453)),
+            ("budgets.webserver.post_a_delta.add", lambda r: r["budgets"]["webserver_coordinator"]["post_a_delta"].__setitem__("add", 108)),
+            ("budgets.webserver.resealed_actual.cpp_loc", lambda r: r["budgets"]["webserver_coordinator"]["resealed_actual"].__setitem__("cpp_loc", 2153)),
+            ("dependency.edges", lambda r: r["dependency_snapshot"].__setitem__("edges", 4)),
+        ]
+        for label, mutate in mutations:
+            with self.subTest(label=label):
+                matrix, contract, catalogue = self.reseal_documents()
+                mutate(matrix["w12_reseal"])
+                self.resign_reseal(matrix, contract, catalogue)
+                with self.assertRaisesRegex(GATE.GateError, "budget|dependency"):
+                    self.validate_documents(matrix=matrix, contract=contract, catalogue=catalogue)
+
+    def test_w12_a2_prime_candidate_rejects_untracked_governance_or_card_path(self):
+        expected = set(GATE.W12_RESEAL_GOVERNANCE_PATHS) | {GATE.W12_RESEAL_VM_PATH}
+        def paths(*args, **_kwargs):
+            return {"srchybrid/WebServer.cpp"} if args and args[0] == "ls-files" else expected
+        with mock.patch.object(GATE, "_git_z_paths", side_effect=paths), \
+             mock.patch.object(GATE, "_git_text", return_value=GATE.W12_RESEAL_PARENT), \
+             mock.patch.object(GATE, "validate_w12_overlay_documents", return_value=self.card()):
+            with self.assertRaisesRegex(GATE.GateError, "untracked governance/CARD"):
+                GATE.verify_w12_reseal_candidate()
+
+    def test_w12_a2_prime_candidate_rejects_wrong_parent_and_governance_binding_blob(self):
+        expected = set(GATE.W12_RESEAL_GOVERNANCE_PATHS) | {GATE.W12_RESEAL_VM_PATH}
+        def git_text(*args, **_kwargs):
+            if args[:2] == ("rev-parse", "HEAD"):
+                return "a" * 40
+            if args[:3] == ("show", "-s", "--format=%P"):
+                return "f" * 40
+            raise AssertionError(args)
+        with mock.patch.object(GATE, "_git_z_paths", side_effect=lambda *a, **k: set() if a and a[0] == "ls-files" else expected), \
+             mock.patch.object(GATE, "_git_text", side_effect=git_text), \
+             mock.patch.object(GATE, "validate_w12_overlay_documents", return_value=self.card()):
+            with self.assertRaisesRegex(GATE.GateError, "exactly one parent"):
+                GATE.verify_w12_reseal_candidate()
+        matrix, contract, catalogue = self.reseal_documents()
+        contract["w12_reseal_binding"]["payload_sha256"] = "0" * 64
+        with self.assertRaisesRegex(GATE.GateError, "cross-document binding"):
+            self.validate_documents(matrix=matrix, contract=contract, catalogue=catalogue)
+
+    def reseal_ledger(self, stage="H2"):
+        a2 = "a" * 40
+        payload = self.matrix["w12_reseal"]
+        review_artifacts = self.reseal_review_artifacts()
+        reviews = [{
+            "role": role, "path": GATE.W12_H2_REVIEW_PATHS[role],
+            "sha256": hashlib.sha256(json.dumps(review_artifacts[role], sort_keys=True).encode()).hexdigest(),
+        } for role in ("Terra", "Sol")]
+        summary_raw = json.dumps(self.reseal_coverage_summary(), sort_keys=True).encode()
+        coverage = [{
+            "id": identifier,
+            "stage": "R2" if identifier == "W12-COV-07" else (
+                "A2/H2" if identifier == "W12-COV-06" else "PRE-A2"
+            ),
+            "verdict": "PASS" if stage == "R2" or identifier != "W12-COV-07" else "PENDING",
+            "summary_path": GATE.W12_H2_COVERAGE_PATH,
+            "summary_sha256": hashlib.sha256(summary_raw).hexdigest(),
+            "summary_entry": None if identifier == "W12-COV-07" else identifier.lower(),
+            "r2_artifacts": [],
+        } for identifier in GATE.W12_COVERAGE_IDS]
+        return {"cards":{"W12":{
+            "state":"active", "stage":stage, "activation_commit":a2,
+            "evidence":[], "r_evidence":None,
+            "reseal":{
+                "schema":"ese.mod52.w12-reseal-activation/v1",
+                "payload_sha256":payload["payload_sha256"],
+                "merge_commit":"m"*40, "reviews":reviews, "coverage":coverage,
+            },
+        }}}
+
+    def reseal_review_artifacts(self):
+        payload = self.matrix["w12_reseal"]
+        return {role:{
+            "schema":"ese.mod52.w12-reseal-review/v1", "role":role,
+            "verdict":"APPROVE", "payload_sha256":payload["payload_sha256"],
+            "reviewed_commit":"a"*40, "reviewed_tree":"t"*40,
+            "findings":[],
+        } for role in ("Terra", "Sol")}
+
+    def reseal_coverage_summary(self):
+        return {
+            "schema":"ese.mod52.w12-reseal-coverage/v1",
+            "payload_sha256":self.matrix["w12_reseal"]["payload_sha256"],
+            "source_commit":"a"*40, "source_tree":"t"*40,
+            "results":[{
+                "id":identifier, "logical_key":identifier.lower(),
+                "command":GATE.W12_RESEAL_COVERAGE_SOURCES[identifier][1],
+                "exit_code":0, "marker":GATE.W12_RESEAL_COVERAGE_SOURCES[identifier][2],
+                "source_path":GATE.W12_RESEAL_COVERAGE_SOURCES[identifier][0],
+                "source_sha256":hashlib.sha256(b"source").hexdigest(),
+                "source_commit":"a"*40, "source_tree":"t"*40,
+            } for identifier in GATE.W12_COVERAGE_IDS if identifier != "W12-COV-07"],
+        }
+
+    def reseal_git_text(self, drift_path=None, wrong_parent=False, wrong_vm=False):
+        a2, merge, h2, r2 = "a"*40, "m"*40, "h"*40, "r"*40
+        def fake(*args, **_kwargs):
+            if args[:3] == ("show", "-s", "--format=%P"):
+                target = args[3]
+                if target == a2:
+                    return "f"*40 if wrong_parent else GATE.W12_RESEAL_PARENT
+                if target == merge:
+                    return f"{GATE.W12_RESEAL_MERGE_TARGET} {a2}"
+                if target == h2:
+                    return merge
+                if target == r2:
+                    return h2
+            if args[:2] == ("rev-parse", "HEAD"):
+                return h2
+            if args[:2] == ("rev-parse", f"{a2}^{{tree}}"):
+                return "t"*40
+            if args[:2] == ("rev-parse", f"{merge}:{GATE.W12_RESEAL_VM_PATH}"):
+                return "0"*40 if wrong_vm else "0758f6cabdb0405d33370efba00ba69f9e40360f"
+            if args[0] == "rev-parse" and ":" in args[1]:
+                commit, path = args[1].split(":", 1)
+                return "d"*40 if drift_path == path and commit in {merge, h2, r2} else "b"*40
+            raise AssertionError(args)
+        return fake
+
+    def reseal_blob_read(self, commit, path, h2_ledger=None):
+        if path == GATE.W12_H2_COVERAGE_PATH:
+            return self.reseal_coverage_summary()
+        if path in GATE.W12_H2_REVIEW_PATHS.values():
+            role = next(role for role, value in GATE.W12_H2_REVIEW_PATHS.items() if value == path)
+            return self.reseal_review_artifacts()[role]
+        if h2_ledger is not None and commit == "h"*40 and path == GATE.ACTIVATION.relative_to(ROOT).as_posix():
+            return h2_ledger
+        return self.matrix
+
+    def reseal_raw_blob(self, _commit, path, *_args, **_kwargs):
+        if path == GATE.W12_H2_COVERAGE_PATH:
+            return json.dumps(self.reseal_coverage_summary(), sort_keys=True).encode()
+        if path in GATE.W12_H2_REVIEW_PATHS.values():
+            role = next(role for role, value in GATE.W12_H2_REVIEW_PATHS.items() if value == path)
+            return json.dumps(self.reseal_review_artifacts()[role], sort_keys=True).encode()
+        return b"source"
+
+    @staticmethod
+    def reseal_card_blob(_commit, path, *_args, **_kwargs):
+        return None if path == "srchybrid/WebServer_original.cpp" else b"same"
+
+    def test_w12_a2_prime_bilateral_absent_allowlist_is_exact_and_fail_closed(self):
+        paths = ["srchybrid/WebServer_original.cpp", "srchybrid/WebServer.cpp"]
+        with mock.patch.object(GATE, "_w12_blob_or_none", side_effect=self.reseal_card_blob):
+            GATE._validate_w12_reseal_card_blob_equivalence("a", "b", paths, "positive")
+        def unilateral(commit, path, *_args, **_kwargs):
+            if path == "srchybrid/WebServer_original.cpp":
+                return None if commit == "a" else b"reappeared"
+            return b"same"
+        with mock.patch.object(GATE, "_w12_blob_or_none", side_effect=unilateral):
+            with self.assertRaisesRegex(GATE.GateError, "unilateral"):
+                GATE._validate_w12_reseal_card_blob_equivalence("a", "b", paths, "unilateral")
+        def second_absent(_commit, path, *_args, **_kwargs):
+            return None if path in {"srchybrid/WebServer_original.cpp", "srchybrid/Unexpected.cpp"} else b"same"
+        with mock.patch.object(GATE, "_w12_blob_or_none", side_effect=second_absent):
+            with self.assertRaisesRegex(GATE.GateError, "bilateral absent"):
+                GATE._validate_w12_reseal_card_blob_equivalence("a", "b", paths + ["srchybrid/Unexpected.cpp"], "second")
+        with mock.patch.object(GATE, "_w12_blob_or_none", return_value=b"reappeared"):
+            with self.assertRaisesRegex(GATE.GateError, "bilateral absent"):
+                GATE._validate_w12_reseal_card_blob_equivalence("a", "b", paths, "reappearance")
+
+    def test_w12_h2_schema_binds_ordered_merge_reviews_and_coverage(self):
+        ledger = self.reseal_ledger("H2")
+        card = {"card_paths":["srchybrid/WebServer_original.cpp", "srchybrid/WebServer.cpp"]}
+        h2_paths = {GATE.ACTIVATION.relative_to(ROOT).as_posix(), *GATE.W12_H2_REVIEW_PATHS.values(), GATE.W12_H2_COVERAGE_PATH}
+        with mock.patch.object(GATE, "_git_text", side_effect=self.reseal_git_text()), \
+             mock.patch.object(GATE, "_is_ancestor", return_value=True), \
+             mock.patch.object(GATE, "_w12_commit_changed_paths", return_value=h2_paths), \
+             mock.patch.object(GATE, "_w12_strict_json_blob", side_effect=self.reseal_blob_read), \
+             mock.patch.object(GATE, "_git_blob", side_effect=self.reseal_raw_blob), \
+             mock.patch.object(GATE, "_w12_blob_or_none", side_effect=self.reseal_card_blob):
+            self.assertEqual(GATE.validate_w12_reseal_activation_state(card, ledger), ("H2", "a"*40))
+
+    def test_w12_reseal_rejects_a3_h3_r3_protocol_nomenclature(self):
+        card = {"card_paths": []}
+        for forbidden_stage in ("A3", "H3", "R3"):
+            ledger = self.reseal_ledger("H2")
+            ledger["cards"]["W12"]["stage"] = forbidden_stage
+            with self.subTest(stage=forbidden_stage), self.assertRaisesRegex(
+                GATE.GateError, "activation stage drift"
+            ):
+                GATE.validate_w12_reseal_activation_state(card, ledger)
+
+    def test_w12_h2_rejects_review_body_hash_role_and_coverage_command_hash(self):
+        ledger = self.reseal_ledger("H2")
+        reseal = ledger["cards"]["W12"]["reseal"]
+        bad_reviews = copy.deepcopy(reseal["reviews"])
+        bad_reviews[0]["sha256"] = "0" * 64
+        with mock.patch.object(GATE, "_git_text", return_value="t"*40), \
+             mock.patch.object(GATE, "_w12_strict_json_blob", side_effect=self.reseal_blob_read), \
+             mock.patch.object(GATE, "_git_blob", side_effect=self.reseal_raw_blob):
+            with self.assertRaisesRegex(GATE.GateError, "artifact hash"):
+                GATE._validate_w12_reseal_reviews(bad_reviews, "a"*40, "h"*40)
+        bad_body = copy.deepcopy(self.reseal_review_artifacts()["Terra"])
+        bad_body["role"] = "Sol"
+        bad_raw = json.dumps(bad_body, sort_keys=True).encode()
+        body_reviews = copy.deepcopy(reseal["reviews"])
+        body_reviews[0]["sha256"] = hashlib.sha256(bad_raw).hexdigest()
+        def body_blob(_commit, path, *_args, **_kwargs):
+            return bad_raw if path == GATE.W12_H2_REVIEW_PATHS["Terra"] else self.reseal_raw_blob(_commit, path)
+        def body_json(commit, path, *_args, **_kwargs):
+            return bad_body if path == GATE.W12_H2_REVIEW_PATHS["Terra"] else self.reseal_blob_read(commit, path)
+        with mock.patch.object(GATE, "_git_text", return_value="t"*40), \
+             mock.patch.object(GATE, "_w12_strict_json_blob", side_effect=body_json), \
+             mock.patch.object(GATE, "_git_blob", side_effect=body_blob):
+            with self.assertRaisesRegex(GATE.GateError, "durable review binding"):
+                GATE._validate_w12_reseal_reviews(body_reviews, "a"*40, "h"*40)
+        summary_mutations = []
+        missing = self.reseal_coverage_summary(); missing["results"].pop(); summary_mutations.append(("missing", missing))
+        extra = self.reseal_coverage_summary(); extra["results"].append(copy.deepcopy(extra["results"][-1])); summary_mutations.append(("extra", extra))
+        for field, value in (("command", "python unreviewed.py"), ("exit_code", 1), ("marker", "WRONG"), ("source_tree", "f"*40), ("source_sha256", "0"*64)):
+            summary = self.reseal_coverage_summary(); summary["results"][0][field] = value; summary_mutations.append((field, summary))
+        for label, summary in summary_mutations:
+            rows = copy.deepcopy(reseal["coverage"])
+            raw = json.dumps(summary, sort_keys=True).encode()
+            for row in rows:
+                row["summary_sha256"] = hashlib.sha256(raw).hexdigest()
+            def summary_blob(_commit, path, *_args, **_kwargs):
+                return raw if path == GATE.W12_H2_COVERAGE_PATH else b"source"
+            def summary_json(_commit, path, *_args, **_kwargs):
+                return summary if path == GATE.W12_H2_COVERAGE_PATH else self.matrix
+            with self.subTest(label=label), \
+                 mock.patch.object(GATE, "_git_blob", side_effect=summary_blob), \
+                 mock.patch.object(GATE, "_w12_strict_json_blob", side_effect=summary_json), \
+                 mock.patch.object(GATE, "_git_text", return_value="t"*40):
+                with self.assertRaisesRegex(GATE.GateError, "coverage summary|coverage result"):
+                    GATE._validate_w12_reseal_coverage(rows, "H2", "a"*40, None, "h"*40)
+        bad_row = copy.deepcopy(reseal["coverage"]); bad_row[0]["summary_entry"] = "wrong"
+        with mock.patch.object(GATE, "_git_blob", side_effect=self.reseal_raw_blob), \
+             mock.patch.object(GATE, "_w12_strict_json_blob", side_effect=self.reseal_blob_read), \
+             mock.patch.object(GATE, "_git_text", return_value="t"*40):
+            with self.assertRaisesRegex(GATE.GateError, "coverage order/stage/evidence"):
+                GATE._validate_w12_reseal_coverage(bad_row, "H2", "a"*40, None, "h"*40)
+        bad_hash = copy.deepcopy(reseal["coverage"]); bad_hash[0]["summary_sha256"] = "0"*64
+        with mock.patch.object(GATE, "_git_blob", side_effect=self.reseal_raw_blob), \
+             mock.patch.object(GATE, "_w12_strict_json_blob", side_effect=self.reseal_blob_read), \
+             mock.patch.object(GATE, "_git_text", return_value="t"*40):
+            with self.assertRaisesRegex(GATE.GateError, "coverage order/stage/evidence"):
+                GATE._validate_w12_reseal_coverage(bad_hash, "H2", "a"*40, None, "h"*40)
+
+    def test_w12_r2_cov07_rejects_four_six_or_wrong_hash_artifact_links(self):
+        ledger = self.reseal_ledger("R2")
+        rows = ledger["cards"]["W12"]["reseal"]["coverage"]
+        evidence = {
+            key:{"path":f"artifacts/r2/{filename}", "sha256":marker*64}
+            for (key, filename), marker in zip(GATE.W12_R_ARTIFACT_NAMES.items(), "45678")
+        }
+        cov07 = next(row for row in rows if row["id"] == "W12-COV-07")
+        cov07["r2_artifacts"] = [
+            {"key":key, "path":item["path"], "sha256":item["sha256"]}
+            for key, item in evidence.items()
+        ]
+        mutations = []
+        fewer = copy.deepcopy(rows); next(row for row in fewer if row["id"] == "W12-COV-07")["r2_artifacts"].pop(); mutations.append(fewer)
+        extra = copy.deepcopy(rows); next(row for row in extra if row["id"] == "W12-COV-07")["r2_artifacts"].append({"key":"extra","path":"artifacts/r2/extra.json","sha256":"9"*64}); mutations.append(extra)
+        wrong = copy.deepcopy(rows); next(row for row in wrong if row["id"] == "W12-COV-07")["r2_artifacts"][0]["sha256"] = "0"*64; mutations.append(wrong)
+        for candidate in mutations:
+            with mock.patch.object(GATE, "_git_blob", side_effect=self.reseal_raw_blob), \
+                 mock.patch.object(GATE, "_w12_strict_json_blob", side_effect=self.reseal_blob_read), \
+                 mock.patch.object(GATE, "_git_text", return_value="t"*40):
+                with self.assertRaisesRegex(GATE.GateError, "COV07 artifact linkage"):
+                    GATE._validate_w12_reseal_coverage(candidate, "R2", "a"*40, evidence, "h"*40)
+
+    def test_w12_h2_rejects_intermediate_parent(self):
+        ledger = self.reseal_ledger("H2")
+        card = {"card_paths":["srchybrid/WebServer_original.cpp", "srchybrid/WebServer.cpp"]}
+        base_git = self.reseal_git_text()
+        def intermediate(*args, **kwargs):
+            if args[:3] == ("show", "-s", "--format=%P") and args[3] == "h"*40:
+                return "i"*40
+            return base_git(*args, **kwargs)
+        with mock.patch.object(GATE, "_git_text", side_effect=intermediate), \
+             mock.patch.object(GATE, "_is_ancestor", return_value=True), \
+             mock.patch.object(GATE, "_w12_strict_json_blob", side_effect=self.reseal_blob_read), \
+             mock.patch.object(GATE, "_w12_blob_or_none", side_effect=self.reseal_card_blob):
+            with self.assertRaisesRegex(GATE.GateError, "parent must be exactly"):
+                GATE.validate_w12_reseal_activation_state(card, ledger)
+
+    def test_w12_official_cli_auto_detects_a2_prime_candidate(self):
+        completed = subprocess.run(
+            [sys.executable, str(GATE.__file__), "--verify"], cwd=ROOT,
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("M2A-00 PASS", completed.stdout)
+
+    def test_w12_pre_h2_merge_is_pending_and_rejects_inverted_or_ff_topology(self):
+        expected = set(GATE.W12_RESEAL_GOVERNANCE_PATHS) | {GATE.W12_RESEAL_VM_PATH}
+        card = {"card_paths":["srchybrid/WebServer_original.cpp", "srchybrid/WebServer.cpp"]}
+        def run(parents):
+            def git_text(*args, **_kwargs):
+                if args[:2] == ("rev-parse", "HEAD"):
+                    return "m"*40
+                if args[:3] == ("show", "-s", "--format=%P"):
+                    return parents if args[3] == "m"*40 else GATE.W12_RESEAL_PARENT
+                if args[:2] == ("rev-parse", f"{'m'*40}:{GATE.W12_RESEAL_VM_PATH}"):
+                    return "0758f6cabdb0405d33370efba00ba69f9e40360f"
+                raise AssertionError(args)
+            with mock.patch.object(GATE, "_w12_strict_json_file", return_value=self.matrix), \
+                 mock.patch.object(GATE, "validate_w12_overlay_documents", return_value=card), \
+                 mock.patch.object(GATE, "_git_text", side_effect=git_text), \
+                 mock.patch.object(GATE, "_git_z_paths", return_value=set()), \
+                 mock.patch.object(GATE, "_w12_commit_changed_paths", return_value=expected), \
+                 mock.patch.object(GATE, "_w12_blob_or_none", side_effect=self.reseal_card_blob):
+                return GATE.verify_w12_reseal_candidate()
+        with self.assertRaisesRegex(GATE.GateError, "PENDING_UNTIL_MERGE_AND_H2"):
+            run(f"{GATE.W12_RESEAL_MERGE_TARGET} {'a'*40}")
+        with self.assertRaisesRegex(GATE.GateError, "inverted"):
+            run(f"{'a'*40} {GATE.W12_RESEAL_MERGE_TARGET}")
+        with self.assertRaisesRegex(GATE.GateError, "exactly one parent"):
+            run(GATE.W12_RESEAL_MERGE_TARGET)
+
+    def test_w12_official_cli_subprocess_contract_candidate_preh2_h2_r2(self):
+        scenarios = [
+            ("candidate", "{'stage':'A2-PRIME-CANDIDATE','status':'PASS'}", 0, "M2A-00 PASS"),
+            ("preh2", "g.GateError('PENDING_UNTIL_MERGE_AND_H2: ledger required')", 1, "PENDING_UNTIL_MERGE_AND_H2"),
+            ("h2", "{'stage':'H2','status':'PASS'}", 0, "M2A-00 PASS"),
+            ("r2", "{'stage':'R2','status':'PASS'}", 0, "M2A-00 PASS"),
+        ]
+        for label, result, expected_exit, marker in scenarios:
+            side = "side_effect=" + result if label == "preh2" else "return_value=" + result
+            code = (
+                "import importlib.util,sys;from unittest import mock;"
+                f"p=r'{GATE.__file__}';sys.path.insert(0,r'{TOOLS}');"
+                "s=importlib.util.spec_from_file_location('cli_gate',p);g=importlib.util.module_from_spec(s);"
+                "sys.modules['cli_gate']=g;s.loader.exec_module(g);"
+                f"c=mock.patch.object(g,'verify',{side});c.start();raise SystemExit(g.main(['--verify']))"
+            )
+            completed = subprocess.run([sys.executable, "-c", code], cwd=ROOT, text=True, capture_output=True, check=False)
+            with self.subTest(label=label):
+                self.assertEqual(completed.returncode, expected_exit, completed.stdout + completed.stderr)
+                self.assertIn(marker, completed.stdout + completed.stderr)
+
+    def test_w12_h2_rejects_wrong_a2_parent_vm_blob_and_governance_drift(self):
+        ledger = self.reseal_ledger("H2")
+        card = {"card_paths":["srchybrid/WebServer_original.cpp", "docs/architecture/mod52_migration_contract_v2.json"]}
+        h2_paths = {GATE.ACTIVATION.relative_to(ROOT).as_posix(), *GATE.W12_H2_REVIEW_PATHS.values(), GATE.W12_H2_COVERAGE_PATH}
+        for kwargs, reason in (({"wrong_parent":True}, "exactly one parent"), ({"wrong_vm":True}, "did not converge"), ({"drift_path":card["card_paths"][1]}, "CARD_PATH blob drift")):
+            def scoped_blob(commit, path, *_args, **_kwargs):
+                if kwargs.get("drift_path") == path and commit == "m"*40:
+                    return b"drift"
+                return self.reseal_card_blob(commit, path)
+            with self.subTest(reason=reason), \
+                 mock.patch.object(GATE, "_git_text", side_effect=self.reseal_git_text(**kwargs)), \
+                 mock.patch.object(GATE, "_is_ancestor", return_value=True), \
+                 mock.patch.object(GATE, "_w12_commit_changed_paths", return_value=h2_paths), \
+                 mock.patch.object(GATE, "_w12_strict_json_blob", side_effect=self.reseal_blob_read), \
+                 mock.patch.object(GATE, "_git_blob", side_effect=self.reseal_raw_blob), \
+                 mock.patch.object(GATE, "_w12_blob_or_none", side_effect=scoped_blob):
+                with self.assertRaisesRegex(GATE.GateError, reason):
+                    GATE.validate_w12_reseal_activation_state(card, ledger)
+
+    def test_w12_r2_requires_h2_parent_exact_five_artifacts_and_no_card_drift(self):
+        ledger = self.reseal_ledger("R2")
+        h2_ledger = self.reseal_ledger("H2")
+        r_evidence = {
+            key:{"path":f"artifacts/r2/{filename}", "sha256":marker*64}
+            for (key, filename), marker in zip(GATE.W12_R_ARTIFACT_NAMES.items(), "45678")
+        }
+        ledger["cards"]["W12"]["r_evidence"] = r_evidence
+        cov07 = next(row for row in ledger["cards"]["W12"]["reseal"]["coverage"] if row["id"] == "W12-COV-07")
+        cov07["r2_artifacts"] = [
+            {"key":key, "path":item["path"], "sha256":item["sha256"]}
+            for key, item in r_evidence.items()
+        ]
+        card = {"card_paths":["srchybrid/WebServer_original.cpp", "srchybrid/WebServer.cpp"]}
+        paths = {name:f"artifacts/r2/{filename}" for name, filename in GATE.W12_R_ARTIFACT_NAMES.items()}
+        expected = {GATE.ACTIVATION.relative_to(ROOT).as_posix(), *paths.values()}
+        fake_git = self.reseal_git_text()
+        def r2_git(*args, **kwargs):
+            if args[:2] == ("rev-parse", "HEAD"):
+                return "r"*40
+            return fake_git(*args, **kwargs)
+        def blobs(commit, path, *args, **kwargs):
+            return self.reseal_blob_read(commit, path, h2_ledger)
+        with mock.patch.object(GATE, "_git_text", side_effect=r2_git), \
+             mock.patch.object(GATE, "_is_ancestor", return_value=True), \
+             mock.patch.object(GATE, "_w12_commit_changed_paths", return_value=expected), \
+             mock.patch.object(GATE, "_w12_strict_json_blob", side_effect=blobs), \
+             mock.patch.object(GATE, "_git_blob", side_effect=self.reseal_raw_blob), \
+             mock.patch.object(GATE, "_w12_blob_or_none", side_effect=self.reseal_card_blob), \
+             mock.patch.object(GATE, "validate_w12_r_evidence_schema", return_value=paths), \
+             mock.patch.object(GATE, "_validate_w12_r_artifacts") as artifacts:
+            self.assertEqual(GATE.validate_w12_reseal_activation_state(card, ledger), ("R2", "a"*40))
+            artifacts.assert_called_once()
+        drift_git = self.reseal_git_text()
+        def reverted_blob(commit, path, *_args, **_kwargs):
+            if commit == "r"*40 and path == "srchybrid/WebServer.cpp":
+                return b"reverted"
+            return self.reseal_card_blob(commit, path)
+        def revert_git(*args, **kwargs):
+            if args[:2] == ("rev-parse", "HEAD"):
+                return "r"*40
+            if args[:2] == ("rev-parse", f"{'r'*40}:srchybrid/WebServer.cpp"):
+                return "e"*40
+            return drift_git(*args, **kwargs)
+        with mock.patch.object(GATE, "_git_text", side_effect=revert_git), \
+             mock.patch.object(GATE, "_is_ancestor", return_value=True), \
+             mock.patch.object(GATE, "_w12_commit_changed_paths", return_value=expected), \
+             mock.patch.object(GATE, "_w12_strict_json_blob", side_effect=blobs), \
+             mock.patch.object(GATE, "_git_blob", side_effect=self.reseal_raw_blob), \
+             mock.patch.object(GATE, "_w12_blob_or_none", side_effect=reverted_blob), \
+             mock.patch.object(GATE, "validate_w12_r_evidence_schema", return_value=paths), \
+             mock.patch.object(GATE, "_validate_w12_r_artifacts"):
+            with self.assertRaisesRegex(GATE.GateError, "CARD_PATH blob drift"):
+                GATE.validate_w12_reseal_activation_state(card, ledger)
+        def intermediate_h2(*args, **kwargs):
+            if args[:2] == ("rev-parse", "HEAD"):
+                return "r"*40
+            if args[:3] == ("show", "-s", "--format=%P") and args[3] == "h"*40:
+                return "i"*40
+            return fake_git(*args, **kwargs)
+        with mock.patch.object(GATE, "_git_text", side_effect=intermediate_h2), \
+             mock.patch.object(GATE, "_is_ancestor", return_value=True), \
+             mock.patch.object(GATE, "_w12_commit_changed_paths", return_value=expected), \
+             mock.patch.object(GATE, "_w12_strict_json_blob", side_effect=blobs), \
+             mock.patch.object(GATE, "_w12_blob_or_none", side_effect=self.reseal_card_blob), \
+             mock.patch.object(GATE, "validate_w12_r_evidence_schema", return_value=paths):
+            with self.assertRaisesRegex(GATE.GateError, "must directly parent"):
+                GATE.validate_w12_reseal_activation_state(card, ledger)
 
     def test_w12_v2_closed_documents_and_cross_links_are_valid(self):
         card = self.validate_documents()

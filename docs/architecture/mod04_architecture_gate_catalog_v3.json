@@ -10,6 +10,11 @@
     "v1_sha256": "6d5708dcd3ac5cc7379918e4e5e4b9296a624a77c3bf20861e094a62c537a6e0",
     "v2_path": "docs/architecture/mod04_architecture_gate_catalog_v2.json"
   },
+  "w12_reseal_binding": {
+    "schema": "ese.mod52.w12-reseal-binding/v1",
+    "payload_sha256": "a555bc2ed2df12537f47808baf4e0172c9322f56a39aaac83be47ef1e993b8cb",
+    "activation_binding": "H2_ONLY"
+  },
   "catalogue_source": "docs/architecture/mod52_migration_matrix_v2.json",
   "card_prerequisites": ["closed CARD_PATHS", "matrix and ownership contracts parse", "Sol independent PRE-A review", "all W12-COV PRE-A gates pass"],
   "additional_modules": ["WebServerFacade", "WebHlsCapabilityController"],

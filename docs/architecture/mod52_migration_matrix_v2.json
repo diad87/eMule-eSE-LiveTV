@@ -14,6 +14,58 @@
     "sha256": "de7e65410f34813276a3c8ef2f06a54009f2fbbf4ed2175f84eb7d33bdf91a05",
     "immutable": true
   },
+  "w12_reseal": {
+    "schema": "ese.mod52.w12-reseal/v1",
+    "payload_sha256": "a555bc2ed2df12537f47808baf4e0172c9322f56a39aaac83be47ef1e993b8cb",
+    "state": "A2-CANDIDATE",
+    "prior_immutable_a": "d534405890a1bd2e7c6060601f75ad2c5821206a",
+    "baseline_parent": "365662f4371f417723a3bac66bbf17b584d8b4f0",
+    "merge_target": "e28e267e6d7ad7728c376a9a661476718f510230",
+    "activation_binding": "H2_ONLY",
+    "mod02_status": "PENDING_UNTIL_MERGE_AND_H2",
+    "functional_commits": [
+      {"sha":"39508f4322bf224b23891f0f60d8a04ae99cf050","subject":"Make mapper admission fail closed and observable"},
+      {"sha":"ab242b492b3bc7f8d719906cc2cda0857bc7d805","subject":"Add privacy-safe ownership journal validation"},
+      {"sha":"b6f4e54ad842503db9f016866c20727f1a5fa57c","subject":"Make UPnP ownership cleanup transactional"},
+      {"sha":"12bbe7f4e8c2f3af23c67c209a9abed58e893543","subject":"Complete exhausted mapper rounds explicitly"},
+      {"sha":"df839ec9f99781d21ff9bcff47bec1c57ef2d0a0","subject":"Make UPnP worker shutdown teardown-safe"},
+      {"sha":"47bccd220f528b6a4be3aca67a4d4942c2d2125a","subject":"Add nonblocking shutdown stage telemetry"},
+      {"sha":"cdad5f125d4e0b9775ce708573e80025f48cd02e","subject":"Make authenticated mapper shutdown observable"},
+      {"sha":"d0a69ec6e907b74fe9e41ce2105fbf0a3a058df1","subject":"Avoid authenticated web shutdown deadlocks"},
+      {"sha":"365662f4371f417723a3bac66bbf17b584d8b4f0","subject":"Govern UPnP lifecycle primitives"}
+    ],
+    "functional_delta_paths": [
+      {"path":"srchybrid/DirectReachabilityManager.cpp","pre_blob":"8fedc48243d0e54e02d01e3be7788a923e1c629f","post_blob":"9c5d1683b7b631ca97c2f914d2eea86acd2db7db","add":160,"delete":4},
+      {"path":"srchybrid/DirectReachabilityManager.h","pre_blob":"02e9cab212e1fc8204adad7ee397da425b19524e","post_blob":"b12352fc4ae63c1c0ad04ad70123002f877a30f5","add":4,"delete":0},
+      {"path":"srchybrid/Mod02BuildIdentity.h","pre_blob":"f77735451d5fbbef37d2cab68d4da5c9a8f0072e","post_blob":"d2e9158c65840e321b0cc39348e1482b949a744b","add":1,"delete":1},
+      {"path":"srchybrid/WebRequestDispatch.cpp","pre_blob":"f254f544b5b72d647068131a9111a16270544751","post_blob":"a922670a1c551b21c6ee47a24aa266224a37b1b5","add":24,"delete":4},
+      {"path":"srchybrid/WebServer.cpp","pre_blob":"bd161f7386886a11af5ef431d297572997fabbd5","post_blob":"0e4a307e1aa317372cf42c56bbea0e58da8396d5","add":105,"delete":1},
+      {"path":"srchybrid/WebServer.h","pre_blob":"b5372c7812ea4c8e371be48a467affe9b975c775","post_blob":"9f7d5e745df647bf578e105a83de6faed346a255","add":2,"delete":0},
+      {"path":"srchybrid/eSE/test/live_tv_regression.test.js","pre_blob":"d1efc4551ef0bfd1610340eadb9e93cff28923fc","post_blob":"6a58eced4beedc30f56594c5a55a5e4749ba05c7","add":389,"delete":0},
+      {"path":"srchybrid/emule.vcxproj","pre_blob":"e04ef9286d181e284c84e0a06367674f851005d1","post_blob":"28f584f1d36333406488fbf8c20aeabebc0adb4c","add":6,"delete":0},
+      {"path":"srchybrid/tests/make.bat","pre_blob":"bf2fa447672518c48e2c7d0e7e99d5ca562de2ac","post_blob":"bd77756d1104a3afc247c070f4cf1077fe17962b","add":5,"delete":0},
+      {"path":"tests/test_v92_m2a00_migration_ratchet.py","pre_blob":"72fbd49e30317ff03c313c13b2c6af3fa41a9848","post_blob":"19afea0b68264d085eb5e20779287a433616d74c","add":98,"delete":0},
+      {"path":"tests/test_v92_mod04_architecture_gate.py","pre_blob":"a58616ce1f7e591287985ef80480cfeae2eb8c4e","post_blob":"bdde6b4cf8146ffeb198c18773378985c52a760d","add":8,"delete":0},
+      {"path":"tools/architecture/run_mod02_stream_selftest.ps1","pre_blob":"489c175de226f53fc34781393010226db4c554ce","post_blob":"2b65c4946fba9e9b86cfd09e1615b702f8e2635a","add":10,"delete":0},
+      {"path":"tools/architecture/verify_m2a00_migration_ratchet.py","pre_blob":"1dc7c33af4938189a0a19a6bcb72fc4a3ddc6fd8","post_blob":"dd419955119370c1e10c305e28a60f3bfb280979","add":178,"delete":2}
+    ],
+    "reseal_governance_paths": [
+      "docs/architecture/mod52_migration_matrix_v2.json",
+      "docs/architecture/mod52_migration_contract_v2.json",
+      "docs/architecture/mod04_architecture_gate_catalog_v3.json",
+      "tools/architecture/verify_m2a00_migration_ratchet.py",
+      "tests/test_v92_m2a00_migration_ratchet.py"
+    ],
+    "premerge_vm_tail": [{"path":"tools/architecture/verify_mod02_characterization.py","pre_blob":"1c61b4e1deb1bc7bc0ec22e6c7115d6c7c35c6df","merge_target_blob":"0758f6cabdb0405d33370efba00ba69f9e40360f"}],
+    "reseal_tail_path_count": 6,
+    "distinct_path_union_count": 17,
+    "budgets": {
+      "card_total": {"original_limit":{"add_max":12000,"delete_min":5500,"net_max":6500},"original_a_actual":{"add":11995,"delete":5521,"net":6474},"post_a_delta":{"add":990,"delete":12,"net":978},"resealed_actual":{"add":12985,"delete":5533,"net":7452},"exact_exception":{"add_over":985,"net_over":952}},
+      "webserver_coordinator": {"original_limit":{"add_max":500,"delete_min":120,"net_max":300,"cpp_target_loc":2100,"cpp_hard_loc":3500,"header_hard_loc":300},"original_a_actual":{"add":421,"delete":137,"net":284,"cpp_loc":2048},"post_a_delta":{"add":107,"delete":1,"net":106,"cpp_loc_delta":104},"resealed_actual":{"add":528,"delete":138,"net":390,"cpp_loc":2152,"header_loc":273},"exact_exception":{"add_over":28,"net_over":90,"cpp_target_over":52}}
+    },
+    "dependency_snapshot": {"modules":30,"edges":3,"includes":3,"new_sccs":0},
+    "reviews": [{"role":"Terra","verdict":"PREPARED","binding":"PAYLOAD_ONLY"},{"role":"Sol","verdict":"REQUIRED_BEFORE_COMMIT","binding":"PAYLOAD_ONLY"}]
+  },
   "programme_budget": {
     "w12_jp": 4.75,
     "w12_hours": 33.25,

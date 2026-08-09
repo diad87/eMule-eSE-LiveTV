@@ -246,22 +246,39 @@ function Assert-R93OneNewCandidateProcess {
 
 function Assert-R93NonFirstStartIni {
     param([Parameter(Mandatory = $true)][string]$Path)
-    $inEmule = $false
-    $values = @()
+    $required = @(
+        [pscustomobject]@{ key = 'AppVersion'; value = 'R93_ISOLATED_PROFILE' },
+        [pscustomobject]@{ key = 'StartupMinimized'; value = '1' },
+        [pscustomobject]@{ key = 'MinToTray_Aero'; value = '1' },
+        [pscustomobject]@{ key = 'MinToTray'; value = '1' })
+    $section = ''
+    $observed = @{}
+    foreach ($item in $required) { $observed[$item.key] = @() }
     foreach ($line in [IO.File]::ReadAllLines($Path)) {
         if ($line -match '^\[([^\]]+)\]$') {
-            $inEmule = [string]::Equals($Matches[1], 'eMule',
-                [StringComparison]::OrdinalIgnoreCase)
+            $section = [string]$Matches[1]
             continue
         }
-        if ($inEmule -and $line -match '^([^=]+)=(.*)$' -and
-            [string]::Equals($Matches[1], 'AppVersion',
-                [StringComparison]::OrdinalIgnoreCase)) {
-            $values += [string]$Matches[2]
+        if ($line -notmatch '^([^=]+)=(.*)$') { continue }
+        $key = [string]$Matches[1]
+        $value = [string]$Matches[2]
+        foreach ($item in $required) {
+            if ([string]::Equals($key, [string]$item.key,
+                    [StringComparison]::OrdinalIgnoreCase)) {
+                $observed[$item.key] += [pscustomobject]@{
+                    section = $section; value = $value }
+                break
+            }
         }
     }
-    if ($values.Count -ne 1 -or [string]::IsNullOrEmpty($values[0])) {
-        throw 'Isolated profile would enter the first-run modal workflow.'
+    foreach ($item in $required) {
+        $matches = @($observed[$item.key])
+        if ($matches.Count -ne 1 -or
+            -not [string]::Equals([string]$matches[0].section, 'eMule',
+                [StringComparison]::OrdinalIgnoreCase) -or
+            [string]$matches[0].value -cne [string]$item.value) {
+            throw 'Isolated profile contract is incomplete or ambiguous.'
+        }
     }
     return $true
 }
@@ -279,6 +296,12 @@ function Set-R93ProductIni {
     # [eMule] AppVersion.  A fresh lab profile must never enter the modal
     # first-run wizard because that would invalidate unattended shutdown.
     Set-LabIniValue $Path eMule AppVersion R93_ISOLATED_PROFILE | Out-Null
+    # --headless suppresses interactive work but deliberately does not hide the
+    # MFC dialog.  Preferences.cpp reads these exact keys; both tray variants
+    # are fixed so Aero/non-Aero hosts converge on a hidden main window.
+    Set-LabIniValue $Path eMule StartupMinimized 1 | Out-Null
+    Set-LabIniValue $Path eMule MinToTray_Aero 1 | Out-Null
+    Set-LabIniValue $Path eMule MinToTray 1 | Out-Null
     Set-LabIniValue $Path UPnP EnableUPnP 1 | Out-Null
     Set-LabIniValue $Path eMule Port $TcpPort | Out-Null
     Set-LabIniValue $Path eMule UDPPort $UdpPort | Out-Null
@@ -300,7 +323,8 @@ function Assert-R93ExpectedHeadlessWindowSet {
         [ValidateRange(2, 20)][int]$StableSamples = 5,
         [ValidateRange(1, 1000)][int]$SampleIntervalMs = 100,
         [scriptblock]$InventoryProvider,
-        [scriptblock]$IdentityGuard
+        [scriptblock]$IdentityGuard,
+        [string]$ExpectedMfcWindowClass = ''
     )
     if ($null -eq $InventoryProvider) {
         if ($null -eq ('R93WindowInventoryNative' -as [type])) {
@@ -403,7 +427,11 @@ public static class R93WindowInventoryNative {
                         [string]::IsNullOrEmpty($title)) -or
                     ($windowClass -ceq 'MSCTFIME UI' -and
                         $title -ceq 'MSCTFIME UI') -or
-                    ($windowClass -ceq 'IME' -and $title -ceq 'Default IME')
+                    ($windowClass -ceq 'IME' -and $title -ceq 'Default IME') -or
+                    (-not [string]::IsNullOrEmpty($ExpectedMfcWindowClass) -and
+                        $windowClass -ceq $ExpectedMfcWindowClass -and
+                        $title -in @('eMule Async DNS Resolve Socket Wnd #2',
+                            'Socket Notification Sink'))
                 -not ($isMain -or $isKnownInfrastructure)
             })
         if ($unexpected.Count -gt 0) {
@@ -753,6 +781,7 @@ $adminHash = (($credentialBytes | ForEach-Object { $_.ToString('x2') }) -join ''
 $process = $null
 $spawnedToken = $null
 $launchedIdentity = $null
+$expectedMfcWindowClass = ''
 $backend = $null
 $baseUrl = "http://127.0.0.1:$WebPort"
 $adapters = [pscustomobject]@{
@@ -786,6 +815,8 @@ $adapters = [pscustomobject]@{
             $preexistingBaseline $after ([int]$token) $exe $exeHash
         $null = Assert-R93LaunchedProcessHandleIdentity $script:process `
             $script:launchedIdentity $exe $exeHash
+        $script:expectedMfcWindowClass = 'Afx:{0:X16}:0' -f `
+            $script:process.MainModule.BaseAddress.ToInt64()
         $identityGuard = { param($guardToken)
             try {
                 $null = Assert-R93LaunchedProcessHandleIdentity `
@@ -794,7 +825,8 @@ $adapters = [pscustomobject]@{
             } catch { return $false }
         }.GetNewClosure()
         $null = Assert-R93ExpectedHeadlessWindowSet `
-            -ProcessId ([int]$token) -IdentityGuard $identityGuard
+            -ProcessId ([int]$token) -IdentityGuard $identityGuard `
+            -ExpectedMfcWindowClass $script:expectedMfcWindowClass
         return $true }
     Exists = { param($token)
         if ($null -eq $script:process -or
@@ -825,7 +857,8 @@ $adapters = [pscustomobject]@{
                 }.GetNewClosure()
                 $null = Assert-R93ExpectedHeadlessWindowSet `
                     -ProcessId ([int]$ignored) `
-                    -IdentityGuard $preCloseIdentity
+                    -IdentityGuard $preCloseIdentity `
+                    -ExpectedMfcWindowClass $script:expectedMfcWindowClass
                 Invoke-R93AuthenticatedWebClose -BaseUrl $baseUrl `
                     -StoredPasswordHash $adminHash } `
             -WaitForExit { param($ignored, $milliseconds)

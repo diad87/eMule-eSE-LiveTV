@@ -50,6 +50,24 @@ try{
     Assert-T ($sections['eMule']['AppVersion']-ceq 'R93_ISOLATED_PROFILE' -and
         (Assert-R93NonFirstStartIni $iniPath)) `
         'production helper did not establish a non-first-start profile'
+    Assert-T ($sections['eMule']['StartupMinimized']-ceq '1' -and
+        $sections['eMule']['MinToTray_Aero']-ceq '1' -and
+        $sections['eMule']['MinToTray']-ceq '1') `
+        'production helper did not deterministically hide the main dialog'
+    $profileLocations=@();$profileSection=$null
+    foreach($line in [IO.File]::ReadAllLines($iniPath)){
+        if($line-match '^\[([^\]]+)\]$'){$profileSection=$Matches[1];continue}
+        if($line-match '^([^=]+)='){
+            $key=$Matches[1]
+            if($key-in @('AppVersion','StartupMinimized','MinToTray_Aero','MinToTray')){
+                $profileLocations+="$profileSection`:$key"}
+        }
+    }
+    foreach($key in @('AppVersion','StartupMinimized','MinToTray_Aero','MinToTray')){
+        Assert-T (@($profileLocations|Where-Object{$_-ceq "eMule:$key"}).Count-eq 1 -and
+            @($profileLocations|Where-Object{$_-like "*:$key"}).Count-eq 1) `
+            "profile key $key was duplicated or written outside eMule"
+    }
     Assert-T ($sections['eMule']['Port']-ceq '41001' -and
         $sections['eMule']['UDPPort']-ceq '41002') 'production helper wrote wrong eMule ports'
     Assert-T ($sections['WebServer']['Enabled']-ceq '1' -and
@@ -69,22 +87,46 @@ try{
             $roundtrip,$originalBytes)) 'production INI roundtrip was not byte-exact'
 }finally{if([IO.File]::Exists($iniPath)){[IO.File]::Delete($iniPath)}}
 
-# Missing and empty AppVersion reproduce Preferences.cpp's exact first-start
-# boundary and must be rejected before any child process is launched.
-foreach($hostileText in @(
-    "[eMule]`r`nPort=1`r`n",
-    "[eMule]`r`nAppVersion=`r`nPort=1`r`n",
-    "[eMule]`r`nPort=1`r`n[Other]`r`nAppVersion=foreign`r`n",
-    "[eMule]`r`nAppVersion=one`r`nAppVersion=two`r`nPort=1`r`n")){
+# The isolated profile parser is closed over all four normative keys.  Each
+# key is mandatory, unique, exact-valued and confined to [eMule].
+$profileContract=[ordered]@{AppVersion='R93_ISOLATED_PROFILE'
+    StartupMinimized='1';MinToTray_Aero='1';MinToTray='1'}
+function New-TestProfileText($overrides){
+    $lines=[Collections.ArrayList]::new();$null=$lines.Add('[eMule]')
+    foreach($entry in $profileContract.GetEnumerator()){
+        $null=$lines.Add("$($entry.Key)=$($entry.Value)")}
+    if($null-ne $overrides){foreach($line in @($overrides)){$null=$lines.Add($line)}}
+    return (($lines -join "`r`n")+"`r`n")
+}
+$cleanProfile=Join-Path ([IO.Path]::GetTempPath()) `
+    ('r93-clean-profile-'+[Guid]::NewGuid().ToString('N')+'.ini')
+try{
+    [IO.File]::WriteAllText($cleanProfile,(New-TestProfileText $null),
+        [Text.UTF8Encoding]::new($false))
+    Assert-T (Assert-R93NonFirstStartIni $cleanProfile) `
+        'clean isolated profile contract was rejected'
+}finally{if([IO.File]::Exists($cleanProfile)){[IO.File]::Delete($cleanProfile)}}
+foreach($key in @($profileContract.Keys)){
+    $expected=[string]$profileContract[$key]
+    $baseLines=@('[eMule]')+@($profileContract.GetEnumerator()|ForEach-Object{
+        if($_.Key-cne $key){"$($_.Key)=$($_.Value)"}})
+    $hostileProfiles=@(
+        (($baseLines -join "`r`n")+"`r`n"),
+        ((@($baseLines,"$key=WRONG") -join "`r`n")+"`r`n"),
+        ((@($baseLines,"$key=$expected","$key=$expected") -join "`r`n")+"`r`n"),
+        ((@($baseLines,'[Other]',"$key=$expected") -join "`r`n")+"`r`n"),
+        (New-TestProfileText @('[Other]',"$key=$expected")))
+    foreach($hostileText in $hostileProfiles){
     $hostileIni=Join-Path ([IO.Path]::GetTempPath()) `
-        ('r93-first-start-'+[Guid]::NewGuid().ToString('N')+'.ini')
+        ('r93-profile-contract-'+[Guid]::NewGuid().ToString('N')+'.ini')
     try{
         [IO.File]::WriteAllText($hostileIni,$hostileText,
             [Text.UTF8Encoding]::new($false))
         $rejected=$false
         try{$null=Assert-R93NonFirstStartIni $hostileIni}catch{$rejected=$true}
-        Assert-T $rejected 'missing/empty AppVersion passed first-start preflight'
+        Assert-T $rejected "hostile isolated-profile key $key was accepted"
     }finally{if([IO.File]::Exists($hostileIni)){[IO.File]::Delete($hostileIni)}}
+    }
 }
 
 # The post-spawn preflight operates on transient window metadata only.  It
@@ -118,6 +160,43 @@ $hiddenUnknownRejected=$false
 try{$null=Assert-R93ExpectedHeadlessWindowSet 77 100 3 1 $hiddenUnknown}
 catch{$hiddenUnknownRejected=$_.Exception.Message -match 'unallowlisted'}
 Assert-T $hiddenUnknownRejected 'hidden window outside the exact allowlist was accepted'
+$exactAfxClass='Afx:00007FF778950000:0'
+$mainAndExactInfrastructure={param($pid) @(
+    [pscustomobject]@{hwnd=1;owner=0;visible=$false
+        window_class='#32770';title='eMule isolated'},
+    [pscustomobject]@{hwnd=2;owner=0;visible=$false
+        window_class=$exactAfxClass;title='eMule Async DNS Resolve Socket Wnd #2'},
+    [pscustomobject]@{hwnd=3;owner=0;visible=$false
+        window_class=$exactAfxClass;title='Socket Notification Sink'})
+}.GetNewClosure()
+Assert-T (Assert-R93ExpectedHeadlessWindowSet -ProcessId 77 -TimeoutMs 100 `
+    -StableSamples 3 -SampleIntervalMs 1 `
+    -InventoryProvider $mainAndExactInfrastructure `
+    -ExpectedMfcWindowClass $exactAfxClass) `
+    'hidden main plus two exact MFC infrastructure windows was rejected'
+foreach($hostileAfx in @(
+    [pscustomobject]@{class=$exactAfxClass;title='variant title'},
+    [pscustomobject]@{class='Afx:00007FF778950001:0';title='Socket Notification Sink'})){
+    $variantProvider={param($pid) @(
+        [pscustomobject]@{hwnd=1;owner=0;visible=$false
+            window_class='#32770';title='eMule isolated'},
+        [pscustomobject]@{hwnd=2;owner=0;visible=$false
+            window_class=$hostileAfx.class;title=$hostileAfx.title})
+    }.GetNewClosure()
+    $variantRejected=$false
+    try{$null=Assert-R93ExpectedHeadlessWindowSet -ProcessId 77 `
+        -TimeoutMs 100 -StableSamples 3 -SampleIntervalMs 1 `
+        -InventoryProvider $variantProvider `
+        -ExpectedMfcWindowClass $exactAfxClass}
+    catch{$variantRejected=$_.Exception.Message -match 'unallowlisted'}
+    Assert-T $variantRejected 'MFC infrastructure class/title variant was accepted'
+}
+$visibleMain={param($pid) @([pscustomobject]@{hwnd=1;owner=0;visible=$true
+    window_class='#32770';title='eMule isolated'})}.GetNewClosure()
+$visibleMainRejected=$false
+try{$null=Assert-R93ExpectedHeadlessWindowSet 77 100 3 1 $visibleMain}
+catch{$visibleMainRejected=$_.Exception.Message -match 'unexpected modal'}
+Assert-T $visibleMainRejected 'visible main dialog was accepted as headless-ready'
 $doubleMain={param($pid) @(
     [pscustomobject]@{hwnd=1;owner=0;visible=$false
         window_class='#32770';title='eMule isolated'},

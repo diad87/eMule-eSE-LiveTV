@@ -194,9 +194,29 @@ foreach($hostileAfx in @(
 $visibleMain={param($pid) @([pscustomobject]@{hwnd=1;owner=0;visible=$true
     window_class='#32770';title='eMule isolated'})}.GetNewClosure()
 $visibleMainRejected=$false
-try{$null=Assert-R93ExpectedHeadlessWindowSet 77 100 3 1 $visibleMain}
-catch{$visibleMainRejected=$_.Exception.Message -match 'unexpected modal'}
+try{$null=Assert-R93ExpectedHeadlessWindowSet 77 5 3 1 $visibleMain}
+catch{$visibleMainRejected=$_.Exception.Message -match 'main window'}
 Assert-T $visibleMainRejected 'visible main dialog was accepted as headless-ready'
+$startupTransition=[pscustomobject]@{samples=0}
+$visibleThenHidden={param($pid)
+    $startupTransition.samples++
+    @([pscustomobject]@{hwnd=1;owner=0
+        visible=($startupTransition.samples-le 2)
+        window_class='#32770';title='eMule isolated'})
+}.GetNewClosure()
+Assert-T (Assert-R93ExpectedHeadlessWindowSet 77 100 3 1 $visibleThenHidden) `
+    'visible-to-hidden startup transition did not reach stable readiness'
+Assert-T ($startupTransition.samples-eq 5) `
+    'visible startup samples incorrectly counted toward hidden clean streak'
+$visibleWizard={param($pid) @(
+    [pscustomobject]@{hwnd=1;owner=0;visible=$false
+        window_class='#32770';title='eMule isolated'},
+    [pscustomobject]@{hwnd=2;owner=1;visible=$true
+        window_class='#32770';title='eMule First Runtime Wizard'})}.GetNewClosure()
+$wizardRejected=$false
+try{$null=Assert-R93ExpectedHeadlessWindowSet 77 100 3 1 $visibleWizard}
+catch{$wizardRejected=$_.Exception.Message -match 'unexpected modal'}
+Assert-T $wizardRejected 'visible first-runtime wizard was not rejected immediately'
 $doubleMain={param($pid) @(
     [pscustomobject]@{hwnd=1;owner=0;visible=$false
         window_class='#32770';title='eMule isolated'},

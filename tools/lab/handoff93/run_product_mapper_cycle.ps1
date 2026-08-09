@@ -405,7 +405,18 @@ public static class R93WindowInventoryNative {
             -not [bool](& $IdentityGuard $ProcessId)) {
             throw 'Launched process identity changed during window preflight.'
         }
-        if (@($rows | Where-Object { [bool]$_.visible }).Count -gt 0) {
+        $visibleExpectedMain = @($rows | Where-Object {
+                [bool]$_.visible -and [int64]$_.owner -eq 0 -and
+                [string]$_.window_class -ceq '#32770' -and
+                ([string]$_.title).StartsWith('eMule ',
+                    [StringComparison]::Ordinal) })
+        $otherVisible = @($rows | Where-Object {
+                [bool]$_.visible -and -not (
+                    [int64]$_.owner -eq 0 -and
+                    [string]$_.window_class -ceq '#32770' -and
+                    ([string]$_.title).StartsWith('eMule ',
+                        [StringComparison]::Ordinal)) })
+        if ($otherVisible.Count -gt 0 -or $visibleExpectedMain.Count -gt 1) {
             throw 'Launched headless process exposed an unexpected modal window.'
         }
         $main = @($rows | Where-Object {
@@ -417,7 +428,7 @@ public static class R93WindowInventoryNative {
                 $windowClass = [string]$_.window_class
                 $title = [string]$_.title
                 $isMain = $windowClass -ceq '#32770' -and
-                    -not [bool]$_.visible -and [int64]$_.owner -eq 0 -and
+                    [int64]$_.owner -eq 0 -and
                     $title.StartsWith('eMule ',
                         [StringComparison]::Ordinal)
                 $isKnownInfrastructure =
@@ -437,7 +448,7 @@ public static class R93WindowInventoryNative {
         if ($unexpected.Count -gt 0) {
             throw 'Launched headless process exposed an unallowlisted window.'
         }
-        if ($main.Count -eq 1) {
+        if ($main.Count -eq 1 -and $visibleExpectedMain.Count -eq 0) {
             $stable++
             if ($stable -ge $StableSamples) { return $true }
         } else { $stable = 0 }

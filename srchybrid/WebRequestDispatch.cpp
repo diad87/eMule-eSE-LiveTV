@@ -633,10 +633,13 @@ bool RunProbe(
 	bool highLevel = false,
 	bool secure = false,
 	bool loopback = true,
-	const CStringA& browserToken = CStringA())
+	const CStringA& browserToken = CStringA(),
+	const CStringA& csrfToken = CStringA(),
+	const CStringA& fetchSite = CStringA())
 {
 	WebClassicPort port{&probe, ProbeParse, ProbeChallenge, ProbeBlocked, ProbeAdd, ProbeBearer, ProbeCsrf, ProbeFailure, ProbeSuccess, ProbeRemove, ProbeLogged, ProbeAdmin, ProbeContent, ProbeBinary, ProbeReply, ProbeNotify, ProbeBad, ProbeAction, ProbeFile, ProbeRender};
 	WebClassicInput input; input.legacy = &probe; input.url = url; input.ip_text = loopback ? _T("127.0.0.1") : _T("198.51.100.7"); input.ip = loopback ? INADDR_LOOPBACK : 0x076433c6u; input.loopback = loopback; input.app_running = true; input.use_gzip = gzip; input.allow_high_level = highLevel; input.secure_transport = secure; input.browser_session_token = browserToken;
+	input.csrf_token = csrfToken; input.fetch_site = fetchSite;
 	const M2AParentPort parent{&probe}; M2AModuleHandle binding = M2A_BIND_W1_EC6846B80E(parent); if (!binding) return false; activeProbe = &probe; try { RunWebClassicRequest(parent, input, port); } catch (...) { activeProbe = nullptr; M2A_UNBIND_W1_EC6846B80E(parent); return probe.file_throw || probe.parse_throw; } activeProbe = nullptr; M2A_UNBIND_W1_EC6846B80E(parent); return true;
 }
 
@@ -657,6 +660,22 @@ bool RunWebClassicRequestCharacterizationSelfTest()
 	DispatchProbe logout; if (!RunProbe(logout, _T("?w=logout"), false, false, true, false, CStringA("bearer")) || logout.removals != 1 || logout.headers.Find("eSEWebSession=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict; Secure") < 0) return false;
 	DispatchProbe csrf; csrf.csrf = false; if (!RunProbe(csrf, _T("?ses=1&w=server")) || csrf.replies != 1 || csrf.contents != 0 || !ProbeHardened(csrf.headers)) return false;
 	DispatchProbe admin; admin.admin = true; if (!RunProbe(admin, _T("?ses=1&w=close"), false, true) || admin.actions != 1 || admin.contents != 1) return false; DispatchProbe missing; missing.admin = true; if (!RunProbe(missing, _T("?ses=1&w=getfile&filehash=x")) || missing.files != 1 || missing.contents != 1) return false;
+	DispatchProbe authenticatedClose; authenticatedClose.logged = false; authenticatedClose.admin = true;
+	if (!RunProbe(authenticatedClose, _T("?w=password&r=ok&n=n"))
+		|| authenticatedClose.sessions != 1
+		|| authenticatedClose.issued_bearer.GetLength() != 64) return false;
+	const int csrfBegin = authenticatedClose.headers.Find("X-CSRF-Token: ");
+	if (csrfBegin < 0) return false;
+	const CStringA issuedCsrf = authenticatedClose.headers.Mid(
+		csrfBegin + 14, 64);
+	if (issuedCsrf.GetLength() != 64) return false;
+	if (!RunProbe(authenticatedClose, _T("?w=close"), false, true,
+		false, false, authenticatedClose.issued_bearer, issuedCsrf,
+		CStringA("same-origin"))
+		|| authenticatedClose.actions != 1
+		|| authenticatedClose.removals != 1
+		|| authenticatedClose.headers.Find(
+			"Set-Cookie: eSEWebSession=; Path=/; Max-Age=0;") < 0) return false;
 	DispatchProbe fileThrow; fileThrow.admin = true; fileThrow.file_throw = true; if (!RunProbe(fileThrow, _T("?ses=1&w=getfile&filehash=x")) || fileThrow.files != 1 || fileThrow.replies != 0 || fileThrow.contents != 0) return false; DispatchProbe parseThrow; parseThrow.admin = true; parseThrow.parse_throw = true; if (!RunProbe(parseThrow, _T("?ses=1&w=getfile&filehash=x")) || parseThrow.files != 0 || parseThrow.replies != 1 || !ProbeHardened(parseThrow.headers)) return false; DispatchProbe gzip;
 	return RunProbe(gzip, _T("?ses=1&w=server"), true) && gzip.binaries == 1 && gzip.contents == 0 && ProbeHardened(gzip.headers);
 }

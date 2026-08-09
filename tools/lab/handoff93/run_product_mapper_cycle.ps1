@@ -256,11 +256,14 @@ function Set-R93ProductIni {
     Set-LabIniValue $Path UPnP EnableUPnP 1 | Out-Null
     Set-LabIniValue $Path eMule Port $TcpPort | Out-Null
     Set-LabIniValue $Path eMule UDPPort $UdpPort | Out-Null
+    # CIni::GetString with an explicit section makes that section current.
+    # Preferences reads Password explicitly first, so all following web keys
+    # (including high-level admin permission) come from [WebServer].
     Set-LabIniValue $Path WebServer Enabled 1 | Out-Null
     Set-LabIniValue $Path WebServer Port $WebPort | Out-Null
     Set-LabIniValue $Path WebServer Password `
         $StoredPasswordHash.ToLowerInvariant() | Out-Null
-    Set-LabIniValue $Path eMule AllowAdminHiLevelFunc 1 | Out-Null
+    Set-LabIniValue $Path WebServer AllowAdminHiLevelFunc 1 | Out-Null
 }
 
 function Invoke-R93AuthenticatedWebClose {
@@ -301,9 +304,14 @@ function Invoke-R93AuthenticatedWebClose {
         throw 'Local admin login did not issue an exact CSRF token.'
     }
     try {
-        $null = & $RequestInvoker "$BaseUrl/?w=close" $session @{
+        $closeResponse = & $RequestInvoker "$BaseUrl/?w=close" $session @{
             'X-CSRF-Token' = $csrf
             'Sec-Fetch-Site' = 'same-origin'
+        }
+        $clearCookie = [string]$closeResponse.Headers['Set-Cookie']
+        if ($clearCookie -cnotmatch '(?:^|[,;]\s*)eSEWebSession=;' -or
+            $clearCookie -cnotmatch '(?:^|;\s*)Max-Age=0(?:;|$)') {
+            throw 'Local admin close was not observably accepted.'
         }
         return $true
     }

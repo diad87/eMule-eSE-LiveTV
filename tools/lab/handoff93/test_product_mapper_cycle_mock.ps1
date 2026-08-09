@@ -50,8 +50,9 @@ try{
         $sections['eMule']['UDPPort']-ceq '41002') 'production helper wrote wrong eMule ports'
     Assert-T ($sections['WebServer']['Enabled']-ceq '1' -and
         $sections['WebServer']['Port']-ceq '41003' -and
-        $sections['WebServer']['Password']-ceq $testAdminHash) 'production helper did not configure authenticated WebServer'
-    Assert-T ($sections['eMule']['AllowAdminHiLevelFunc']-ceq '1') 'high-level local admin action was not enabled'
+        $sections['WebServer']['Password']-ceq $testAdminHash -and
+        $sections['WebServer']['AllowAdminHiLevelFunc']-ceq '1') 'production helper did not configure authenticated high-level WebServer'
+    Assert-T (-not $sections['eMule'].ContainsKey('AllowAdminHiLevelFunc')) 'high-level permission was written to the section Preferences no longer reads'
     $udpPortSections=@($sections.Keys|Where-Object{$sections[$_].ContainsKey('UDPPort')})
     $portSections=@($sections.Keys|Where-Object{$sections[$_].ContainsKey('Port')}|Sort-Object)
     Assert-T ($udpPortSections.Count-eq 1 -and $udpPortSections[0]-ceq 'eMule') 'UDPPort leaked outside eMule'
@@ -82,7 +83,7 @@ $requestInvoker={param($uri,$session,$headers)
     if($uri -match 'w=password'){
         return [pscustomobject]@{Headers=@{'X-CSRF-Token'=('a'*64)}}
     }
-    return [pscustomobject]@{Headers=@{}}
+    return [pscustomobject]@{Headers=@{'Set-Cookie'='eSEWebSession=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict'}}
 }.GetNewClosure()
 Assert-T (Invoke-R93AuthenticatedWebClose 'http://127.0.0.1:41003' `
     $storedHash $requestInvoker) 'authenticated Web close protocol failed'
@@ -96,6 +97,13 @@ Assert-T ($requests.Count-eq 3 -and
     $requests[2].headers['Sec-Fetch-Site']-ceq 'same-origin') 'challenge/session/CSRF close exchange is not exact'
 $requestText=($requests|ForEach-Object{$_.uri})-join ''
 Assert-T (-not $requestText.Contains($storedHash)) 'stored credential hash leaked into request URI'
+$falsePositiveInvoker={param($uri,$session,$headers)
+    if($uri.EndsWith('/')){return [pscustomobject]@{Content="<input name=`"n`" value=`"$challenge`">";Headers=@{}}}
+    if($uri -match 'w=password'){return [pscustomobject]@{Headers=@{'X-CSRF-Token'=('f'*64)}}}
+    return [pscustomobject]@{StatusCode=200;Headers=@{}}
+}.GetNewClosure()
+Assert-T (-not (Invoke-R93AuthenticatedWebClose 'http://127.0.0.1:41003' `
+        $storedHash $falsePositiveInvoker)) 'HTTP 200 without the close acceptance cookie was trusted'
 
 # A transport loss during challenge/login is retried with identity accreditation.
 $retryNonces=@(('b'*64),('c'*64))
@@ -113,7 +121,7 @@ $retryInvoker={param($uri,$session,$headers)
         if($retryState.loginCalls-eq 1){throw 'simulated transport loss during login'}
         return [pscustomobject]@{Headers=@{'X-CSRF-Token'=('d'*64)}}
     }
-    return [pscustomobject]@{Headers=@{}}
+    return [pscustomobject]@{Headers=@{'Set-Cookie'='eSEWebSession=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict'}}
 }.GetNewClosure()
 $retryClose={param($token)if(Invoke-R93AuthenticatedWebClose `
     'http://127.0.0.1:41003' $storedHash $retryInvoker){$retryState.alive=$false}}.GetNewClosure()
@@ -151,7 +159,7 @@ $lossInvoker={param($uri,$session,$headers)
         return [pscustomobject]@{Headers=@{'X-CSRF-Token'=('e'*64)}}
     }
     $closeLoss.closeCalls++;if($closeLoss.closeCalls-eq 1){throw 'simulated close response loss'}
-    return [pscustomobject]@{Headers=@{}}
+    return [pscustomobject]@{Headers=@{'Set-Cookie'='eSEWebSession=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict'}}
 }.GetNewClosure()
 $lossClose={param($token)if(Invoke-R93AuthenticatedWebClose `
     'http://127.0.0.1:41003' $storedHash $lossInvoker){$closeLoss.alive=$false}}.GetNewClosure()

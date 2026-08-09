@@ -271,4 +271,35 @@ TopologyGenerationDecision ResolveTopologyGeneration(
     return decision;
 }
 
+TopologyGenerationDecision ResolveMapperRejectionGeneration(
+    std::uint64_t current_generation,
+    std::uint64_t expected_generation) noexcept {
+    TopologyGenerationDecision decision{};
+    if (expected_generation == 0 || current_generation == 0)
+        return decision;
+    const std::uint64_t maximum =
+        (std::numeric_limits<std::uint64_t>::max)();
+    if (expected_generation == maximum) {
+        decision.disposition = current_generation == expected_generation
+            ? TopologyGenerationDisposition::RejectOverflow
+            : TopologyGenerationDisposition::RejectStale;
+        decision.generation = current_generation;
+        return decision;
+    }
+    const std::uint64_t rejected_generation = expected_generation + 1;
+    if (current_generation == expected_generation) {
+        decision.disposition = TopologyGenerationDisposition::Advance;
+        decision.generation = rejected_generation;
+        return decision;
+    }
+    if (current_generation == rejected_generation) {
+        decision.disposition = TopologyGenerationDisposition::Keep;
+        decision.generation = rejected_generation;
+        return decision;
+    }
+    decision.disposition = TopologyGenerationDisposition::RejectStale;
+    decision.generation = current_generation;
+    return decision;
+}
+
 } // namespace natmap

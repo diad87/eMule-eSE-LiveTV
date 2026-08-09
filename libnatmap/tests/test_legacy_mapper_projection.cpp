@@ -331,6 +331,41 @@ void TestTopologyGenerationRejectsInvalidAndOverflow() {
     CHECK(overflow.generation == maximum);
 }
 
+void TestMapperRejectionGenerationIsAtomicAndIdempotent() {
+    TopologyGenerationDecision decision =
+        ResolveMapperRejectionGeneration(40, 40);
+    CHECK(decision.disposition ==
+          TopologyGenerationDisposition::Advance);
+    CHECK(decision.generation == 41);
+
+    // ObserveMappedPorts already advanced the snapshot before ApplyMapping
+    // rejected. The compensating transition must not advance it again.
+    decision = ResolveMapperRejectionGeneration(41, 40);
+    CHECK(decision.disposition == TopologyGenerationDisposition::Keep);
+    CHECK(decision.generation == 41);
+
+    // Repeating the same rejection is harmless; unrelated generations are
+    // fenced rather than overwritten.
+    decision = ResolveMapperRejectionGeneration(41, 40);
+    CHECK(decision.disposition == TopologyGenerationDisposition::Keep);
+    CHECK(ResolveMapperRejectionGeneration(42, 40).disposition ==
+          TopologyGenerationDisposition::RejectStale);
+    CHECK(ResolveMapperRejectionGeneration(40, 41).disposition ==
+          TopologyGenerationDisposition::RejectStale);
+    const std::uint64_t maximum =
+        (std::numeric_limits<std::uint64_t>::max)();
+    CHECK(ResolveMapperRejectionGeneration(maximum, maximum).disposition ==
+          TopologyGenerationDisposition::RejectOverflow);
+    decision = ResolveMapperRejectionGeneration(40, maximum);
+    CHECK(decision.disposition ==
+          TopologyGenerationDisposition::RejectStale);
+    CHECK(decision.generation == 40);
+    decision = ResolveMapperRejectionGeneration(maximum, 40);
+    CHECK(decision.disposition ==
+          TopologyGenerationDisposition::RejectStale);
+    CHECK(decision.generation == maximum);
+}
+
 } // namespace
 
 int main() {
@@ -341,6 +376,7 @@ int main() {
     TestAdmissionRejectsEveryNonPublishableExternalClass();
     TestTopologyGenerationRules();
     TestTopologyGenerationRejectsInvalidAndOverflow();
+    TestMapperRejectionGenerationIsAtomicAndIdempotent();
     std::printf(
         "test_legacy_mapper_projection: %d checks, %d failures\n",
         checks, failures);

@@ -46,10 +46,12 @@ public:
 		const natmap::VerificationAttempt& attempt);
 	bool HasVerifiedEd2kReachability() const;
 	uint64 GetTopologyGeneration() const;
+	bool BeginMappingAttempt();
 	natmap::UpstreamGatewayCandidates GetUpstreamGatewayCandidates(
 		const natmap::UpstreamDiscoveryInput& authorizedEvidence) const;
 	bool ObserveMapperResult(const natmap::MapperResult& result,
 		const natmap::RouteBindingIdentity& routeBinding);
+	bool RejectMapperResult(uint64 nExpectedGeneration);
 	// MX03 typed bridge. It consumes only an already-authorized, already
 	// completed upstream PCP result and keeps the legacy planes withdrawn until
 	// the normal proof path validates the candidate. It sends no discovery or

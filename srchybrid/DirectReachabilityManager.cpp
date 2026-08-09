@@ -272,6 +272,46 @@ uint64 CDirectReachabilityManager::GetTopologyGeneration() const
 	return m_snapshot.topology_generation;
 }
 
+bool CDirectReachabilityManager::BeginMappingAttempt()
+{
+	StatusCacheRefreshGuard guard{*this};
+	AssertMainThread();
+	if (m_snapshot.topology_generation == 0 || m_mappedCandidates.is_closed()
+		|| m_mappedCandidates.snapshot().candidate_count() != 0
+		|| m_mappedCandidates.snapshot().topology_generation()
+			!= m_snapshot.topology_generation)
+		return false;
+	const uint64 generation = m_snapshot.topology_generation;
+	const auto DiscoveringPlane = [generation](const natmap::Endpoint& local) {
+		natmap::PlaneSnapshot plane;
+		plane.state = natmap::ReachabilityState::Discovering;
+		plane.reason = natmap::ReasonCode::None;
+		plane.local = local;
+		plane.advertised = local;
+		plane.generation = generation;
+		return plane;
+	};
+	m_snapshot.ed2k_tcp_v4 = DiscoveringPlane(MakeAnyV4(
+		m_nLocalTcpPort.load(std::memory_order_acquire)));
+	m_snapshot.kad_udp_v4 = DiscoveringPlane(MakeAnyV4(
+		m_nLocalUdpPort.load(std::memory_order_acquire)));
+	m_tcpLease = natmap::LeaseController{};
+	m_udpLease = natmap::LeaseController{};
+	m_tcpChain = natmap::NatChainTransaction{};
+	m_udpChain = natmap::NatChainTransaction{};
+	m_mapperRouteBinding = natmap::RouteBindingIdentity{};
+	m_mapperTopologyIdentity = natmap::MapperTopologyIdentity{};
+	m_pcpCpeResult = natmap::MapperResultData{};
+	m_nAdvertisedTcpPort.store(
+		m_nLocalTcpPort.load(std::memory_order_acquire),
+		std::memory_order_release);
+	m_nAdvertisedUdpPort.store(
+		m_nLocalUdpPort.load(std::memory_order_acquire),
+		std::memory_order_release);
+	m_bEnabled.store(false, std::memory_order_release);
+	return true;
+}
+
 natmap::UpstreamGatewayCandidates
 CDirectReachabilityManager::GetUpstreamGatewayCandidates(
 	const natmap::UpstreamDiscoveryInput& authorizedEvidence) const
@@ -360,11 +400,79 @@ bool CDirectReachabilityManager::ObserveMapperResult(
 		|| update == natmap::MappedCandidateUpdate::Replaced)
 		return true;
 
-	// The actionable process-local snapshot is authoritative for modern
-	// routing. If it cannot publish the complete pair, withdraw the legacy
-	// projection in the same main-thread turn.
-	DisableMappedPlanes(natmap::ReasonCode::InvalidResponse);
+	// The caller performs one generation-correlated compensating transition.
+	// Do not mutate here: ObserveMappedPorts may already have advanced once.
 	return false;
+}
+
+bool CDirectReachabilityManager::RejectMapperResult(
+	uint64 nExpectedGeneration)
+{
+	StatusCacheRefreshGuard guard{*this};
+	AssertMainThread();
+	const natmap::TopologyGenerationDecision decision =
+		natmap::ResolveMapperRejectionGeneration(
+			m_snapshot.topology_generation, nExpectedGeneration);
+	if (decision.disposition ==
+		natmap::TopologyGenerationDisposition::RejectOverflow) {
+		FailClosedAtGenerationLimit(natmap::ReasonCode::InvalidResponse);
+		return true;
+	}
+	if (decision.disposition !=
+			natmap::TopologyGenerationDisposition::Advance
+		&& decision.disposition !=
+			natmap::TopologyGenerationDisposition::Keep)
+		return false;
+	const uint64 generation = decision.generation;
+	if (m_mappedCandidates.snapshot().topology_generation() > generation)
+		return false;
+	const bool advance = decision.disposition ==
+		natmap::TopologyGenerationDisposition::Advance;
+	const auto BlockPlane = [generation, advance](
+		const natmap::PlaneSnapshot& current,
+		natmap::TransitionResult& blocked) {
+		natmap::PlaneSnapshot source = current;
+		if (advance) {
+			const natmap::TransitionResult discovering = natmap::ApplyEvent(
+				current, natmap::StateEvent{
+					natmap::EventType::BeginGeneration, generation});
+			if (discovering.disposition !=
+				natmap::TransitionDisposition::Applied)
+				return false;
+			source = discovering.snapshot;
+		}
+		blocked = natmap::ApplyEvent(source,
+			natmap::StateEvent{
+				natmap::EventType::RouterBlocked, generation,
+				natmap::ReasonCode::InvalidResponse});
+		return blocked.disposition ==
+			natmap::TransitionDisposition::Applied;
+	};
+	natmap::TransitionResult tcp;
+	natmap::TransitionResult udp;
+	if (!BlockPlane(m_snapshot.ed2k_tcp_v4, tcp)
+		|| !BlockPlane(m_snapshot.kad_udp_v4, udp))
+		return false;
+	m_snapshot.topology_generation = generation;
+	m_snapshot.ed2k_tcp_v4 = tcp.snapshot;
+	m_snapshot.kad_udp_v4 = udp.snapshot;
+	if (m_mappedCandidates.snapshot().topology_generation() < generation)
+		m_mappedCandidates.Invalidate(generation);
+	m_tcpLease = natmap::LeaseController{};
+	m_udpLease = natmap::LeaseController{};
+	m_tcpChain = natmap::NatChainTransaction{};
+	m_udpChain = natmap::NatChainTransaction{};
+	m_mapperRouteBinding = natmap::RouteBindingIdentity{};
+	m_mapperTopologyIdentity = natmap::MapperTopologyIdentity{};
+	m_pcpCpeResult = natmap::MapperResultData{};
+	m_nAdvertisedTcpPort.store(
+		m_nLocalTcpPort.load(std::memory_order_acquire),
+		std::memory_order_release);
+	m_nAdvertisedUdpPort.store(
+		m_nLocalUdpPort.load(std::memory_order_acquire),
+		std::memory_order_release);
+	m_bEnabled.store(false, std::memory_order_release);
+	return true;
 }
 
 natmap::PcpUpstreamDecision

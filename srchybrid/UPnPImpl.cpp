@@ -16,6 +16,7 @@
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #include "StdAfx.h"
 #include "UPnPImpl.h"
+#include "Log.h"
 
 #include <chrono>
 #include <limits>
@@ -259,6 +260,10 @@ bool CUPnPImpl::SendMapperResultMessage(
 	const MappingOperationContext& operation,
 	const natmap::MapperResultData& resultData)
 {
+	const auto RejectDelivery = [](LPCTSTR stage) {
+		DebugLogWarning(_T("NATMAP mapper delivery rejected stage=%s"), stage);
+		return false;
+	};
 	natmap::MapperResultData boundResult = resultData;
 	boundResult.request_interface_index = operation.interface_index;
 	boundResult.request_local_address = operation.local_address;
@@ -275,7 +280,7 @@ bool CUPnPImpl::SendMapperResultMessage(
 		|| !natmap::IsMapperResultRouteCurrent(
 			boundResult, operationRoute)
 		|| !natmap::MapperResult(boundResult).IsStructurallyValid())
-		return false;
+		return RejectDelivery(_T("envelope"));
 
 	std::lock_guard<std::mutex> lock(m_resultMutex);
 	if (operation.request.request_id == 0
@@ -283,7 +288,7 @@ bool CUPnPImpl::SendMapperResultMessage(
 		|| operation.request.topology_generation
 			!= m_requestContext.topology_generation
 		|| operation.request.operation != m_requestContext.operation)
-		return false;
+		return RejectDelivery(_T("context"));
 	const HWND resultWindow = m_hResultWindow;
 	const UINT resultMessage = m_nResultMessageID;
 	const std::shared_ptr<natmap::MappingResultMailbox> mailbox =
@@ -292,17 +297,17 @@ bool CUPnPImpl::SendMapperResultMessage(
 	m_hResultWindow = NULL;
 	m_resultMailbox.reset();
 	if (resultWindow == NULL || resultMessage == 0 || !mailbox)
-		return false;
+		return RejectDelivery(_T("callback"));
 
 	const natmap::MailboxPublish published =
 		mailbox->Publish(boundResult);
 	if (!published.IsPublished())
-		return false;
+		return RejectDelivery(_T("mailbox"));
 	const WPARAM messageToken = static_cast<WPARAM>(
 		0x80000000u | published.delivery_id);
 	if (!::PostMessage(resultWindow, resultMessage, messageToken, 0)) {
 		mailbox->Discard(published.delivery_id);
-		return false;
+		return RejectDelivery(_T("post"));
 	}
 	return true;
 }

@@ -331,12 +331,41 @@ void TestLeaseExpiryWithdrawsEndpointAndFencesLateCallbacks() {
     CHECK(!late.snapshot.advertised.IsUsable());
 }
 
+void TestRejectedMapperProjectionWithdrawsCandidateInPlace() {
+    PlaneSnapshot state{};
+    state.local = Ep(192, 168, 1, 20, 4662,
+                     EndpointSource::LocalInterface);
+    state = ApplyEvent(
+        state, StateEvent{EventType::BeginGeneration, 41}).snapshot;
+    state = ApplyEvent(
+        state, StateEvent{EventType::MappingStarted, 41}).snapshot;
+    StateEvent mapped{};
+    mapped.type = EventType::MappingSucceeded;
+    mapped.generation = 41;
+    mapped.lease = Lease(41, 52144);
+    state = ApplyEvent(state, mapped).snapshot;
+    CHECK(state.state == ReachabilityState::CandidateMapped);
+    CHECK(state.lease.IsStructurallyValid());
+
+    const TransitionResult rejected = ApplyEvent(
+        state, StateEvent{EventType::RouterBlocked, 41,
+                          ReasonCode::InvalidResponse});
+    CHECK(rejected.disposition == TransitionDisposition::Applied);
+    CHECK(rejected.snapshot.generation == 41);
+    CHECK(rejected.snapshot.state == ReachabilityState::BlockedByRouter);
+    CHECK(rejected.snapshot.reason == ReasonCode::InvalidResponse);
+    CHECK(!rejected.snapshot.lease.IsStructurallyValid());
+    CHECK(!rejected.snapshot.mapped.IsUsable());
+    CHECK(!rejected.snapshot.advertised.IsUsable());
+}
+
 } // namespace
 
 int main() {
     TestHappyPathAndStaleFencing();
     TestSplitEvidenceAndFailedVerification();
     TestLeaseExpiryWithdrawsEndpointAndFencesLateCallbacks();
+    TestRejectedMapperProjectionWithdrawsCandidateInPlace();
     TestHundredThousandAdversarialTransitions();
     std::printf("test_state_machine: %d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

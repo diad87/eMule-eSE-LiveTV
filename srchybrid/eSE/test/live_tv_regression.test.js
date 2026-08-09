@@ -1721,3 +1721,90 @@ test('reach status cache publishes std::string under mutex', () => {
   assert.match(getBody, /lock_guard/);
   assert.doesNotMatch(getBody, /m_snapshot/);
 });
+
+test('mapping lifecycle is observable before worker I/O and rejects fail closed', () => {
+  const header = read(repoRoot, 'srchybrid', 'DirectReachabilityManager.h');
+  const manager = read(repoRoot, 'srchybrid', 'DirectReachabilityManager.cpp');
+  assert.match(header, /bool BeginMappingAttempt\(\);/);
+  assert.match(header, /bool RejectMapperResult\(uint64 nExpectedGeneration\);/);
+
+  const beginAt = manager.indexOf('bool CDirectReachabilityManager::BeginMappingAttempt()');
+  const rejectAt = manager.indexOf('bool CDirectReachabilityManager::RejectMapperResult(');
+  assert.ok(beginAt >= 0 && rejectAt > beginAt);
+  const beginBody = manager.slice(beginAt,
+    manager.indexOf('\nbool CDirectReachabilityManager::', beginAt + 10));
+  assert.match(beginBody, /AssertMainThread\(\)/);
+  assert.match(beginBody, /m_snapshot\.topology_generation/);
+  assert.match(beginBody, /ed2k_tcp_v4 = DiscoveringPlane/);
+  assert.match(beginBody, /kad_udp_v4 = DiscoveringPlane/);
+  assert.match(beginBody, /ReachabilityState::Discovering/);
+  assert.match(beginBody, /ReasonCode::None/);
+  assert.doesNotMatch(beginBody, /topology_generation\s*(?:\+\+|\+=)/);
+
+  const rejectBody = manager.slice(rejectAt,
+    manager.indexOf('\nnatmap::', rejectAt + 10));
+  assert.match(rejectBody, /EventType::RouterBlocked/);
+  assert.match(rejectBody, /ReasonCode::InvalidResponse/);
+  assert.match(rejectBody, /ed2k_tcp_v4/);
+  assert.match(rejectBody, /kad_udp_v4/);
+  assert.match(rejectBody, /ResolveMapperRejectionGeneration/);
+  assert.match(rejectBody, /TopologyGenerationDisposition::Keep/);
+  assert.match(rejectBody, /m_mappedCandidates\.Invalidate\(generation\)/);
+  assert.match(rejectBody, /m_bEnabled\.store\(false/);
+
+  const dialog = read(repoRoot, 'srchybrid', 'EmuleDlg.cpp');
+  const startAt = dialog.indexOf('void CemuleDlg::StartUPnP(');
+  const stopAt = dialog.indexOf('void CemuleDlg::StopUPnP(', startAt);
+  const startBody = dialog.slice(startAt, stopAt);
+  const armAt = startBody.indexOf('m_mappingResultGate.Arm(');
+  const observableAt = startBody.indexOf('BeginMappingAttempt()');
+  const discoveryAt = startBody.indexOf('impl->StartDiscovery(');
+  assert.ok(armAt >= 0 && observableAt > armAt && discoveryAt > observableAt);
+  const admissionAt = dialog.indexOf('// Admit the common mapper result');
+  const fallbackAt = dialog.indexOf('//>>> WiZaRd - handle "UPNP_TIMEOUT" events!');
+  const leaseSuccessAt = dialog.indexOf('impl->RecordLeaseSuccess()');
+  const legacySuccessAt = dialog.indexOf('thePrefs.SetLastWorkingUPnPImpl');
+  assert.ok(admissionAt >= 0 && admissionAt < fallbackAt);
+  assert.ok(fallbackAt < leaseSuccessAt && leaseSuccessAt < legacySuccessAt);
+  const rejection = dialog.slice(dialog.indexOf('if (!observed)', admissionAt),
+    dialog.indexOf('if (observed', admissionAt));
+  assert.match(rejection, /bMapperAdmissionRejected = true/);
+  assert.match(rejection, /bMapperRejectionHandled =[\s\S]*RejectMapperResult\([\s\S]*mapperResultData\.topology_generation/);
+  assert.match(rejection, /resultCode = CUPnPImpl::UPNP_FAILED/);
+  assert.match(rejection, /StopAsyncFind\(\)/);
+  assert.match(rejection, /DeletePortsForGeneration\([\s\S]*mapperResultData\.topology_generation/);
+  assert.match(rejection, /bMapperRejectionHandled\s*\?/);
+  assert.doesNotMatch(rejection, /RecordLeaseSuccess|SetLastWorkingUPnPImpl|Port mapped|SetUPnPCriticalError\(false\)/);
+
+  const observeAt = manager.indexOf('bool CDirectReachabilityManager::ObserveMapperResult(');
+  const observeBody = manager.slice(observeAt, rejectAt);
+  assert.match(observeBody, /ObserveMappedPorts\(/);
+  assert.match(observeBody, /m_mappedCandidates\.ApplyMapping\(/);
+  assert.doesNotMatch(observeBody, /DisableMappedPlanes\(/);
+  assert.match(observeBody, /return false;/);
+
+  const epochResetAt = dialog.indexOf('&& mapperResultData.mapper_epoch_reset',
+    admissionAt);
+  assert.ok(epochResetAt > admissionAt);
+  const epochResetGuard = dialog.slice(
+    dialog.lastIndexOf('if (resultCode != CUPnPImpl::UPNP_OK', epochResetAt),
+    epochResetAt + '&& mapperResultData.mapper_epoch_reset'.length);
+  assert.match(epochResetGuard, /&& !bMapperAdmissionRejected/);
+  // A mapper-success admission rejection owns one cleanup and one generation
+  // transition; the epoch-reset recovery below is fenced by the flag above.
+  assert.equal((rejection.match(/RejectMapperResult\(/g) || []).length, 1);
+  assert.equal((rejection.match(/DeletePortsForGeneration\(/g) || []).length, 1);
+  assert.equal((rejection.match(/RecordSuccess\(/g) || []).length, 0);
+});
+
+test('mapper delivery rejection logs stage only', () => {
+  const impl = read(repoRoot, 'srchybrid', 'UPnPImpl.cpp');
+  const begin = impl.indexOf('bool CUPnPImpl::SendMapperResultMessage(');
+  const end = impl.indexOf('bool CUPnPImpl::SendPcpUpstreamBundleMessage(', begin);
+  const body = impl.slice(begin, end);
+  assert.match(body, /NATMAP mapper delivery rejected stage=%s/);
+  for (const stage of ['envelope', 'context', 'callback', 'mailbox', 'post'])
+    assert.match(body, new RegExp(`RejectDelivery\\(_T\\("${stage}"\\)\\)`));
+  const logLine = body.match(/DebugLogWarning\([^\n]+/)[0];
+  assert.doesNotMatch(logLine, /(?:ip|address|port|nonce|request|token|id)=/i);
+});

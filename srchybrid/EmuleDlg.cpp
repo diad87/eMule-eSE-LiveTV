@@ -5132,6 +5132,8 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 	bool bWasRefresh = false;
 	bool bPcpUpstreamBundle = false;
 	bool bPcpTcpOnlyCgnatFailure = false;
+	bool bMapperAdmissionRejected = false;
+	bool bMapperRejectionHandled = false;
 
 	if (bMapperResult) {
 		const uint32 deliveryId =
@@ -5483,6 +5485,63 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		}
 	}
 
+	// Admit the common mapper result before any legacy success side effect.
+	// A rejected projection is an ordinary mapper failure: retire only the
+	// correlated generation, then let the existing implementation fallback run.
+	if (resultCode == CUPnPImpl::UPNP_OK
+		&& bMapperResult
+		&& !bPcpUpstreamBundle
+		&& theApp.directreachability != NULL) {
+		const uint64 previousGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const bool wasDirectReachabilityEnabled =
+			theApp.directreachability->IsEnabled();
+		const bool observed =
+			theApp.directreachability->ObserveMapperResult(
+				natmap::MapperResult(mapperResultData),
+				mapperRouteBinding);
+		if (!observed) {
+			bMapperAdmissionRejected = true;
+			bMapperRejectionHandled =
+				theApp.directreachability->RejectMapperResult(
+					mapperResultData.topology_generation);
+			resultCode = CUPnPImpl::UPNP_FAILED;
+			impl->StopAsyncFind();
+			impl->DeletePortsForGeneration(
+				mapperResultData.topology_generation);
+			LIVE_LOG("NATMAP", bMapperRejectionHandled
+				? "correlated mapper success rejected stage=reach_admission"
+				: "correlated mapper success rejected stage=reach_transition");
+		}
+		if (observed
+			&& m_upnpRecoverySchedule.RecordSuccess(
+				mapperResultData.topology_generation)) {
+			m_bUPnPRouteRecoveryPending = false;
+			LIVE_LOG("NATMAP",
+				"mapping recovery succeeded generation=%llu; backoff reset",
+				(unsigned long long)
+					mapperResultData.topology_generation);
+		}
+		const natmap::AdvertisementObservation advertisement{
+			previousGeneration,
+			theApp.directreachability->GetTopologyGeneration(),
+			observed,
+			wasDirectReachabilityEnabled,
+			theApp.directreachability->IsEnabled()};
+		if (natmap::ShouldRestartAdvertisementLogin(
+				advertisement,
+				theApp.serverconnect->IsConnected(),
+				theApp.serverconnect->IsConnecting(),
+				theApp.serverconnect->IsConnectedViaRelay())) {
+			LogWarning(_T("Direct reachability endpoint changed or was withdrawn; reconnecting to update the advertised port"));
+			if (theApp.serverconnect->IsConnecting())
+				theApp.serverconnect->StopConnectionTry();
+			if (theApp.serverconnect->IsConnected())
+				theApp.serverconnect->Disconnect();
+			theApp.serverconnect->ConnectToAnyServer();
+		}
+	}
+
 //>>> WiZaRd - handle "UPNP_TIMEOUT" events!
 	if (!bWasRefresh && resultCode != CUPnPImpl::UPNP_OK) {
 		//just to be sure, stop any running services and also delete the forwarded ports (if necessary)
@@ -5532,48 +5591,12 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		else
 			LIVE_LOG("NATMAP", "permanent mapping; mapper has no safe refresh operation, network-change recovery remains armed");
 	}
-	if (resultCode == CUPnPImpl::UPNP_OK
-		&& bMapperResult
-		&& !bPcpUpstreamBundle
-		&& theApp.directreachability != NULL) {
-		const uint64 previousGeneration =
-			theApp.directreachability->GetTopologyGeneration();
-		const bool wasDirectReachabilityEnabled =
-			theApp.directreachability->IsEnabled();
-		const bool observed =
-			theApp.directreachability->ObserveMapperResult(
-				natmap::MapperResult(mapperResultData),
-				mapperRouteBinding);
-		if (observed
-			&& m_upnpRecoverySchedule.RecordSuccess(
-				mapperResultData.topology_generation)) {
-			m_bUPnPRouteRecoveryPending = false;
-			LIVE_LOG("NATMAP",
-				"mapping recovery succeeded generation=%llu; backoff reset",
-				(unsigned long long)
-					mapperResultData.topology_generation);
-		}
-		const natmap::AdvertisementObservation advertisement{
-			previousGeneration,
-			theApp.directreachability->GetTopologyGeneration(),
-			observed,
-			wasDirectReachabilityEnabled,
-			theApp.directreachability->IsEnabled()};
-		if (natmap::ShouldRestartAdvertisementLogin(
-				advertisement,
-				theApp.serverconnect->IsConnected(),
-				theApp.serverconnect->IsConnecting(),
-				theApp.serverconnect->IsConnectedViaRelay())) {
-			LogWarning(_T("Direct reachability endpoint changed or was withdrawn; reconnecting to update the advertised port"));
-			if (theApp.serverconnect->IsConnecting())
-				theApp.serverconnect->StopConnectionTry();
-			if (theApp.serverconnect->IsConnected())
-				theApp.serverconnect->Disconnect();
-			theApp.serverconnect->ConnectToAnyServer();
-		}
-	}
 	if (resultCode != CUPnPImpl::UPNP_OK
 		&& bMapperResult
+		// A successful mapper callback rejected by reach admission has already
+		// retired its exact generation and entered ordinary mapper fallback.
+		// Do not reinterpret its epoch-reset bit as a second topology event.
+		&& !bMapperAdmissionRejected
 		// PCP atomic failures were already retired, advertised and scheduled by
 		// the exact CPE path above. Re-running generic epoch-reset recovery
 		// would advance generation twice and mislabel it as NAT-PMP.
@@ -5747,6 +5770,12 @@ void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort,
 					m_bUPnPRouteRecoveryPending = true;
 					LIVE_LOG("NATMAP",
 						"mapping start deferred until a network route is restored");
+					return;
+				}
+				if (theApp.directreachability != NULL
+					&& !theApp.directreachability->BeginMappingAttempt()) {
+					m_mappingResultGate.CancelPending();
+					PostLocalUPnPFailure(false);
 					return;
 				}
 				impl->BeginMappingRequest(request.context,

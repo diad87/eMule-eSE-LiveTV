@@ -53,6 +53,13 @@ struct TopologyGenerationDecision {
     std::uint64_t generation = 0;
 };
 
+// Correlates a failed legacy projection with the generation carried by the
+// mapper result. ObserveMappedPorts may already have advanced once before a
+// later publication check rejects; both paths converge on exactly expected+1.
+TopologyGenerationDecision ResolveMapperRejectionGeneration(
+    std::uint64_t current_generation,
+    std::uint64_t expected_generation) noexcept;
+
 enum class LegacyMapperAdmissionStatus : std::uint8_t {
     Accepted = 0,
     InvalidResult = 1,

@@ -244,6 +244,16 @@ function Assert-R93OneNewCandidateProcess {
     return $newItems[0]
 }
 
+function Get-R93ProductLaunchArguments {
+    param([Parameter(Mandatory = $true)]
+        [ValidateRange(1, 65535)][int]$WebPort)
+    # Emule.cpp accepts the metrics override only as --metrics-port=<N>.
+    # It also prevents LaunchEseServer from forcing 4711 and replacing the
+    # isolated credential. TCP/UDP remain attributed exclusively by the INI.
+    return @('--portable', '--ignoreinstances', '--headless',
+        ('--metrics-port={0}' -f $WebPort))
+}
+
 function Assert-R93NonFirstStartIni {
     param([Parameter(Mandatory = $true)][string]$Path)
     $required = @(
@@ -799,7 +809,7 @@ $adapters = [pscustomobject]@{
     Configure = { Set-R93ProductIni $ini $TcpPort $UdpPort $WebPort $adminHash }
     Start = { $script:process = Start-Process -FilePath $exe `
             -WorkingDirectory $package `
-            -ArgumentList @('--portable','--ignoreinstances','--headless') `
+            -ArgumentList @(Get-R93ProductLaunchArguments $WebPort) `
             -WindowStyle Hidden -PassThru
         # Register ownership before every fallible identity/property access.
         $script:spawnedToken = [int]$script:process.Id

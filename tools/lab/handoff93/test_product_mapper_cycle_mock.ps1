@@ -8,6 +8,7 @@ $ast=[Management.Automation.Language.Parser]::ParseFile($path,[ref]$tok,[ref]$er
 Assert-T ($err.Count-eq 0) 'parser errors'
 foreach($n in @('Assert-R93NoReparseChain','Assert-R93NonFirstStartIni',
         'Set-R93ProductIni','Assert-R93ExpectedHeadlessWindowSet',
+        'Get-R93ProductLaunchArguments',
         'Get-R93ProductProcessInventory','Get-R93LockedExecutableSha256',
         'Assert-R93LaunchedProcessHandleIdentity',
         'Read-R93PreexistingProcessAllowlist',
@@ -27,6 +28,14 @@ Assert-T $reparseRejected 'intermediate reparse accepted'
 $casePath=Assert-R93NoReparseChain -Root 'C:\PACKAGE' -Path 'c:\package\leaf' -Label casing
 Assert-T ($casePath -match '(?i)c:\\package\\leaf') 'canonical path casing rejected'
 Remove-Item Function:\Test-Path;Remove-Item Function:\Get-Item
+
+$launchArguments=@(Get-R93ProductLaunchArguments 41003)
+Assert-T (($launchArguments -join '|') -ceq
+    '--portable|--ignoreinstances|--headless|--metrics-port=41003') `
+    'product launch arguments do not match the exact command-line parser contract'
+Assert-T (-not (($launchArguments -join ' ') -match
+        '(?i)--(?:tcp|udp)-port|metrics-port\s+41003|4711')) `
+    'launch arguments contain speculative transport flags, split syntax or 4711'
 
 # Execute the production INI helpers against real bytes, then prove exact
 # restoration rather than trusting a mock return value.
@@ -669,6 +678,11 @@ Assert-T ($source -notmatch '(?i)ledger|Remove-R01Upnp|DeletePortMapping|Stop-Pr
 $upnpConfigIndex=$source.IndexOf('Set-R93ProductIni $ini $TcpPort $UdpPort $WebPort $adminHash')
 $startProcessIndex=$source.IndexOf('Start-Process -FilePath $exe')
 Assert-T ($upnpConfigIndex-ge 0 -and $startProcessIndex-gt $upnpConfigIndex) 'real UPnP=1 configuration is not before Start'
+Assert-T ($source.Contains(
+        '-ArgumentList @(Get-R93ProductLaunchArguments $WebPort)') -and
+    $source.Contains("('--metrics-port={0}' -f `$WebPort)") -and
+    $source -notmatch "Get-R93ProductLaunchArguments[\\s\\S]{0,500}--(?:tcp|udp)-port") `
+    'production launch is not bound to the exact metrics-only override'
 $closeAttemptIndex=$source.IndexOf('-CloseAttempt { param($ignored)')
 $preCloseWindowIndex=$source.IndexOf(
     '$null = Assert-R93ExpectedHeadlessWindowSet',$closeAttemptIndex)

@@ -6,7 +6,8 @@ function Import-F($ast,$name){$m=@($ast.FindAll({param($n)$n -is [Management.Aut
 $path=Join-Path $PSScriptRoot 'run_product_mapper_cycle.ps1';$tok=$null;$err=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($path,[ref]$tok,[ref]$err)
 Assert-T ($err.Count-eq 0) 'parser errors'
-foreach($n in @('Assert-R93NoReparseChain','Set-R93ProductIni',
+foreach($n in @('Assert-R93NoReparseChain','Assert-R93NonFirstStartIni',
+        'Set-R93ProductIni','Assert-R93ExpectedHeadlessWindowSet',
         'Get-R93ProductProcessInventory','Get-R93LockedExecutableSha256',
         'Assert-R93LaunchedProcessHandleIdentity',
         'Read-R93PreexistingProcessAllowlist',
@@ -46,6 +47,9 @@ try{
             $sections[$currentSection][$Matches[1]]=$Matches[2]}
     }
     Assert-T ($sections['UPnP']['EnableUPnP']-ceq '1') 'production helper did not enable UPnP'
+    Assert-T ($sections['eMule']['AppVersion']-ceq 'R93_ISOLATED_PROFILE' -and
+        (Assert-R93NonFirstStartIni $iniPath)) `
+        'production helper did not establish a non-first-start profile'
     Assert-T ($sections['eMule']['Port']-ceq '41001' -and
         $sections['eMule']['UDPPort']-ceq '41002') 'production helper wrote wrong eMule ports'
     Assert-T ($sections['WebServer']['Enabled']-ceq '1' -and
@@ -64,6 +68,118 @@ try{
     Assert-T ([Collections.StructuralComparisons]::StructuralEqualityComparer.Equals(
             $roundtrip,$originalBytes)) 'production INI roundtrip was not byte-exact'
 }finally{if([IO.File]::Exists($iniPath)){[IO.File]::Delete($iniPath)}}
+
+# Missing and empty AppVersion reproduce Preferences.cpp's exact first-start
+# boundary and must be rejected before any child process is launched.
+foreach($hostileText in @(
+    "[eMule]`r`nPort=1`r`n",
+    "[eMule]`r`nAppVersion=`r`nPort=1`r`n",
+    "[eMule]`r`nPort=1`r`n[Other]`r`nAppVersion=foreign`r`n",
+    "[eMule]`r`nAppVersion=one`r`nAppVersion=two`r`nPort=1`r`n")){
+    $hostileIni=Join-Path ([IO.Path]::GetTempPath()) `
+        ('r93-first-start-'+[Guid]::NewGuid().ToString('N')+'.ini')
+    try{
+        [IO.File]::WriteAllText($hostileIni,$hostileText,
+            [Text.UTF8Encoding]::new($false))
+        $rejected=$false
+        try{$null=Assert-R93NonFirstStartIni $hostileIni}catch{$rejected=$true}
+        Assert-T $rejected 'missing/empty AppVersion passed first-start preflight'
+    }finally{if([IO.File]::Exists($hostileIni)){[IO.File]::Delete($hostileIni)}}
+}
+
+# The post-spawn preflight operates on transient window metadata only.  It
+# permits one hidden main dialog and rejects a visible first-run modal without
+# serializing either title, HWND or PID into the result contract.
+$headlessRows={param($pid) @([pscustomobject]@{hwnd=1;owner=0;visible=$false
+    window_class='#32770';title='eMule isolated'})}.GetNewClosure()
+Assert-T (Assert-R93ExpectedHeadlessWindowSet 77 100 3 1 $headlessRows) `
+    'expected hidden headless main window was rejected'
+$modalRows={param($pid) @(
+    [pscustomobject]@{hwnd=1;owner=0;visible=$false
+        window_class='#32770';title='eMule isolated'},
+    [pscustomobject]@{hwnd=2;owner=1;visible=$true
+        window_class='#32770';title='eMule First Runtime Wizard'})}.GetNewClosure()
+$modalRejected=$false
+try{$null=Assert-R93ExpectedHeadlessWindowSet 77 100 3 1 $modalRows}
+catch{$modalRejected=$_.Exception.Message -match 'unexpected modal'}
+Assert-T $modalRejected 'visible unexpected modal was accepted'
+$missingMain={param($pid) @([pscustomobject]@{hwnd=3;owner=0;visible=$false
+    window_class='IME';title='Default IME'})}.GetNewClosure()
+$missingMainRejected=$false
+try{$null=Assert-R93ExpectedHeadlessWindowSet 77 5 3 1 $missingMain}
+catch{$missingMainRejected=$_.Exception.Message -match 'main window'}
+Assert-T $missingMainRejected 'missing hidden main window was accepted'
+$hiddenUnknown={param($pid) @(
+    [pscustomobject]@{hwnd=1;owner=0;visible=$false
+        window_class='#32770';title='eMule isolated'},
+    [pscustomobject]@{hwnd=4;owner=0;visible=$false
+        window_class='UnexpectedLabWindow';title=''})}.GetNewClosure()
+$hiddenUnknownRejected=$false
+try{$null=Assert-R93ExpectedHeadlessWindowSet 77 100 3 1 $hiddenUnknown}
+catch{$hiddenUnknownRejected=$_.Exception.Message -match 'unallowlisted'}
+Assert-T $hiddenUnknownRejected 'hidden window outside the exact allowlist was accepted'
+$doubleMain={param($pid) @(
+    [pscustomobject]@{hwnd=1;owner=0;visible=$false
+        window_class='#32770';title='eMule isolated'},
+    [pscustomobject]@{hwnd=2;owner=0;visible=$false
+        window_class='#32770';title='eMule duplicate'})}.GetNewClosure()
+$doubleMainRejected=$false
+try{$null=Assert-R93ExpectedHeadlessWindowSet 77 5 3 1 $doubleMain}
+catch{$doubleMainRejected=$_.Exception.Message -match 'main window'}
+Assert-T $doubleMainRejected 'two hidden main dialogs were accepted'
+$partialEnumeration={param($pid) [pscustomobject]@{
+    enumeration_complete=$false
+    rows=@([pscustomobject]@{hwnd=1;owner=0;visible=$false
+        window_class='#32770';title='eMule isolated'})
+}}.GetNewClosure()
+$partialRejected=$false
+try{$null=Assert-R93ExpectedHeadlessWindowSet 77 100 3 1 $partialEnumeration}
+catch{$partialRejected=$_.Exception.Message -match 'enumeration was incomplete'}
+Assert-T $partialRejected 'EnumWindows FALSE with a plausible partial list was accepted'
+
+$lateModalState=[pscustomobject]@{samples=0}
+$cleanThenModal={param($pid)
+    $lateModalState.samples++
+    if($lateModalState.samples-eq 1){return @([pscustomobject]@{hwnd=1
+        owner=0;visible=$false;window_class='#32770';title='eMule isolated'})}
+    return @([pscustomobject]@{hwnd=1;owner=0;visible=$false
+            window_class='#32770';title='eMule isolated'},
+        [pscustomobject]@{hwnd=2;owner=1;visible=$true
+            window_class='#32770';title='late modal'})
+}.GetNewClosure()
+$lateModalRejected=$false
+try{$null=Assert-R93ExpectedHeadlessWindowSet 77 100 3 1 $cleanThenModal}
+catch{$lateModalRejected=$_.Exception.Message -match 'unexpected modal'}
+Assert-T ($lateModalRejected -and $lateModalState.samples-eq 2) `
+    'clean first sample bypassed a modal appearing during stability window'
+
+$identityState=[pscustomobject]@{checks=0}
+$driftingGuard={param($pid)$identityState.checks++;return $identityState.checks-lt 3}.GetNewClosure()
+$identityDriftRejected=$false
+try{$null=Assert-R93ExpectedHeadlessWindowSet 77 100 3 1 $headlessRows $driftingGuard}
+catch{$identityDriftRejected=$_.Exception.Message -match 'identity changed'}
+Assert-T ($identityDriftRejected -and $identityState.checks-eq 3) `
+    'identity exit/reuse between clean samples was accepted'
+
+$beforeClose=[pscustomobject]@{alive=$true;samples=0;authCalls=0}
+$modalBeforeClose={param($pid)
+    $beforeClose.samples++
+    return @([pscustomobject]@{hwnd=1;owner=0;visible=$false
+            window_class='#32770';title='eMule isolated'},
+        [pscustomobject]@{hwnd=2;owner=1;visible=$true
+            window_class='#32770';title='late modal'})
+}.GetNewClosure()
+$guardedClose={param($token)
+    $null=Assert-R93ExpectedHeadlessWindowSet $token 100 3 1 `
+        $modalBeforeClose {param($pid)$true}
+    $beforeClose.authCalls++
+}.GetNewClosure()
+$preCloseResult=Invoke-R93AccreditedWebShutdown 77 1 `
+    {param($token)$beforeClose.alive}.GetNewClosure() `
+    {param($token)$true} $guardedClose {param($token,$ms)$false}
+Assert-T (-not $preCloseResult -and $beforeClose.samples-ge 1 -and
+    $beforeClose.authCalls-eq 0) `
+    'modal appearing immediately before close reached authentication'
 
 $requests=[Collections.ArrayList]::new()
 $storedHash='0123456789abcdef0123456789abcdef'
@@ -454,6 +570,15 @@ Assert-T ($source -notmatch '(?i)ledger|Remove-R01Upnp|DeletePortMapping|Stop-Pr
 $upnpConfigIndex=$source.IndexOf('Set-R93ProductIni $ini $TcpPort $UdpPort $WebPort $adminHash')
 $startProcessIndex=$source.IndexOf('Start-Process -FilePath $exe')
 Assert-T ($upnpConfigIndex-ge 0 -and $startProcessIndex-gt $upnpConfigIndex) 'real UPnP=1 configuration is not before Start'
+$closeAttemptIndex=$source.IndexOf('-CloseAttempt { param($ignored)')
+$preCloseWindowIndex=$source.IndexOf(
+    '$null = Assert-R93ExpectedHeadlessWindowSet',$closeAttemptIndex)
+$authenticatedCloseIndex=$source.IndexOf(
+    'Invoke-R93AuthenticatedWebClose -BaseUrl',$closeAttemptIndex)
+Assert-T ($closeAttemptIndex-ge 0 -and
+    $preCloseWindowIndex-gt $closeAttemptIndex -and
+    $authenticatedCloseIndex-gt $preCloseWindowIndex) `
+    'production close does not revalidate stable windows before authentication'
 foreach($needle in @("-Path '/api/reach/status'",'/?w=password&n=','&r=','/?w=close','X-CSRF-Token','Sec-Fetch-Site','[IO.File]::ReadAllBytes($ini)','Restore-R93IniBytes $ini $iniBytes $iniHash','satisfies_h93_15 = $false')){Assert-T $source.Contains($needle) "missing $needle"}
 Assert-T ($source -notmatch '\?w=password&p=|AdminPassword|adminSecret') 'reversible credential login remains present'
 Assert-T ($source -notmatch 'PreexistingProcessAllowlistPath' -and

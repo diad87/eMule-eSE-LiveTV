@@ -244,6 +244,28 @@ function Assert-R93OneNewCandidateProcess {
     return $newItems[0]
 }
 
+function Assert-R93NonFirstStartIni {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $inEmule = $false
+    $values = @()
+    foreach ($line in [IO.File]::ReadAllLines($Path)) {
+        if ($line -match '^\[([^\]]+)\]$') {
+            $inEmule = [string]::Equals($Matches[1], 'eMule',
+                [StringComparison]::OrdinalIgnoreCase)
+            continue
+        }
+        if ($inEmule -and $line -match '^([^=]+)=(.*)$' -and
+            [string]::Equals($Matches[1], 'AppVersion',
+                [StringComparison]::OrdinalIgnoreCase)) {
+            $values += [string]$Matches[2]
+        }
+    }
+    if ($values.Count -ne 1 -or [string]::IsNullOrEmpty($values[0])) {
+        throw 'Isolated profile would enter the first-run modal workflow.'
+    }
+    return $true
+}
+
 function Set-R93ProductIni {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -253,6 +275,10 @@ function Set-R93ProductIni {
         [Parameter(Mandatory = $true)]
         [ValidatePattern('^[0-9a-fA-F]{32}$')][string]$StoredPasswordHash
     )
+    # Preferences.cpp derives IsFirstStart() solely from an empty
+    # [eMule] AppVersion.  A fresh lab profile must never enter the modal
+    # first-run wizard because that would invalidate unattended shutdown.
+    Set-LabIniValue $Path eMule AppVersion R93_ISOLATED_PROFILE | Out-Null
     Set-LabIniValue $Path UPnP EnableUPnP 1 | Out-Null
     Set-LabIniValue $Path eMule Port $TcpPort | Out-Null
     Set-LabIniValue $Path eMule UDPPort $UdpPort | Out-Null
@@ -264,6 +290,133 @@ function Set-R93ProductIni {
     Set-LabIniValue $Path WebServer Password `
         $StoredPasswordHash.ToLowerInvariant() | Out-Null
     Set-LabIniValue $Path WebServer AllowAdminHiLevelFunc 1 | Out-Null
+    $null = Assert-R93NonFirstStartIni $Path
+}
+
+function Assert-R93ExpectedHeadlessWindowSet {
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [ValidateRange(0, 30000)][int]$TimeoutMs = 10000,
+        [ValidateRange(2, 20)][int]$StableSamples = 5,
+        [ValidateRange(1, 1000)][int]$SampleIntervalMs = 100,
+        [scriptblock]$InventoryProvider,
+        [scriptblock]$IdentityGuard
+    )
+    if ($null -eq $InventoryProvider) {
+        if ($null -eq ('R93WindowInventoryNative' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class R93WindowInventoryNative {
+    public sealed class Inventory {
+        public bool enumeration_complete;
+        public Row[] rows;
+    }
+    public sealed class Row {
+        public long hwnd;
+        public long owner;
+        public bool visible;
+        public string window_class;
+        public string title;
+    }
+    private delegate bool EnumProc(IntPtr hwnd, IntPtr context);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc callback, IntPtr context);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr hwnd, uint command);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder value, int size);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, StringBuilder value, int size);
+    public static Inventory Get(uint expectedProcessId) {
+        var result = new List<Row>();
+        bool complete = EnumWindows(delegate(IntPtr hwnd, IntPtr ignored) {
+            uint processId;
+            GetWindowThreadProcessId(hwnd, out processId);
+            if (processId == expectedProcessId) {
+                var windowClass = new StringBuilder(256);
+                var title = new StringBuilder(256);
+                GetClassName(hwnd, windowClass, windowClass.Capacity);
+                GetWindowText(hwnd, title, title.Capacity);
+                result.Add(new Row { hwnd = hwnd.ToInt64(),
+                    owner = GetWindow(hwnd, 4).ToInt64(),
+                    visible = IsWindowVisible(hwnd),
+                    window_class = windowClass.ToString(),
+                    title = title.ToString() });
+            }
+            return true;
+        }, IntPtr.Zero);
+        return new Inventory { enumeration_complete = complete,
+            rows = result.ToArray() };
+    }
+}
+'@
+        }
+        $InventoryProvider = {
+            param($expectedProcessId)
+            return [R93WindowInventoryNative]::Get(
+                [uint32]$expectedProcessId)
+        }
+    }
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+    $stable = 0
+    do {
+        if ($null -ne $IdentityGuard -and
+            -not [bool](& $IdentityGuard $ProcessId)) {
+            throw 'Launched process identity changed during window preflight.'
+        }
+        $inventory = & $InventoryProvider $ProcessId
+        if ($null -ne $inventory -and
+            $null -ne $inventory.PSObject.Properties['enumeration_complete']) {
+            if (-not [bool]$inventory.enumeration_complete) {
+                throw 'Top-level window enumeration was incomplete.'
+            }
+            $rows = @($inventory.rows)
+        } else {
+            # Injectable providers used by the offline campaign predate the
+            # native completion envelope and are complete by construction.
+            $rows = @($inventory)
+        }
+        if ($null -ne $IdentityGuard -and
+            -not [bool](& $IdentityGuard $ProcessId)) {
+            throw 'Launched process identity changed during window preflight.'
+        }
+        if (@($rows | Where-Object { [bool]$_.visible }).Count -gt 0) {
+            throw 'Launched headless process exposed an unexpected modal window.'
+        }
+        $main = @($rows | Where-Object {
+                [string]$_.window_class -ceq '#32770' -and
+                -not [bool]$_.visible -and [int64]$_.owner -eq 0 -and
+                ([string]$_.title).StartsWith('eMule ',
+                    [StringComparison]::Ordinal) })
+        $unexpected = @($rows | Where-Object {
+                $windowClass = [string]$_.window_class
+                $title = [string]$_.title
+                $isMain = $windowClass -ceq '#32770' -and
+                    -not [bool]$_.visible -and [int64]$_.owner -eq 0 -and
+                    $title.StartsWith('eMule ',
+                        [StringComparison]::Ordinal)
+                $isKnownInfrastructure =
+                    (($windowClass -in @('Auto-Suggest Dropdown',
+                            'eMule_TaskbarNotifierWndClass', 'ComboLBox',
+                            'tooltips_class32')) -and
+                        [string]::IsNullOrEmpty($title)) -or
+                    ($windowClass -ceq 'MSCTFIME UI' -and
+                        $title -ceq 'MSCTFIME UI') -or
+                    ($windowClass -ceq 'IME' -and $title -ceq 'Default IME')
+                -not ($isMain -or $isKnownInfrastructure)
+            })
+        if ($unexpected.Count -gt 0) {
+            throw 'Launched headless process exposed an unallowlisted window.'
+        }
+        if ($main.Count -eq 1) {
+            $stable++
+            if ($stable -ge $StableSamples) { return $true }
+        } else { $stable = 0 }
+        if ($TimeoutMs -eq 0 -or [DateTime]::UtcNow -ge $deadline) { break }
+        Start-Sleep -Milliseconds $SampleIntervalMs
+    } while ($true)
+    throw 'Expected hidden headless main window was not uniquely observable.'
 }
 
 function Invoke-R93AuthenticatedWebClose {
@@ -633,6 +786,15 @@ $adapters = [pscustomobject]@{
             $preexistingBaseline $after ([int]$token) $exe $exeHash
         $null = Assert-R93LaunchedProcessHandleIdentity $script:process `
             $script:launchedIdentity $exe $exeHash
+        $identityGuard = { param($guardToken)
+            try {
+                $null = Assert-R93LaunchedProcessHandleIdentity `
+                    $script:process $script:launchedIdentity $exe $exeHash
+                return [int]$script:process.Id -eq [int]$guardToken
+            } catch { return $false }
+        }.GetNewClosure()
+        $null = Assert-R93ExpectedHeadlessWindowSet `
+            -ProcessId ([int]$token) -IdentityGuard $identityGuard
         return $true }
     Exists = { param($token)
         if ($null -eq $script:process -or
@@ -653,8 +815,19 @@ $adapters = [pscustomobject]@{
     Close = { param($token) $null = Invoke-R93AccreditedWebShutdown `
             -Token $token -TimeoutSec $ShutdownTimeoutSec `
             -Exists $adapters.Exists -IsAccredited $adapters.IsAccredited `
-            -CloseAttempt { param($ignored) Invoke-R93AuthenticatedWebClose `
-                    -BaseUrl $baseUrl -StoredPasswordHash $adminHash } `
+            -CloseAttempt { param($ignored)
+                $preCloseIdentity = { param($guardToken)
+                    try {
+                        $null = Assert-R93LaunchedProcessHandleIdentity `
+                            $script:process $script:launchedIdentity $exe $exeHash
+                        return [int]$script:process.Id -eq [int]$guardToken
+                    } catch { return $false }
+                }.GetNewClosure()
+                $null = Assert-R93ExpectedHeadlessWindowSet `
+                    -ProcessId ([int]$ignored) `
+                    -IdentityGuard $preCloseIdentity
+                Invoke-R93AuthenticatedWebClose -BaseUrl $baseUrl `
+                    -StoredPasswordHash $adminHash } `
             -WaitForExit { param($ignored, $milliseconds)
                 $script:process.WaitForExit($milliseconds) } }
     WaitForExit = { param($token) $script:process.WaitForExit(0) }

@@ -69,6 +69,56 @@ W12_R_TOOL_PATHS = {
     "ratchet": "tools/architecture/verify_m2a00_migration_ratchet.py",
 }
 W12_COVERAGE_IDS = tuple(f"W12-COV-{index:02d}" for index in range(1, 12))
+W12_RESEAL_DOMAIN = b"ese.mod52.w12-reseal/v1\0"
+W12_RESEAL_FUNCTIONAL_BASE = "d534405890a1bd2e7c6060601f75ad2c5821206a"
+W12_RESEAL_PARENT = "365662f4371f417723a3bac66bbf17b584d8b4f0"
+W12_RESEAL_MERGE_TARGET = "e28e267e6d7ad7728c376a9a661476718f510230"
+W12_RESEAL_GOVERNANCE_PATHS = [
+    "docs/architecture/mod52_migration_matrix_v2.json",
+    "docs/architecture/mod52_migration_contract_v2.json",
+    "docs/architecture/mod04_architecture_gate_catalog_v3.json",
+    "tools/architecture/verify_m2a00_migration_ratchet.py",
+    "tests/test_v92_m2a00_migration_ratchet.py",
+]
+W12_RESEAL_FUNCTIONAL_PATHS = [
+    "srchybrid/DirectReachabilityManager.cpp",
+    "srchybrid/DirectReachabilityManager.h",
+    "srchybrid/Mod02BuildIdentity.h",
+    "srchybrid/WebRequestDispatch.cpp",
+    "srchybrid/WebServer.cpp",
+    "srchybrid/WebServer.h",
+    "srchybrid/eSE/test/live_tv_regression.test.js",
+    "srchybrid/emule.vcxproj",
+    "srchybrid/tests/make.bat",
+    "tests/test_v92_m2a00_migration_ratchet.py",
+    "tests/test_v92_mod04_architecture_gate.py",
+    "tools/architecture/run_mod02_stream_selftest.ps1",
+    "tools/architecture/verify_m2a00_migration_ratchet.py",
+]
+W12_RESEAL_VM_PATH = "tools/architecture/verify_mod02_characterization.py"
+W12_RESEAL_BILATERAL_ABSENT = {"srchybrid/WebServer_original.cpp"}
+W12_RESEAL_ORDERED_UNION = list(dict.fromkeys(
+    W12_RESEAL_FUNCTIONAL_PATHS + W12_RESEAL_GOVERNANCE_PATHS
+    + [W12_RESEAL_VM_PATH]
+))
+W12_H2_REVIEW_PATHS = {
+    "Terra": "artifacts/mod52-w12-h2-reseal/review-terra.json",
+    "Sol": "artifacts/mod52-w12-h2-reseal/review-sol.json",
+}
+W12_H2_COVERAGE_PATH = "artifacts/mod52-w12-h2-reseal/coverage-summary.json"
+W12_RESEAL_COVERAGE_SOURCES = {
+    "W12-COV-01": ("tests/test_v92_mod22_web_auth_policy.py", "python tests/test_v92_mod22_web_auth_policy.py", "OK"),
+    "W12-COV-02": ("tests/test_v92_mod23_web_route_table.py", "python tests/test_v92_mod23_web_route_table.py", "OK"),
+    "W12-COV-03": ("srchybrid/tests/test_web_hls_capability_controller.cpp", "cmd /d /c srchybrid\\tests\\make.bat", "test_web_hls_capability_controller PASS"),
+    "W12-COV-04": ("srchybrid/tests/test_web_hls_capability_controller.cpp", "cmd /d /c srchybrid\\tests\\make.bat", "test_web_hls_capability_controller PASS"),
+    "W12-COV-05": ("srchybrid/tests/test_web_streaming.cpp", "cmd /d /c srchybrid\\tests\\make.bat", "test_web_streaming PASS"),
+    "W12-COV-06": ("tools/architecture/verify_m2a00_migration_ratchet.py", "python tools/architecture/verify_m2a00_migration_ratchet.py --verify", "M2A-00 PASS"),
+    "W12-COV-07": ("tests/test_v92_m2a_w12_security_evidence.py", "python -m unittest tests.test_v92_m2a_w12_security_evidence", "OK"),
+    "W12-COV-08": ("srchybrid/eSE/test/live_tv_regression.test.js", "node --test srchybrid/eSE/test/live_tv_regression.test.js", "pass"),
+    "W12-COV-09": ("srchybrid/eSE/test/live_tv_regression.test.js", "node --test srchybrid/eSE/test/live_tv_regression.test.js", "pass"),
+    "W12-COV-10": ("tests/test_v92_mod23_web_route_table.py", "python tests/test_v92_mod23_web_route_table.py", "OK"),
+    "W12-COV-11": ("tests/test_v92_k03_port_roles.py", "python tests/test_v92_k03_port_roles.py", "OK"),
+}
 W12_TYPED_COVERAGE = (
     "card:W12",
     "module:WebServerFacade",
@@ -3163,6 +3213,220 @@ def _validate_w12_surface_schemas(card: dict[str, Any]) -> None:
         raise GateError("W12 surfaces and surface budgets do not cover the same paths")
 
 
+def _w12_reseal_digest(payload: dict[str, Any]) -> str:
+    body = copy.deepcopy(payload)
+    claimed = body.pop("payload_sha256", None)
+    if not isinstance(claimed, str) or not re.fullmatch(r"[0-9a-f]{64}", claimed):
+        raise GateError("W12 reseal payload digest is malformed")
+    encoded = json.dumps(
+        body, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    ).encode("ascii")
+    return hashlib.sha256(W12_RESEAL_DOMAIN + encoded).hexdigest()
+
+
+def _validate_w12_reseal(
+    payload: dict[str, Any], contract_binding: dict[str, Any],
+    catalogue_binding: dict[str, Any],
+) -> None:
+    required = {
+        "schema", "payload_sha256", "state", "prior_immutable_a",
+        "baseline_parent", "merge_target", "activation_binding",
+        "mod02_status", "functional_commits", "functional_delta_paths",
+        "reseal_governance_paths", "premerge_vm_tail",
+        "reseal_tail_path_count", "distinct_path_union_count", "budgets", "dependency_snapshot",
+        "reviews",
+    }
+    payload = _closed_object(payload, required, "matrix.w12_reseal")
+    digest = _w12_reseal_digest(payload)
+    if digest != payload["payload_sha256"]:
+        raise GateError("W12 reseal payload digest drift")
+    expected_binding = {
+        "schema": "ese.mod52.w12-reseal-binding/v1",
+        "payload_sha256": digest,
+        "activation_binding": "H2_ONLY",
+    }
+    if contract_binding != expected_binding or catalogue_binding != expected_binding:
+        raise GateError("W12 reseal cross-document binding drift")
+    if (
+        payload["schema"] != "ese.mod52.w12-reseal/v1"
+        or payload["state"] != "A2-CANDIDATE"
+        or payload["prior_immutable_a"] != W12_RESEAL_FUNCTIONAL_BASE
+        or payload["baseline_parent"] != W12_RESEAL_PARENT
+        or payload["merge_target"] != W12_RESEAL_MERGE_TARGET
+        or payload["activation_binding"] != "H2_ONLY"
+        or payload["mod02_status"] != "PENDING_UNTIL_MERGE_AND_H2"
+    ):
+        raise GateError("W12 reseal identity/state drift")
+
+    paths = _closed_list(payload["functional_delta_paths"], "reseal.functional_delta_paths")
+    if len(paths) != 13:
+        raise GateError("W12 reseal functional path count drift")
+    raw_names = [row.get("path") if isinstance(row, dict) else None for row in paths]
+    if raw_names != W12_RESEAL_FUNCTIONAL_PATHS or len({str(p).casefold() for p in raw_names}) != 13:
+        raise GateError("W12 reseal functional path set/order/case drift")
+    names: list[str] = []
+    for row in paths:
+        row = _closed_object(
+            row, {"path", "pre_blob", "post_blob", "add", "delete"},
+            "reseal.functional_delta_path",
+        )
+        path = _safe_w12_path(row["path"])
+        if path in names:
+            raise GateError("W12 reseal functional path order/duplicate drift")
+        names.append(path)
+        for key in ("pre_blob", "post_blob"):
+            if not isinstance(row[key], str) or not re.fullmatch(r"[0-9a-f]{40}", row[key]):
+                raise GateError("W12 reseal functional blob is malformed")
+        if not _nonnegative_int(row["add"]) or not _nonnegative_int(row["delete"]):
+            raise GateError("W12 reseal functional numstat is malformed")
+        if _git_text("rev-parse", f"{W12_RESEAL_FUNCTIONAL_BASE}:{path}") != row["pre_blob"]:
+            raise GateError(f"W12 reseal pre-blob drift: {path}")
+        if _git_text("rev-parse", f"{W12_RESEAL_PARENT}:{path}") != row["post_blob"]:
+            raise GateError(f"W12 reseal post-blob drift: {path}")
+        measured = _w12_numstat(W12_RESEAL_FUNCTIONAL_BASE, W12_RESEAL_PARENT, [path])[path]
+        if measured != (row["add"], row["delete"]):
+            raise GateError(f"W12 reseal functional numstat drift: {path}")
+
+    commits = _closed_list(payload["functional_commits"], "reseal.functional_commits")
+    if len(commits) != 9:
+        raise GateError("W12 reseal functional commit count drift")
+    declared_commits: list[str] = []
+    for row in commits:
+        row = _closed_object(row, {"sha", "subject"}, "reseal.functional_commit")
+        if not isinstance(row["sha"], str) or not re.fullmatch(r"[0-9a-f]{40}", row["sha"]):
+            raise GateError("W12 reseal functional commit hash malformed")
+        if _git_text("show", "-s", "--format=%s", row["sha"]) != row["subject"]:
+            raise GateError("W12 reseal functional commit subject drift")
+        declared_commits.append(row["sha"])
+    projected: list[str] = []
+    for sha in _git_text("rev-list", "--reverse", f"{W12_RESEAL_FUNCTIONAL_BASE}..{W12_RESEAL_PARENT}").splitlines():
+        if _w12_commit_changed_paths(f"{sha}^", sha) & set(names):
+            projected.append(sha)
+    if declared_commits != projected:
+        raise GateError("W12 reseal functional commit projection/order drift")
+
+    governance = _closed_list(payload["reseal_governance_paths"], "reseal.governance_paths")
+    if governance != W12_RESEAL_GOVERNANCE_PATHS:
+        raise GateError("W12 reseal governance path set/order drift")
+    tail = _closed_list(payload["premerge_vm_tail"], "reseal.premerge_vm_tail")
+    if len(tail) != 1 or set(tail[0]) != {"path", "pre_blob", "merge_target_blob"}:
+        raise GateError("W12 reseal premerge V/M tail schema/count drift")
+    expected_tail = {
+        "path": "tools/architecture/verify_mod02_characterization.py",
+        "pre_blob": "1c61b4e1deb1bc7bc0ec22e6c7115d6c7c35c6df",
+        "merge_target_blob": "0758f6cabdb0405d33370efba00ba69f9e40360f",
+    }
+    if tail[0] != expected_tail:
+        raise GateError("W12 reseal premerge V/M tail drift")
+    ordered_union = list(dict.fromkeys(names + governance + [tail[0]["path"]]))
+    if payload["reseal_tail_path_count"] != 6 or len(set(governance) | {tail[0]["path"]}) != 6:
+        raise GateError("W12 reseal tail path count drift")
+    if (
+        payload["distinct_path_union_count"] != 17
+        or ordered_union != W12_RESEAL_ORDERED_UNION
+        or len({p.casefold() for p in ordered_union}) != 17
+    ):
+        raise GateError("W12 reseal distinct path union drift")
+
+    budgets = payload["budgets"]
+    if set(budgets) != {"card_total", "webserver_coordinator"}:
+        raise GateError("W12 reseal budget schema drift")
+    expected_budget = {
+        "card_total": {
+            "original_limit":{"add_max":12000,"delete_min":5500,"net_max":6500},
+            "original_a_actual":{"add":11995,"delete":5521,"net":6474},
+            "post_a_delta":{"add":990,"delete":12,"net":978},
+            "resealed_actual":{"add":12985,"delete":5533,"net":7452},
+            "exact_exception":{"add_over":985,"net_over":952},
+        },
+        "webserver_coordinator": {
+            "original_limit":{"add_max":500,"delete_min":120,"net_max":300,"cpp_target_loc":2100,"cpp_hard_loc":3500,"header_hard_loc":300},
+            "original_a_actual":{"add":421,"delete":137,"net":284,"cpp_loc":2048},
+            "post_a_delta":{"add":107,"delete":1,"net":106,"cpp_loc_delta":104},
+            "resealed_actual":{"add":528,"delete":138,"net":390,"cpp_loc":2152,"header_loc":273},
+            "exact_exception":{"add_over":28,"net_over":90,"cpp_target_over":52},
+        },
+    }
+    if budgets != expected_budget:
+        raise GateError("W12 reseal budget/equation drift")
+    historical_matrix = _w12_strict_json_blob(
+        W12_RESEAL_FUNCTIONAL_BASE,
+        W12_MATRIX.relative_to(ROOT).as_posix(),
+    )
+    historical_paths = historical_matrix["cards"][0]["card_paths"]
+    original_stats = _w12_numstat(W12_BASE_COMMIT, W12_RESEAL_FUNCTIONAL_BASE, historical_paths)
+    original_add = sum(row[0] for row in original_stats.values())
+    original_delete = sum(row[1] for row in original_stats.values())
+    post_add = sum(row["add"] for row in paths)
+    post_delete = sum(row["delete"] for row in paths)
+    measured_total = {
+        "original_a_actual":{"add":original_add,"delete":original_delete,"net":original_add-original_delete},
+        "post_a_delta":{"add":post_add,"delete":post_delete,"net":post_add-post_delete},
+        "resealed_actual":{"add":original_add+post_add,"delete":original_delete+post_delete,"net":original_add+post_add-original_delete-post_delete},
+    }
+    for key, value in measured_total.items():
+        if budgets["card_total"][key] != value:
+            raise GateError(f"W12 reseal Git-derived total budget drift: {key}")
+    total_limit = budgets["card_total"]["original_limit"]
+    total_actual = budgets["card_total"]["resealed_actual"]
+    if budgets["card_total"]["exact_exception"] != {
+        "add_over": total_actual["add"] - total_limit["add_max"],
+        "net_over": total_actual["net"] - total_limit["net_max"],
+    }:
+        raise GateError("W12 reseal total exception equation drift")
+
+    coordinator_paths = ["srchybrid/WebServer.cpp", "srchybrid/WebServer.h"]
+    original_coord = _w12_numstat(W12_BASE_COMMIT, W12_RESEAL_FUNCTIONAL_BASE, coordinator_paths)
+    post_coord = _w12_numstat(W12_RESEAL_FUNCTIONAL_BASE, W12_RESEAL_PARENT, coordinator_paths)
+    def totals(rows: dict[str, tuple[int, int]]) -> dict[str, int]:
+        added = sum(row[0] for row in rows.values())
+        deleted = sum(row[1] for row in rows.values())
+        return {"add":added,"delete":deleted,"net":added-deleted}
+    measured_original_coord = totals(original_coord)
+    measured_post_coord = totals(post_coord)
+    measured_post_coord["cpp_loc_delta"] = (
+        _w12_physical_loc(_w12_blob_or_none(W12_RESEAL_PARENT, coordinator_paths[0]))
+        - _w12_physical_loc(_w12_blob_or_none(W12_RESEAL_FUNCTIONAL_BASE, coordinator_paths[0]))
+    )
+    measured_resealed_coord = totals(_w12_numstat(W12_BASE_COMMIT, W12_RESEAL_PARENT, coordinator_paths))
+    measured_resealed_coord.update({
+        "cpp_loc": _w12_physical_loc(_w12_blob_or_none(W12_RESEAL_PARENT, coordinator_paths[0])),
+        "header_loc": _w12_physical_loc(_w12_blob_or_none(W12_RESEAL_PARENT, coordinator_paths[1])),
+    })
+    coordinator_budget = budgets["webserver_coordinator"]
+    expected_original_coord = {**measured_original_coord, "cpp_loc":2048}
+    if coordinator_budget["original_a_actual"] != expected_original_coord:
+        raise GateError("W12 reseal Git-derived original coordinator drift")
+    if coordinator_budget["post_a_delta"] != measured_post_coord:
+        raise GateError("W12 reseal Git-derived post-A coordinator drift")
+    if coordinator_budget["resealed_actual"] != measured_resealed_coord:
+        raise GateError("W12 reseal Git-derived coordinator/LOC drift")
+    coord_limit = coordinator_budget["original_limit"]
+    if coordinator_budget["exact_exception"] != {
+        "add_over": measured_resealed_coord["add"] - coord_limit["add_max"],
+        "net_over": measured_resealed_coord["net"] - coord_limit["net_max"],
+        "cpp_target_over": measured_resealed_coord["cpp_loc"] - coord_limit["cpp_target_loc"],
+    }:
+        raise GateError("W12 reseal coordinator exception equation drift")
+
+    mod51_report = mod51.validate(
+        mod51.load_json(mod51.CONTRACT_PATH), mod51.load_json(mod51.MOD04_PATH),
+        mod51.load_json(mod51.MOD03_PATH),
+    )
+    graph = mod51_report["current_graph"]
+    measured_dependencies = {
+        "modules":len(graph["nodes"]), "edges":len(graph["edges"]),
+        "includes":len(graph["includes"]), "new_sccs":len(mod51_report["new_sccs"]),
+    }
+    if payload["dependency_snapshot"] != measured_dependencies:
+        raise GateError("W12 reseal dependency snapshot drift")
+    if payload["reviews"] != [
+        {"role":"Terra","verdict":"PREPARED","binding":"PAYLOAD_ONLY"},
+        {"role":"Sol","verdict":"REQUIRED_BEFORE_COMMIT","binding":"PAYLOAD_ONLY"},
+    ]:
+        raise GateError("W12 reseal review state drift")
+
+
 def validate_w12_overlay_documents(
     matrix: dict[str, Any],
     contract: dict[str, Any],
@@ -3174,7 +3438,7 @@ def validate_w12_overlay_documents(
     _closed_object(matrix, {
         "schema", "status", "w12_base_commit", "scope", "supersedes",
         "supersedes_for_card", "change_scope", "v1_evidence",
-        "programme_budget", "cards",
+        "w12_reseal", "programme_budget", "cards",
     }, "matrix v2")
     _closed_object(contract, {
         "schema", "status", "w12_base_commit", "scope", "supersedes",
@@ -3182,6 +3446,7 @@ def validate_w12_overlay_documents(
         "card_prerequisites", "card_total_budget", "coordinator_limits",
         "ratchet", "additional_modules", "approved_header_only_ports",
         "coverage_requirements", "security_invariants", "acceptance",
+        "w12_reseal_binding",
     }, "contract v2")
     _closed_object(ownership, {
         "schema", "status", "scope", "supersedes", "supersedes_for_card",
@@ -3194,7 +3459,7 @@ def validate_w12_overlay_documents(
         "card_prerequisites", "additional_modules",
         "approved_header_only_ports", "coordinator_limits",
         "coverage_requirements", "coverage_map", "gates", "stop_conditions",
-        "approval",
+        "approval", "w12_reseal_binding",
     }, "MOD-0.4 v3")
     if (
         matrix["schema"] != "ese.mod52.migration-matrix/v2"
@@ -3211,6 +3476,11 @@ def validate_w12_overlay_documents(
         )
     ):
         raise GateError("W12 overlay identity/base/status drift")
+
+    _validate_w12_reseal(
+        matrix["w12_reseal"], contract["w12_reseal_binding"],
+        catalogue["w12_reseal_binding"],
+    )
     if matrix["supersedes"] != ["docs/architecture/mod52_migration_matrix_v1.json"]:
         raise GateError("W12 matrix supersedes scope drift")
     if contract["supersedes"] != ["docs/architecture/mod52_migration_contract_v1.json"]:
@@ -4777,6 +5047,18 @@ def verify_w12_overlay() -> dict[str, Any]:
     catalogue = _w12_strict_json_file(W12_MOD04)
     card = validate_w12_overlay_documents(matrix, contract, ownership, catalogue)
     ledger = _w12_strict_json_file(ACTIVATION)
+    w12_state = ledger.get("cards", {}).get("W12", {})
+    if isinstance(w12_state, dict) and "reseal" in w12_state:
+        stage, activation_commit = validate_w12_reseal_activation_state(card, ledger)
+        return {
+            "schema": "ese.m2a00.w12-reseal-ratchet-report/v1",
+            "baseline_commit": W12_RESEAL_PARENT,
+            "stage": stage,
+            "activation_commit": activation_commit,
+            "payload_sha256": matrix["w12_reseal"]["payload_sha256"],
+            "coverage": list(W12_COVERAGE_IDS),
+            "status": "PASS",
+        }
     stage, activation_commit, numstat = validate_w12_activation_state(card, ledger)
     metrics = validate_w12_source_ratchets(card, numstat)
     validate_w12_dependencies_and_scc(card, ownership)
@@ -4794,6 +5076,277 @@ def verify_w12_overlay() -> dict[str, Any]:
         },
         "status": "PASS",
     }
+
+
+def verify_w12_reseal_candidate() -> dict[str, Any]:
+    """Validate the uncommitted A2-prime delta without claiming H2 activation."""
+    matrix = _w12_strict_json_file(W12_MATRIX)
+    contract = _w12_strict_json_file(W12_CONTRACT)
+    ownership = _w12_strict_json_file(W12_MOD03)
+    catalogue = _w12_strict_json_file(W12_MOD04)
+    card = validate_w12_overlay_documents(matrix, contract, ownership, catalogue)
+    expected = set(W12_RESEAL_GOVERNANCE_PATHS) | {
+        "tools/architecture/verify_mod02_characterization.py"
+    }
+    head = _git_text("rev-parse", "HEAD")
+    dirty = _git_z_paths("diff", "--name-only", "HEAD") | _git_z_paths(
+        "diff", "--cached", "--name-only", "HEAD"
+    )
+    untracked = _git_z_paths("ls-files", "--others", "--exclude-standard")
+    protected_untracked = untracked & (expected | set(card["card_paths"]))
+    if protected_untracked:
+        raise GateError("W12 A2-prime candidate has untracked governance/CARD paths")
+    if head == W12_RESEAL_PARENT:
+        changed = dirty
+    else:
+        parents = _git_text("show", "-s", "--format=%P", head).split()
+        if len(parents) == 2:
+            if parents[0] != W12_RESEAL_MERGE_TARGET:
+                raise GateError("W12 pre-H2 merge parents are inverted or drifted")
+            a2_prime_commit = parents[1]
+            if (
+                _git_text("show", "-s", "--format=%P", a2_prime_commit).split()
+                != [W12_RESEAL_PARENT] or dirty
+            ):
+                raise GateError("W12 pre-H2 merge does not contain an exact A2-prime parent")
+            if _w12_commit_changed_paths(W12_RESEAL_PARENT, a2_prime_commit) != expected:
+                raise GateError("W12 A2-prime committed delta is not the exact six-path tail")
+            if _git_text("rev-parse", f"{head}:{W12_RESEAL_VM_PATH}") != "0758f6cabdb0405d33370efba00ba69f9e40360f":
+                raise GateError("W12 pre-H2 merge V/M blob did not converge")
+            _validate_w12_reseal_card_blob_equivalence(
+                a2_prime_commit, head, card["card_paths"], "A2-prime-to-pre-H2-merge"
+            )
+            raise GateError("PENDING_UNTIL_MERGE_AND_H2: reviewed merge is valid but activation ledger is not updated")
+        if parents != [W12_RESEAL_PARENT] or dirty:
+            raise GateError("W12 A2-prime must have exactly one parent, the sealed baseline")
+        changed = _w12_commit_changed_paths(W12_RESEAL_PARENT, head)
+    if changed != expected:
+        raise GateError("W12 A2-prime candidate must change exactly the six reseal tail paths")
+    tail_path = "tools/architecture/verify_mod02_characterization.py"
+    tail_blob = hashlib.sha1(
+        b"blob " + str(len((ROOT / tail_path).read_bytes())).encode("ascii") + b"\0"
+        + (ROOT / tail_path).read_bytes()
+    ).hexdigest()
+    if tail_blob != matrix["w12_reseal"]["premerge_vm_tail"][0]["merge_target_blob"]:
+        raise GateError("W12 A2-prime candidate does not carry the exact premerge V/M blob")
+    return {
+        "schema": "ese.m2a00.w12-a2-prime-candidate-report/v1",
+        "baseline_parent": W12_RESEAL_PARENT,
+        "payload_sha256": matrix["w12_reseal"]["payload_sha256"],
+        "changed_path_count": 6,
+        "mod02_status": "PENDING_UNTIL_MERGE_AND_H2",
+        "status": "PASS",
+    }
+
+
+def _validate_w12_reseal_reviews(rows: Any, a2_commit: str, h2_commit: str) -> None:
+    rows = _closed_list(rows, "ledger.W12.reseal.reviews")
+    if len(rows) != 2:
+        raise GateError("W12 H2 requires exactly Terra and Sol durable reviews")
+    tree = _git_text("rev-parse", f"{a2_commit}^{{tree}}")
+    payload_sha = _w12_strict_json_blob(
+        a2_commit, W12_MATRIX.relative_to(ROOT).as_posix()
+    )["w12_reseal"]["payload_sha256"]
+    expected_roles = ["Terra", "Sol"]
+    for role, row in zip(expected_roles, rows):
+        row = _closed_object(row, {"role", "path", "sha256"}, "ledger.W12.reseal.review")
+        expected_path = W12_H2_REVIEW_PATHS[role]
+        if row["role"] != role or row["path"] != expected_path:
+            raise GateError("W12 H2 review artifact path/role drift")
+        raw = _git_blob(h2_commit, expected_path)
+        if row["sha256"] != hashlib.sha256(raw).hexdigest():
+            raise GateError("W12 H2 review artifact hash drift")
+        artifact = _w12_strict_json_blob(h2_commit, expected_path)
+        artifact = _closed_object(
+            artifact,
+            {"schema", "role", "verdict", "payload_sha256", "reviewed_commit", "reviewed_tree", "findings"},
+            "W12 H2 review artifact",
+        )
+        if (
+            artifact["schema"] != "ese.mod52.w12-reseal-review/v1"
+            or artifact["role"] != role or artifact["verdict"] != "APPROVE"
+            or artifact["payload_sha256"] != payload_sha
+            or artifact["reviewed_commit"] != a2_commit or artifact["reviewed_tree"] != tree
+            or artifact["findings"] != []
+        ):
+            raise GateError("W12 H2 durable review binding drift")
+
+
+def _validate_w12_reseal_coverage(
+    rows: Any, stage: str, a2_commit: str, r_evidence: Any, h2_commit: str,
+) -> None:
+    rows = _closed_list(rows, "ledger.W12.reseal.coverage")
+    if len(rows) != 11:
+        raise GateError("W12 reseal coverage must contain exactly eleven rows")
+    raw_summary = _git_blob(h2_commit, W12_H2_COVERAGE_PATH)
+    summary_sha = hashlib.sha256(raw_summary).hexdigest()
+    summary = _closed_object(
+        _w12_strict_json_blob(h2_commit, W12_H2_COVERAGE_PATH),
+        {"schema", "payload_sha256", "source_commit", "source_tree", "results"},
+        "W12 H2 coverage summary",
+    )
+    a2_matrix = _w12_strict_json_blob(a2_commit, W12_MATRIX.relative_to(ROOT).as_posix())
+    source_tree = _git_text("rev-parse", f"{a2_commit}^{{tree}}")
+    if (
+        summary["schema"] != "ese.mod52.w12-reseal-coverage/v1"
+        or summary["payload_sha256"] != a2_matrix["w12_reseal"]["payload_sha256"]
+        or summary["source_commit"] != a2_commit
+        or summary["source_tree"] != source_tree
+    ):
+        raise GateError("W12 H2 coverage summary identity drift")
+    results = _closed_list(summary["results"], "W12 H2 coverage summary results")
+    expected_result_ids = [item for item in W12_COVERAGE_IDS if item != "W12-COV-07"]
+    if len(results) != 10 or [item.get("id") for item in results] != expected_result_ids:
+        raise GateError("W12 H2 coverage summary missing/extra/order drift")
+    result_by_id: dict[str, dict[str, Any]] = {}
+    for item in results:
+        item = _closed_object(
+            item, {"id", "logical_key", "command", "exit_code", "marker",
+                   "source_path", "source_sha256", "source_commit", "source_tree"},
+            "W12 H2 coverage result",
+        )
+        source_path, command, marker = W12_RESEAL_COVERAGE_SOURCES[item["id"]]
+        if (
+            item["logical_key"] != item["id"].lower()
+            or item["command"] != command or item["exit_code"] != 0
+            or item["marker"] != marker or item["source_path"] != source_path
+            or item["source_sha256"] != hashlib.sha256(_git_blob(a2_commit, source_path)).hexdigest()
+            or item["source_commit"] != a2_commit or item["source_tree"] != source_tree
+        ):
+            raise GateError("W12 H2 coverage result command/exit/marker/source drift")
+        result_by_id[item["id"]] = item
+    for expected_id, row in zip(W12_COVERAGE_IDS, rows):
+        row = _closed_object(
+            row, {"id", "stage", "verdict", "summary_path", "summary_sha256",
+                  "summary_entry", "r2_artifacts"},
+            "ledger.W12.reseal.coverage.row",
+        )
+        expected_stage = "R2" if expected_id == "W12-COV-07" else (
+            "A2/H2" if expected_id == "W12-COV-06" else "PRE-A2"
+        )
+        expected_verdict = "PASS" if stage == "R2" or expected_id != "W12-COV-07" else "PENDING"
+        pending = expected_verdict == "PENDING"
+        if (
+            row["id"] != expected_id or row["stage"] != expected_stage
+            or row["verdict"] != expected_verdict
+            or row["summary_path"] != W12_H2_COVERAGE_PATH
+            or row["summary_sha256"] != summary_sha
+            or row["summary_entry"] != (None if expected_id == "W12-COV-07" else expected_id.lower())
+        ):
+            raise GateError("W12 reseal coverage order/stage/evidence drift")
+        if expected_id != "W12-COV-07":
+            if row["r2_artifacts"] != []:
+                raise GateError("W12 non-R coverage must not link R2 artifacts")
+        elif stage == "H2":
+            if row["r2_artifacts"] != []:
+                raise GateError("W12 H2 COV07 must not claim R2 artifacts")
+        else:
+            expected_artifacts = [
+                {"key":key, "path":r_evidence[key]["path"], "sha256":r_evidence[key]["sha256"]}
+                for key in W12_R_ARTIFACT_NAMES
+            ]
+            if row["r2_artifacts"] != expected_artifacts:
+                raise GateError("W12 R2 COV07 artifact linkage drift")
+
+
+def _validate_w12_reseal_card_blob_equivalence(
+    left: str, right: str, card_paths: list[str], label: str,
+) -> None:
+    bilateral_absent: list[str] = []
+    for path in card_paths:
+        left_blob = _w12_blob_or_none(left, path)
+        right_blob = _w12_blob_or_none(right, path)
+        if left_blob is None and right_blob is None:
+            bilateral_absent.append(path)
+            continue
+        if (left_blob is None) != (right_blob is None):
+            raise GateError(f"W12 reseal unilateral CARD_PATH absence: {label}: {path}")
+        if left_blob != right_blob:
+            raise GateError(f"W12 reseal CARD_PATH blob drift: {label}: {path}")
+    if bilateral_absent != ["srchybrid/WebServer_original.cpp"] or set(bilateral_absent) != W12_RESEAL_BILATERAL_ABSENT:
+        raise GateError(f"W12 reseal bilateral absent CARD_PATH set/order drift: {label}")
+
+
+def validate_w12_reseal_activation_state(
+    card: dict[str, Any], ledger: dict[str, Any], head: str = "HEAD"
+) -> tuple[str, str]:
+    state = ledger.get("cards", {}).get("W12")
+    if not isinstance(state, dict) or set(state) != {
+        "state", "stage", "activation_commit", "evidence", "r_evidence", "reseal"
+    }:
+        raise GateError("W12 reseal activation ledger schema drift")
+    if state["state"] != "active" or state["stage"] not in {"H2", "R2"}:
+        raise GateError("W12 reseal activation stage drift")
+    a2_commit = state["activation_commit"]
+    if not isinstance(a2_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", a2_commit):
+        raise GateError("W12 reseal activation commit malformed")
+    if _git_text("show", "-s", "--format=%P", a2_commit).split() != [W12_RESEAL_PARENT]:
+        raise GateError("W12 A2-prime must have exactly one parent, the sealed baseline")
+    a2_matrix = _w12_strict_json_blob(a2_commit, W12_MATRIX.relative_to(ROOT).as_posix())
+    if a2_matrix["w12_reseal"]["payload_sha256"] != _w12_reseal_digest(a2_matrix["w12_reseal"]):
+        raise GateError("W12 A2 committed payload digest drift")
+    reseal = _closed_object(
+        state["reseal"],
+        {"schema", "payload_sha256", "merge_commit", "reviews", "coverage"},
+        "ledger.W12.reseal",
+    )
+    if reseal["schema"] != "ese.mod52.w12-reseal-activation/v1" or reseal["payload_sha256"] != a2_matrix["w12_reseal"]["payload_sha256"]:
+        raise GateError("W12 H2 payload binding drift")
+    merge_commit = reseal["merge_commit"]
+    if _git_text("show", "-s", "--format=%P", merge_commit).split() != [W12_RESEAL_MERGE_TARGET, a2_commit]:
+        raise GateError("W12 reseal merge parents/order drift")
+    if _git_text("rev-parse", f"{merge_commit}:{W12_RESEAL_VM_PATH}") != "0758f6cabdb0405d33370efba00ba69f9e40360f":
+        raise GateError("W12 reseal merge V/M blob did not converge")
+    _validate_w12_reseal_card_blob_equivalence(
+        a2_commit, merge_commit, card["card_paths"], "A2-prime-to-merge"
+    )
+    resolved_head = _git_text("rev-parse", head)
+    if not _is_ancestor(merge_commit, resolved_head):
+        raise GateError("W12 H2/R2 is not descended from the reviewed merge")
+    ledger_path = ACTIVATION.relative_to(ROOT).as_posix()
+    if state["stage"] == "H2":
+        if _git_text("show", "-s", "--format=%P", resolved_head).split() != [merge_commit]:
+            raise GateError("W12 H2 parent must be exactly the reviewed merge")
+        if state["r_evidence"] is not None:
+            raise GateError("W12 H2 must not contain R2 evidence")
+        expected_h2 = {ledger_path, *W12_H2_REVIEW_PATHS.values(), W12_H2_COVERAGE_PATH}
+        if _w12_commit_changed_paths(merge_commit, resolved_head) != expected_h2:
+            raise GateError("W12 H2 must contain exactly ledger, two reviews and coverage summary")
+        _validate_w12_reseal_reviews(reseal["reviews"], a2_commit, resolved_head)
+        _validate_w12_reseal_coverage(reseal["coverage"], "H2", a2_commit, None, resolved_head)
+    else:
+        if not _is_ancestor(merge_commit, resolved_head):
+            raise GateError("W12 R2 is not descended from H2 merge")
+        artifact_paths = validate_w12_r_evidence_schema(state["r_evidence"], a2_commit)
+        expected = {ledger_path, *artifact_paths.values()}
+        # The H2 commit is the first parent of R2 and must itself be merge-descended.
+        h2_commit = _git_text("show", "-s", "--format=%P", resolved_head).split()
+        if len(h2_commit) != 1 or not _is_ancestor(merge_commit, h2_commit[0]):
+            raise GateError("W12 R2 parent is not a merge-descended H2")
+        if _git_text("show", "-s", "--format=%P", h2_commit[0]).split() != [merge_commit]:
+            raise GateError("W12 R2 parent H2 must directly parent the reviewed merge")
+        _validate_w12_reseal_reviews(reseal["reviews"], a2_commit, h2_commit[0])
+        _validate_w12_reseal_coverage(
+            reseal["coverage"], "R2", a2_commit, state["r_evidence"], h2_commit[0]
+        )
+        parent_ledger = _w12_strict_json_blob(h2_commit[0], ledger_path)
+        parent_state = parent_ledger.get("cards", {}).get("W12")
+        expected_parent = copy.deepcopy(state)
+        expected_parent["stage"] = "H2"
+        expected_parent["r_evidence"] = None
+        for row in expected_parent["reseal"]["coverage"]:
+            if row["id"] == "W12-COV-07":
+                row["verdict"] = "PENDING"
+                row["r2_artifacts"] = []
+        if parent_state != expected_parent:
+            raise GateError("W12 R2 parent ledger is not the exact H2 attestation")
+        if _w12_commit_changed_paths(h2_commit[0], resolved_head) != expected:
+            raise GateError("W12 R2 must contain exactly ledger plus five artifacts")
+        _validate_w12_r_artifacts(state, a2_commit, artifact_paths)
+    _validate_w12_reseal_card_blob_equivalence(
+        merge_commit, resolved_head, card["card_paths"], "merge-to-H2/R2"
+    )
+    return state["stage"], a2_commit
 
 
 def report() -> dict[str, Any]:
@@ -4814,6 +5367,11 @@ def verify(overrides: dict[str, bytes] | None = None) -> dict[str, Any]:
             raise GateError("W12 overlay is partially present")
         if overrides is not None:
             raise GateError("W12 overlay verification does not accept v1 source overrides")
+        matrix = _w12_strict_json_file(W12_MATRIX)
+        ledger = _w12_strict_json_file(ACTIVATION)
+        w12_state = ledger.get("cards", {}).get("W12", {})
+        if "w12_reseal" in matrix and isinstance(w12_state, dict) and "reseal" not in w12_state:
+            return verify_w12_reseal_candidate()
         return verify_w12_overlay()
     contract, matrix, baseline = load(CONTRACT), load(MATRIX), load(BASELINE)
     ledger = load(ACTIVATION)
@@ -4835,13 +5393,15 @@ def verify(overrides: dict[str, bytes] | None = None) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser=argparse.ArgumentParser(); parser.add_argument("--report",action="store_true"); parser.add_argument("--verify",action="store_true")
+    parser=argparse.ArgumentParser(); parser.add_argument("--report",action="store_true"); parser.add_argument("--verify",action="store_true"); parser.add_argument("--verify-reseal-candidate",action="store_true")
     args=parser.parse_args(argv)
     try:
         if args.report:
             print(json.dumps(report(), sort_keys=True, indent=2)); return 0
         if args.verify:
             print("M2A-00 PASS: green migration ratchet") if verify() else None; return 0
+        if args.verify_reseal_candidate:
+            print("M2A-00 A2-PRIME CANDIDATE PASS: closed reseal payload") if verify_w12_reseal_candidate() else None; return 0
         raise GateError("choose --report or --verify")
     except (OSError, KeyError, TypeError, ValueError, mod04.GateError, mod51.GateError, GateError) as exc:
         print(f"M2A-00 FAIL: {exc}", file=sys.stderr); return 1

@@ -11,6 +11,11 @@
     "sha256": "b3957aca15b7c25e42229c3f9623bff881b450c7277323a28c7639e0ea9f3caf",
     "immutable": true
   },
+  "w12_reseal_binding": {
+    "schema": "ese.mod52.w12-reseal-binding/v1",
+    "payload_sha256": "a555bc2ed2df12537f47808baf4e0172c9322f56a39aaac83be47ef1e993b8cb",
+    "activation_binding": "H2_ONLY"
+  },
   "inputs": {
     "matrix": "docs/architecture/mod52_migration_matrix_v2.json",
     "ownership": "docs/architecture/mod03_ownership_layering_contract_v3.json",

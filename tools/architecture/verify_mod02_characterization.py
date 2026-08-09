@@ -22,8 +22,29 @@ INVENTORY = ROOT / "docs" / "architecture" / "mod01_architecture_inventory_v1.js
 GOLDENS = ROOT / "docs" / "architecture" / "mod02_characterization_goldens_v1.json"
 BUILD_MANIFEST = ROOT / "docs" / "architecture" / "mod02_build_manifest_v1.json"
 IDENTITY_HEADER = ROOT / "srchybrid" / "Mod02BuildIdentity.h"
+RUNTIME_RUNNER = ROOT / "tools" / "architecture" / "run_mod02_stream_selftest.ps1"
+EXPECTED_CRITICAL_SOURCE_COUNT = 157
+EXPECTED_CRITICAL_SOURCE_PREFIX = [
+    "srchybrid/EmuleDlg.cpp", "srchybrid/EmuleDlg.h",
+    "srchybrid/UPnPImpl.cpp", "srchybrid/UPnPImpl.h",
+    "srchybrid/UPnPImplMiniLib.cpp", "srchybrid/UPnPImplMiniLib.h",
+    "srchybrid/UPnPImplWrapper.cpp", "srchybrid/UPnPImplWrapper.h",
+    "srchybrid/UPnPWorkerLifecycle.h",
+    "srchybrid/UPnPDeferredReaperCore.h",
+    "srchybrid/tests/test_upnp_worker_lifecycle.cpp",
+    "srchybrid/tests/make.bat",
+    "srchybrid/eSE/test/live_tv_regression.test.js",
+]
 CRITICAL_SOURCE_PATHS = [
     "srchybrid/EmuleDlg.cpp", "srchybrid/EmuleDlg.h",
+    "srchybrid/UPnPImpl.cpp", "srchybrid/UPnPImpl.h",
+    "srchybrid/UPnPImplMiniLib.cpp", "srchybrid/UPnPImplMiniLib.h",
+    "srchybrid/UPnPImplWrapper.cpp", "srchybrid/UPnPImplWrapper.h",
+    "srchybrid/UPnPWorkerLifecycle.h",
+    "srchybrid/UPnPDeferredReaperCore.h",
+    "srchybrid/tests/test_upnp_worker_lifecycle.cpp",
+    "srchybrid/tests/make.bat",
+    "srchybrid/eSE/test/live_tv_regression.test.js",
     "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h", "srchybrid/LiveTunnelBulkFacade.inl", "srchybrid/LiveTunnelBulkStatePort.h", "srchybrid/LiveTunnelBulkProxy.cpp", "srchybrid/LiveTunnelBulkProxy.h", "srchybrid/LiveTunnelBulkTransportAdapter.cpp", "srchybrid/LiveTunnelBulkTransportAdapter.h", "srchybrid/LiveTunnelSearchFacade.inl", "srchybrid/LiveTunnelSearchPort.h", "srchybrid/LiveTunnelSearchService.cpp", "srchybrid/LiveTunnelSearchService.h", "srchybrid/LiveTunnelCoordinatorFacade.cpp", "srchybrid/LiveTunnelCoordinatorFacade.h", "srchybrid/LiveTunnelCoordinatorMethods.inl", "srchybrid/LiveTunnelCoordinatorPort.h",
     "srchybrid/LiveCellQueue.cpp", "srchybrid/LiveCellQueue.h",
     "srchybrid/LiveTunnelFraming.cpp", "srchybrid/LiveTunnelFraming.h",
@@ -92,6 +113,34 @@ CRITICAL_SOURCE_PATHS = [
     "srchybrid/LiveBuddyRelay.cpp", "srchybrid/LiveBuddyRelay.h",
     "srchybrid/LiveStreamDlgUI.cpp", "srchybrid/LiveStreamDlg.h",
 ]
+
+
+def runtime_runner_critical_source_paths(text: str | None = None) -> list[str]:
+    if text is None:
+        text = RUNTIME_RUNNER.read_text(encoding="utf-8")
+    match = re.search(
+        r"\$criticalSourceRelativePaths\s*=\s*@\((.*?)\)\s*"
+        r"\$identityHeaderRelativePath", text, re.DOTALL,
+    )
+    if match is None:
+        raise ValueError("MOD-0.2 runtime critical-source list is missing")
+    return re.findall(r"'([^']+)'", match.group(1))
+
+
+def validate_critical_source_contract(
+    verifier_paths: list[str] | None = None,
+    runner_paths: list[str] | None = None,
+) -> None:
+    verifier_paths = list(CRITICAL_SOURCE_PATHS if verifier_paths is None else verifier_paths)
+    runner_paths = list(runtime_runner_critical_source_paths() if runner_paths is None else runner_paths)
+    if len(verifier_paths) != EXPECTED_CRITICAL_SOURCE_COUNT:
+        raise ValueError("MOD-0.2 verifier critical-source count drift")
+    if len({path.casefold() for path in verifier_paths}) != len(verifier_paths):
+        raise ValueError("MOD-0.2 verifier critical-source casefold duplicate")
+    if verifier_paths[:len(EXPECTED_CRITICAL_SOURCE_PREFIX)] != EXPECTED_CRITICAL_SOURCE_PREFIX:
+        raise ValueError("MOD-0.2 verifier critical-source prefix/order drift")
+    if verifier_paths != runner_paths:
+        raise ValueError("MOD-0.2 verifier/runtime critical-source parity drift")
 
 
 def normalize_source_bytes(raw: bytes) -> bytes:
@@ -172,6 +221,7 @@ def source_identity() -> str:
 
 
 def verify_build_identity() -> None:
+    validate_critical_source_contract()
     manifest = json.loads(BUILD_MANIFEST.read_text(encoding="utf-8"))
     if set(manifest) != {
         "schema", "source_commit", "source_identity_sha256", "executable_sha256",

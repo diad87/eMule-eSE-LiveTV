@@ -75,13 +75,92 @@ function Set-R93ProductIni {
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][int]$TcpPort,
         [Parameter(Mandatory = $true)][int]$UdpPort,
-        [Parameter(Mandatory = $true)][int]$WebPort
+        [Parameter(Mandatory = $true)][int]$WebPort,
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[0-9a-fA-F]{32}$')][string]$StoredPasswordHash
     )
     Set-LabIniValue $Path UPnP EnableUPnP 1 | Out-Null
     Set-LabIniValue $Path eMule Port $TcpPort | Out-Null
     Set-LabIniValue $Path eMule UDPPort $UdpPort | Out-Null
     Set-LabIniValue $Path WebServer Enabled 1 | Out-Null
     Set-LabIniValue $Path WebServer Port $WebPort | Out-Null
+    Set-LabIniValue $Path WebServer Password `
+        $StoredPasswordHash.ToLowerInvariant() | Out-Null
+    Set-LabIniValue $Path eMule AllowAdminHiLevelFunc 1 | Out-Null
+}
+
+function Invoke-R93AuthenticatedWebClose {
+    param(
+        [Parameter(Mandatory = $true)][string]$BaseUrl,
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[0-9a-fA-F]{32}$')][string]$StoredPasswordHash,
+        [scriptblock]$RequestInvoker
+    )
+    $null = Assert-LabApiUrl -BaseUrl $BaseUrl
+    if ($null -eq $RequestInvoker) {
+        $RequestInvoker = {
+            param($Uri, $Session, $Headers)
+            Invoke-WebRequest -Uri $Uri -Method Get -WebSession $Session `
+                -Headers $Headers -TimeoutSec 5 -UseBasicParsing
+        }
+    }
+    $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+    $challengePage = & $RequestInvoker "$BaseUrl/" $session @{}
+    $matches = [regex]::Matches([string]$challengePage.Content,
+        'name=["'']n["''][^>]*value=["'']([0-9a-fA-F]{64})["'']',
+        [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+    if ($matches.Count -ne 1) {
+        throw 'Local login page did not issue one exact challenge nonce.'
+    }
+    $nonce = $matches[0].Groups[1].Value.ToLowerInvariant()
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $response = (($sha256.ComputeHash([Text.Encoding]::ASCII.GetBytes(
+                    $nonce + $StoredPasswordHash.ToLowerInvariant())) |
+                ForEach-Object { $_.ToString('x2') }) -join '')
+    }
+    finally { $sha256.Dispose() }
+    $login = & $RequestInvoker "$BaseUrl/?w=password&n=$nonce&r=$response" `
+        $session @{}
+    $csrf = [string]$login.Headers['X-CSRF-Token']
+    if ($csrf -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'Local admin login did not issue an exact CSRF token.'
+    }
+    try {
+        $null = & $RequestInvoker "$BaseUrl/?w=close" $session @{
+            'X-CSRF-Token' = $csrf
+            'Sec-Fetch-Site' = 'same-origin'
+        }
+        return $true
+    }
+    catch {
+        # Shutdown may close the loopback connection before a response arrives.
+        # Only the independently observed process exit can resolve that ambiguity.
+        return $false
+    }
+}
+
+function Invoke-R93AccreditedWebShutdown {
+    param(
+        [Parameter(Mandatory = $true)]$Token,
+        [ValidateRange(1, 300)][int]$TimeoutSec,
+        [Parameter(Mandatory = $true)][scriptblock]$Exists,
+        [Parameter(Mandatory = $true)][scriptblock]$IsAccredited,
+        [Parameter(Mandatory = $true)][scriptblock]$CloseAttempt,
+        [Parameter(Mandatory = $true)][scriptblock]$WaitForExit
+    )
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
+    do {
+        if (-not [bool](& $Exists $Token)) { return $true }
+        if (-not [bool](& $IsAccredited $Token)) {
+            throw 'Process identity changed during authenticated shutdown.'
+        }
+        try { $null = & $CloseAttempt $Token } catch { }
+        $remainingMs = [Math]::Max(1, [Math]::Min(1000,
+                [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds)))
+        if ([bool](& $WaitForExit $Token $remainingMs)) { return $true }
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return -not [bool](& $Exists $Token)
 }
 
 function Restore-R93IniBytes {
@@ -205,10 +284,19 @@ function Invoke-R93PartialCycle {
             catch { $absent = $false }
             if (-not $absent) { $failureClass = 'MAPPING_REMAINS_UNTOUCHED' }
         }
-        try { $restored = [bool](& $Adapters.RestoreIni) }
-        catch { $restored = $false }
-        if (-not $restored -and $failureClass -cne 'PROCESS_STILL_ALIVE') {
-            $failureClass = 'INI_RESTORE_FAILED'
+        $mayStillWriteIni = $started
+        if ($started) {
+            try { $mayStillWriteIni = [bool](& $Adapters.Exists $token) }
+            catch { $mayStillWriteIni = $true }
+        }
+        if (-not $mayStillWriteIni) {
+            try { $restored = [bool](& $Adapters.RestoreIni) }
+            catch { $restored = $false }
+            if (-not $restored -and $failureClass -cne 'PROCESS_STILL_ALIVE') {
+                $failureClass = 'INI_RESTORE_FAILED'
+            }
+        } elseif ([string]::IsNullOrEmpty($failureClass)) {
+            $failureClass = 'PROCESS_STILL_ALIVE'
         }
     }
     $success = $observed -and $closed -and $absent -and $restored
@@ -229,23 +317,6 @@ function Invoke-R93PartialCycle {
             'PROCESS_STILL_ALIVE', 'IDENTITY_NOT_ACCREDITED')
         failure_class = if ($success) { $null } else { $failureClass }
     }
-}
-
-function Send-R93WmClose {
-    param([int]$ProcessId)
-    if ($null -eq ('R93WmClose' -as [type])) {
-        Add-Type -TypeDefinition @'
-using System; using System.Collections.Generic; using System.Runtime.InteropServices;
-public static class R93WmClose {
- delegate bool EnumProc(IntPtr h, IntPtr p);
- [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc c, IntPtr p);
- [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
- [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
- public static int Send(int expected) { var ws=new List<IntPtr>(); EnumWindows(delegate(IntPtr h,IntPtr x){uint p;GetWindowThreadProcessId(h,out p);if(p==(uint)expected)ws.Add(h);return true;},IntPtr.Zero);int n=0;foreach(var h in ws)if(PostMessage(h,0x0010,IntPtr.Zero,IntPtr.Zero))n++;return n; }
-}
-'@
-    }
-    return [R93WmClose]::Send($ProcessId)
 }
 
 function Get-R93PhysicalSoapBackend {
@@ -288,11 +359,17 @@ if (-not (Test-R93PortBindable TCP $TcpPort) -or
 
 $iniBytes = [IO.File]::ReadAllBytes($ini)
 $iniHash = (Get-FileHash $ini -Algorithm SHA256).Hash
+$credentialBytes = New-Object byte[] 16
+$credentialRng = [Security.Cryptography.RandomNumberGenerator]::Create()
+try { $credentialRng.GetBytes($credentialBytes) }
+finally { $credentialRng.Dispose() }
+$adminHash = (($credentialBytes | ForEach-Object { $_.ToString('x2') }) -join '')
+[Array]::Clear($credentialBytes, 0, $credentialBytes.Length)
 $process = $null
 $backend = $null
 $baseUrl = "http://127.0.0.1:$WebPort"
 $adapters = [pscustomobject]@{
-    Configure = { Set-R93ProductIni $ini $TcpPort $UdpPort $WebPort }
+    Configure = { Set-R93ProductIni $ini $TcpPort $UdpPort $WebPort $adminHash }
     Start = { $script:process = Start-Process -FilePath $exe `
             -WorkingDirectory $package `
             -ArgumentList @('--portable','--ignoreinstances','--headless') `
@@ -311,17 +388,26 @@ $adapters = [pscustomobject]@{
         if (-not $envelope.available) { return $null }
         Get-R93CandidateProjection $envelope $TcpPort $UdpPort }
     Pause = { Start-Sleep -Seconds 1 }
-    Close = { param($token) if ((Send-R93WmClose $token) -lt 1) {
-            throw 'No accredited window accepted WM_CLOSE.' } }
-    WaitForExit = { param($token) $script:process.WaitForExit(
-            $ShutdownTimeoutSec * 1000) }
+    Close = { param($token) $null = Invoke-R93AccreditedWebShutdown `
+            -Token $token -TimeoutSec $ShutdownTimeoutSec `
+            -Exists $adapters.Exists -IsAccredited $adapters.IsAccredited `
+            -CloseAttempt { param($ignored) Invoke-R93AuthenticatedWebClose `
+                    -BaseUrl $baseUrl -StoredPasswordHash $adminHash } `
+            -WaitForExit { param($ignored, $milliseconds)
+                $script:process.WaitForExit($milliseconds) } }
+    WaitForExit = { param($token) $script:process.WaitForExit(0) }
     MappingsAbsent = { if ($null -eq $script:backend) {
             $script:backend = Get-R93PhysicalSoapBackend }
         $null -eq (Get-R01UpnpMapping $script:backend $TcpPort TCP) -and
         $null -eq (Get-R01UpnpMapping $script:backend $UdpPort UDP) }
     RestoreIni = { Restore-R93IniBytes $ini $iniBytes $iniHash }
 }
-$result = Invoke-R93PartialCycle -Adapters $adapters `
-    -MaxSamples $ObservationTimeoutSec
+try {
+    $result = Invoke-R93PartialCycle -Adapters $adapters `
+        -MaxSamples $ObservationTimeoutSec
+}
+finally {
+    $adminHash = $null
+}
 $result | ConvertTo-Json -Compress
 if ([string]$result.status -cne 'MAPPING_OBSERVED_CLEAN_EXIT') { exit 1 }

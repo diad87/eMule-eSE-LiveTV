@@ -1,0 +1,10 @@
+'use strict';const assert=require('node:assert/strict');const test=require('node:test');const {decodeNatPmpRequest}=require('../natpmp_request_decoder');const {NATPMP_VECTORS}=require('../natpmp_vectors');const {createO01FaultController}=require('../v92_o01_t8_fault_controller');
+const request=()=>decodeNatPmpRequest(Buffer.from(NATPMP_VECTORS.map_tcp_request.hex,'hex'));const response=()=>Buffer.from(NATPMP_VECTORS.map_tcp_response.hex,'hex');
+test('wire controller delegates late/reject/epoch/malformed/drop to NAT-PMP injector',async()=>{let slept=0;const c=createO01FaultController({sleep:async(ms)=>{slept=ms;}});const signal=new AbortController().signal;
+ c.arm('dropped_late',{deadline_ms:10});let out=await c.apply(response(),request(),signal);assert.equal(out.late,true);assert.equal(slept,11);assert.equal(out.packets.length,1);
+ c.arm('explicit_reject');out=await c.apply(response(),request(),signal);assert.equal(out.packets[0].readUInt16BE(2),2);assert.equal(out.packets[0].readUInt16BE(10),0);
+ c.arm('epoch_reset',{epoch:123});out=await c.apply(response(),request(),signal);assert.equal(out.packets[0].readUInt32BE(4),123);
+ c.arm('malformed');out=await c.apply(response(),request(),signal);assert.equal(out.packets[0].length,3);
+ c.arm('final_boundary');out=await c.apply(response(),request(),signal);assert.equal(out.packets.length,0);
+});
+test('captured response replay is byte exact duplicate and partial requires UDP',async()=>{const c=createO01FaultController();const signal=new AbortController().signal;await c.apply(response(),request(),signal);c.arm('replay_duplicate');const replay=await c.apply(response(),request(),signal);assert.equal(replay.packets.length,2);assert.deepEqual(replay.packets[0],replay.packets[1]);c.arm('partial_pair');await assert.rejects(c.apply(response(),request(),signal),/REQUIRES_UDP/);});

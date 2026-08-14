@@ -33,12 +33,18 @@
 #include "emule.h"
 #include "preferences.h"
 #include "UPnPImplNATPMP.h"
+#include "natmap/natpmp_product_policy.h"
 #include "Log.h"
 #include "OtherFunctions.h"
 #include "natmap/natpmp_codec.h"
 #include "natmap/natpmp_epoch_policy.h"
 #include "natmap/natpmp_gateway_policy.h"
 #include "natmap/natpmp_pair_transaction.h"
+#include "../cryptopp/sha.h"
+
+#include <bcrypt.h>
+
+#pragma comment(lib, "bcrypt.lib")
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -76,7 +82,18 @@ CUPnPImplNATPMP::CUPnPImplNATPMP()
 	, m_bAbortDiscovery(false)
 	, m_bMapperEpochObservationValid(false)
 	, m_nMapperEpochObservedAtSeconds(0)
+	, m_ownerToken(0)
 {
+	for (unsigned attempt = 0;
+		attempt < 2 && m_ownerToken == 0; ++attempt) {
+		if (BCryptGenRandom(NULL,
+			reinterpret_cast<PUCHAR>(&m_ownerToken),
+			static_cast<ULONG>(sizeof(m_ownerToken)),
+			BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) {
+			m_ownerToken = 0;
+			continue;
+		}
+	}
 	m_nOldUDPPort = 0;
 	m_nOldTCPPort = 0;
 	m_nOldTCPWebPort = 0;
@@ -157,7 +174,8 @@ void CUPnPImplNATPMP::DeletePorts(
 		natmap::NatPmpCleanupContext context{};
 		context.gateway_address = gatewayAddress;
 		context.interface_index = m_dwInterfaceIndex;
-		context.generation = generation;
+		context.generation = natmap::ResolveNatPmpCleanupGeneration(
+			m_cleanupProof, generation);
 		context.observed_monotonic_seconds =
 			NatPmpMonotonicSeconds();
 		const natmap::NatPmpCleanupPlan cleanup =
@@ -180,6 +198,32 @@ void CUPnPImplNATPMP::DeletePorts(
 		m_dwOldInterfaceIndex = 0;
 	} else
 		DebugLogError(_T("NAT-PMP: Unable to remove port mappings - busy"));
+}
+
+natmap::MapperResultData CUPnPImplNATPMP::BuildMapperResultData(
+	const MappingOperationContext& operation) const
+{
+	natmap::MapperResultData data =
+		CUPnPImpl::BuildMapperResultData(operation);
+	if (data.status == natmap::MappingStatus::Created
+			|| data.status == natmap::MappingStatus::Renewed) {
+		const natmap::NatPmpOwnershipPreimage preimage =
+			natmap::BuildNatPmpOwnershipPreimage(
+				m_cleanupProof, data,
+				operation.request.topology_generation,
+				m_ownerToken);
+		if (!preimage.valid)
+			return data;
+		CryptoPP::SHA256 hash;
+		hash.Update(reinterpret_cast<const CryptoPP::byte*>(
+			preimage.bytes.data()), preimage.size);
+		std::array<std::uint8_t, 32> digest = {};
+		hash.Final(reinterpret_cast<CryptoPP::byte*>(digest.data()));
+		natmap::ApplyNatPmpOwnershipDigest(
+			preimage, digest, m_cleanupProof,
+			operation.request.topology_generation, data);
+	}
+	return data;
 }
 
 void CUPnPImplNATPMP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nTCPWebPort)

@@ -1,0 +1,45 @@
+'use strict';
+const assert = require('node:assert/strict'); const test = require('node:test'); const dgram = require('node:dgram');
+const { createGatewayAdapter } = require('../v92_o01_t8_gateway_adapter');
+const { createO01UdpMux } = require('../v92_o01_t8_udp_mux');
+const { NATPMP_VECTORS } = require('../natpmp_vectors'); const { PCP_VECTORS } = require('../pcp_vectors');
+const {createO01FaultController}=require('../v92_o01_t8_fault_controller');
+function request(socket, target, packet) { return new Promise((resolve, reject) => { socket.once('message', resolve); socket.send(packet, target.port, target.address, (e) => e && reject(e)); }); }
+test('single loopback socket demuxes NAT-PMP v0 and PCP v2 into shared state', async (t) => {
+  const adapter = createGatewayAdapter({ now: () => 1000 });
+  const mux = createO01UdpMux({ mode: 'NON_RELEASE', bind_address: '127.0.0.1', port: 0, allowed_source_addresses: ['127.0.0.1'], adapter });
+  const target = await mux.start(); const client = dgram.createSocket('udp4'); t.after(async () => { await mux.close(); client.close(); });
+  const nat = await request(client, target, Buffer.from(NATPMP_VECTORS.map_tcp_request.hex, 'hex')); assert.equal(nat[0], 0); assert.equal(nat[1], 0x82);
+  await request(client,target,Buffer.from(NATPMP_VECTORS.map_udp_request.hex,'hex'));
+  const pcpPacket = Buffer.from(PCP_VECTORS.map_tcp_request.hex, 'hex'); Buffer.from('00000000000000000000ffff7f000001','hex').copy(pcpPacket, 8);
+  const pcp = await request(client, target, pcpPacket); assert.equal(pcp[0], 2); assert.equal(pcp[1], 0x81);
+  const pcpUdp=Buffer.from(pcpPacket);pcpUdp[36]=17;pcpUdp.writeUInt16BE(4672,40);await request(client,target,pcpUdp);
+  await request(client,target,Buffer.from(NATPMP_VECTORS.external_address_request.hex,'hex'));
+  const announce=Buffer.from(PCP_VECTORS.announce_request.hex,'hex');Buffer.from('00000000000000000000ffff7f000001','hex').copy(announce,8);await request(client,target,announce);
+  assert.deepEqual(new Set(adapter.observe().mappings.map((entry) => entry.protocol)), new Set(['upnp','natpmp','pcp']));
+  const traffic=adapter.observeProtocol().traffic;assert.deepEqual({pcp:traffic.pcp_requests,natpmp:traffic.natpmp_requests,accepted:traffic.accepted_outcomes,rejected:traffic.rejected_outcomes},{pcp:3,natpmp:3,accepted:6,rejected:0});
+});
+test('invalid version is dropped and formal mode rejects missing T8 provenance', async () => {
+  const adapter = createGatewayAdapter({ now: () => 1000 });
+  assert.throws(() => createO01UdpMux({ mode: 'FORMAL_T8', bind_address: '127.0.0.1', port: 5351, allowed_source_addresses: ['127.0.0.1'], adapter }), /PROVENANCE/);
+  assert.throws(() => createO01UdpMux({ mode: 'NON_RELEASE', bind_address: '0.0.0.0', port: 0, allowed_source_addresses: ['127.0.0.1'], adapter }), /LOOPBACK/);
+});
+test('wire ownership rejection and NAT-PMP delete are delegated without foreign mutation', async (t) => {
+  const adapter = createGatewayAdapter({ now: () => 1000 });
+  const mux = createO01UdpMux({ mode: 'NON_RELEASE', bind_address: '127.0.0.1', port: 0, allowed_source_addresses: ['127.0.0.1'], adapter });
+  const target = await mux.start(); const client = dgram.createSocket('udp4'); t.after(async () => { await mux.close(); client.close(); });
+  const pcpPacket = Buffer.from(PCP_VECTORS.map_tcp_request.hex, 'hex'); Buffer.from('00000000000000000000ffff7f000001','hex').copy(pcpPacket, 8);
+  await request(client, target, pcpPacket);const pcpUdp=Buffer.from(pcpPacket);pcpUdp[36]=17;pcpUdp.writeUInt16BE(4672,40);await request(client,target,pcpUdp); const before = adapter.observe();
+  const wrong = Buffer.from(pcpPacket); wrong[24] ^= 0xff; const rejected = await request(client, target, wrong);
+  assert.equal(rejected[3], 2); assert.deepEqual(adapter.observe(), before);
+  await request(client, target, Buffer.from(NATPMP_VECTORS.map_tcp_request.hex, 'hex'));await request(client,target,Buffer.from(NATPMP_VECTORS.map_udp_request.hex,'hex'));
+  await request(client, target, Buffer.from(NATPMP_VECTORS.map_tcp_delete_request.hex, 'hex'));
+  const udpDelete=Buffer.from(NATPMP_VECTORS.map_tcp_delete_request.hex,'hex');udpDelete[1]=1;udpDelete.writeUInt16BE(4672,4);await request(client,target,udpDelete);
+  assert.equal(adapter.observe().mappings.some((entry) => entry.mapping_id === 'o01.natpmp.tcp'), false);
+  assert.equal(adapter.observe().mappings.some((entry) => entry.mapping_id === 'foreign.persistent.tcp'), true);
+});
+test('wire reject, malformed and partial second member abort candidate byte-stably',async(t)=>{const adapter=createGatewayAdapter({now:()=>1000});const faults=createO01FaultController({sleep:async()=>{}});const mux=createO01UdpMux({mode:'NON_RELEASE',bind_address:'127.0.0.1',port:0,allowed_source_addresses:['127.0.0.1'],adapter,fault_controller:faults});const target=await mux.start();const client=dgram.createSocket('udp4');t.after(async()=>{await mux.close();client.close();});
+ const tcp=Buffer.from(NATPMP_VECTORS.map_tcp_request.hex,'hex'),udp=Buffer.from(NATPMP_VECTORS.map_udp_request.hex,'hex');const initial=adapter.observe();faults.arm('explicit_reject');const rejected=await request(client,target,tcp);assert.equal(rejected.readUInt16BE(2),2);assert.deepEqual(adapter.observe(),initial);
+ await request(client,target,tcp);await request(client,target,udp);const baseline=adapter.observe();faults.arm('malformed');const malformed=await request(client,target,tcp);assert.equal(malformed.length,3);assert.deepEqual(adapter.observe(),baseline);
+ await request(client,target,tcp);faults.arm('partial_pair');const dropped=new Promise(resolve=>setTimeout(resolve,30));client.send(udp,target.port,target.address);await dropped;assert.deepEqual(adapter.observe(),baseline);
+});

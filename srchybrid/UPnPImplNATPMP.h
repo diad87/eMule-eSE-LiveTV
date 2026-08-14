@@ -66,6 +66,8 @@ public:
 
 protected:
     void DeletePorts(bool bSkipLock, std::uint64_t generation);
+    virtual natmap::MapperResultData BuildMapperResultData(
+        const MappingOperationContext& operation) const;
 
 private:
     enum EReceiveResult
@@ -129,5 +131,6 @@ private:
     volatile bool m_bAbortDiscovery;
     bool m_bMapperEpochObservationValid;
     uint64 m_nMapperEpochObservedAtSeconds;
+    std::uint64_t m_ownerToken;
     natmap::NatPmpCleanupProof m_cleanupProof;
 };

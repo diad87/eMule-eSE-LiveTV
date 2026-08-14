@@ -26,6 +26,44 @@ test('browser players use the packaged HLS runtime and guard missing support', (
   assert.ok(fs.statSync(vendor).size > 100000, 'vendored hls.js should not be empty');
 });
 
+test('NAT-PMP product override delegates ownership and cleanup to the governed policy', () => {
+  const source = read(repoRoot, 'srchybrid', 'UPnPImplNATPMP.cpp');
+  const policyHeader = read(repoRoot, 'libnatmap', 'include', 'natmap', 'natpmp_product_policy.h');
+  const policySource = read(repoRoot, 'libnatmap', 'src', 'natpmp_product_policy.cpp');
+  const project = read(repoRoot, 'srchybrid', 'emule.vcxproj');
+  const make = read(repoRoot, 'libnatmap', 'make.bat');
+  const buildAt = source.indexOf('natmap::MapperResultData CUPnPImplNATPMP::BuildMapperResultData(');
+  const buildEnd = source.indexOf('\nvoid CUPnPImplNATPMP::StartDiscovery(', buildAt);
+  const build = source.slice(buildAt, buildEnd);
+  assert.ok(buildAt >= 0 && buildEnd > buildAt);
+  assert.equal((build.match(/CUPnPImpl::BuildMapperResultData\(/g) || []).length, 1);
+  assert.equal((build.match(/BuildNatPmpOwnershipPreimage\(/g) || []).length, 1);
+  assert.equal((build.match(/ApplyNatPmpOwnershipDigest\(/g) || []).length, 1);
+  assert.match(build, /hash\.Update\([\s\S]*preimage\.bytes\.data\(\)\),\s*preimage\.size\)/);
+  assert.doesNotMatch(build, /CorrelatesNatPmpOwnershipProof|ApplyNatPmpOwnershipProof|updateInteger|owner\.v1/);
+  assert.match(policyHeader, /ApplyNatPmpOwnershipDigest\([\s\S]*NatPmpCleanupProof& proof,[\s\S]*uint64_t request_generation,[\s\S]*MapperResultData& data/);
+  const applyAt = policySource.indexOf('bool ApplyNatPmpOwnershipDigest(');
+  const applyEnd = policySource.indexOf('\nstd::uint64_t ResolveNatPmpCleanupGeneration(', applyAt);
+  const apply = policySource.slice(applyAt, applyEnd);
+  assert.ok(applyAt >= 0 && applyEnd > applyAt);
+  assert.equal((apply.match(/CorrelatesNatPmpOwnershipProof\(/g) || []).length, 1);
+
+  const cleanupAt = source.indexOf('void CUPnPImplNATPMP::DeletePorts(\n\tbool bSkipLock');
+  const cleanupEnd = source.indexOf('\nnatmap::MapperResultData CUPnPImplNATPMP::BuildMapperResultData(', cleanupAt);
+  const cleanup = source.slice(cleanupAt, cleanupEnd);
+  assert.ok(cleanupAt >= 0 && cleanupEnd > cleanupAt);
+  assert.equal((cleanup.match(/ResolveNatPmpCleanupGeneration\(/g) || []).length, 1);
+  assert.equal((cleanup.match(/TakeNatPmpCleanupPlan\(/g) || []).length, 1);
+  assert.doesNotMatch(cleanup, /proof\.generation\s*==\s*generation\s*\+\s*1/);
+
+  assert.match(project, /libnatmap\\src\\natpmp_product_policy\.cpp/);
+  assert.match(project, /libnatmap\\include\\natmap\\natpmp_product_policy\.h/);
+  assert.match(make, /test_natpmp_pair_transaction\.cpp[^\r\n]*src\\natpmp_product_policy\.cpp/);
+  const parallelPolicies = fs.readdirSync(path.join(repoRoot, 'libnatmap', 'src'))
+    .filter((name) => /natpmp.*product.*policy/i.test(name));
+  assert.deepEqual(parallelPolicies, ['natpmp_product_policy.cpp']);
+});
+
 test('first-run action points at the real local watch route', () => {
   const page = read(eseRoot, 'eSE-live', 'live_tv_page.js');
   assert.match(page, /window\.location\.href=.*\/live\/watch\/local/);

@@ -1,0 +1,19 @@
+'use strict';
+const crypto=require('node:crypto');const net=require('node:net');const path=require('node:path');const readline=require('node:readline');const {spawn}=require('node:child_process');const {tokenHash}=require('./v92_o01_bridge_protocol');
+function createT8Child(options={}){
+ const formal=options.mode==='FORMAL_T8';const nonRelease=options.mode==='NON_RELEASE';
+ if((!formal&&!nonRelease)||net.isIP(options.bindAddress)!==4||
+    (nonRelease&&options.bindAddress!=='127.0.0.1')||
+    (formal&&(options.bindAddress.startsWith('127.')||net.isIP(options.allowedSource)!==4||
+      !/^[a-f0-9]{64}$/.test(options.interfaceSha256||'')||
+      !/^[a-f0-9]{64}$/.test(options.switchSha256||'')||
+      options.externalAddress!=='88.11.22.4'||
+      !Number.isInteger(options.httpPort)||options.httpPort<1||options.httpPort>65535)))throw new Error('O01_CHILD_CONFIG_INVALID');
+ const token=crypto.randomBytes(32).toString('hex');let child=null,sequence=0,closed=false,pending=[],stderr='';
+ function timeout(promise,milliseconds,code){let timer;return Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(code)),milliseconds);})]).finally(()=>clearTimeout(timer));}
+ function send(command,args={}){if(!child||closed)return Promise.reject(new Error('O01_CHILD_CLOSED'));sequence++;const line=JSON.stringify({schema:'ese.v92.o01-control/v1',sequence,command,arguments:args});return new Promise((resolve,reject)=>{pending.push({resolve,reject});child.stdin.write(`${line}\n`,e=>{if(e){pending.pop();reject(new Error('O01_CHILD_WRITE_FAILED'));}});});}
+ return Object.freeze({async start(){if(child)throw new Error('O01_CHILD_STATE_INVALID');child=spawn(process.execPath,[path.join(__dirname,'v92_o01_t8_daemon.js')],{cwd:path.resolve(__dirname,'..','..','..'),windowsHide:true,stdio:['pipe','pipe','pipe'],env:{...process.env,O01_MODE:options.mode,O01_T8_BIND_ADDRESS:options.bindAddress,O01_T8_ALLOWED_SOURCE:formal?options.allowedSource:'127.0.0.1',O01_T8_INTERFACE_SHA256:formal?options.interfaceSha256:'',O01_T8_SWITCH_SHA256:formal?options.switchSha256:'',O01_T8_HTTP_PORT:formal?String(options.httpPort):'',O01_T8_EXTERNAL_ADDRESS:formal?options.externalAddress:'',O01_CONTROL_TOKEN_SHA256:tokenHash(token)}});
+   child.stderr.on('data',chunk=>{stderr=(stderr+String(chunk)).slice(-4096);});const lines=readline.createInterface({input:child.stdout,crlfDelay:Infinity});lines.on('line',line=>{const waiter=pending.shift();if(!waiter)return;try{const value=JSON.parse(line);value.ok?waiter.resolve(value):waiter.reject(new Error(value.reason_code));}catch(_){waiter.reject(new Error('O01_CHILD_RESPONSE_INVALID'));}});child.once('exit',()=>{closed=true;const detail=stderr.trim().replace(/[\r\n]+/g,' ').slice(0,512);for(const waiter of pending.splice(0))waiter.reject(new Error(detail?`O01_CHILD_EXITED ${detail}`:'O01_CHILD_EXITED'));});
+   return send('hello',{token});},async observe(){return (await send('observe',{})).observation;},async inject(fault,ordinal){return (await send('inject',{fault,planned_ordinal:ordinal})).observation;},async shutdown(){if(closed)return;try{await timeout(send('shutdown',{}),10000,'O01_CHILD_SHUTDOWN_RESPONSE_TIMEOUT');child.stdin.end();await timeout(new Promise(resolve=>{if(child.exitCode!==null)return resolve();child.once('exit',resolve);}),10000,'O01_CHILD_SHUTDOWN_EXIT_TIMEOUT');}catch(error){if(child&&child.exitCode===null)child.kill();throw error;}finally{closed=true;}},pid(){return child&&!closed?child.pid:null;}});
+}
+module.exports=Object.freeze({createT8Child});

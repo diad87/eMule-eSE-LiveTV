@@ -1,5 +1,6 @@
 #include "natmap/natpmp_pair_transaction.h"
 
+#include <algorithm>
 #include <limits>
 
 namespace natmap {
@@ -166,10 +167,30 @@ NatPmpCleanupPlan TakeNatPmpCleanupPlan(
     NatPmpCleanupProof& proof,
     const NatPmpCleanupContext& context) noexcept {
     const NatPmpCleanupProof candidate = proof;
-    proof = NatPmpCleanupProof{};
     NatPmpCleanupPlan plan{};
-    if (!candidate.IsValid())
+    if (!candidate.IsValid()) {
+        proof = NatPmpCleanupProof{};
         return plan;
+    }
+    // A stale or otherwise uncorrelated callback has no authority to consume
+    // the live in-process proof. Preserve it for the exact generation retry.
+    if (candidate.gateway_address != context.gateway_address ||
+        candidate.interface_index != context.interface_index) {
+        proof = NatPmpCleanupProof{};
+        return plan;
+    }
+    if (candidate.generation != context.generation) {
+        const std::uint64_t maximum =
+            (std::numeric_limits<std::uint64_t>::max)();
+        // The host commits a visible successful pair at G+1 after the mapper
+        // request was issued at G. Preserve only that exact same-route skew;
+        // all other generation mismatches consume authority fail-closed.
+        if (context.generation == maximum ||
+            candidate.generation != context.generation + 1)
+            proof = NatPmpCleanupProof{};
+        return plan;
+    }
+    proof = NatPmpCleanupProof{};
     for (std::size_t index = 0;
          index < candidate.mapping_count; ++index) {
         NatPmpCleanupRequest request{};
@@ -183,6 +204,84 @@ NatPmpCleanupPlan TakeNatPmpCleanupPlan(
             plan.mappings[plan.mapping_count++] = request.mapping;
     }
     return plan;
+}
+
+bool CorrelatesNatPmpOwnershipProof(
+    const NatPmpCleanupProof& proof,
+    const MapperResultData& data,
+    std::uint64_t request_generation) noexcept {
+    if (!proof.IsValid() || data.mapper != MapperKind::NatPmp ||
+        data.mapping_count != 2 || request_generation == 0 ||
+        data.topology_generation != request_generation ||
+        proof.gateway_address != std::array<std::uint8_t, 4>{
+            data.gateway.address.bytes[0], data.gateway.address.bytes[1],
+            data.gateway.address.bytes[2], data.gateway.address.bytes[3]} ||
+        data.gateway.address.family != AddressFamily::IPv4 ||
+        proof.interface_index != data.request_interface_index)
+        return false;
+    const std::uint64_t maximum =
+        (std::numeric_limits<std::uint64_t>::max)();
+    if (proof.generation != request_generation &&
+        (request_generation == maximum ||
+         proof.generation != request_generation + 1))
+        return false;
+
+    const TransportMappingResult* tcp = nullptr;
+    const TransportMappingResult* udp = nullptr;
+    for (std::size_t index = 0; index < data.mapping_count; ++index) {
+        const TransportMappingResult& mapping = data.mappings[index];
+        if (mapping.transport == Transport::Tcp && tcp == nullptr)
+            tcp = &mapping;
+        else if (mapping.transport == Transport::Udp && udp == nullptr)
+            udp = &mapping;
+        else
+            return false;
+    }
+    if (tcp == nullptr || udp == nullptr)
+        return false;
+    bool matched_tcp = false;
+    bool matched_udp = false;
+    for (std::size_t index = 0; index < proof.mapping_count; ++index) {
+        const NatPmpCleanupMapping& candidate = proof.mappings[index];
+        if (candidate.transport == NatPmpTransport::Tcp &&
+            candidate.internal_port == tcp->local_endpoint.port &&
+            candidate.external_port ==
+                tcp->granted_external_endpoint.port) {
+            if (matched_tcp)
+                return false;
+            matched_tcp = true;
+        } else if (candidate.transport == NatPmpTransport::Udp &&
+            candidate.internal_port == udp->local_endpoint.port &&
+            candidate.external_port ==
+                udp->granted_external_endpoint.port) {
+            if (matched_udp)
+                return false;
+            matched_udp = true;
+        } else if (candidate.transport == NatPmpTransport::Udp ||
+                   candidate.internal_port == tcp->local_endpoint.port ||
+                   candidate.internal_port == udp->local_endpoint.port)
+            return false;
+        // A distinct optional TCP Web mapping is deliberately excluded from
+        // direct TCP/UDP pair identity.
+    }
+    return matched_tcp && matched_udp;
+}
+
+bool ApplyNatPmpOwnershipProof(
+    const NatPmpCleanupProof& proof,
+    std::uint64_t request_generation,
+    const std::array<std::uint8_t, 32>& identity_digest,
+    MapperResultData& data) noexcept {
+    const bool digest_nonzero = std::any_of(
+        identity_digest.begin(), identity_digest.end(),
+        [](std::uint8_t byte) { return byte != 0; });
+    if (!digest_nonzero ||
+        !CorrelatesNatPmpOwnershipProof(
+            proof, data, request_generation))
+        return false;
+    data.ownership_identity_digest = identity_digest;
+    data.ownership = OwnershipState::OwnedByUs;
+    return true;
 }
 
 NatPmpPairTransaction::NatPmpPairTransaction(

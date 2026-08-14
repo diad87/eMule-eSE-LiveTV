@@ -141,6 +141,24 @@ foreach($key in @($profileContract.Keys)){
 # The post-spawn preflight operates on transient window metadata only.  It
 # permits one hidden main dialog and rejects a visible first-run modal without
 # serializing either title, HWND or PID into the result contract.
+$reporterTemp=Join-Path ([IO.Path]::GetTempPath()) ('r93-reporter-'+[Guid]::NewGuid().ToString('N')+'.tmp')
+try{
+    $reporterStream=[IO.File]::Open($reporterTemp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
+    $reporterState=[pscustomobject]@{stage=''}
+    $silentReporter={param([string]$Stage)$null=($reporterState.stage=$Stage);try{$bytes=[Text.Encoding]::ASCII.GetBytes($Stage);$null=($reporterStream.Position=0);$null=$reporterStream.SetLength(0);$null=$reporterStream.Write($bytes,0,$bytes.Length);$null=$reporterStream.Flush($true)}catch{}}.GetNewClosure()
+    Assert-T (@(& $silentReporter 'STABILITY').Count -eq 0) 'identity reporter emitted pipeline output'
+    $silentGuard={param($token)
+        $null=& $silentReporter 'GUARD_ASSERT_BEGIN'
+        $null=& $silentReporter 'GUARD_TOKEN_COMPARE'
+        $same=[bool]($token -eq 77)
+        if(-not $same){$null=& $silentReporter 'GUARD_FALSE'}
+        return $same
+    }
+    $guardOutput=@(& $silentGuard 77)
+    Assert-T ($guardOutput.Count -eq 1 -and $guardOutput[0] -is [bool] -and $guardOutput[0] -and $reporterState.stage -ceq 'GUARD_TOKEN_COMPARE') 'instrumented identity guard did not enter and emit exactly one true boolean'
+    $mismatchOutput=@(& $silentGuard 78)
+    Assert-T ($mismatchOutput.Count -eq 1 -and $mismatchOutput[0] -is [bool] -and -not $mismatchOutput[0] -and $reporterState.stage -ceq 'GUARD_FALSE') 'instrumented identity guard mismatch did not emit exactly one false boolean'
+}finally{if($null-ne$reporterStream){$reporterStream.Dispose()};if(Test-Path -LiteralPath $reporterTemp){[IO.File]::Delete($reporterTemp)}}
 $headlessRows={param($pid) @([pscustomobject]@{hwnd=1;owner=0;visible=$false
     window_class='#32770';title='eMule isolated'})}.GetNewClosure()
 Assert-T (Assert-R93ExpectedHeadlessWindowSet 77 100 3 1 $headlessRows) `
@@ -454,6 +472,12 @@ $timeoutResult=Invoke-R93PartialCycle $timeout.adapters 1
 Assert-T ($timeoutResult.status-ceq 'FAIL' -and $timeoutResult.failure_class-ceq 'CANDIDATE_PAIR_NOT_OBSERVED' -and $timeout.state.closed -and $timeout.state.restored -and
     [Collections.StructuralComparisons]::StructuralEqualityComparer.Equals(
         $timeout.state.bytes,$timeout.state.original)) 'zero-transition timeout unsafe'
+$timeoutCleanup=New-Adapters { $null } $true $false
+$timeoutCleanupResult=Invoke-R93PartialCycle $timeoutCleanup.adapters 1
+Assert-T ($timeoutCleanupResult.failure_class-ceq 'CANDIDATE_PAIR_NOT_OBSERVED' -and
+    $timeoutCleanupResult.cleanup_failure_class-ceq 'MAPPING_REMAINS_UNTOUCHED' -and
+    $timeoutCleanupResult.sample_observation.samples_total-eq 1 -and
+    $timeoutCleanupResult.sample_observation.samples_available-eq 0) 'cleanup failure overwrote primary sample failure'
 
 $alive=New-Adapters { throw 'injected sample failure' } $false $false
 $aliveResult=Invoke-R93PartialCycle $alive.adapters 1
@@ -465,7 +489,8 @@ Assert-T ($aliveJson -notmatch '(?i)pid|process_id|[A-Z]:\\|/[A-Za-z]+/') 'safe 
 
 $remaining=New-Adapters { [pscustomobject]@{tcp_candidate=$true;udp_candidate=$true;same_generation=$true;generation=4} } $true $false
 $remainingResult=Invoke-R93PartialCycle $remaining.adapters 1
-Assert-T ($remainingResult.status-ceq 'BLOCKED' -and $remainingResult.failure_class-ceq 'MAPPING_REMAINS_UNTOUCHED') 'remaining mapping not blocked'
+Assert-T ($remainingResult.status-ceq 'BLOCKED' -and $remainingResult.failure_class-ceq 'MAPPING_REMAINS_UNTOUCHED' -and
+    $remainingResult.cleanup_failure_class-ceq 'MAPPING_REMAINS_UNTOUCHED') 'remaining mapping not blocked'
 
 $untrusted=New-Adapters { throw 'must not sample' } $true $true $false
 $untrustedResult=Invoke-R93PartialCycle $untrusted.adapters 1

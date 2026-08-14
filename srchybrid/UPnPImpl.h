@@ -140,7 +140,7 @@ protected:
 	bool SendPcpUpstreamBundleMessage(
 		const MappingOperationContext& operation,
 		const natmap::PcpUpstreamResultBundle& bundle);
-	natmap::MapperResultData BuildMapperResultData(
+	virtual natmap::MapperResultData BuildMapperResultData(
 		const MappingOperationContext& operation) const;
 	virtual uint16 RequestedExternalPort(
 		natmap::Transport, uint16 localPort) const

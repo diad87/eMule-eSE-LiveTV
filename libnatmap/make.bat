@@ -51,7 +51,7 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_natpmp_gateway_p
 if errorlevel 1 exit /b 1
 build\test_natpmp_gateway_policy.exe
 if errorlevel 1 exit /b 1
-cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_natpmp_pair_transaction.exe tests\test_natpmp_pair_transaction.cpp src\natpmp_pair_transaction.cpp
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_natpmp_pair_transaction.exe tests\test_natpmp_pair_transaction.cpp src\natpmp_pair_transaction.cpp src\natpmp_product_policy.cpp src\mapper_result.cpp src\legacy_mapper_projection.cpp src\address_policy.cpp
 if errorlevel 1 exit /b 1
 build\test_natpmp_pair_transaction.exe
 if errorlevel 1 exit /b 1

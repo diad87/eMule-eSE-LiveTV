@@ -478,6 +478,9 @@
 	  <LanguageStandard>stdcpp17</LanguageStandard>
 	  <WarningLevel>Level4</WarningLevel>
 	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\natpmp_product_policy.cpp">
+		<PrecompiledHeader>NotUsing</PrecompiledHeader>
+	</ClCompile>
 	<ClCompile Include="..\libnatmap\src\pcp_codec.cpp">
 	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
 	  <LanguageStandard>stdcpp17</LanguageStandard>
@@ -1444,6 +1447,7 @@
 	<ClInclude Include="..\libnatmap\include\natmap\natpmp_epoch_policy.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\natpmp_gateway_policy.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\natpmp_pair_transaction.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\natpmp_product_policy.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\pcp_codec.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\pcp_mapping_identity.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\pcp_map_projection.h" />

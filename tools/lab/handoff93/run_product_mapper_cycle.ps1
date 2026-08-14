@@ -334,7 +334,8 @@ function Assert-R93ExpectedHeadlessWindowSet {
         [ValidateRange(1, 1000)][int]$SampleIntervalMs = 100,
         [scriptblock]$InventoryProvider,
         [scriptblock]$IdentityGuard,
-        [string]$ExpectedMfcWindowClass = ''
+        [string]$ExpectedMfcWindowClass = '',
+        [scriptblock]$DiagnosticReporter
     )
     if ($null -eq $InventoryProvider) {
         if ($null -eq ('R93WindowInventoryNative' -as [type])) {
@@ -394,12 +395,17 @@ public static class R93WindowInventoryNative {
     }
     $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
     $stable = 0
+    $lastVisibleMainCount = 0
+    $lastHiddenMainCount = 0
     do {
+        if ($null -ne $DiagnosticReporter) { & $DiagnosticReporter 'GUARD_PRE' }
         if ($null -ne $IdentityGuard -and
             -not [bool](& $IdentityGuard $ProcessId)) {
             throw 'Launched process identity changed during window preflight.'
         }
+        if ($null -ne $DiagnosticReporter) { & $DiagnosticReporter 'INVENTORY_CALL' }
         $inventory = & $InventoryProvider $ProcessId
+        if ($null -ne $DiagnosticReporter) { & $DiagnosticReporter 'INVENTORY_SHAPE' }
         if ($null -ne $inventory -and
             $null -ne $inventory.PSObject.Properties['enumeration_complete']) {
             if (-not [bool]$inventory.enumeration_complete) {
@@ -411,15 +417,18 @@ public static class R93WindowInventoryNative {
             # native completion envelope and are complete by construction.
             $rows = @($inventory)
         }
+        if ($null -ne $DiagnosticReporter) { & $DiagnosticReporter 'GUARD_POST' }
         if ($null -ne $IdentityGuard -and
             -not [bool](& $IdentityGuard $ProcessId)) {
             throw 'Launched process identity changed during window preflight.'
         }
+        if ($null -ne $DiagnosticReporter) { & $DiagnosticReporter 'CLASSIFY_VISIBLE' }
         $visibleExpectedMain = @($rows | Where-Object {
                 [bool]$_.visible -and [int64]$_.owner -eq 0 -and
                 [string]$_.window_class -ceq '#32770' -and
-                ([string]$_.title).StartsWith('eMule ',
-                    [StringComparison]::Ordinal) })
+                 ([string]$_.title).StartsWith('eMule ',
+                     [StringComparison]::Ordinal) })
+        $lastVisibleMainCount = $visibleExpectedMain.Count
         $otherVisible = @($rows | Where-Object {
                 [bool]$_.visible -and -not (
                     [int64]$_.owner -eq 0 -and
@@ -427,13 +436,20 @@ public static class R93WindowInventoryNative {
                     ([string]$_.title).StartsWith('eMule ',
                         [StringComparison]::Ordinal)) })
         if ($otherVisible.Count -gt 0 -or $visibleExpectedMain.Count -gt 1) {
+            if ($null -ne $DiagnosticReporter) {
+                if ($otherVisible.Count -gt 0) { & $DiagnosticReporter 'OTHER_VISIBLE' }
+                else { & $DiagnosticReporter 'MULTIPLE_VISIBLE_MAIN' }
+            }
             throw 'Launched headless process exposed an unexpected modal window.'
         }
+        if ($null -ne $DiagnosticReporter) { & $DiagnosticReporter 'CLASSIFY_HIDDEN' }
         $main = @($rows | Where-Object {
                 [string]$_.window_class -ceq '#32770' -and
                 -not [bool]$_.visible -and [int64]$_.owner -eq 0 -and
-                ([string]$_.title).StartsWith('eMule ',
-                    [StringComparison]::Ordinal) })
+                 ([string]$_.title).StartsWith('eMule ',
+                     [StringComparison]::Ordinal) })
+        $lastHiddenMainCount = $main.Count
+        if ($null -ne $DiagnosticReporter) { & $DiagnosticReporter 'CLASSIFY_UNEXPECTED' }
         $unexpected = @($rows | Where-Object {
                 $windowClass = [string]$_.window_class
                 $title = [string]$_.title
@@ -456,8 +472,10 @@ public static class R93WindowInventoryNative {
                 -not ($isMain -or $isKnownInfrastructure)
             })
         if ($unexpected.Count -gt 0) {
+            if ($null -ne $DiagnosticReporter) { & $DiagnosticReporter 'UNEXPECTED_WINDOW' }
             throw 'Launched headless process exposed an unallowlisted window.'
         }
+        if ($null -ne $DiagnosticReporter) { & $DiagnosticReporter 'STABILITY' }
         if ($main.Count -eq 1 -and $visibleExpectedMain.Count -eq 0) {
             $stable++
             if ($stable -ge $StableSamples) { return $true }
@@ -465,6 +483,13 @@ public static class R93WindowInventoryNative {
         if ($TimeoutMs -eq 0 -or [DateTime]::UtcNow -ge $deadline) { break }
         Start-Sleep -Milliseconds $SampleIntervalMs
     } while ($true)
+    if ($null -ne $DiagnosticReporter) {
+        if ($lastVisibleMainCount -eq 1 -and $lastHiddenMainCount -eq 0) {
+            & $DiagnosticReporter 'VISIBLE_MAIN'
+        } elseif ($lastVisibleMainCount -eq 0 -and $lastHiddenMainCount -eq 0) {
+            & $DiagnosticReporter 'NO_HIDDEN_MAIN_TIMEOUT'
+        } else { & $DiagnosticReporter 'UNSTABLE_MAIN_TIMEOUT' }
+    }
     throw 'Expected hidden headless main window was not uniquely observable.'
 }
 
@@ -603,6 +628,10 @@ function Get-R93CandidateProjection {
         generation = $topGeneration
         tcp_candidate = [string]$tcp.gate_state -ceq 'CANDIDATE'
         udp_candidate = [string]$udp.gate_state -ceq 'CANDIDATE'
+        tcp_gate_state = if ([string]$tcp.gate_state -in @('CANDIDATE','REACHABLE','BLOCKED','UNKNOWN')) { [string]$tcp.gate_state } else { 'OTHER' }
+        udp_gate_state = if ([string]$udp.gate_state -in @('CANDIDATE','REACHABLE','BLOCKED','UNKNOWN')) { [string]$udp.gate_state } else { 'OTHER' }
+        tcp_reason_code = if ([uint64]$tcp.reason_code -le 65535) { [uint16]$tcp.reason_code } else { [uint16]65535 }
+        udp_reason_code = if ([uint64]$udp.reason_code -le 65535) { [uint16]$udp.reason_code } else { [uint16]65535 }
     }
 }
 
@@ -619,6 +648,16 @@ function Invoke-R93PartialCycle {
     $absent = $false
     $restored = $false
     $failureClass = ''
+    $cleanupFailureClass = $null
+    $samplesTotal = 0
+    $samplesAvailable = 0
+    $tcpCandidateSamples = 0
+    $udpCandidateSamples = 0
+    $sameGenerationSamples = 0
+    $lastTcpGateState = 'UNAVAILABLE'
+    $lastUdpGateState = 'UNAVAILABLE'
+    $lastTcpReasonCode = 65535
+    $lastUdpReasonCode = 65535
     try {
         if ($null -ne $Adapters.PSObject.Properties['VerifyPreexisting']) {
             $null = & $Adapters.VerifyPreexisting
@@ -642,6 +681,17 @@ function Invoke-R93PartialCycle {
                 $null = & $Adapters.VerifyPreexisting
             }
             $sample = & $Adapters.Sample
+            $samplesTotal++
+            if ($null -ne $sample) {
+                $samplesAvailable++
+                if ([bool]$sample.tcp_candidate) { $tcpCandidateSamples++ }
+                if ([bool]$sample.udp_candidate) { $udpCandidateSamples++ }
+                if ([bool]$sample.same_generation) { $sameGenerationSamples++ }
+                if ($null -ne $sample.PSObject.Properties['tcp_gate_state']) { $lastTcpGateState = [string]$sample.tcp_gate_state }
+                if ($null -ne $sample.PSObject.Properties['udp_gate_state']) { $lastUdpGateState = [string]$sample.udp_gate_state }
+                if ($null -ne $sample.PSObject.Properties['tcp_reason_code']) { $lastTcpReasonCode = [uint16]$sample.tcp_reason_code }
+                if ($null -ne $sample.PSObject.Properties['udp_reason_code']) { $lastUdpReasonCode = [uint16]$sample.udp_reason_code }
+            }
             if ($null -ne $sample -and [bool]$sample.tcp_candidate -and
                 [bool]$sample.udp_candidate -and [bool]$sample.same_generation -and
                 [uint64]$sample.generation -gt 0) {
@@ -691,7 +741,10 @@ function Invoke-R93PartialCycle {
         if ($started -and $closed) {
             try { $absent = [bool](& $Adapters.MappingsAbsent) }
             catch { $absent = $false }
-            if (-not $absent) { $failureClass = 'MAPPING_REMAINS_UNTOUCHED' }
+            if (-not $absent) {
+                $cleanupFailureClass = 'MAPPING_REMAINS_UNTOUCHED'
+                if ([string]::IsNullOrEmpty($failureClass)) { $failureClass = $cleanupFailureClass }
+            }
         }
         $mayStillWriteIni = $started
         if ($started) {
@@ -731,6 +784,18 @@ function Invoke-R93PartialCycle {
             'PROCESS_STILL_ALIVE', 'IDENTITY_NOT_ACCREDITED',
             'PREEXISTING_PROCESS_CHANGED')
         failure_class = if ($success) { $null } else { $failureClass }
+        cleanup_failure_class = $cleanupFailureClass
+        sample_observation = [pscustomobject][ordered]@{
+            samples_total = $samplesTotal
+            samples_available = $samplesAvailable
+            tcp_candidate_samples = $tcpCandidateSamples
+            udp_candidate_samples = $udpCandidateSamples
+            same_generation_samples = $sameGenerationSamples
+            last_tcp_gate_state = $lastTcpGateState
+            last_udp_gate_state = $lastUdpGateState
+            last_tcp_reason_code = $lastTcpReasonCode
+            last_udp_reason_code = $lastUdpReasonCode
+        }
     }
 }
 
@@ -804,6 +869,32 @@ $spawnedToken = $null
 $launchedIdentity = $null
 $expectedMfcWindowClass = ''
 $backend = $null
+$identityDiagnosticStream = $null
+$identityDiagnosticEnabled = [Environment]::GetEnvironmentVariable(
+    'R93_LOCAL_IDENTITY_DIAGNOSTIC', 'Process') -ceq '1'
+$identityDiagnosticState = [pscustomobject]@{ stage = '' }
+if ($identityDiagnosticEnabled) {
+    try {
+        $identityDiagnosticPath = Join-Path $config 'r93-local-identity-stage.txt'
+        if (-not (Test-Path -LiteralPath $identityDiagnosticPath)) {
+            $identityDiagnosticStream = [IO.File]::Open($identityDiagnosticPath,
+                [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+                [IO.FileShare]::Read)
+        }
+    } catch { $identityDiagnosticStream = $null }
+}
+$setIdentityStage = { param([string]$Stage)
+    $null = ($identityDiagnosticState.stage = $Stage)
+    if ($null -ne $identityDiagnosticStream) {
+        try {
+            $bytes = [Text.Encoding]::ASCII.GetBytes($Stage)
+            $null = ($identityDiagnosticStream.Position = 0)
+            $null = $identityDiagnosticStream.SetLength(0)
+            $null = $identityDiagnosticStream.Write($bytes, 0, $bytes.Length)
+            $null = $identityDiagnosticStream.Flush($true)
+        } catch { }
+    }
+}.GetNewClosure()
 $baseUrl = "http://127.0.0.1:$WebPort"
 $adapters = [pscustomobject]@{
     Configure = { Set-R93ProductIni $ini $TcpPort $UdpPort $WebPort $adminHash }
@@ -827,27 +918,75 @@ $adapters = [pscustomobject]@{
         }
         Assert-R93ExactProcessIdentitySet $preexistingBaseline $current }
     AccreditNewProcess = { param($token)
+        & $setIdentityStage 'HANDLE'
         # These captures are intentionally after the token has been published.
         $null = $script:process.Handle
         $null = $script:process.StartTime
         $null = $script:process.SessionId
+        & $setIdentityStage 'INVENTORY'
         $after = @(Get-R93ProductProcessInventory $productName)
+        & $setIdentityStage 'CANDIDATE'
         $script:launchedIdentity = Assert-R93OneNewCandidateProcess `
             $preexistingBaseline $after ([int]$token) $exe $exeHash
+        & $setIdentityStage 'HANDLE_IDENTITY'
         $null = Assert-R93LaunchedProcessHandleIdentity $script:process `
             $script:launchedIdentity $exe $exeHash
+        & $setIdentityStage 'MODULE'
         $script:expectedMfcWindowClass = 'Afx:{0:X16}:0' -f `
             $script:process.MainModule.BaseAddress.ToInt64()
         $identityGuard = { param($guardToken)
             try {
+                $null = & $setIdentityStage 'GUARD_ASSERT_BEGIN'
                 $null = Assert-R93LaunchedProcessHandleIdentity `
                     $script:process $script:launchedIdentity $exe $exeHash
-                return [int]$script:process.Id -eq [int]$guardToken
-            } catch { return $false }
-        }.GetNewClosure()
-        $null = Assert-R93ExpectedHeadlessWindowSet `
-            -ProcessId ([int]$token) -IdentityGuard $identityGuard `
-            -ExpectedMfcWindowClass $script:expectedMfcWindowClass
+                $null = & $setIdentityStage 'GUARD_ASSERT_DONE'
+                $null = & $setIdentityStage 'GUARD_TOKEN_COMPARE'
+                $sameToken = [int]$script:process.Id -eq [int]$guardToken
+                if (-not $sameToken) { $null = & $setIdentityStage 'GUARD_FALSE' }
+                return $sameToken
+            } catch { $null = & $setIdentityStage 'GUARD_FALSE'; return $false }
+        }
+        & $setIdentityStage 'WINDOW_SET'
+        try {
+            $null = Assert-R93ExpectedHeadlessWindowSet `
+                -ProcessId ([int]$token) -IdentityGuard $identityGuard `
+                -DiagnosticReporter $setIdentityStage `
+                -ExpectedMfcWindowClass $script:expectedMfcWindowClass `
+                -TimeoutMs 30000
+        } catch {
+            $message = [string]$_.Exception.Message
+            $stage = if ($message -ceq 'Top-level window enumeration was incomplete.') {
+                'WINDOW_ENUM_INCOMPLETE'
+            } elseif ($message -ceq 'Launched headless process exposed an unexpected modal window.') {
+                'WINDOW_MODAL'
+            } elseif ($message -ceq 'Launched headless process exposed an unallowlisted window.') {
+                'WINDOW_UNALLOWLISTED'
+            } elseif ($message -ceq 'Expected hidden headless main window was not uniquely observable.') {
+                'WINDOW_TIMEOUT'
+            } elseif ($message -ceq 'Launched process identity changed during window preflight.') {
+                'WINDOW_IDENTITY_GUARD'
+            } else {
+                $type = $_.Exception.GetType().FullName
+                if ($type -ceq 'System.Management.Automation.PropertyNotFoundException') {
+                    'WINDOW_INTERNAL_PROPERTY'
+                } elseif ($type -ceq 'System.Management.Automation.MethodInvocationException') {
+                    'WINDOW_INTERNAL_METHOD'
+                } elseif ($type -ceq 'System.Management.Automation.ParameterBindingException') {
+                    'WINDOW_INTERNAL_PARAMETER'
+                } elseif ($type -ceq 'System.Management.Automation.RuntimeException') {
+                    'WINDOW_INTERNAL_RUNTIME'
+                } else { 'WINDOW_INTERNAL_OTHER' }
+            }
+            $currentStage = [string]$identityDiagnosticState.stage
+            $replaceGenericIdentityStage =
+                $message -ceq 'Launched process identity changed during window preflight.' -and
+                $currentStage -in @('WINDOW_SET', 'GUARD_PRE', 'GUARD_POST')
+            if ($currentStage -ceq 'WINDOW_SET' -or $replaceGenericIdentityStage) {
+                & $setIdentityStage $stage
+            }
+            throw
+        }
+        & $setIdentityStage 'ACCREDITED'
         return $true }
     Exists = { param($token)
         if ($null -eq $script:process -or
@@ -875,7 +1014,7 @@ $adapters = [pscustomobject]@{
                             $script:process $script:launchedIdentity $exe $exeHash
                         return [int]$script:process.Id -eq [int]$guardToken
                     } catch { return $false }
-                }.GetNewClosure()
+                }
                 $null = Assert-R93ExpectedHeadlessWindowSet `
                     -ProcessId ([int]$ignored) `
                     -IdentityGuard $preCloseIdentity `
@@ -897,6 +1036,9 @@ try {
 }
 finally {
     $adminHash = $null
+    if ($null -ne $identityDiagnosticStream) {
+        $identityDiagnosticStream.Dispose(); $identityDiagnosticStream = $null
+    }
     if ($null -ne $exeLock) { $exeLock.Dispose(); $exeLock = $null }
     if ($null -ne $allowlistLock) {
         $allowlistLock.Dispose(); $allowlistLock = $null

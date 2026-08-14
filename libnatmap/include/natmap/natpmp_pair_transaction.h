@@ -1,4 +1,5 @@
 #pragma once
+#include "natmap/mapper_result.h"
 
 #include "natmap/natpmp_codec.h"
 #include "natmap/natpmp_gateway_policy.h"
@@ -107,6 +108,16 @@ bool AllowsNatPmpCleanup(
 NatPmpCleanupPlan TakeNatPmpCleanupPlan(
     NatPmpCleanupProof& proof,
     const NatPmpCleanupContext& context) noexcept;
+
+bool CorrelatesNatPmpOwnershipProof(
+    const NatPmpCleanupProof& proof,
+    const MapperResultData& data,
+    std::uint64_t request_generation) noexcept;
+bool ApplyNatPmpOwnershipProof(
+    const NatPmpCleanupProof& proof,
+    std::uint64_t request_generation,
+    const std::array<std::uint8_t, 32>& identity_digest,
+    MapperResultData& data) noexcept;
 
 struct NatPmpRollbackTarget {
     NatPmpTransport transport = NatPmpTransport::Tcp;

@@ -1,0 +1,113 @@
+{
+  "schema": "ese.v92.o01-governance-amendment/v1",
+  "status": "DRAFT_PRE_G",
+  "base_commit": "1ea8d9506c93ed5972cf6f370c2a06f4da1f74fc",
+  "scope": "V92-O01 laboratory gateway, formal controller, product observation stream and isolated Hyper-V T8 runner only; no product binary or protocol production source.",
+  "historical_governance_immutable": [
+    "docs/architecture/mod52_migration_contract_v2.json",
+    "docs/architecture/mod52_migration_matrix_v2.json",
+    "docs/architecture/mod52_migration_activation_ledger_v1.json"
+  ],
+  "topology": {
+    "G": "direct child of base_commit; amendment, verifier and verifier test only",
+    "A": "direct child of G; exactly functional_paths and exact budget",
+    "H": "direct child of A; Terra and Sol APPROVE attestations plus offline gate summary; zero functional drift",
+    "S": "optional direct child of H; one elevated short smoke with release_gate=false; never release evidence",
+    "R": "direct child of H or S; archives one uninterrupted formal eight-hour run whose source_commit and source_tree are exactly A, plus separate H and optional S governance bindings; zero functional drift"
+  },
+  "phase_contract": {
+    "schema": "ese.v92.o01-governance-phases/v1",
+    "merge_policy": "Every G/A/H/S/R commit has exactly one parent; merge, squash, rebase substitution and intermediate commits are rejected.",
+    "G": {"parent": "base_commit", "delta": "governance_paths", "artifacts": []},
+    "A": {"parent": "G", "delta": "functional_paths", "artifacts": []},
+    "H": {"parent": "A", "delta": "h_carrier_paths", "artifacts": ["activation", "offline_summary", "review_terra", "review_sol"]},
+    "S": {"optional": true, "parent": "H", "delta": "s_carrier_paths", "release_gate": false, "artifacts": ["nonrelease_raw", "nonrelease_summary"]},
+    "R": {"parent": "H_or_S", "source": "A", "governance": "H_and_optional_S", "delta": "r_carrier_policy", "release_gate": true, "artifacts": ["checkpoints_01_95", "controller_result", "formal_validation", "formal_run_result"]}
+  },
+  "governance_paths": [
+    "docs/architecture/v92_o01_governance_amendment_v1.json",
+    "tools/architecture/verify_v92_o01_governance_amendment.py",
+    "tools/architecture/test_verify_v92_o01_governance_amendment.py"
+  ],
+  "functional_paths": [
+    "tools/lab/handoff93/run_product_mapper_cycle.ps1",
+    "tools/lab/handoff93/test_product_mapper_formal_soak_mock.ps1",
+    "tools/lab/nat_gateway/test/v92_o01_bridge_protocol.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_formal_controller.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_formal_host.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_formal_rpc.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_formal_rpc_peer_mock.js",
+    "tools/lab/nat_gateway/test/v92_o01_product_stream.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_soak.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_child.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_daemon.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_fault_controller.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_gateway_adapter.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_network_adapter.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_udp_mux.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_validate_formal.test.js",
+    "tools/lab/nat_gateway/v92_o01_bridge_protocol.js",
+    "tools/lab/nat_gateway/v92_o01_formal_controller.js",
+    "tools/lab/nat_gateway/v92_o01_formal_host.js",
+    "tools/lab/nat_gateway/v92_o01_formal_rpc.js",
+    "tools/lab/nat_gateway/v92_o01_product_stream.js",
+    "tools/lab/nat_gateway/v92_o01_scenario.json",
+    "tools/lab/nat_gateway/v92_o01_soak.js",
+    "tools/lab/nat_gateway/v92_o01_t8_child.js",
+    "tools/lab/nat_gateway/v92_o01_t8_daemon.js",
+    "tools/lab/nat_gateway/v92_o01_t8_fault_controller.js",
+    "tools/lab/nat_gateway/v92_o01_t8_gateway_adapter.js",
+    "tools/lab/nat_gateway/v92_o01_t8_network_adapter.js",
+    "tools/lab/nat_gateway/v92_o01_t8_udp_mux.js",
+    "tools/lab/nat_gateway/v92_o01_validate_formal.js",
+    "tools/lab/run_v92_o01_formal.ps1",
+    "tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1",
+    "tools/lab/test_v92_o01_formal_runner_mock.ps1",
+    "tools/lab/test_v92_o01_vm_session_mock.ps1",
+    "tools/lab/test_v92_o01_vm_t8_smoke.ps1",
+    "tools/lab/v92_o01_vm_session.psm1"
+  ],
+  "carrier_paths": {
+    "H": [
+      "artifacts/v92-o01-governance/activation.json",
+      "artifacts/v92-o01-governance/offline-summary.json",
+      "artifacts/v92-o01-governance/review-sol.json",
+      "artifacts/v92-o01-governance/review-terra.json"
+    ],
+    "S": [
+      "artifacts/v92-o01-governance/nonrelease-smoke-raw.json",
+      "artifacts/v92-o01-governance/nonrelease-smoke-summary.json"
+    ],
+    "R": {"directory": "artifacts/v92-o01-formal", "checkpoint_pattern": "checkpoint-(01..95).json", "fixed": ["controller-result.json", "formal-run-result.json", "formal-validation.json"], "file_count": 98}
+  },
+  "budget": {"path_count": 36, "add_exact": 1237, "delete_exact": 63, "net_exact": 1174, "headroom": 0},
+  "excluded_state": [{"path": "libutp", "reason": "pre-existing submodule worktree state; not part of O01 and must not be staged"}],
+  "required_reviews": ["Terra APPROVE with no P0/P1", "Sol APPROVE with no P0/P1"],
+  "offline_gates": [
+    "Node 22 complete nat_gateway suite",
+    "formal controller/validator/host/RPC focal suite",
+    "PowerShell parser for every changed ps1/psm1",
+    "product formal-soak mock",
+    "VM session rollback mock",
+    "formal RPC pump mock",
+    "formal runner source/mock gate",
+    "git diff --check"
+  ],
+  "physical_policy": {
+    "short_smoke": "NON_RELEASE only; release_gate must be false; absence of elevation is BLOCKED without mutation",
+    "formal": "exactly 28800000 monotonic milliseconds, no duration override, no resume, no skip-cleanup, Node 22, clean source tree",
+    "claim_rule": "No physical or release PASS may be claimed from mocks, a non-elevated attempt, or the short smoke."
+  },
+  "stop_conditions": [
+    "functional path 37 or any path outside tools/lab",
+    "budget differs by one line",
+    "production source, project file or binary changes",
+    "unbound formal runner/helper appears",
+    "credential serialized to argv, environment, JSON or evidence",
+    "cleanup cannot prove exact owned firewall/VHD/VM/NIC authority",
+    "source, Node, package or evidence binding changes during a run",
+    "P0 or P1 review finding",
+    "release_gate=true before independent validation and exact baseline restoration"
+  ],
+  "activation_state": {"G": null, "A": null, "H": null, "S": null, "R": null, "rule": "This draft never stores its own commit. Commit identities are derived from Git parents and recorded only by a later phase."}
+}

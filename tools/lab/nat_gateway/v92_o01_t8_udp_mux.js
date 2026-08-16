@@ -42,9 +42,9 @@ function createO01UdpMux(config) {
     if (!running || !Buffer.isBuffer(packet) || packet.length < 2 || packet.length > 1100 || !allowed.has(peer.address)) return;
     let framed;
     try { framed = packet[0] === 0 ? natpmp(packet, peer) : packet[0] === 2 ? pcp(packet) : null;
-      if(framed&&config.fault_controller){const decision=await config.fault_controller.apply(framed.response,framed.command,new AbortController().signal);framed={...framed,responses:decision.packets,commit:decision.commit};}
+      if(framed&&config.fault_controller){const before=config.adapter.observeProtocol();const decision=await config.fault_controller.apply(framed.response,framed.command,new AbortController().signal);framed={...framed,responses:decision.packets,commit:decision.commit,decision,before};}
       else if(framed)framed={...framed,commit:true};
-      if(framed&&framed.token)(framed.commit?config.adapter.commitPrepared(framed.token):config.adapter.abortPrepared(framed.token));
+      if(framed&&framed.token){const pairCommitted=framed.commit?config.adapter.commitPrepared(framed.token):(config.adapter.abortPrepared(framed.token),false);if(config.fault_controller&&framed.decision)config.fault_controller.recordTransaction(framed.decision,Boolean(pairCommitted),framed.before,config.adapter.observeProtocol(),framed.command.protocol);}
       if(framed&&['pcp','natpmp'].includes(framed.command.protocol))config.adapter.recordWireOutcome(framed.command.protocol,Boolean(framed.commit));
     } catch (_) { if(framed&&framed.token)config.adapter.abortPrepared(framed.token);return; }
     if (!framed||!running)return;for(const response of framed.responses||[framed.response])socket.send(response, peer.port, peer.address, () => {});

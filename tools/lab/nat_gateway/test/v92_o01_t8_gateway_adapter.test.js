@@ -42,7 +42,9 @@ test('expiry removes both members while permanent UPnP mappings survive', () => 
 
 test('protocol projection is closed and contains no address, port, nonce or path', () => {
   const adapter = createGatewayAdapter({ now: () => 1000, resources: () => ({ gateway_rss_bytes: 7, gateway_sockets: 2 }) });
-  adapter.mapPair('pcp'); const projection = adapter.observeProtocol();
+  adapter.mapPair('pcp'); const projection = {...adapter.observeProtocol(),faults:{armed_fault_ordinal:0,armed_fault_name:'none',last_executed_fault_ordinal:0,last_executed_fault_name:'renew_success',last_executed_outcome:'none',last_fault_candidate_committed:false,pair_transactions_attempted:0,pair_transactions_committed:0,pair_transactions_aborted:0,last_recovery_transaction_ordinal:0,late_packets_delivered:0,late_packets_ignored:0}};
+  delete projection.faults.late_packets_delivered; delete projection.faults.late_packets_ignored;
+  Object.assign(projection.faults,{last_wire_protocol:'none',fault_transactions_attempted:0,recovery_transactions_attempted:0,late_packets_emitted:0,generation_before:0,generation_after:0,epoch_before:0,epoch_after:0,owned_before:0,owned_after:0,publisher_before:false,publisher_after:false,journal_before:0,journal_after:0});
   assert.equal(validateObservation(projection), projection);
   const json = JSON.stringify(projection);
   assert.doesNotMatch(json, /(?:address|port|nonce|path|192\.0\.2|198\.51\.100|\\Users\\|\/home\/)/i);

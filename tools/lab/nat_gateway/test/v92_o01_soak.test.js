@@ -134,7 +134,7 @@ test('crash marker or prior directory makes resume impossible', () => {
 
 test('scenario is a closed, deterministic contract', () => {
   const config = readConfig();
-  assert.deepEqual(Object.keys(config).sort(), ['bound_files','case_id','checkpoint_ms','cycle','final_fault','formal_duration_ms','lease_ms','limits','node_major','owner_tag','sample_ms','schema','slope_window_ms','tick_ms','transports','warmup_ms'].sort());
-  assert.equal(new Set(config.bound_files.map((entry) => entry.toLowerCase())).size, 4);
+  assert.deepEqual(Object.keys(config).sort(), ['bound_files','case_id','checkpoint_ms','cycle','fault_slot_ms','final_fault','formal_duration_ms','lease_ms','limits','node_major','owner_tag','sample_ms','schema','slope_window_ms','tick_ms','transports','warmup_ms'].sort());
+  assert.equal(new Set(config.bound_files.map((entry) => entry.toLowerCase())).size, 20);
   assert.equal(canonical(config.transports), canonical(['tcp','udp']));
 });

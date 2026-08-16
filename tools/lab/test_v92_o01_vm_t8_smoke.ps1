@@ -13,6 +13,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
+$root = $null
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -25,7 +26,7 @@ if ((Split-Path -Leaf $root) -notmatch '^eSE-v9\.2-o01-vm-smoke-[0-9a-f]{12}$' -
     throw 'EvidenceRoot must be a new eSE-v9.2-o01-vm-smoke-<12 hex> directory'
 }
 trap {
-    if(Test-Path -LiteralPath $root -PathType Container){
+    if(-not [string]::IsNullOrEmpty($root) -and (Test-Path -LiteralPath $root -PathType Container)){
         $causes=@();if($_.Exception -is [AggregateException]){$causes=@($_.Exception.InnerExceptions|ForEach-Object{[string]$_.Message})}elseif($null -ne $_.Exception.InnerException){$causes=@([string]$_.Exception.InnerException.Message)}
         $record=[ordered]@{schema='ese.v92.o01-vm-smoke-failure/v1';error_type=$_.Exception.GetType().FullName;message=[string]$_.Exception.Message;causes=$causes;line=[int]$_.InvocationInfo.ScriptLineNumber}|ConvertTo-Json -Compress
         [IO.File]::WriteAllText((Join-Path $root 'failure.json'),$record,[Text.UTF8Encoding]::new($false))

@@ -15,19 +15,18 @@ async function createT8NetworkAdapter(options){
  const common={mode:options.mode,bind_address:options.bindAddress,external_address:options.externalAddress||'198.51.100.10',adapter:semantic,provenance:options.provenance,allowed_source_addresses:options.allowedSources||[options.bindAddress]};
  const mux=createO01UdpMux({...common,port:options.mode==='FORMAL_T8'?5351:0,allowed_source_addresses:options.allowedSources||[options.bindAddress],fault_controller:faults});
  const upnp=createO01UpnpEdge(common); let muxStarted=false,upnpStarted=false,closed=false;
+ let legacyOrdinal=0;
+ const project=()=>Object.freeze({...semantic.observeProtocol(),faults:faults.state()});
  try{await mux.start();muxStarted=true;await upnp.start();upnpStarted=true;}catch(error){if(upnpStarted)await upnp.close();if(muxStarted)await mux.close();semantic.cleanupOwned();throw error;}
  return Object.freeze({
-  async observe(){if(closed)throw new Error('O01_NETWORK_CLOSED');return semantic.observeProtocol();},
+  async observe(){if(closed)throw new Error('O01_NETWORK_CLOSED');return project();},
+  async beginSlot(fault,ordinal){if(closed||!FAULTS.has(fault)||!Number.isSafeInteger(ordinal)||ordinal<1)throw new Error('O01_NETWORK_FAULT_INVALID');
+   if(fault==='epoch_reset'){faults.beginImmediate(fault,ordinal);semantic.restartEpoch(semantic.observe().epoch+1);}
+   else {faults.arm(fault,{planned_ordinal:ordinal});if(fault==='expiry')semantic.expire();}
+   return project();},
   async inject(fault){if(closed||!FAULTS.has(fault))throw new Error('O01_NETWORK_FAULT_INVALID');
-   if(['dropped_late','explicit_reject','stale','replay_duplicate','malformed','partial_pair','final_boundary'].includes(fault)){faults.arm(fault);return semantic.observeProtocol();}
-   const generation=semantic.observe().generation;
-   if(fault==='renew_success'){for(const protocol of ['pcp','natpmp','upnp'])if(semantic.observe().mappings.some(x=>x.protocol===protocol&&x.client_id==='o01-client'))semantic.renewPair(protocol);}
-   else if(fault==='expiry')semantic.expire();
-   else if(fault==='epoch_reset'||fault==='dropped_late')semantic.restartEpoch(semantic.observe().epoch+1);
-   else if(['stale','replay_duplicate','malformed','explicit_reject'].includes(fault))semantic.rejectStale(generation+1);
-   else { semantic.cleanupOwned(); }
-   return semantic.observeProtocol();},
-  async shutdown(){if(closed)return semantic.observeProtocol();closed=true;const failures=[];try{await upnp.close();}catch(e){failures.push(e);}try{await mux.close();}catch(e){failures.push(e);}const final=semantic.cleanupOwned();if(failures.length)throw new AggregateError(failures,'O01_NETWORK_CLOSE_FAILED');return final;}
+   legacyOrdinal++;faults.arm(fault,{planned_ordinal:legacyOrdinal});return project();},
+  async shutdown(){if(closed)return project();closed=true;const failures=[];try{await upnp.close();}catch(e){failures.push(e);}try{await mux.close();}catch(e){failures.push(e);}semantic.cleanupOwned();const final=project();if(failures.length)throw new AggregateError(failures,'O01_NETWORK_CLOSE_FAILED');return final;}
  });
 }
 module.exports=Object.freeze({createT8NetworkAdapter});

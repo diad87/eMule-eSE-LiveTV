@@ -153,7 +153,7 @@ function createGatewayAdapter(options = {}) {
         tcp_state: live && transports.has('tcp') ? 'VERIFIED' : 'WITHDRAWN',
         udp_state: live && transports.has('udp') ? 'VERIFIED' : 'WITHDRAWN',
         publisher_active: live && transports.has('tcp') && transports.has('udp'), journal_entry_count: ownedMappings.length }),
-      resources: Object.freeze({ gateway_rss_bytes: uint('gateway_rss_bytes'), product_working_set_bytes: uint('product_working_set_bytes'),
+      resources: Object.freeze({ gateway_rss_bytes: uint('gateway_rss_bytes'), gateway_heap_bytes:uint('gateway_heap_bytes'),gateway_external_bytes:uint('gateway_external_bytes'),gateway_array_buffers_bytes:uint('gateway_array_buffers_bytes'),product_working_set_bytes: uint('product_working_set_bytes'),
         gateway_handles: uint('gateway_handles'), product_handles: uint('product_handles'), gateway_sockets: uint('gateway_sockets'),
         product_sockets: uint('product_sockets'), event_loop_lag_ms: uint('event_loop_lag_ms') }),
       traffic: Object.freeze({ ...traffic, final_owned_mapping_count: ownedMappings.length,

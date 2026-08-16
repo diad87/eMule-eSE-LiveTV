@@ -1,8 +1,10 @@
 {
-  "schema": "ese.v92.o01-offline-summary/v1",
-  "source_commit": "37057fcb58e25fc9cec6ebba67fc294343936a1a",
-  "source_tree": "969abbd1df19afc12d49cee22e45b6a698de21b7",
-  "amendment_sha256": "f60a99763774cfdabe988b7e53f1d0d1722e31195f567fd1fc00372c4f8a5bd7",
+  "schema": "ese.v92.o01-hotfix-offline-summary/v1",
+  "source_commit": "3d19e260c1bdf24f1b03a181869ae0602e795179",
+  "source_tree": "01f1646d7f384a91c3e5b623cf0de95ddbc615c1",
+  "m_commit": "9c9e9b517bac1f9175c4b68623b40281f8fc9b28",
+  "m_tree": "63f96e67f4d2b581c8ae04075426dda7e6e13ed1",
+  "amendment_sha256": "8978e30d6817bcdadb6072844dde8395c4277da33f77a004fa3d9e1cacc1b677",
   "gates": [
     {"name":"Node 22 complete nat_gateway suite","command":"npm.cmd test","exit_code":0,"marker":"O01_NODE_SUITE_PASS","body":["O01_NODE_SUITE_PASS"],"body_sha256":"78de767fc05a9e9246ef6a74fe37f533b83a2b929d32285f9d5bb45100a717ea"},
     {"name":"formal controller/validator/host/RPC focal suite","command":"node --test test/v92_o01_formal_controller.test.js test/v92_o01_validate_formal.test.js test/v92_o01_formal_host.test.js test/v92_o01_formal_rpc.test.js","exit_code":0,"marker":"O01_FORMAL_FOCAL_PASS","body":["O01_FORMAL_FOCAL_PASS"],"body_sha256":"66e239e959cee4c8bd25050399be08b89cf8ddc5fed630ed37acbccba64e2674"},
@@ -11,6 +13,10 @@
     {"name":"VM session rollback mock","command":"powershell -File tools/lab/test_v92_o01_vm_session_mock.ps1","exit_code":0,"marker":"O01_SESSION_MOCK_PASS","body":["O01_SESSION_MOCK_PASS"],"body_sha256":"c00ecf3cafc2de4225af7f0aa0ef8c4e9f36f167895ad11d69b88c4ae7d544c7"},
     {"name":"formal RPC pump mock","command":"powershell -File tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1","exit_code":0,"marker":"O01_RPC_MOCK_PASS","body":["O01_RPC_MOCK_PASS"],"body_sha256":"50227ad44d11870bfe381e33f373626fbb1bbd9b577c11365afee7fe0e4d331b"},
     {"name":"formal runner source/mock gate","command":"powershell -File tools/lab/test_v92_o01_formal_runner_mock.ps1","exit_code":0,"marker":"O01_RUNNER_MOCK_PASS","body":["O01_RUNNER_MOCK_PASS"],"body_sha256":"eda0aa6badc1cab0a2471362656458926f0e2b8a948ba497b07789bf09fc4343"},
+    {"name":"PCP and NAT-PMP ownership host contracts","command":"cmd /d /c \"python -B tests\\test_v92_l02_pcp_ownership.py && python -B tests\\test_v92_l03_natpmp_ownership.py && python -B tests\\test_v92_l07_hostile_corpus.py && python -B tests\\test_v92_m02_double_nat.py && python -B tests\\test_v92_mx03_pcp_upstream.py\"","exit_code":0,"marker":"O01_MAPPER_OWNERSHIP_PASS","body":["O01_MAPPER_OWNERSHIP_PASS"],"body_sha256":"e1e24872b8a67f95f331c45eff463d3dc09573198edaf9366b43adad124d3962"},
+    {"name":"libnatmap complete native suite","command":"cmd /d /c libnatmap\\make.bat","exit_code":0,"marker":"O01_LIBNATMAP_PASS","body":["O01_LIBNATMAP_PASS"],"body_sha256":"33cb3dd02da485c3671bf0b6ce0e65416baeb2936f3cbf9c32b5693aa40c6e79"},
+    {"name":"Release x64 build","command":"powershell -File tools/build_all.ps1 -ReleaseTag v0.70b-eSE9.2.0-rc.1","exit_code":0,"marker":"O01_RELEASE_BUILD_PASS","body":["O01_RELEASE_BUILD_PASS"],"body_sha256":"9036396dee16735e8eb4945ea8458f7757b81c183faee30a189e92891be3afea"},
+    {"name":"MOD02 verifier and runtime reseal","command":"verify M36 MOD02 artifacts","exit_code":0,"marker":"O01_MOD02_RESEAL_PASS","body":["O01_MOD02_RESEAL_PASS"],"body_sha256":"ed380623012a243f5fb9a90633896963d66d6a324aa9955d8cac295a111897a0"},
     {"name":"git diff --check","command":"git diff --check","exit_code":0,"marker":"O01_DIFF_CHECK_PASS","body":["O01_DIFF_CHECK_PASS"],"body_sha256":"f7f8579baf8e7d4389e39da139568f925e293a83267dc77e7c10bf625f9c8af9"}
   ]
 }

@@ -1,13 +1,23 @@
 {
-  "schema": "ese.v92.o01-activation/v1",
-  "g_commit": "cfeba8b67234c47a052e3d976acbb233868160f4",
-  "a_commit": "37057fcb58e25fc9cec6ebba67fc294343936a1a",
-  "a_tree": "969abbd1df19afc12d49cee22e45b6a698de21b7",
-  "amendment_sha256": "f60a99763774cfdabe988b7e53f1d0d1722e31195f567fd1fc00372c4f8a5bd7",
-  "functional_paths_sha256": "bd6ea920149c74092a77260fceb929c815a1360788f318408a3a38a42ce234df",
+  "schema": "ese.v92.o01-hotfix-activation/v1",
+  "predecessor_h_commit": "c9a81244ba8f2171aed6610aaea10a5898ac6acb",
+  "g_commit": "487f43bd95cc841b91311dd7166a863ecdd7bf8e",
+  "a_commit": "3d19e260c1bdf24f1b03a181869ae0602e795179",
+  "a_tree": "01f1646d7f384a91c3e5b623cf0de95ddbc615c1",
+  "m_commit": "9c9e9b517bac1f9175c4b68623b40281f8fc9b28",
+  "m_tree": "63f96e67f4d2b581c8ae04075426dda7e6e13ed1",
+  "amendment_sha256": "8978e30d6817bcdadb6072844dde8395c4277da33f77a004fa3d9e1cacc1b677",
+  "historical_functional_paths_sha256": "bd6ea920149c74092a77260fceb929c815a1360788f318408a3a38a42ce234df",
+  "hotfix_functional_paths_sha256": "5e714c084ab081a4cf6c5f348c2de542611e47be90f31b08f93e7553283483b7",
+  "cumulative_functional_paths_sha256": "cad436aea2eb37ef4a4d2c131b4557c4bf634c50e640df1466411e072e4720b6",
+  "release_metadata_paths_sha256": "fd893f1bca46b2ec5a36d7496c8a12f6ec52c84550a421056995a04673536056",
+  "build_gate_paths_sha256": "8746cf629d0b443db453da205d4e7eeebf8729516084cd5a0149d913c0ab9d29",
+  "package_documentation_paths_sha256": "a3405a38d5d939c6a2f774d60329ea288b397ad68f499257d5830be0598697e2",
+  "mod02_reseal_paths_sha256": "3ad6c9d8c7530b99686f0ed020dbaf3fef4fa9c6c4fe844e21e1fd47d929c611",
+  "candidate_paths_sha256": "9abb0acf0ed94ca4b93ead443c6a7510c1d8d1a893a9340e6143bd483eee05c9",
   "artifact_sha256": {
-    "artifacts/v92-o01-governance/offline-summary.json": "11bfaad7dda4b131a4f4a254cda57af3e833fbaa0d149d4fd1796b2773ad9460",
-    "artifacts/v92-o01-governance/review-sol.json": "7ddeb4f05501eebc084386798dc00f770945e1447eb3d289e0a2f4ebd0c383c0",
-    "artifacts/v92-o01-governance/review-terra.json": "d087d01d2ca8b78cba29f0e9573875242255217f58768a92dbc4bdc4f9cd2bc9"
+    "artifacts/v92-o01-governance/offline-summary.json": "90fd782dc8a5d9f1dbfebcb223c7c94cf64a3bf843357e04f8a6960ccd724253",
+    "artifacts/v92-o01-governance/review-sol.json": "ae5c1f913e45b2bde98cc82643d0c53035ebe849074a401f98f1df0f16aee1a3",
+    "artifacts/v92-o01-governance/review-terra.json": "f74b6f8158cea6dfe5c1f1c22eb8d317090e89adf496620c5bb619feaf525c1c"
   }
 }

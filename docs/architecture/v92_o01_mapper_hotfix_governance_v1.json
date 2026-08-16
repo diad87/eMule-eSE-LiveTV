@@ -1,127 +1,119 @@
 {
-  "schema": "ese.v92.o01-mapper-hotfix-governance/v1",
-  "status": "DRAFT_PRE_G8",
+  "schema": "ese.v92.o01-runtime-fix-governance/v1",
+  "status": "DRAFT_PRE_G9",
   "predecessor": {
-    "g_commit": "cfeba8b67234c47a052e3d976acbb233868160f4",
-    "a_commit": "37057fcb58e25fc9cec6ebba67fc294343936a1a",
-    "a_tree": "969abbd1df19afc12d49cee22e45b6a698de21b7",
-    "h_commit": "c9a81244ba8f2171aed6610aaea10a5898ac6acb",
-    "h_tree": "ea5a4b52d13fcd070db87dcd2bf686cdb3df2af0"
+    "g8_commit": "487f43bd95cc841b91311dd7166a863ecdd7bf8e",
+    "g8_tree": "f0b5f1587a836d30e668dfa377eab6c0c218a073",
+    "a36_commit": "3d19e260c1bdf24f1b03a181869ae0602e795179",
+    "a36_tree": "01f1646d7f384a91c3e5b623cf0de95ddbc615c1",
+    "m36_commit": "9c9e9b517bac1f9175c4b68623b40281f8fc9b28",
+    "m36_tree": "63f96e67f4d2b581c8ae04075426dda7e6e13ed1",
+    "h36_commit": "db2ddfd42768ae9f7311ca5f8f0c618a3484f5a3",
+    "h36_tree": "c381830c43f2a2d7b94dea1bd0afa125959aface"
   },
   "historical_contract": {
-    "verifier": "tools/architecture/verify_v92_o01_governance_amendment.py",
-    "historical_path_count": 36,
-    "historical_add_exact": 1237,
-    "historical_delete_exact": 63,
-    "historical_net_exact": 1174,
-    "cumulative_path_count": 44,
-    "cumulative_add_exact": 1440,
-    "cumulative_delete_exact": 73,
-    "cumulative_net_exact": 1367,
+    "governance_document_sha256": "8978e30d6817bcdadb6072844dde8395c4277da33f77a004fa3d9e1cacc1b677",
+    "governance_verifier_sha256": "bd5eb197828b889831afa3a67489a2299f5ce01a4ab5df8ac0244cec5e47f28d",
+    "governance_test_sha256": "8fb0550d7c99705bc47248ab2eb93539652ab73d0908781265fffb05cd4bed20",
     "candidate_path_count": 59,
     "candidate_add_exact": 1654,
     "candidate_delete_exact": 126,
-    "candidate_net_exact": 1528
+    "candidate_net_exact": 1528,
+    "candidate_paths_sha256": "9abb0acf0ed94ca4b93ead443c6a7510c1d8d1a893a9340e6143bd483eee05c9"
   },
-  "scope": "V92-O01 rc.1 candidate only: reject incoherent PCP pairs, publish route-bound PCP ownership, complete PCP and NAT-PMP gateway endpoints, add exact regression coverage, repair the exact libkad6 standalone release-gate link, bind the exact 9.2.0-rc.1 metadata and release documents, make the six packaged release documents candidate-honest, and reseal the exact MOD02 identity after the version ratchet update; the predecessor O01 controller and physical contract remain immutable.",
+  "scope": "V92-O01 rc.1 only: repair the controller resource accounting and formal terminal propagation exposed by the first A36 physical run, ratchet the remaining MOD02 characterization test to the sealed identity, keep the H36 release candidate contract immutable, rebuild the official Release executable from A37, reseal MOD02 in M37, and permit release only through a direct independently validated R after H37.",
   "topology": {
-    "G": "direct child of predecessor H; this amendment, verifier and verifier test only",
-    "A": "direct child of G; exactly functional_paths plus release_metadata_paths plus build_gate_paths plus package_documentation_paths plus mod02_reseal_paths and their exact separate budgets",
-    "M": "direct child of A; exact Release build receipt plus MOD02 manifest, matrix and runtime summary reseal only",
-    "H": "direct child of M; exact four governance carriers, reviews bind A and activation binds M",
-    "S": "optional direct child of H; one NON_RELEASE physical preflight only",
-    "R": "direct child of H or S; exact formal eight-hour evidence sourced from A and using the executable validated by M"
+    "G9": "direct child of H36; exactly this amendment, verifier and verifier test",
+    "A37": "direct child of G9; exactly formal_runtime_fix_paths plus mod02_test_ratchet_paths at their exact separate budgets and byte identities",
+    "M37": "direct child of A37; exact official Release receipt plus MOD02 manifest, matrix and runtime summary",
+    "H37": "direct child of M37; exact four governance carriers with two independent empty-finding approvals",
+    "R": "direct child of H37; exact formal eight-hour evidence sourced from A37 and using the executable validated by M37"
   },
   "phase_contract": {
-    "schema": "ese.v92.o01-mapper-hotfix-phases/v1",
-    "merge_policy": "Every G/A/M/H/S/R commit has exactly one parent; merges and intermediate commits are rejected.",
-    "G": {"parent": "predecessor_h", "delta": "governance_paths"},
-    "A": {"parent": "G", "delta": "functional_paths_plus_release_metadata_paths_plus_build_gate_paths_plus_package_documentation_paths_plus_mod02_reseal_paths"},
-    "M": {"parent": "A", "delta": "mod02_carrier_paths"},
-    "H": {"parent": "M", "delta": "h_carrier_paths"},
-    "S": {"optional": true, "parent": "H", "delta": "s_carrier_paths", "release_gate": false},
-    "R": {"parent": "H_or_S", "source": "A", "governance": "H_and_optional_S", "executable": "exact_M_manifest_executable_sha256", "release_gate": true}
+    "schema": "ese.v92.o01-runtime-fix-phases/v1",
+    "merge_policy": "Every G9/A37/M37/H37/R commit has exactly one parent; merges, S, intermediate commits and reused build metadata are rejected.",
+    "G9": {"parent": "H36", "delta": "governance_paths"},
+    "A37": {"parent": "G9", "delta": "formal_runtime_fix_paths_plus_mod02_test_ratchet_paths"},
+    "M37": {"parent": "A37", "delta": "m_carrier_paths", "build": "official full Release rebuild from clean A37"},
+    "H37": {"parent": "M37", "delta": "h_carrier_paths"},
+    "R": {"parent": "H37", "source": "A37", "governance": "H37", "executable": "exact_M37_manifest_executable_sha256", "release_gate": true}
   },
   "governance_paths": [
     "docs/architecture/v92_o01_mapper_hotfix_governance_v1.json",
     "tools/architecture/verify_v92_o01_mapper_hotfix_governance.py",
     "tools/architecture/test_verify_v92_o01_mapper_hotfix_governance.py"
   ],
-  "functional_paths": [
-    "libnatmap/src/pcp_pair_transaction.cpp",
-    "libnatmap/tests/test_legacy_mapper_projection.cpp",
-    "libnatmap/tests/test_pcp_pair_transaction.cpp",
-    "srchybrid/UPnPImplNATPMP.cpp",
-    "srchybrid/UPnPImplPCP.cpp",
-    "srchybrid/UPnPImplPCP.h",
-    "tests/test_v92_l02_pcp_ownership.py",
-    "tests/test_v92_l03_natpmp_ownership.py"
+  "formal_runtime_fix_paths": [
+    "tools/lab/nat_gateway/v92_o01_t8_daemon.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_daemon.test.js",
+    "tools/lab/t8_hyperv.ps1",
+    "tools/lab/test_t8_hyperv_plan.ps1",
+    "tools/lab/run_v92_o01_formal.ps1",
+    "tools/lab/test_v92_o01_formal_runner_mock.ps1"
   ],
-  "release_metadata_paths": [
-    "docs/RELEASE_NOTES_v9.2.0-rc.1.md",
-    "docs/V92_RC1_EXECUTION.md",
-    "srchybrid/Version.h",
-    "srchybrid/eSE/package-lock.json",
-    "srchybrid/eSE/package.json"
-  ],
-  "release_metadata_sha256": {
-    "docs/RELEASE_NOTES_v9.2.0-rc.1.md": "7092ec87998b5f03e9913049f0d3849b25204af498f4d8e319a241420560a030",
-    "docs/V92_RC1_EXECUTION.md": "6b765d83cedefc986790f1e79fc83d26ac6889c4535b96fdc1c5429de4a29340",
-    "srchybrid/Version.h": "3405f993e97de02fa3af16d813fa99727472dc9bd417df3a38b817a6bbc43bd7",
-    "srchybrid/eSE/package-lock.json": "534eced571e12188a7e9af83e0caf9e34c957876b6b0904effa04c52a41ac5cd",
-    "srchybrid/eSE/package.json": "ea8c8bb89164f4ab897993f25f71a40aee584e8b38f072ac17cceb157d4b164f"
+  "formal_runtime_fix_sha256": {
+    "tools/lab/nat_gateway/v92_o01_t8_daemon.js": "525865a3477f2cc250ae30c2cbaf7ca84c900f471234ffc277f390609584731f",
+    "tools/lab/nat_gateway/test/v92_o01_t8_daemon.test.js": "041e1de8f4ac514b7f680aeaf23e56b72d8c4bc12cf79cdeba4771782993db8a",
+    "tools/lab/t8_hyperv.ps1": "9972724ad8c18830b5bb256ad419bc05bd1c9c7c7c62e3567532438c3d678138",
+    "tools/lab/test_t8_hyperv_plan.ps1": "2c63431330fe9428002141eb24ff68679e40c6f4296c55493212522b6d48a8a7",
+    "tools/lab/run_v92_o01_formal.ps1": "7e634561fce9fa5d0df527b2f595b1b6a56efba655a32d436a08a87805eb3762",
+    "tools/lab/test_v92_o01_formal_runner_mock.ps1": "0400589f453b92adc5710d7d7b7212a75b2353c4dc3016b7a276a6a95972fa87"
   },
-  "build_gate_paths": [
-    "libkad6/make_crypto_vectors.bat",
-    "tests/test_v92_m2a_lt1_release_gate.py"
+  "mod02_test_ratchet_paths": [
+    "tests/test_v92_mod02_characterization.py"
   ],
-  "build_gate_sha256": {
-    "libkad6/make_crypto_vectors.bat": "ac724e18a50f647974297423aae4a87a1ae1b624ec774d6abfef2088db9c35fb",
-    "tests/test_v92_m2a_lt1_release_gate.py": "7df1085d5fd6d8fa2818666e497279754a020e6fe5224da13f263ce1e7dd627f"
+  "mod02_test_ratchet_sha256": {
+    "tests/test_v92_mod02_characterization.py": "7129060dcd2811bbda9ad0a9c56c15c946e39bcf96adcf14bfec44ff84e0b346"
   },
-  "package_documentation_paths": [
-    "CHANGES_FROM_EMULE_0.70b.md",
-    "GUIA-RAPIDA.md",
-    "README.md",
-    "THIRD_PARTY_LICENSES.md",
-    "docs/INDEX.md",
-    "docs/USER_GUIDE.md"
-  ],
-  "package_documentation_sha256": {
-    "CHANGES_FROM_EMULE_0.70b.md": "0d8a8d68ef84f194f4c717660bd04f593c115aef3169cb84fa43780c69fccff7",
-    "GUIA-RAPIDA.md": "1788f7060733fa369f9365a8051f48e98cc7f1dcad3d3adb727fee8f9d3dcd13",
-    "README.md": "28eabaf5be34b1d3b818dcf384387d405394dcbc48a1b5c3f230c8d80e368409",
-    "THIRD_PARTY_LICENSES.md": "7ab529f988f46b5903038951ec9f55735ded2496ebb5d437ab04065ba5c44eb7",
-    "docs/INDEX.md": "921abe47ca6367b113281d9f4daa1f73eac1d2168d37ded1e9f4eefdcf4cff10",
-    "docs/USER_GUIDE.md": "95729dd9d7ff7fbb679ebfb3da0a436c57485f50d67eb2ad5fb0f99895e4f6f1"
+  "path_budget": {
+    "tools/lab/nat_gateway/v92_o01_t8_daemon.js": {"add_exact": 10, "delete_exact": 2},
+    "tools/lab/nat_gateway/test/v92_o01_t8_daemon.test.js": {"add_exact": 9, "delete_exact": 2},
+    "tools/lab/t8_hyperv.ps1": {"add_exact": 2, "delete_exact": 2},
+    "tools/lab/test_t8_hyperv_plan.ps1": {"add_exact": 23, "delete_exact": 0},
+    "tools/lab/run_v92_o01_formal.ps1": {"add_exact": 2, "delete_exact": 2},
+    "tools/lab/test_v92_o01_formal_runner_mock.ps1": {"add_exact": 1, "delete_exact": 1},
+    "tests/test_v92_mod02_characterization.py": {"add_exact": 1, "delete_exact": 1}
   },
-  "mod02_reseal_paths": [
-    "srchybrid/Mod02BuildIdentity.h",
-    "srchybrid/eSE/test/live_tv_regression.test.js"
+  "historical_overlap_paths": [
+    "tools/lab/nat_gateway/v92_o01_t8_daemon.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_daemon.test.js",
+    "tools/lab/run_v92_o01_formal.ps1",
+    "tools/lab/test_v92_o01_formal_runner_mock.ps1"
   ],
-  "mod02_reseal_sha256": {
-    "srchybrid/Mod02BuildIdentity.h": "760f2564e6b99aaceb8ba2e70c5aaf4283545b7d867509cd07228d6b835bf8af",
-    "srchybrid/eSE/test/live_tv_regression.test.js": "adb46a0b326e1668558ec390087bc04d2913c1f9fbdd66d41e111398bdbf8166"
+  "new_candidate_paths": [
+    "tools/lab/t8_hyperv.ps1",
+    "tools/lab/test_t8_hyperv_plan.ps1",
+    "tests/test_v92_mod02_characterization.py"
+  ],
+  "budget": {"path_count": 7, "add_exact": 48, "delete_exact": 10, "net_exact": 38, "headroom": 0},
+  "formal_runtime_fix_budget": {"path_count": 6, "add_exact": 47, "delete_exact": 9, "net_exact": 38, "headroom": 0},
+  "mod02_test_ratchet_budget": {"path_count": 1, "add_exact": 1, "delete_exact": 1, "net_exact": 0, "headroom": 0},
+  "cumulative_candidate_budget": {"path_count": 62, "add_exact": 1702, "delete_exact": 136, "net_exact": 1566},
+  "cumulative_candidate_paths_sha256": "140557b8694f61af9f660dc990082b2696a0ee1ae6fb46a679f5d2d25e06e828",
+  "release_contract": {
+    "release_tag": "v0.70b-eSE9.2.0-rc.1",
+    "source_fingerprint": "3E1B51DCE2A83DF5DDA10697385FD8C7F05D8C81EB391B967D30E0CD6761ED23",
+    "mod02_identity_sha256": "b9c3c25fece8a80d71eee340e61d8cd5088b95f8b12e221278d9d249f6d29c9d",
+    "mod02_marker_sha256": "17d7cbca262c94f802d59255d0ec41137bd85c12037a393cc5198abd40373cae",
+    "scenario_sha256": "3462299984b058685ad051ffc20f76e9d21772f629b7d3c2abd05b8f48693028",
+    "scenario_socket_limit": 2,
+    "build_policy": "M37 must contain a new official full Release x64 build receipt bound to A37; M36 binary or metadata reuse is forbidden."
   },
   "carrier_paths": {
-    "M": {
+    "M37": {
       "fixed": [
         "docs/architecture/mod02_build_manifest_v1.json",
         "docs/architecture/mod02_characterization_matrix_v1.json"
       ],
-      "summary_pattern": "artifacts/mod02-runtime-v92-<A[0:8]>/summary.json",
-      "release_build_receipt_pattern": "artifacts/v92-o01-release-build-<A[0:8]>/emule-release-build.json",
+      "summary_pattern": "artifacts/mod02-runtime-v92-<A37[0:8]>/summary.json",
+      "release_build_receipt_pattern": "artifacts/v92-o01-release-build-<A37[0:8]>/emule-release-build.json",
       "file_count": 4
     },
-    "H": [
+    "H37": [
       "artifacts/v92-o01-governance/activation.json",
       "artifacts/v92-o01-governance/offline-summary.json",
       "artifacts/v92-o01-governance/review-sol.json",
       "artifacts/v92-o01-governance/review-terra.json"
-    ],
-    "S": [
-      "artifacts/v92-o01-governance/nonrelease-smoke-raw.json",
-      "artifacts/v92-o01-governance/nonrelease-smoke-summary.json"
     ],
     "R": {
       "directory": "artifacts/v92-o01-formal",
@@ -130,50 +122,41 @@
       "file_count": 98
     }
   },
-  "budget": {"path_count": 23, "add_exact": 417, "delete_exact": 63, "net_exact": 354, "headroom": 0},
-  "mapper_budget": {"path_count": 8, "add_exact": 203, "delete_exact": 10, "net_exact": 193, "headroom": 0},
-  "release_metadata_budget": {"path_count": 5, "add_exact": 151, "delete_exact": 6, "net_exact": 145, "headroom": 0},
-  "build_gate_budget": {"path_count": 2, "add_exact": 19, "delete_exact": 1, "net_exact": 18, "headroom": 0},
-  "package_documentation_budget": {"path_count": 6, "add_exact": 42, "delete_exact": 44, "net_exact": -2, "headroom": 0},
-  "mod02_reseal_budget": {"path_count": 2, "add_exact": 2, "delete_exact": 2, "net_exact": 0, "headroom": 0},
   "required_reviews": ["Terra APPROVE with findings=[]", "Sol APPROVE with findings=[]"],
   "offline_gates": [
     "Node 22 complete nat_gateway suite",
-    "formal controller/validator/host/RPC focal suite",
-    "PowerShell parser for every changed ps1/psm1",
-    "product formal-soak mock",
-    "VM session rollback mock",
-    "formal RPC pump mock",
-    "formal runner source/mock gate",
-    "PCP and NAT-PMP ownership host contracts",
-    "libnatmap complete native suite",
-    "Release x64 build",
-    "MOD02 verifier and runtime reseal",
+    "PowerShell parser for every changed ps1",
+    "T8 Hyper-V plan regression",
+    "formal runner mock",
+    "MOD02 characterization identity ratchet",
+    "G9 hostile governance suite",
+    "official full Release x64 rebuild from clean A37",
+    "M37 MOD02 verifier and runtime reseal",
     "git diff --check"
   ],
   "physical_policy": {
-    "short_preflight": "One NON_RELEASE physical preflight after H is permitted; it must restore the exact baseline and can never award release PASS.",
-    "formal": "Exactly 28800000 monotonic milliseconds, no duration override, no resume, no skip-cleanup, Node 22 and clean A source.",
-    "claim_rule": "Only independently validated R evidence with exact cleanup and baseline restoration may award V92-O01 PASS."
+    "formal": "Exactly 28800000 monotonic milliseconds, no duration override, no resume, no skip-cleanup, Node 22, clean A37 source and the M37 executable.",
+    "claim_rule": "Only independently validated direct-R evidence with exact cleanup and baseline restoration may award V92-O01 PASS.",
+    "preflight": "No S phase exists in G9; diagnostic runs are external NON_RELEASE evidence and cannot enter the release ancestry."
   },
   "stop_conditions": [
-    "candidate path 24 or any path outside the closed allowlist",
-    "budget differs by one line",
-    "project file, product binary, MOD02 critical source outside mod02_reseal_paths or unrelated production source changes",
-    "PCP ownership without exact TCP and UDP identities or one public address",
-    "PCP or NAT-PMP result without the protocol gateway port",
-    "M lacks a clean Release build receipt and MOD02 runtime PASS bound to A and the rebuilt executable",
+    "A37 path 8 or any path outside the two closed A37 slices",
+    "A37 budget differs by one line or is preserved only by a compensated rebalance",
+    "an A37 byte identity differs from its pinned SHA-256",
+    "historical overlap differs from exactly four named paths or cumulative candidate union differs from 62 paths",
+    "scenario limits.sockets differs from integer 2 or the scenario blob changes",
+    "daemon counts controller stdio as gateway sockets or does not retain exactly two data-plane UDP sockets",
+    "T8 plan or teardown terminates the caller, or the formal runner can report success after a failed nested phase",
+    "M37 is not a fresh clean official Release build bound to A37 and the exact MOD02 identity",
     "source, Node, package or evidence binding changes during a run",
-    "a packaged document identifies the candidate as 9.1 stable, or a candidate-facing entrypoint (README, GUIA-RAPIDA, docs/INDEX or docs/USER_GUIDE) omits the 9.2.0-rc.1 NO_GO boundary",
     "P0, P1, P2 or nonempty review finding",
     "release_gate=true before independent validation and exact baseline restoration"
   ],
   "activation_state": {
-    "G": null,
-    "A": null,
-    "M": null,
-    "H": null,
-    "S": null,
+    "G9": null,
+    "A37": null,
+    "M37": null,
+    "H37": null,
     "R": null,
     "rule": "The document never stores its own commit; phase identities are derived from exact Git parentage and later carriers."
   }

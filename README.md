@@ -9,27 +9,23 @@ P2P live streaming over eD2K and Kad. It combines the native Windows client,
 FFmpeg-based HLS broadcasting and a local web dashboard in one portable
 Windows x64 package.
 
-## Current release
+## Current candidate
 
-### eSE 9.1.0 for Windows x64
+### eSE 9.2.0-rc.1 for Windows x64
 
-This source tree builds the final `9.1.0` Windows x64 release. It combines the
-frozen RC.3 direct-link fix with the accepted post-RC3 IPv6, Kad6 and stability
-changes.
+This source tree builds the `9.2.0-rc.1` Windows x64 qualification candidate.
+It remains **NO_GO** until its physical O01 evidence is complete and independently
+validated. The latest published stable release remains `9.1.0`.
 
-[9.1.0 release notes](docs/RELEASE_NOTES_v9.1.0.md)
-· [Cumulative qualification status](docs/V91_POST_RC3_CAMPAIGN_STATUS.md)
+[9.2.0-rc.1 release notes](docs/RELEASE_NOTES_v9.2.0-rc.1.md)
+· [RC1 execution contract](docs/V92_RC1_EXECUTION.md)
 · [All releases](https://github.com/diad87/eMule-eSE-LiveTV/releases)
 
 > [!IMPORTANT]
-> The cumulative campaign records **22 PASS, 0 FAIL and 5 BLOCKED**. The five
-> blocked cases are physical coverage that could not be completed with the
-> available public dual-stack, controlled-DNS and LAN-to-mobile conditions;
-> they are unverified coverage, not recorded product failures. R01 reached the
-> router, but UPnP error 501 prevented its simultaneous-mapping/inbound-probe
-> sequence. The accepted results were collected across RC.3 and
-> hash-pinned post-RC3 candidates, not by rerunning all 27 cases against one
-> final binary. See the release notes before deployment.
+> This candidate is not a public release and must not be presented as one.
+> Historical v9.1 qualification does not transfer to the v9.2 binary. Use only
+> the exact hash-bound package, read its release notes, and wait for the formal
+> eight-hour O01 result before any release claim or deployment.
 
 ### Run it
 
@@ -166,7 +162,7 @@ For a local developer build:
 
 ```powershell
 .\tools\build_all.ps1 `
-  -ReleaseTag v0.70b-eSE9.1.0 `
+  -ReleaseTag v0.70b-eSE9.2.0-rc.1 `
   -AllowDirty `
   -MaxCpuCount 1
 ```

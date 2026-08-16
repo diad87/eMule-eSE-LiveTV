@@ -16,11 +16,18 @@ bool IsPairEpochCoherent(
         || previous_epoch - current_epoch <= 1;
 }
 
+bool SameAddress(
+    const IpAddress& left,
+    const IpAddress& right) noexcept {
+    return left.family == right.family && left.bytes == right.bytes;
+}
+
 } // namespace
 
 bool PcpPairCommit::IsValid() const noexcept {
     return IsProjectionFor(tcp, Transport::Tcp)
-        && (!has_udp || IsProjectionFor(udp, Transport::Udp));
+        && (!has_udp || (IsProjectionFor(udp, Transport::Udp)
+            && SameAddress(tcp.external_address, udp.external_address)));
 }
 
 PcpPairTransaction::PcpPairTransaction(
@@ -56,7 +63,9 @@ bool PcpPairTransaction::StageUdp(
     const PcpMapProjection& projection) noexcept {
     if (status_ != PcpPairTransactionStatus::AwaitingUdp
         || !IsProjectionFor(projection, Transport::Udp)
-        || !IsPairEpochCoherent(tcp_.epoch, projection.epoch))
+        || !IsPairEpochCoherent(tcp_.epoch, projection.epoch)
+        || !SameAddress(tcp_.external_address,
+                        projection.external_address))
         return false;
     udp_ = projection;
     status_ = PcpPairTransactionStatus::Ready;

@@ -402,7 +402,7 @@ test('release dashboard is loopback-only and legacy updates fail closed', () => 
   assert.match(updateCheck, /Automatic installation is disabled/);
   assert.match(preflight, /package-lock\.json/);
   assert.match(preflight, /GPL-2\.0-only/);
-  assert.equal(pkg.version, '9.1.0');
+  assert.equal(pkg.version, '9.2.0-rc.1');
 });
 
 test('postponed dashboard remote access is inert and leaks no pairing state', () => {

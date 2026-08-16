@@ -163,6 +163,31 @@ bool CUPnPImplPCP::SendResultIfLifecycleLive(
 	return SendResultMessage(operation);
 }
 
+natmap::MapperResultData CUPnPImplPCP::BuildMapperResultData(
+	const MappingOperationContext& operation) const
+{
+	natmap::MapperResultData data =
+		CUPnPImpl::BuildMapperResultData(operation);
+	data.gateway.port = PCP_PORT;
+	const bool mapped = data.status == natmap::MappingStatus::Created
+		|| data.status == natmap::MappingStatus::Renewed;
+	if (!mapped
+		|| !m_tcpIdentity.Matches(
+			natmap::Transport::Tcp, m_nTCPPort)
+		|| !m_udpIdentity.Matches(
+			natmap::Transport::Udp, m_nUDPPort)
+		|| m_tcpExternalAddress != m_udpExternalAddress)
+		return data;
+	data.ownership_nonce = m_tcpIdentity.nonce;
+	data.ownership_identity_digest.fill(0);
+	std::copy(m_tcpIdentity.nonce.begin(), m_tcpIdentity.nonce.end(),
+		data.ownership_identity_digest.begin());
+	std::copy(m_udpIdentity.nonce.begin(), m_udpIdentity.nonce.end(),
+		data.ownership_identity_digest.begin() + m_tcpIdentity.nonce.size());
+	data.ownership = natmap::OwnershipState::OwnedByUs;
+	return data;
+}
+
 void CUPnPImplPCP::StopAsyncFind()
 {
 	if (m_hThreadHandle != NULL) {
@@ -941,8 +966,8 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 		const bool udpStaged = udpMapped
 			&& pairTransaction.StageUdp(udpProjection);
 		// A MAP response may be valid on the wire but unstageable because its
-		// epoch is incoherent with TCP. It still created a UDP lease, so it is a
-		// completed atomic-pair failure, not a timeout or a partial success.
+		// epoch or public address is incoherent with TCP. It still created a UDP
+		// lease, so this is an atomic-pair failure, not a partial success.
 		cpeAtomicPairFailure = udpMapped && !udpStaged;
 		cpeEpochReset = cpeAtomicPairFailure &&
 			IsPcpEpochDiscontinuity(

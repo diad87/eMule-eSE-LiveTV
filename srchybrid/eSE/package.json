@@ -1,6 +1,6 @@
 {
   "name": "eSE",
-  "version": "9.1.0",
+  "version": "9.2.0-rc.1",
   "main": "server.js",
   "bin": "server.js",
   "scripts": {

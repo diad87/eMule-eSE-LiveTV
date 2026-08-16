@@ -51,6 +51,8 @@ public:
 
 protected:
 	bool DeletePorts(bool bSkipLock);
+	virtual natmap::MapperResultData BuildMapperResultData(
+		const MappingOperationContext& operation) const;
 
 private:
 	static const uint16 PCP_PORT = 5351;

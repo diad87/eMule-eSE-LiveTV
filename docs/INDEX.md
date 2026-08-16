@@ -5,6 +5,11 @@ maintain eMule eSE.
 
 ## User documentation
 
+- [eSE 9.2.0-rc.1 release notes](RELEASE_NOTES_v9.2.0-rc.1.md)
+  - qualification-candidate scope, `NO_GO` release state, fixed limitations
+  and rollback boundary.
+- [eSE 9.2.0-rc.1 execution contract](V92_RC1_EXECUTION.md)
+  - exact build, package, physical campaign and promotion requirements.
 - [eSE 9.1.0 release notes](RELEASE_NOTES_v9.1.0.md)
   — final Windows x64 scope, cumulative qualification limits, safe defaults,
   update procedure and rollback.

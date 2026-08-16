@@ -205,6 +205,7 @@ natmap::MapperResultData CUPnPImplNATPMP::BuildMapperResultData(
 {
 	natmap::MapperResultData data =
 		CUPnPImpl::BuildMapperResultData(operation);
+	data.gateway.port = NATPMP_PORT;
 	if (data.status == natmap::MappingStatus::Created
 			|| data.status == natmap::MappingStatus::Renewed) {
 		const natmap::NatPmpOwnershipPreimage preimage =

@@ -123,6 +123,34 @@ void TestEpochResetBetweenTcpAndUdpFailsThePair() {
     CHECK(commit.IsValid());
 }
 
+void TestExternalAddressMismatchRequiresExactRollback() {
+    PcpPairTransaction transaction(true, true);
+    CHECK(transaction.StageTcp(Tcp()));
+    PcpMapProjection hostile_udp = Udp();
+    hostile_udp.external_address = IpAddress::V4(88, 11, 22, 45);
+    CHECK(!transaction.StageUdp(hostile_udp));
+    CHECK(transaction.status()
+        == PcpPairTransactionStatus::AwaitingUdp);
+    transaction.RecordUdpFailure();
+    CHECK(transaction.status()
+        == PcpPairTransactionStatus::TcpRollbackRequired);
+
+    PcpPairCommit partial{};
+    CHECK(!transaction.TryCommit(partial));
+    CHECK(!partial.IsValid());
+    PcpMappingIdentity rollback{};
+    CHECK(transaction.GetTcpRollbackIdentity(rollback));
+    CHECK(rollback.transport == Transport::Tcp);
+    CHECK(rollback.internal_port == Tcp().internal_port);
+    CHECK(rollback.nonce == Tcp().nonce);
+
+    PcpPairCommit forged{};
+    forged.tcp = Tcp();
+    forged.udp = hostile_udp;
+    forged.has_udp = true;
+    CHECK(!forged.IsValid());
+}
+
 void TestTcpFailurePublishesAndRollsBackNothing() {
     PcpPairTransaction transaction(true, true);
     transaction.RecordTcpFailure();
@@ -166,6 +194,7 @@ int main() {
     TestInitialUdpFailureRequiresExactTcpRollback();
     TestRefreshUdpFailureNeverDeletesExistingTcp();
     TestEpochResetBetweenTcpAndUdpFailsThePair();
+    TestExternalAddressMismatchRequiresExactRollback();
     TestTcpFailurePublishesAndRollsBackNothing();
     TestTcpOnlyOperationCanCommit();
     TestWrongTransportsFailClosed();

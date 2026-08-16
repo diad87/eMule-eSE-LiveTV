@@ -29,7 +29,9 @@ if errorlevel 1 exit /b 1
 
 cl /nologo /EHsc /O2 /W4 /std:c++17 /Iinclude /I.. /I..\srchybrid ^
   /Febuild\test_kad6_exit_notice_server.exe tests\test_kad6_exit_notice_server.cpp ^
-  ..\srchybrid\Kad6ExitNoticeServer.cpp ws2_32.lib
+  ..\srchybrid\Kad6ExitNoticeServer.cpp ..\srchybrid\LiveTunnelReleaseGate.cpp ^
+  src\kad6_release.cpp src\kad6_exit_notice.cpp ^
+  src\kad6_tags.cpp src\kad6_address.cpp ws2_32.lib
 if errorlevel 1 (echo EXIT NOTICE SERVER BUILD FAILED & exit /b 1)
 echo --- running build\test_kad6_exit_notice_server.exe ---
 build\test_kad6_exit_notice_server.exe

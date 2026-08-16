@@ -24,6 +24,10 @@ def require(condition: bool, message: str) -> None:
 natpmp = source("srchybrid/UPnPImplNATPMP.cpp")
 header = source("srchybrid/UPnPImplNATPMP.h")
 policy = source("libnatmap/src/natpmp_pair_transaction.cpp")
+result = natpmp[
+    natpmp.index("natmap::MapperResultData CUPnPImplNATPMP::BuildMapperResultData(")
+    : natpmp.index("void CUPnPImplNATPMP::StartDiscovery(")
+]
 delete = natpmp[
     natpmp.index("void CUPnPImplNATPMP::DeletePorts(")
     : natpmp.index("void CUPnPImplNATPMP::StartDiscovery(")
@@ -42,7 +46,8 @@ require(
 require(
     "context.gateway_address = gatewayAddress;" in delete
     and "context.interface_index = m_dwInterfaceIndex;" in delete
-    and "context.generation = generation;" in delete,
+    and "context.generation = natmap::ResolveNatPmpCleanupGeneration("
+    in delete,
     "cleanup must bind the current gateway, interface and generation",
 )
 require(
@@ -57,9 +62,12 @@ require(
     "the consumed ownership plan must be built before every NAT-PMP DELETE",
 )
 require(
-    "proof = NatPmpCleanupProof{};" in policy
-    and policy.index("proof = NatPmpCleanupProof{};")
-    < policy.index("if (!candidate.IsValid())"),
+    "if (!candidate.IsValid()) {\n"
+    "        proof = NatPmpCleanupProof{};\n"
+    "        return plan;\n"
+    "    }" in policy
+    and policy.index("proof = NatPmpCleanupProof{};\n    for (")
+    < policy.index("NatPmpCleanupRequest request{};"),
     "cleanup authority must be consumed before any plan can be returned",
 )
 require(
@@ -73,5 +81,20 @@ require(
     and "ReadFile(" not in natpmp,
     "NAT-PMP must not infer crash ownership from disk or port coincidence",
 )
+require(
+    result.count("CUPnPImpl::BuildMapperResultData(operation)") == 1
+    and result.count("data.gateway.port = NATPMP_PORT;") == 1,
+    "the NAT-PMP result must delegate once and set its service port once",
+)
+require(
+    result.index("CUPnPImpl::BuildMapperResultData(operation)")
+    < result.index("data.gateway.port = NATPMP_PORT;")
+    < result.index("BuildNatPmpOwnershipPreimage("),
+    "the gateway endpoint must be complete before ownership is applied",
+)
+require(
+    "static const uint16 NATPMP_PORT = 5351;" in header,
+    "the NAT-PMP result must use the protocol service port",
+)
 
-print("test_v92_l03_natpmp_ownership: 8 checks, 0 failures")
+print("test_v92_l03_natpmp_ownership: 11 checks, 0 failures")

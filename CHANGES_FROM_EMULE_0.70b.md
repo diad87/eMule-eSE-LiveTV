@@ -1,7 +1,7 @@
 # Changes from upstream eMule 0.70b
 
 This repository is a modified eMule 0.70b source tree. The changes below
-describe the main first-party differences shipped in eMule eSE 9.1.0.
+describe the cumulative first-party differences through eMule eSE 9.2.0-rc.1.
 
 The list is intentionally limited to implemented behavior. Experimental code
 is identified as gated and is not presented as a supported public service.
@@ -128,7 +128,7 @@ Privacy limits are explicit:
 First-party hardening includes:
 
 - loopback-first API boundaries;
-- localhost-only dashboard/API/HLS binding for the 9.1.0 package;
+- localhost-only dashboard/API/HLS binding since the 9.1.0 package;
 - removal of automatic dashboard UPnP exposure;
 - HLS path validation;
 - bounded proxy responses and request timeouts;
@@ -139,7 +139,7 @@ First-party hardening includes:
 - CSPRNG-backed identity and nonce generation;
 - crash dump support.
 
-Automatic updating is disabled for 9.1.0. No updater executable or
+Automatic updating remains disabled in 9.2.0-rc.1. No updater executable or
 installer is packaged or invoked; update and rollback are manual, with an
 explicit profile/download backup.
 

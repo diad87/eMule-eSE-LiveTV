@@ -1,17 +1,14 @@
-# Guía rápida de eMule eSE 9.1.0
+# Guía rápida de eMule eSE 9.2.0-rc.1
 
-Esta versión estable funciona como una aplicación portable para Windows 10/11
-x64. No hace falta compilar ni instalar nada.
+Esta candidata de cualificación funciona como una aplicación portable para
+Windows 10/11 x64. Sigue en estado **NO_GO** hasta completar su evidencia física.
 
 ## 1. Descargar
 
-Descarga el paquete `9.1.0` solo desde la página de la etiqueta exacta:
-
-[v0.70b-eSE9.1.0](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.1.0)
-
-La página incluye el ZIP y su fichero SHA-256 cuando la versión está
-publicada. Si todavía no contiene el activo, no descargues una copia de
-terceros: usa la última versión pública listada en GitHub.
+Usa únicamente el paquete `9.2.0-rc.1` entregado para la campaña y verifica su
+SHA-256, `BUILD_INFO.txt` y `RELEASE_NOTES.md`. No descargues copias de terceros
+ni interpretes esta candidata como una versión pública. Hasta que exista una
+publicación aprobada, la última versión estable sigue siendo `9.1.0`.
 
 La autoactualización está desactivada y no se empaqueta ningún actualizador
 ejecutable ni instalador. Las actualizaciones se descargan manualmente después
@@ -35,7 +32,7 @@ idiomas y la configuración inicial.
 5. Se abrirá el panel en
    [http://localhost:8080/live](http://localhost:8080/live).
 
-En 9.1.0 el panel, la API y el HLS recibido son solo locales. No abras ni
+En esta candidata el panel, la API y el HLS recibido son solo locales. No abras ni
 reenvíes los puertos `4711` o `8080` para acceder desde otro equipo; el acceso
 LAN/remoto queda aplazado.
 

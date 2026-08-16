@@ -179,6 +179,58 @@ void TestTcpOnlyPreservesLegacyOptionalUdp() {
     CHECK(observation.external_udp_port == 0);
 }
 
+void TestProductMapperResultsRequireGatewayAndOwnership() {
+    LegacyMapperObservation observation{};
+    MapperResultData pcp = LegacySuccess(MappingOperation::Initial);
+    CHECK(AdmitLegacyMapperObservation(
+              MapperResult(pcp), 4, observation) ==
+          LegacyMapperAdmissionStatus::Accepted);
+
+    MapperResultData hostile = pcp;
+    hostile.gateway.port = 0;
+    CHECK(AdmitLegacyMapperObservation(
+              MapperResult(hostile), 4, observation) ==
+          LegacyMapperAdmissionStatus::InvalidResult);
+
+    hostile = pcp;
+    hostile.ownership = OwnershipState::Unverifiable;
+    hostile.ownership_nonce.fill(0);
+    CHECK(AdmitLegacyMapperObservation(
+              MapperResult(hostile), 4, observation) ==
+          LegacyMapperAdmissionStatus::InvalidResult);
+
+    hostile = pcp;
+    hostile.ownership_nonce.fill(0);
+    CHECK(AdmitLegacyMapperObservation(
+              MapperResult(hostile), 4, observation) ==
+          LegacyMapperAdmissionStatus::InvalidResult);
+
+    MapperResultData natpmp = pcp;
+    natpmp.mapper = MapperKind::NatPmp;
+    natpmp.source = MapperSource::NatPmp;
+    natpmp.mappings[0].granted_external_endpoint.source =
+        EndpointSource::NatPmpPublicAddress;
+    natpmp.mappings[1].granted_external_endpoint.source =
+        EndpointSource::NatPmpPublicAddress;
+    natpmp.ownership_nonce.fill(0);
+    natpmp.ownership_identity_digest[0] = 1;
+    CHECK(AdmitLegacyMapperObservation(
+              MapperResult(natpmp), 4, observation) ==
+          LegacyMapperAdmissionStatus::Accepted);
+
+    hostile = natpmp;
+    hostile.gateway.port = 0;
+    CHECK(AdmitLegacyMapperObservation(
+              MapperResult(hostile), 4, observation) ==
+          LegacyMapperAdmissionStatus::InvalidResult);
+
+    hostile = natpmp;
+    hostile.ownership_identity_digest.fill(0);
+    CHECK(AdmitLegacyMapperObservation(
+              MapperResult(hostile), 4, observation) ==
+          LegacyMapperAdmissionStatus::InvalidResult);
+}
+
 void TestAdmissionRejectsEveryNonPublishableExternalClass() {
     const IpAddress rejected[] = {
         IpAddress::V4(127, 0, 0, 1),
@@ -373,6 +425,7 @@ int main() {
     TestRefreshOnlyChangesLegacyRefreshFlag();
     TestProjectionFailsClosedWithoutMutatingOutput();
     TestTcpOnlyPreservesLegacyOptionalUdp();
+    TestProductMapperResultsRequireGatewayAndOwnership();
     TestAdmissionRejectsEveryNonPublishableExternalClass();
     TestTopologyGenerationRules();
     TestTopologyGenerationRejectsInvalidAndOverflow();

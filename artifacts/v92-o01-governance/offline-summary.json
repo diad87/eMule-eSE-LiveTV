@@ -1,0 +1,16 @@
+{
+  "schema": "ese.v92.o01-offline-summary/v1",
+  "source_commit": "37057fcb58e25fc9cec6ebba67fc294343936a1a",
+  "source_tree": "969abbd1df19afc12d49cee22e45b6a698de21b7",
+  "amendment_sha256": "f60a99763774cfdabe988b7e53f1d0d1722e31195f567fd1fc00372c4f8a5bd7",
+  "gates": [
+    {"name":"Node 22 complete nat_gateway suite","command":"npm.cmd test","exit_code":0,"marker":"O01_NODE_SUITE_PASS","body":["O01_NODE_SUITE_PASS"],"body_sha256":"78de767fc05a9e9246ef6a74fe37f533b83a2b929d32285f9d5bb45100a717ea"},
+    {"name":"formal controller/validator/host/RPC focal suite","command":"node --test test/v92_o01_formal_controller.test.js test/v92_o01_validate_formal.test.js test/v92_o01_formal_host.test.js test/v92_o01_formal_rpc.test.js","exit_code":0,"marker":"O01_FORMAL_FOCAL_PASS","body":["O01_FORMAL_FOCAL_PASS"],"body_sha256":"66e239e959cee4c8bd25050399be08b89cf8ddc5fed630ed37acbccba64e2674"},
+    {"name":"PowerShell parser for every changed ps1/psm1","command":"powershell parser changed ps1/psm1","exit_code":0,"marker":"O01_POWERSHELL_PARSE_PASS","body":["O01_POWERSHELL_PARSE_PASS"],"body_sha256":"831e26ccbffae3670363535e290e34d4e27eb04f2dd2aa6d3677a4ee3d7babe4"},
+    {"name":"product formal-soak mock","command":"powershell -File tools/lab/handoff93/test_product_mapper_formal_soak_mock.ps1","exit_code":0,"marker":"O01_PRODUCT_MOCK_PASS","body":["O01_PRODUCT_MOCK_PASS"],"body_sha256":"6e739a657e686b9357c7edb3add2cf76474122a1c75d41ccd92db868dd7bcad6"},
+    {"name":"VM session rollback mock","command":"powershell -File tools/lab/test_v92_o01_vm_session_mock.ps1","exit_code":0,"marker":"O01_SESSION_MOCK_PASS","body":["O01_SESSION_MOCK_PASS"],"body_sha256":"c00ecf3cafc2de4225af7f0aa0ef8c4e9f36f167895ad11d69b88c4ae7d544c7"},
+    {"name":"formal RPC pump mock","command":"powershell -File tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1","exit_code":0,"marker":"O01_RPC_MOCK_PASS","body":["O01_RPC_MOCK_PASS"],"body_sha256":"50227ad44d11870bfe381e33f373626fbb1bbd9b577c11365afee7fe0e4d331b"},
+    {"name":"formal runner source/mock gate","command":"powershell -File tools/lab/test_v92_o01_formal_runner_mock.ps1","exit_code":0,"marker":"O01_RUNNER_MOCK_PASS","body":["O01_RUNNER_MOCK_PASS"],"body_sha256":"eda0aa6badc1cab0a2471362656458926f0e2b8a948ba497b07789bf09fc4343"},
+    {"name":"git diff --check","command":"git diff --check","exit_code":0,"marker":"O01_DIFF_CHECK_PASS","body":["O01_DIFF_CHECK_PASS"],"body_sha256":"f7f8579baf8e7d4389e39da139568f925e293a83267dc77e7c10bf625f9c8af9"}
+  ]
+}

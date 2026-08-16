@@ -1,0 +1,13 @@
+{
+  "schema": "ese.v92.o01-activation/v1",
+  "g_commit": "cfeba8b67234c47a052e3d976acbb233868160f4",
+  "a_commit": "37057fcb58e25fc9cec6ebba67fc294343936a1a",
+  "a_tree": "969abbd1df19afc12d49cee22e45b6a698de21b7",
+  "amendment_sha256": "f60a99763774cfdabe988b7e53f1d0d1722e31195f567fd1fc00372c4f8a5bd7",
+  "functional_paths_sha256": "bd6ea920149c74092a77260fceb929c815a1360788f318408a3a38a42ce234df",
+  "artifact_sha256": {
+    "artifacts/v92-o01-governance/offline-summary.json": "11bfaad7dda4b131a4f4a254cda57af3e833fbaa0d149d4fd1796b2773ad9460",
+    "artifacts/v92-o01-governance/review-sol.json": "7ddeb4f05501eebc084386798dc00f770945e1447eb3d289e0a2f4ebd0c383c0",
+    "artifacts/v92-o01-governance/review-terra.json": "d087d01d2ca8b78cba29f0e9573875242255217f58768a92dbc4bdc4f9cd2bc9"
+  }
+}

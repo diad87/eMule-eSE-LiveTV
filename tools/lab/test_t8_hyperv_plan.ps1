@@ -4,6 +4,29 @@ param()
 $ErrorActionPreference = 'Stop'
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $scriptRoot 't8_hyperv_common.ps1')
+$entryTokens = $null
+$entryErrors = $null
+$entryAst = [Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $scriptRoot 't8_hyperv.ps1'),
+    [ref]$entryTokens,
+    [ref]$entryErrors)
+if ($entryErrors.Count -ne 0 -or $entryAst.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.ExitStatementAst]
+    }, $true).Count -ne 0) {
+    throw 'T8 entrypoint must return to nested callers without contaminating their exit code'
+}
+$entryText = [IO.File]::ReadAllText((Join-Path $scriptRoot 't8_hyperv.ps1'))
+$planOutput = $entryText.IndexOf('$result | ConvertTo-Json -Depth 8')
+$planReturn = $entryText.IndexOf('    return', $planOutput)
+$administratorGate = $entryText.IndexOf('if (-not (Test-T8Administrator))')
+$teardownOutput = $entryText.IndexOf("operation = 'teardown'")
+$teardownReturn = $entryText.IndexOf('    return', $teardownOutput)
+$applyGate = $entryText.IndexOf('if (Test-Path -LiteralPath $stateTarget)', $teardownOutput)
+if ($planOutput -lt 0 -or $planReturn -le $planOutput -or $planReturn -ge $administratorGate -or
+    $teardownOutput -lt 0 -or $teardownReturn -le $teardownOutput -or $teardownReturn -ge $applyGate) {
+    throw 'T8 Plan and Teardown success branches must return before later mutation gates'
+}
 
 function Assert-T8Test {
     param(

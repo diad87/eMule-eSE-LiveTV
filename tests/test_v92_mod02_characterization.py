@@ -288,7 +288,7 @@ class Mod02CharacterizationTest(unittest.TestCase):
         identity = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
         self.assertEqual(
             identity,
-            "34d97678beaf4800b988fb3e481eb123d16f6adbd87c8dfba701feece1bd5524",
+            "b9c3c25fece8a80d71eee340e61d8cd5088b95f8b12e221278d9d249f6d29c9d",
         )
         header = IDENTITY_HEADER.read_text(encoding="utf-8")
         self.assertIn(identity, header)

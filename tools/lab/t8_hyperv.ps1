@@ -429,7 +429,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Plan') {
         mutation_performed = $false
     }
     $result | ConvertTo-Json -Depth 8
-    exit 0
+    return
 }
 
 if (-not (Test-T8Administrator)) {
@@ -454,7 +454,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Teardown') {
         plan_id = $plan.plan_id
         phase = $state.phase
     } | ConvertTo-Json -Depth 6
-    exit 0
+    return
 }
 
 if (Test-Path -LiteralPath $stateTarget) {

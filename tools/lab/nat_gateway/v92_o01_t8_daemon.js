@@ -1,7 +1,15 @@
 'use strict';
 const readline = require('node:readline');
+const dgram = require('node:dgram');
+const net = require('node:net');
 const { monitorEventLoopDelay } = require('node:perf_hooks');
 const { createSession } = require('./v92_o01_bridge_protocol');
+
+function isDataPlaneSocket(handle) {
+  if (handle instanceof dgram.Socket) return true;
+  return handle instanceof net.Socket && typeof handle.localAddress === 'string' && handle.localAddress.length > 0 &&
+    typeof handle.remoteAddress === 'string' && handle.remoteAddress.length > 0;
+}
 
 async function runDaemon(input, output, environment, adapter) {
   if (!environment || !/^[a-f0-9]{64}$/.test(environment.O01_CONTROL_TOKEN_SHA256 || '')) throw new Error('O01_DAEMON_TOKEN_HASH_REQUIRED');
@@ -25,7 +33,7 @@ if (require.main === module) {
   let adapter;
   Promise.resolve().then(async () => {
     const lag=monitorEventLoopDelay({resolution:20});lag.enable();
-    const resources=()=>{const memory=process.memoryUsage();const handles=typeof process._getActiveHandles==='function'?process._getActiveHandles():[];return{gateway_rss_bytes:memory.rss,gateway_heap_bytes:memory.heapUsed,gateway_external_bytes:memory.external,gateway_array_buffers_bytes:memory.arrayBuffers||0,gateway_handles:handles.length,gateway_sockets:handles.filter((entry)=>entry&&entry.constructor&&entry.constructor.name==='Socket').length,event_loop_lag_ms:Math.ceil(Number(lag.max)/1000000)};};
+    const resources=()=>{const memory=process.memoryUsage();const handles=typeof process._getActiveHandles==='function'?process._getActiveHandles():[];return{gateway_rss_bytes:memory.rss,gateway_heap_bytes:memory.heapUsed,gateway_external_bytes:memory.external,gateway_array_buffers_bytes:memory.arrayBuffers||0,gateway_handles:handles.length,gateway_sockets:handles.filter(isDataPlaneSocket).length,event_loop_lag_ms:Math.ceil(Number(lag.max)/1000000)};};
     const formal=process.env.O01_MODE==='FORMAL_T8';
     const provenance=formal?{schema:'ese.v92.t8-bind/v1',adapter_address:process.env.O01_T8_BIND_ADDRESS,
       interface_id_digest:process.env.O01_T8_INTERFACE_SHA256,hyperv_switch_digest:process.env.O01_T8_SWITCH_SHA256,
@@ -39,4 +47,4 @@ if (require.main === module) {
     process.stderr.write(`V92_O01_DAEMON_FAIL ${error.reason_code || error.message}\n`); process.exitCode = 1;
   });
 }
-module.exports = { runDaemon };
+module.exports = { runDaemon, isDataPlaneSocket };

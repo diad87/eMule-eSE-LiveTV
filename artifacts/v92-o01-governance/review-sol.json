@@ -1,8 +1,8 @@
 {
   "schema": "ese.v92.o01-review/v1",
   "role": "Sol",
-  "reviewed_commit": "480b0c58a48fda23d979313715de1e0605d6ba16",
-  "reviewed_tree": "682e3bdd5dc68751f2e4325c96c7eb697e6d6d89",
+  "reviewed_commit": "ff52e777dd96de346328bf7825d1906499980615",
+  "reviewed_tree": "ecb70c0dd588632a0bf099ac73ad9256a854e9e2",
   "verdict": "APPROVE",
   "findings": []
 }

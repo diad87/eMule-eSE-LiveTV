@@ -1,19 +1,18 @@
 {
-  "schema": "ese.v92.o01-runtime-fix-offline-summary/v1",
-  "source_commit": "480b0c58a48fda23d979313715de1e0605d6ba16",
-  "source_tree": "682e3bdd5dc68751f2e4325c96c7eb697e6d6d89",
-  "m_commit": "dbf99e6a5837e12bf3fa506d42778b76c4162e90",
-  "m_tree": "568cceb6e3e6221943be705bf76bc27947ca5f84",
-  "amendment_sha256": "f74ac5518135593e1bb8f9dea42f301112310ec02cf7546efbb5156fc8808c8d",
+  "schema": "ese.v92.o01-physical-repair-offline-summary/v1",
+  "source_commit": "ff52e777dd96de346328bf7825d1906499980615",
+  "source_tree": "ecb70c0dd588632a0bf099ac73ad9256a854e9e2",
+  "m_commit": "cf9abf0103fb855f3fa7df41d89fb9b28897c23c",
+  "m_tree": "4b649a93b62849a906852ecba190dbfe39ef32ce",
+  "amendment_sha256": "ea14ac3bb18fbefac240ce74431ffa5f5adc152914779b27b7892e6ea558781a",
   "gates": [
     {"name":"Node 22 complete nat_gateway suite","command":"npm.cmd test","exit_code":0,"marker":"O01_NODE_SUITE_PASS","body":["O01_NODE_SUITE_PASS"],"body_sha256":"78de767fc05a9e9246ef6a74fe37f533b83a2b929d32285f9d5bb45100a717ea"},
-    {"name":"PowerShell parser for every changed ps1","command":"powershell parser changed ps1","exit_code":0,"marker":"O01_POWERSHELL_PARSE_PASS","body":["O01_POWERSHELL_PARSE_PASS"],"body_sha256":"831e26ccbffae3670363535e290e34d4e27eb04f2dd2aa6d3677a4ee3d7babe4"},
-    {"name":"T8 Hyper-V plan regression","command":"powershell -File tools/lab/test_t8_hyperv_plan.ps1","exit_code":0,"marker":"O01_T8_PLAN_PASS","body":["O01_T8_PLAN_PASS"],"body_sha256":"dd378f6a69f08b20a7bb98fa2552d0a848971501741b7d173ee4bc280f21973a"},
-    {"name":"formal runner mock","command":"powershell -File tools/lab/test_v92_o01_formal_runner_mock.ps1","exit_code":0,"marker":"O01_RUNNER_MOCK_PASS","body":["O01_RUNNER_MOCK_PASS"],"body_sha256":"eda0aa6badc1cab0a2471362656458926f0e2b8a948ba497b07789bf09fc4343"},
-    {"name":"MOD02 characterization identity ratchet","command":"python -B tests/test_v92_mod02_characterization.py","exit_code":0,"marker":"O01_MOD02_CHARACTERIZATION_PASS","body":["O01_MOD02_CHARACTERIZATION_PASS"],"body_sha256":"286a30bd6467d5009b4567404816099cf29d07502c772afa99b4496eb7657085"},
-    {"name":"G9 hostile governance suite","command":"python -B tools/architecture/test_verify_v92_o01_mapper_hotfix_governance.py","exit_code":0,"marker":"O01_G9_GOVERNANCE_PASS","body":["O01_G9_GOVERNANCE_PASS"],"body_sha256":"8d5f40a35b6cf91e4148d01afb1faa054429659a4e27e7b7cd426e021e5fea2c"},
-    {"name":"official full Release x64 rebuild from clean A37","command":"powershell -File tools/build_all.ps1 -ReleaseTag v0.70b-eSE9.2.0-rc.1","exit_code":0,"marker":"O01_RELEASE_BUILD_PASS","body":["O01_RELEASE_BUILD_PASS"],"body_sha256":"9036396dee16735e8eb4945ea8458f7757b81c183faee30a189e92891be3afea"},
-    {"name":"M37 MOD02 verifier and runtime reseal","command":"verify M37 MOD02 artifacts","exit_code":0,"marker":"O01_MOD02_RESEAL_PASS","body":["O01_MOD02_RESEAL_PASS"],"body_sha256":"ed380623012a243f5fb9a90633896963d66d6a324aa9955d8cac295a111897a0"},
+    {"name":"PowerShell parser for every changed ps1/psm1","command":"powershell parser changed ps1/psm1","exit_code":0,"marker":"O01_POWERSHELL_PARSE_PASS","body":["O01_POWERSHELL_PARSE_PASS"],"body_sha256":"831e26ccbffae3670363535e290e34d4e27eb04f2dd2aa6d3677a4ee3d7babe4"},
+    {"name":"formal runner source/mock gate","command":"powershell -File tools/lab/test_v92_o01_formal_runner_mock.ps1","exit_code":0,"marker":"O01_RUNNER_MOCK_PASS","body":["O01_RUNNER_MOCK_PASS"],"body_sha256":"eda0aa6badc1cab0a2471362656458926f0e2b8a948ba497b07789bf09fc4343"},
+    {"name":"G10 hostile governance suite","command":"python -B tools/architecture/test_verify_v92_o01_physical_repair_governance.py","exit_code":0,"marker":"O01_G10_GOVERNANCE_PASS","body":["O01_G10_GOVERNANCE_PASS"],"body_sha256":"81118d59171cae70cb1ffd09e8f1b39e901fc451ee0c9ff5b2f388272b58676b"},
+    {"name":"exact A38 byte and budget verifier","command":"python -B tools/architecture/verify_v92_o01_physical_repair_governance.py --verify","exit_code":0,"marker":"O01_A38_BINDING_PASS","body":["O01_A38_BINDING_PASS"],"body_sha256":"43f2410fedcd6cdd2f4c3f1bff7e165f0fb1498b26a37becd81bbb47706da6e1"},
+    {"name":"official full Release x64 rebuild from clean A38","command":"powershell -File tools/build_all.ps1 -ReleaseTag v0.70b-eSE9.2.0-rc.1","exit_code":0,"marker":"O01_RELEASE_BUILD_PASS","body":["O01_RELEASE_BUILD_PASS"],"body_sha256":"9036396dee16735e8eb4945ea8458f7757b81c183faee30a189e92891be3afea"},
+    {"name":"M38 MOD02 verifier and runtime reseal","command":"verify M38 MOD02 artifacts","exit_code":0,"marker":"O01_MOD02_RESEAL_PASS","body":["O01_MOD02_RESEAL_PASS"],"body_sha256":"ed380623012a243f5fb9a90633896963d66d6a324aa9955d8cac295a111897a0"},
     {"name":"git diff --check","command":"git diff --check","exit_code":0,"marker":"O01_DIFF_CHECK_PASS","body":["O01_DIFF_CHECK_PASS"],"body_sha256":"f7f8579baf8e7d4389e39da139568f925e293a83267dc77e7c10bf625f9c8af9"}
   ]
 }

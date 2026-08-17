@@ -35,6 +35,11 @@ function createGatewayAdapter(options = {}) {
   const externalAddress = options.externalAddress || '198.51.100.10';
   const externalOctets = externalAddress.split('.').map(Number);
   if (externalOctets.length !== 4 || externalOctets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) throw new Error('O01_ADAPTER_EXTERNAL_ADDRESS_INVALID');
+  const maximumLifetimeSeconds = options.maximumLifetimeSeconds;
+  if (maximumLifetimeSeconds !== undefined &&
+      (!Number.isSafeInteger(maximumLifetimeSeconds) || maximumLifetimeSeconds < 1 || maximumLifetimeSeconds > 0xffffffff)) {
+    throw new Error('O01_ADAPTER_LIFETIME_INVALID');
+  }
   const foreign = { mapping_id: 'foreign.persistent.tcp', protocol: 'upnp', transport: 'tcp',
     client_id: 'foreign-client', internal_address: '192.0.2.200', internal_port: 62000,
     requested_external_port: 62000, external_address: externalAddress, external_port: 62000,
@@ -48,11 +53,31 @@ function createGatewayAdapter(options = {}) {
     upnp_accepted: 0, upnp_rejected: 0,
     max_owned_mapping_count: 0 };
   const transactionBrand = new WeakMap();
-  const pendingPairs = new Map();
-  const now = () => {
+  let pendingPair = null;
+  let lastClockValue = -1;
+  let logicalClockFloor = 0;
+  let wireEpochOriginMs = 0;
+  let lastWireEpoch = 0;
+  const physicalNow = () => {
     const value = typeof options.now === 'function' ? options.now() : 0;
-    if (!Number.isSafeInteger(value) || value < 0) throw new Error('O01_ADAPTER_CLOCK_INVALID');
+    if (!Number.isSafeInteger(value) || value < 0 || value < lastClockValue) throw new Error('O01_ADAPTER_CLOCK_INVALID');
+    lastClockValue = value;
     return value;
+  };
+  const projectWireEpoch = (physicalMs) => {
+    const value = Math.floor((physicalMs - wireEpochOriginMs) / 1000);
+    if (!Number.isSafeInteger(value) || value < lastWireEpoch || value > 0xffffffff) throw new Error('O01_ADAPTER_EPOCH_INVALID');
+    lastWireEpoch = value;
+    return value;
+  };
+  const wireEpoch = () => projectWireEpoch(physicalNow());
+  const now = () => {
+    return Math.max(physicalNow(), logicalClockFloor);
+  };
+  const grantedLifetime = (requested) => {
+    if (!Number.isSafeInteger(requested) || requested < 0 || requested > 0xffffffff) throw new Error('O01_ADAPTER_LIFETIME_INVALID');
+    return requested === 0 || maximumLifetimeSeconds === undefined
+      ? requested : Math.min(requested, maximumLifetimeSeconds);
   };
   function trackOwnedPeak() {
     const count = snapshotInternalMappings(state).filter((entry) => entry.client_id === 'o01-client').length;
@@ -69,16 +94,18 @@ function createGatewayAdapter(options = {}) {
   }
   function mapPair(protocol, lifetimeSeconds = 30) {
     if (!['pcp', 'natpmp', 'upnp'].includes(protocol)) throw new Error('O01_ADAPTER_PROTOCOL_INVALID');
+    const effectiveLifetime = protocol === 'upnp' ? 0 : grantedLifetime(lifetimeSeconds);
     return transactPair((current, transport) => {
+      const nowMs = now();
       if (protocol === 'pcp') return applyPcpMapCommand(current, pcpCommand(transport, lifetimeSeconds), {
-        now_monotonic_ms: now(), client_id: 'o01-client', instance_id_digest: DIGEST_A,
-        granted_lifetime_seconds: lifetimeSeconds,
+        now_monotonic_ms: nowMs, client_id: 'o01-client', instance_id_digest: DIGEST_A,
+        granted_lifetime_seconds: effectiveLifetime,
         new_mapping: { mapping_id: owned(protocol, transport), external_address: externalAddress, external_port: transport === 'tcp' ? 54662 : 54672 },
       }).state;
       if (protocol === 'upnp') {
         const result = applyUpnpAddPortMapping(current, upnpCommand(transport), {
           client_id: 'o01-client', gateway_external_address: externalAddress, gateway_identity_digest: DIGEST_A,
-          instance_id_digest: DIGEST_B, now_monotonic_ms: now(), table_capacity: 16,
+          instance_id_digest: DIGEST_B, now_monotonic_ms: nowMs, table_capacity: 16,
         });
         if (!result.ok) throw new Error(`O01_ADAPTER_UPNP_${result.error_code}`);
         return result.state;
@@ -87,34 +114,56 @@ function createGatewayAdapter(options = {}) {
       return createMapping(current, { mapping_id: owned(protocol, transport), protocol, transport,
         client_id: 'o01-client', internal_address: '192.0.2.10', internal_port: port,
         requested_external_port: 0, external_address: externalAddress, external_port: port + 51000,
-        lease: { lifetime_seconds: lifetimeSeconds, created_monotonic_ms: now(), expires_monotonic_ms: now() + lifetimeSeconds * 1000 },
+        lease: { lifetime_seconds: effectiveLifetime, created_monotonic_ms: nowMs, expires_monotonic_ms: nowMs + effectiveLifetime * 1000 },
         owner: { kind: 'natpmp-lease-scope', instance_id_digest: DIGEST_A, scope_id: 'o01' },
         epoch: current.epoch, generation: current.generation, atomic_group_id: `o01.${protocol}.pair`,
       }).state;
     });
   }
   function renewPair(protocol, lifetimeSeconds = 30) {
+    const effectiveLifetime = protocol === 'upnp' ? 0 : grantedLifetime(lifetimeSeconds);
     return transactPair((current, transport) => {
+      const nowMs = now();
       const mapping = snapshotInternalMappings(current).find((entry) => entry.mapping_id === owned(protocol, transport));
       if (!mapping) throw new Error('O01_ADAPTER_MAPPING_MISSING');
       if (protocol === 'pcp') return applyPcpMapCommand(current, pcpCommand(transport, lifetimeSeconds), {
-        now_monotonic_ms: now(), client_id: 'o01-client', instance_id_digest: DIGEST_A,
-        granted_lifetime_seconds: lifetimeSeconds, new_mapping: null,
+        now_monotonic_ms: nowMs, client_id: 'o01-client', instance_id_digest: DIGEST_A,
+        granted_lifetime_seconds: effectiveLifetime, new_mapping: null,
       }).state;
       if (protocol === 'upnp') return applyUpnpAddPortMapping(current, upnpCommand(transport), {
         client_id: 'o01-client', gateway_external_address: externalAddress, gateway_identity_digest: DIGEST_A,
-        instance_id_digest: DIGEST_B, now_monotonic_ms: now(), table_capacity: 16,
+        instance_id_digest: DIGEST_B, now_monotonic_ms: nowMs, table_capacity: 16,
       }).state;
       return renewMapping(current, { mapping_id: mapping.mapping_id, epoch: current.epoch,
-        generation: current.generation, owner: mapping.owner, lifetime_seconds: lifetimeSeconds,
-        now_monotonic_ms: now() }).state;
+        generation: current.generation, owner: mapping.owner, lifetime_seconds: effectiveLifetime,
+        now_monotonic_ms: nowMs }).state;
     });
   }
   function expire() { state = expireMappings(state, now()).state; return observe(); }
+  function expireOwned() {
+    const ownedMappings = snapshotInternalMappings(state).filter((entry) => entry.client_id === 'o01-client');
+    if (!ownedMappings.length || ownedMappings.some((entry) => entry.lease.expires_monotonic_ms === null)) throw new Error('O01_ADAPTER_EXPIRY_INVALID');
+    const deadline = Math.max(...ownedMappings.map((entry) => entry.lease.expires_monotonic_ms));
+    logicalClockFloor = Math.max(logicalClockFloor, deadline);
+    pendingPair = null;
+    state = expireMappings(state, logicalClockFloor).state;
+    if (snapshotInternalMappings(state).some((entry) => entry.client_id === 'o01-client')) throw new Error('O01_ADAPTER_EXPIRY_INCOMPLETE');
+    lastFault = 'expiry';
+    return observe();
+  }
   function restartEpoch(seconds) {
     if (!Number.isSafeInteger(seconds) || seconds < 0 || seconds > 0xffffffff) throw new Error('O01_ADAPTER_EPOCH_INVALID');
+    wireEpochOriginMs = physicalNow();
+    lastWireEpoch = 0;
+    pendingPair = null;
     state = resetMappingState(state, { epoch: seconds, generation: state.generation + 1 }).state;
+    lastFault = 'epoch_reset';
     return observe();
+  }
+  function applyFaultBoundary(name) {
+    if (name === 'expiry') return expireOwned();
+    if (name === 'epoch_reset') return restartEpoch(state.epoch + 1);
+    throw new Error('O01_ADAPTER_BOUNDARY_INVALID');
   }
   function rejectStale(expectedGeneration) {
     const before = state;
@@ -133,11 +182,13 @@ function createGatewayAdapter(options = {}) {
     return observe();
   }
   function observe() {
+    state = expireMappings(state, now()).state;
     const mappings = snapshotInternalMappings(state);
-    return Object.freeze({ epoch: state.epoch, generation: state.generation,
+    return Object.freeze({ epoch: wireEpoch(), generation: state.generation,
       mappings, pair_atomic: mappings.filter((entry) => entry.client_id === 'o01-client').length % 2 === 0 });
   }
   function observeProtocol() {
+    state = expireMappings(state, now()).state;
     const mappings = snapshotInternalMappings(state);
     const ownedMappings = mappings.filter((entry) => entry.client_id === 'o01-client');
     const transports = new Set(ownedMappings.map((entry) => entry.transport));
@@ -164,36 +215,42 @@ function createGatewayAdapter(options = {}) {
   }
   function applyPcp(command, requestWire) {
     const existing = snapshotInternalMappings(state).find((entry) => entry.protocol === 'pcp' && entry.transport === command.transport);
+    const effectiveLifetime = grantedLifetime(command.lifetime_seconds);
+    const physicalMs = physicalNow();
     const result = applyPcpMapCommand(state, command, {
-      now_monotonic_ms: now(), client_id: 'o01-client', instance_id_digest: DIGEST_A,
-      granted_lifetime_seconds: command.lifetime_seconds,
+      now_monotonic_ms: Math.max(physicalMs, logicalClockFloor), client_id: 'o01-client', instance_id_digest: DIGEST_A,
+      granted_lifetime_seconds: effectiveLifetime,
       new_mapping: existing || command.operation === 'delete' ? null : { mapping_id: owned('pcp', command.transport),
         external_address: externalAddress, external_port: command.transport === 'tcp' ? 54662 : 54672 },
     });
     state = result.state; trackOwnedPeak();
-    return toPcpMapResponse(command, result, requestWire);
+    return Object.freeze({ ...toPcpMapResponse(command, result, requestWire), epoch: projectWireEpoch(physicalMs) });
   }
   function applyNatPmp(command, sourceAddress) {
-    if (command.operation === 'external-address') { return { response_type: 'external-address', result_code: 0, epoch: state.epoch, external_ip: externalOctets }; }
+    if (command.operation === 'external-address') { return { response_type: 'external-address', result_code: 0, epoch: wireEpoch(), external_ip: externalOctets }; }
     const mappingId = owned('natpmp', command.transport);
     const existing = snapshotInternalMappings(state).find((entry) => entry.mapping_id === mappingId);
     if (command.operation === 'delete') {
+      const responseEpoch = wireEpoch();
       if (existing) state = deleteMapping(state, { mapping_id: mappingId, epoch: state.epoch, generation: state.generation, owner: existing.owner }).state;
       trackOwnedPeak();
-      return { response_type: 'map', transport: command.transport, result_code: 0, epoch: state.epoch,
+      return { response_type: 'map', transport: command.transport, result_code: 0, epoch: responseEpoch,
         internal_port: command.internal_port, external_port: 0, lifetime_seconds: 0 };
     }
+    const effectiveLifetime = grantedLifetime(command.lifetime_seconds);
+    const physicalMs = physicalNow();
+    const nowMs = Math.max(physicalMs, logicalClockFloor);
     if (existing) state = renewMapping(state, { mapping_id: mappingId, epoch: state.epoch, generation: state.generation,
-      owner: existing.owner, lifetime_seconds: command.lifetime_seconds, now_monotonic_ms: now() }).state;
+      owner: existing.owner, lifetime_seconds: effectiveLifetime, now_monotonic_ms: nowMs }).state;
     else state = createMapping(state, { mapping_id: mappingId, protocol: 'natpmp', transport: command.transport,
       client_id: 'o01-client', internal_address: sourceAddress, internal_port: command.internal_port,
       requested_external_port: command.suggested_external_port, external_address: externalAddress,
       external_port: command.transport === 'tcp' ? 55662 : 55672,
-      lease: { lifetime_seconds: command.lifetime_seconds, created_monotonic_ms: now(), expires_monotonic_ms: now() + command.lifetime_seconds * 1000 },
+      lease: { lifetime_seconds: effectiveLifetime, created_monotonic_ms: nowMs, expires_monotonic_ms: nowMs + effectiveLifetime * 1000 },
       owner: { kind: 'natpmp-lease-scope', instance_id_digest: DIGEST_A, scope_id: 'o01' },
       epoch: state.epoch, generation: state.generation, atomic_group_id: 'o01.natpmp.pair' }).state;
-    trackOwnedPeak(); return { response_type: 'map', transport: command.transport, result_code: 0, epoch: state.epoch,
-      internal_port: command.internal_port, external_port: command.transport === 'tcp' ? 55662 : 55672, lifetime_seconds: command.lifetime_seconds };
+    trackOwnedPeak(); return { response_type: 'map', transport: command.transport, result_code: 0, epoch: projectWireEpoch(physicalMs),
+      internal_port: command.internal_port, external_port: command.transport === 'tcp' ? 55662 : 55672, lifetime_seconds: effectiveLifetime };
   }
   function applyUpnp(command) {
     if (command.operation === 'delete_port_mapping') traffic.upnp_delete_requests++; else traffic.upnp_add_requests++;
@@ -206,24 +263,47 @@ function createGatewayAdapter(options = {}) {
   }
   function prepare(protocol, transport, operation) {
     if (!['pcp','natpmp','upnp'].includes(protocol) || !TRANSPORTS.includes(transport) || typeof operation !== 'function') throw new Error('O01_ADAPTER_TRANSACTION_INVALID');
-    const committed = state; const pending = pendingPairs.get(protocol);
+    const committed = state; const pending = pendingPair;
+    if (pending && pending.protocol !== protocol) throw new Error('O01_ADAPTER_TRANSACTION_PENDING');
+    if (pending && pending.committed !== committed) {
+      if (pendingPair === pending) pendingPair = null;
+      throw new Error('O01_ADAPTER_TRANSACTION_STALE');
+    }
     if (pending && pending.transports.has(transport)) throw new Error('O01_ADAPTER_PAIR_DUPLICATE');
     state = pending ? pending.state : committed;
     let response;
-    try { response = operation(); } catch (error) { state = committed; pendingPairs.delete(protocol); throw error; }
+    try { response = operation(); } catch (error) {
+      state = committed;
+      if (pendingPair === pending) pendingPair = null;
+      throw error;
+    }
     const candidate = state; state = committed;
     const token = Object.freeze({ protocol, transport });
-    transactionBrand.set(token, { protocol, committed, candidate, response,
+    transactionBrand.set(token, { protocol, committed, pending, candidate, response,
       transports: new Set([...(pending ? pending.transports : []), transport]) });
     return Object.freeze({ token, response });
   }
   function commitPrepared(token) {
-    const tx = transactionBrand.get(token); if (!tx || tx.committed !== state) throw new Error('O01_ADAPTER_TRANSACTION_STALE');
+    const tx = transactionBrand.get(token);
+    if (!tx || tx.committed !== state || tx.pending !== pendingPair) throw new Error('O01_ADAPTER_TRANSACTION_STALE');
     transactionBrand.delete(token);
-    if (tx.transports.size === 1) { pendingPairs.set(tx.protocol, { state: tx.candidate, transports: tx.transports }); return false; }
-    state = tx.candidate; pendingPairs.delete(tx.protocol); trackOwnedPeak(); return true;
+    if (tx.response && tx.response.result_code !== 0) {
+      if (tx.pending !== null && pendingPair === tx.pending) pendingPair = null;
+      return false;
+    }
+    if (tx.transports.size === 1) {
+      pendingPair = { protocol: tx.protocol, committed: tx.committed, state: tx.candidate, transports: tx.transports };
+      return false;
+    }
+    state = tx.candidate; pendingPair = null; trackOwnedPeak(); return true;
   }
-  function abortPrepared(token) { const tx=transactionBrand.get(token);if(!tx)return false;transactionBrand.delete(token);pendingPairs.delete(tx.protocol);return true; }
+  function abortPrepared(token) {
+    const tx = transactionBrand.get(token);
+    if (!tx) return false;
+    transactionBrand.delete(token);
+    if (tx.pending !== null && pendingPair === tx.pending) pendingPair = null;
+    return true;
+  }
   function preparePcp(command, wire) { return prepare('pcp', command.transport, () => applyPcp(command, wire)); }
   function prepareNatPmp(command, source) { return prepare('natpmp', command.transport, () => applyNatPmp(command, source)); }
   function readUpnp(command) {
@@ -250,6 +330,7 @@ function createGatewayAdapter(options = {}) {
     state = candidate; lastFault = 'final_boundary'; return observeProtocol();
   }
   return Object.freeze({ mapPair, renewPair, expire, restartEpoch, rejectStale, rejectForeign,
+    expireOwned, applyFaultBoundary,
     observe, observeProtocol, applyPcp, applyNatPmp, applyUpnp, readUpnp, cleanupOwned,
     preparePcp, prepareNatPmp, commitPrepared, abortPrepared, recordWireOutcome });
 }

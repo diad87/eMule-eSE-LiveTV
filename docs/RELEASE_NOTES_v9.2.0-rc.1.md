@@ -20,8 +20,11 @@ not a declaration that the v9.2 physical exit gate has passed.
 - The v9.2 T8 laboratory provides real PCP/NAT-PMP wire exchanges, hostile
   replies, bounded recovery, privacy-safe observations and exact teardown.
 - The formal O01 controller requires 8 uninterrupted hours, 2,880 observation
-  ticks, 960 fault slots, 480 product samples, 95 checkpoints and a chained
-  terminal record. Simulation cannot award a formal PASS.
+  ticks, 96 five-minute fault slots, 480 product samples, 95 checkpoints and a
+  chained terminal record. The live gateway caps PCP and NAT-PMP grants at 120
+  seconds and holds delayed replies for eight seconds so every fault and
+  recovery is exercised by real wire traffic. Simulation cannot award a
+  formal PASS.
 
 ## Safety and privacy
 

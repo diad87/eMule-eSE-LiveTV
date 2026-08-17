@@ -6,7 +6,7 @@ const path = require('node:path');
 
 const REPO = path.resolve(__dirname, '..', '..', '..');
 const CONFIG_PATH = path.join(__dirname, 'v92_o01_scenario.json');
-const BOUND_PATHS = ['tools/lab/handoff93/run_product_mapper_cycle.ps1','tools/lab/nat_gateway/v92_o01_product_stream.js','tools/lab/nat_gateway/v92_o01_formal_controller.js','tools/lab/nat_gateway/v92_o01_validate_formal.js','tools/lab/nat_gateway/v92_o01_scenario.json','tools/lab/nat_gateway/v92_o01_t8_child.js','tools/lab/nat_gateway/v92_o01_t8_daemon.js','tools/lab/nat_gateway/v92_o01_bridge_protocol.js','tools/lab/nat_gateway/v92_o01_t8_network_adapter.js','tools/lab/nat_gateway/v92_o01_t8_gateway_adapter.js','tools/lab/nat_gateway/v92_o01_t8_udp_mux.js','tools/lab/nat_gateway/v92_o01_t8_upnp_edge.js','tools/lab/nat_gateway/v92_o01_t8_fault_controller.js','tools/lab/nat_gateway/v92_o01_formal_host.js','tools/lab/nat_gateway/v92_o01_formal_rpc.js','tools/lab/run_v92_o01_formal.ps1','tools/lab/v92_o01_vm_session.psm1','tools/lab/t8_hyperv.ps1','tools/lab/common.ps1','tools/lab/v91_r01_upnp.ps1'];
+const BOUND_PATHS = ['tools/lab/handoff93/run_product_mapper_cycle.ps1','tools/lab/nat_gateway/v92_o01_product_stream.js','tools/lab/nat_gateway/v92_o01_formal_controller.js','tools/lab/nat_gateway/v92_o01_validate_formal.js','tools/lab/nat_gateway/v92_o01_scenario.json','tools/lab/nat_gateway/v92_o01_soak.js','tools/lab/nat_gateway/v92_o01_t8_child.js','tools/lab/nat_gateway/v92_o01_t8_daemon.js','tools/lab/nat_gateway/v92_o01_bridge_protocol.js','tools/lab/nat_gateway/v92_o01_t8_network_adapter.js','tools/lab/nat_gateway/v92_o01_t8_gateway_adapter.js','tools/lab/nat_gateway/v92_o01_t8_udp_mux.js','tools/lab/nat_gateway/v92_o01_t8_upnp_edge.js','tools/lab/nat_gateway/v92_o01_t8_fault_controller.js','tools/lab/nat_gateway/v92_o01_formal_host.js','tools/lab/nat_gateway/v92_o01_formal_rpc.js','tools/lab/run_v92_o01_formal.ps1','tools/lab/v92_o01_vm_session.psm1','tools/lab/t8_hyperv.ps1','tools/lab/common.ps1','tools/lab/v91_r01_upnp.ps1'];
 
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -19,14 +19,14 @@ function hashDomain(domain, value) {
 function fileHash(filename) { return crypto.createHash('sha256').update(fs.readFileSync(filename)).digest('hex'); }
 function readConfig() {
   const value = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-  const keys = ['schema','case_id','formal_duration_ms','tick_ms','fault_slot_ms','lease_ms','checkpoint_ms','sample_ms','warmup_ms','slope_window_ms','node_major','owner_tag','transports','cycle','final_fault','limits','bound_files'];
+  const keys = ['schema','case_id','formal_duration_ms','tick_ms','fault_slot_ms','lease_ms','late_delay_ms','checkpoint_ms','sample_ms','warmup_ms','slope_window_ms','node_major','owner_tag','transports','cycle','final_fault','limits','bound_files'];
   const limitKeys = ['rss_absolute_bytes','heap_absolute_bytes','external_absolute_bytes','array_buffers_absolute_bytes','rss_window_growth_bytes','heap_window_growth_bytes','handles','timers','sockets','mapping_table','journal_entries','log_bytes','artifact_bytes','checkpoint_max_gap_ms'];
   if (!value || Array.isArray(value) || canonical(Object.keys(value).sort()) !== canonical(keys.sort()) ||
       value.schema !== 'ese.v92.o01-scenario/v1' || value.case_id !== 'V92-O01' || value.formal_duration_ms !== 28800000 ||
       value.node_major !== 22 || canonical(value.transports) !== canonical(['tcp','udp']) || value.final_fault !== 'final_boundary' ||
       !Array.isArray(value.cycle) || value.cycle.length !== 18 || canonical(value.bound_files) !== canonical(BOUND_PATHS) ||
       !value.limits || canonical(Object.keys(value.limits).sort()) !== canonical(limitKeys.sort()) ||
-      ![value.tick_ms,value.fault_slot_ms,value.lease_ms,value.checkpoint_ms,value.sample_ms,value.warmup_ms,value.slope_window_ms,...Object.values(value.limits)].every((entry) => Number.isSafeInteger(entry) && entry > 0) ||
+      ![value.tick_ms,value.fault_slot_ms,value.lease_ms,value.late_delay_ms,value.checkpoint_ms,value.sample_ms,value.warmup_ms,value.slope_window_ms,...Object.values(value.limits)].every((entry) => Number.isSafeInteger(entry) && entry > 0) ||
       value.formal_duration_ms % value.tick_ms !== 0 || value.checkpoint_ms % value.tick_ms !== 0 || value.slope_window_ms % value.sample_ms !== 0) throw new Error('O01_SCENARIO_INVALID');
   return value;
 }

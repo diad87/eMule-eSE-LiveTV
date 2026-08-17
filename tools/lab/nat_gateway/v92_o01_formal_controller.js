@@ -7,6 +7,10 @@ const { validateObservation } = require('./v92_o01_bridge_protocol');
 const { parseLine, createProductStreamState } = require('./v92_o01_product_stream');
 
 const REJECT_STABLE = new Set(['explicit_reject', 'stale', 'replay_duplicate', 'malformed', 'partial_pair']);
+const BOUNDARY_FAULTS = new Set(['expiry', 'epoch_reset']);
+const FAULT_TICK_LIMIT = 12;
+const RECOVERY_TICK_LIMIT = 20;
+const MAX_TRANSIENT_PRODUCT_SAMPLES = 2;
 const ALL_FAULTS = Object.freeze(['renew_success','dropped_late','explicit_reject','expiry','epoch_reset','stale','replay_duplicate','malformed','partial_pair','final_boundary']);
 const CHECKPOINT_KEYS = Object.freeze([
   'schema', 'ordinal', 'elapsed_ms', 'fault_ordinal', 'executed', 'slots',
@@ -25,7 +29,7 @@ function bounded(promise,milliseconds,code){let timer;return Promise.race([Promi
 function repositoryBinding(repoRoot,config){const root=path.resolve(repoRoot||'');const git=(args)=>execFileSync('git',['-C',root,...args],{encoding:'utf8',windowsHide:true}).trim();if(git(['status','--porcelain=v1','--untracked-files=all'])!=='')fail('O01_CONTROLLER_SOURCE_DIRTY');const sourceCommit=git(['rev-parse','HEAD']);const sourceTree=git(['rev-parse','HEAD^{tree}']);const scenarioPath=path.join(root,'tools/lab/nat_gateway/v92_o01_scenario.json');const scenarioSha256=crypto.createHash('sha256').update(fs.readFileSync(scenarioPath)).digest('hex');const boundFiles=config.bound_files.map((relative)=>({path:relative,sha256:crypto.createHash('sha256').update(fs.readFileSync(path.join(root,...relative.split('/')))).digest('hex')}));return{sourceCommit,sourceTree,scenarioSha256,boundFiles};}
 function validateScenario(config) {
   if (!config || config.schema !== 'ese.v92.o01-scenario/v1' || config.formal_duration_ms !== 28800000 || config.tick_ms !== 10000 ||
-      config.fault_slot_ms !== 30000 ||
+      config.fault_slot_ms !== 300000 || config.lease_ms !== 120000 || config.late_delay_ms !== 8000 ||
       config.sample_ms !== 60000 || config.checkpoint_ms !== 300000 || config.node_major !== 22 ||
       !Array.isArray(config.cycle) || config.cycle.length !== 18 || config.final_fault !== 'final_boundary' ||
       [...new Set([...config.cycle, config.final_fault])].sort().join(',') !== [...ALL_FAULTS].sort().join(',')) {
@@ -33,10 +37,12 @@ function validateScenario(config) {
   }
   const tickCount = config.formal_duration_ms / config.tick_ms;
   const slotCount = config.formal_duration_ms / config.fault_slot_ms;
+  const slotTicks = config.fault_slot_ms / config.tick_ms;
   const schedule = Array.from({ length: slotCount }, (_, index) => config.cycle[index % config.cycle.length]);
   schedule[slotCount - 1] = config.final_fault;
-  if (tickCount !== 2880 || schedule.length !== 960 || schedule.at(-1) !== 'final_boundary') fail('O01_CONTROLLER_SCHEDULE');
-  return Object.freeze({ tick_count: tickCount, schedule: Object.freeze(schedule), planned: Object.freeze(countSchedule(schedule)) });
+  if (tickCount !== 2880 || slotTicks !== 30 || schedule.length !== 96 || schedule.at(-1) !== 'final_boundary') fail('O01_CONTROLLER_SCHEDULE');
+  return Object.freeze({ tick_count: tickCount, slot_ticks: slotTicks,
+    schedule: Object.freeze(schedule), planned: Object.freeze(countSchedule(schedule)) });
 }
 function assertLimits(config, product, gateway) {
   if (gateway.resources.gateway_rss_bytes > config.limits.rss_absolute_bytes ||
@@ -52,17 +58,20 @@ function assertLimits(config, product, gateway) {
 }
 function createCrossValidator(config) {
   const plan = validateScenario(config);
-  let slotOrdinal = 0; let ticks = 0; let baseline = null; let latestGateway = null; let latestProduct = null; let productSamples = 0; let activeFault = null;const gatewayHistory=[];const productHistory=[];
+  let slotOrdinal = 0; let ticks = 0; let baseline = null; let latestGateway = null;
+  let latestProduct = null; let productSamples = 0; let activeFault = null; let slotStartTick = 0;
+  let faultTickOffset = 0; let recoveryTickOffset = 0; let transientProductSamples = 0;
+  let latestProductCoherent = true; const gatewayHistory=[]; const productHistory=[];
   const executed = {};
   return Object.freeze({ beginSlot(fault, gatewayValue) {
     const gateway = validateObservation(gatewayValue);
     const expected = plan.schedule[slotOrdinal];
-    const immediate=fault==='epoch_reset';
-    if (activeFault || fault !== expected || (immediate ?
-        (gateway.faults.armed_fault_ordinal!==0||gateway.faults.last_executed_fault_ordinal!==slotOrdinal+1||gateway.faults.last_executed_fault_name!==fault) :
-        (gateway.faults.armed_fault_ordinal!==slotOrdinal+1||gateway.faults.armed_fault_name!==fault))) fail('O01_CONTROLLER_FAULT_ORDER');
+    if (activeFault || fault !== expected || gateway.faults.armed_fault_ordinal!==slotOrdinal+1 ||
+        gateway.faults.armed_fault_name!==fault||gateway.faults.last_executed_fault_ordinal!==slotOrdinal) fail('O01_CONTROLLER_FAULT_ORDER');
     baseline = latestGateway ? structuredClone(latestGateway) : structuredClone(gateway);
-    activeFault = fault; latestGateway = structuredClone(gateway); return gateway;
+    activeFault = fault; latestGateway = structuredClone(gateway); slotStartTick = ticks;
+    faultTickOffset = 0; recoveryTickOffset = 0; transientProductSamples = 0;
+    latestProductCoherent = true; return gateway;
   }, acceptTick(gatewayValue) {
     if (!activeFault) fail('O01_CONTROLLER_SLOT_NOT_STARTED');
     const gateway = validateObservation(gatewayValue); ticks += 1;
@@ -71,25 +80,52 @@ function createCrossValidator(config) {
         gateway.traffic.final_owned_mapping_count > gateway.traffic.max_owned_mapping_count) {
       fail('O01_CONTROLLER_GATEWAY');
     }
+    const ordinal=slotOrdinal+1;const offset=ticks-slotStartTick;
+    if(gateway.faults.last_executed_fault_ordinal===ordinal&&faultTickOffset===0)faultTickOffset=offset;
+    if(gateway.faults.last_recovery_transaction_ordinal===ordinal&&recoveryTickOffset===0)recoveryTickOffset=offset;
+    if(faultTickOffset>FAULT_TICK_LIMIT||(offset>=FAULT_TICK_LIMIT&&faultTickOffset===0))fail('O01_CONTROLLER_FAULT_NOT_CONSUMED');
     assertLimits(config, null, gateway);gatewayHistory.push(gateway);if(ticks>config.warmup_ms/config.tick_ms&&gatewayHistory.length>60){const prior=gatewayHistory[gatewayHistory.length-61];if(gateway.resources.gateway_rss_bytes-prior.resources.gateway_rss_bytes>config.limits.rss_window_growth_bytes||gateway.resources.gateway_heap_bytes-prior.resources.gateway_heap_bytes>config.limits.heap_window_growth_bytes)fail('O01_CONTROLLER_RESOURCE_SLOPE');} latestGateway = structuredClone(gateway); return gateway;
   }, completeSlot() {
-    if (!activeFault || ticks !== (slotOrdinal + 1) * 3) fail('O01_CONTROLLER_SLOT_TICKS');
+    if (!activeFault || ticks !== (slotOrdinal + 1) * plan.slot_ticks) fail('O01_CONTROLLER_SLOT_TICKS');
     const fault = activeFault; const current = latestGateway; const ordinal = slotOrdinal + 1;
     if (current.faults.armed_fault_ordinal !== 0 || current.faults.armed_fault_name !== 'none' ||
         current.faults.last_executed_fault_ordinal !== ordinal || current.faults.last_executed_fault_name !== fault ||
         current.faults.pair_transactions_attempted <= baseline.faults.pair_transactions_attempted) fail('O01_CONTROLLER_FAULT_NOT_CONSUMED');
+    if(faultTickOffset<1||faultTickOffset>FAULT_TICK_LIMIT||
+       recoveryTickOffset<faultTickOffset||recoveryTickOffset>RECOVERY_TICK_LIMIT||!latestProductCoherent)fail('O01_CONTROLLER_RECOVERY_MISSING');
     if (!['pcp','natpmp'].includes(current.faults.last_wire_protocol)) fail('O01_CONTROLLER_MAPPER_PROTOCOL');
     if (current.faults.pair_transactions_attempted !== current.faults.pair_transactions_committed + current.faults.pair_transactions_aborted ||
         current.faults.pair_transactions_attempted !== current.faults.fault_transactions_attempted + current.faults.recovery_transactions_attempted) fail('O01_CONTROLLER_TRANSACTION_ACCOUNTING');
+    const attemptedDelta=current.faults.pair_transactions_attempted-baseline.faults.pair_transactions_attempted;
+    const committedDelta=current.faults.pair_transactions_committed-baseline.faults.pair_transactions_committed;
+    const abortedDelta=current.faults.pair_transactions_aborted-baseline.faults.pair_transactions_aborted;
+    if(attemptedDelta!==committedDelta+abortedDelta||committedDelta<1||
+       current.traffic.final_owned_mapping_count!==2||current.product.publisher_active!==true||current.product.journal_entry_count!==2)fail('O01_CONTROLLER_TRANSACTION_ACCOUNTING');
     if (REJECT_STABLE.has(fault) || fault === 'dropped_late' || fault === 'final_boundary') {
       if (current.faults.last_fault_candidate_committed || current.faults.pair_transactions_aborted <= baseline.faults.pair_transactions_aborted) fail('O01_CONTROLLER_REJECT_MUTATED');
       if (current.faults.generation_before!==current.faults.generation_after||current.faults.epoch_before!==current.faults.epoch_after||current.faults.owned_before!==current.faults.owned_after||current.faults.publisher_before!==current.faults.publisher_after||current.faults.journal_before!==current.faults.journal_after) fail('O01_CONTROLLER_HOSTILE_STATE_MUTATED');
-      if (fault !== 'final_boundary' && current.faults.last_recovery_transaction_ordinal !== ordinal) fail('O01_CONTROLLER_RECOVERY_MISSING');
+      if (current.faults.last_recovery_transaction_ordinal !== ordinal) fail('O01_CONTROLLER_RECOVERY_MISSING');
+    } else if(BOUNDARY_FAULTS.has(fault)){
+      if(current.faults.last_fault_candidate_committed||current.faults.pair_transactions_aborted<=baseline.faults.pair_transactions_aborted||
+         current.faults.last_recovery_transaction_ordinal!==ordinal||current.faults.owned_before!==2||current.faults.owned_after!==0||
+         current.faults.publisher_before!==true||current.faults.publisher_after!==false||current.faults.journal_before!==2||current.faults.journal_after!==0||
+         current.traffic.final_owned_mapping_count!==2)fail('O01_CONTROLLER_BOUNDARY_RECOVERY');
+      if(current.faults.generation_before!==baseline.gateway.generation||current.faults.epoch_before!==baseline.gateway.epoch)fail('O01_CONTROLLER_BOUNDARY_RECOVERY');
+      if(fault==='expiry'&&(current.faults.generation_after!==baseline.gateway.generation||current.faults.epoch_after!==baseline.gateway.epoch||current.gateway.generation!==baseline.gateway.generation||current.gateway.epoch!==baseline.gateway.epoch))fail('O01_CONTROLLER_EXPIRY');
+      if(fault==='epoch_reset'&&(current.faults.generation_after!==baseline.gateway.generation+1||current.faults.epoch_after!==baseline.gateway.epoch+1||current.gateway.generation!==baseline.gateway.generation+1||current.gateway.epoch!==baseline.gateway.epoch+1))fail('O01_CONTROLLER_EPOCH');
     } else if (current.faults.pair_transactions_committed <= baseline.faults.pair_transactions_committed ||
                current.faults.last_recovery_transaction_ordinal !== ordinal) fail('O01_CONTROLLER_RECOVERY_MISSING');
-    if (fault === 'dropped_late' && current.faults.late_packets_emitted <= baseline.faults.late_packets_emitted) fail('O01_CONTROLLER_LATE_NOT_EMITTED');
+    if(!BOUNDARY_FAULTS.has(fault)&&(current.faults.generation_before!==baseline.gateway.generation||
+       current.faults.epoch_before!==baseline.gateway.epoch||current.faults.owned_before!==baseline.traffic.final_owned_mapping_count||
+       current.faults.publisher_before!==baseline.product.publisher_active||current.faults.journal_before!==baseline.product.journal_entry_count||
+       current.faults.generation_after!==current.gateway.generation||current.faults.epoch_after!==current.gateway.epoch||
+       current.faults.owned_after!==current.traffic.final_owned_mapping_count||current.faults.publisher_after!==current.product.publisher_active||
+       current.faults.journal_after!==current.product.journal_entry_count))fail('O01_CONTROLLER_FAULT_AUDIT');
+    if (fault === 'dropped_late' && (current.faults.late_packets_emitted-baseline.faults.late_packets_emitted!==1||
+        current.faults.late_packets_suppressed<=baseline.faults.late_packets_suppressed)) fail('O01_CONTROLLER_LATE_NOT_EMITTED');
+    if(fault!=='epoch_reset'&&(current.gateway.generation!==baseline.gateway.generation||current.gateway.epoch!==baseline.gateway.epoch))fail('O01_CONTROLLER_GENERATION_DRIFT');
     if (fault === 'epoch_reset' && current.gateway.epoch !== baseline.gateway.epoch + 1) fail('O01_CONTROLLER_EPOCH');
-    const summary=Object.freeze({schema:'ese.v92.o01-slot/v1',ordinal,fault,generation_before:baseline.gateway.generation,generation_after:current.gateway.generation,epoch_before:baseline.gateway.epoch,epoch_after:current.gateway.epoch,owned_before:baseline.traffic.final_owned_mapping_count,owned_after:current.traffic.final_owned_mapping_count,attempted_delta:current.faults.pair_transactions_attempted-baseline.faults.pair_transactions_attempted,committed_delta:current.faults.pair_transactions_committed-baseline.faults.pair_transactions_committed,aborted_delta:current.faults.pair_transactions_aborted-baseline.faults.pair_transactions_aborted,late_emitted_delta:current.faults.late_packets_emitted-baseline.faults.late_packets_emitted,candidate_committed:current.faults.last_fault_candidate_committed,recovery_ordinal:current.faults.last_recovery_transaction_ordinal,outcome:current.faults.last_executed_outcome,wire_protocol:current.faults.last_wire_protocol,fault_generation_before:current.faults.generation_before,fault_generation_after:current.faults.generation_after,fault_epoch_before:current.faults.epoch_before,fault_epoch_after:current.faults.epoch_after,fault_owned_before:current.faults.owned_before,fault_owned_after:current.faults.owned_after,fault_publisher_before:current.faults.publisher_before,fault_publisher_after:current.faults.publisher_after,fault_journal_before:current.faults.journal_before,fault_journal_after:current.faults.journal_after,pair_atomic:current.gateway.pair_atomic,foreign_fixture_present:current.gateway.foreign_fixture_present,publisher_active:current.product.publisher_active,journal_entry_count:current.product.journal_entry_count});
+    const summary=Object.freeze({schema:'ese.v92.o01-slot/v1',ordinal,fault,fault_tick_offset:faultTickOffset,recovery_tick_offset:recoveryTickOffset,transient_product_samples:transientProductSamples,generation_before:baseline.gateway.generation,generation_after:current.gateway.generation,epoch_before:baseline.gateway.epoch,epoch_after:current.gateway.epoch,owned_before:baseline.traffic.final_owned_mapping_count,owned_after:current.traffic.final_owned_mapping_count,attempted_delta:attemptedDelta,committed_delta:committedDelta,aborted_delta:abortedDelta,late_emitted_delta:current.faults.late_packets_emitted-baseline.faults.late_packets_emitted,late_suppressed_delta:current.faults.late_packets_suppressed-baseline.faults.late_packets_suppressed,candidate_committed:current.faults.last_fault_candidate_committed,recovery_ordinal:current.faults.last_recovery_transaction_ordinal,outcome:current.faults.last_executed_outcome,wire_protocol:current.faults.last_wire_protocol,fault_generation_before:current.faults.generation_before,fault_generation_after:current.faults.generation_after,fault_epoch_before:current.faults.epoch_before,fault_epoch_after:current.faults.epoch_after,fault_owned_before:current.faults.owned_before,fault_owned_after:current.faults.owned_after,fault_publisher_before:current.faults.publisher_before,fault_publisher_after:current.faults.publisher_after,fault_journal_before:current.faults.journal_before,fault_journal_after:current.faults.journal_after,pair_atomic:current.gateway.pair_atomic,foreign_fixture_present:current.gateway.foreign_fixture_present,publisher_active:current.product.publisher_active,journal_entry_count:current.product.journal_entry_count});
     slotOrdinal = ordinal; executed[fault] = (executed[fault] || 0) + 1; activeFault = null;
     return summary;
   }, acceptProduct(productValue) {
@@ -97,9 +133,14 @@ function createCrossValidator(config) {
     const product = typeof productValue === 'string' ? parseLine(productValue) : productValue;
     if (product.schema !== 'ese.v92.o01-product-sample/v1' || product.available !== true ||
         product.same_generation !== true || product.tcp_state !== product.udp_state ||
-        product.sequence !== productSamples + 2 || product.generation !== latestGateway.product.topology_generation ||
-        (['CANDIDATE','REACHABLE'].includes(product.tcp_state) &&
-          (!latestGateway.product.publisher_active || latestGateway.product.journal_entry_count !== 2))) fail('O01_CONTROLLER_PRODUCT');
+        product.sequence !== productSamples + 2) fail('O01_CONTROLLER_PRODUCT');
+    const coherent=product.generation===latestGateway.product.topology_generation&&
+      (!['CANDIDATE','REACHABLE'].includes(product.tcp_state)||(latestGateway.product.publisher_active&&latestGateway.product.journal_entry_count===2));
+    if(!coherent){const boundaryTransition=BOUNDARY_FAULTS.has(activeFault)&&faultTickOffset>0&&recoveryTickOffset===0&&
+      !latestGateway.product.publisher_active&&latestGateway.product.journal_entry_count===0&&
+      ['CANDIDATE','REACHABLE'].includes(product.tcp_state)&&transientProductSamples<MAX_TRANSIENT_PRODUCT_SAMPLES;
+      if(!boundaryTransition)fail('O01_CONTROLLER_PRODUCT');transientProductSamples+=1;}
+    latestProductCoherent=coherent;
     assertLimits(config, product, latestGateway);productHistory.push(product);if(productSamples+1>config.warmup_ms/config.sample_ms&&productHistory.length>10){const prior=productHistory[productHistory.length-11];if(product.working_set_bytes-prior.working_set_bytes>config.limits.rss_window_growth_bytes)fail('O01_CONTROLLER_RESOURCE_SLOPE');}
     productSamples += 1; latestProduct = Object.freeze({ ...product });
     return Object.freeze({ product: latestProduct, gateway: latestGateway });
@@ -111,8 +152,8 @@ function createCrossValidator(config) {
 }
 function makeCheckpoint({ ordinal, elapsedMs, faultOrdinal, executed, slots, product, gateway, previousSha256 }) {
   if (!Number.isSafeInteger(ordinal) || ordinal < 1 || ordinal > 95 ||
-      elapsedMs !== ordinal * 300000 || !Number.isSafeInteger(faultOrdinal) || faultOrdinal !== elapsedMs / 30000 ||
-      !Array.isArray(slots)||slots.length!==10||slots[0].ordinal!==faultOrdinal-9||slots[9].ordinal!==faultOrdinal||
+      elapsedMs !== ordinal * 300000 || !Number.isSafeInteger(faultOrdinal) || faultOrdinal !== ordinal ||
+      !Array.isArray(slots)||slots.length!==1||slots[0].ordinal!==faultOrdinal||
       typeof previousSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(previousSha256)) fail('O01_CONTROLLER_CHECKPOINT');
   const body = { schema: 'ese.v92.o01-checkpoint/v2', ordinal, elapsed_ms: elapsedMs,
     fault_ordinal: faultOrdinal, executed: Object.fromEntries(Object.entries(executed).sort()), slots,
@@ -124,7 +165,7 @@ function makeCheckpoint({ ordinal, elapsedMs, faultOrdinal, executed, slots, pro
   return Object.freeze(record);
 }
 function makeTerminalRecord({ product, gateway, slots, previousSha256 }) {
-  if(!Array.isArray(slots)||slots.length!==10||slots[0].ordinal!==951||slots[9].ordinal!==960)fail('O01_CONTROLLER_TERMINAL_SLOTS');
+  if(!Array.isArray(slots)||slots.length!==1||slots[0].ordinal!==96)fail('O01_CONTROLLER_TERMINAL_SLOTS');
   const body = { schema: 'ese.v92.o01-terminal/v1', elapsed_ms: product.elapsed_ms,
     slots,product, gateway, product_sha256: hash('ese.v92.o01-product-terminal/v1', product),
     gateway_sha256: hash('ese.v92.o01-gateway-terminal/v1', gateway), previous_sha256: previousSha256 };
@@ -165,8 +206,8 @@ async function runControllerCore(options) {
       fail('O01_CONTROLLER_MAPPER_PROTOCOL');
     const epoch = clock.now(); let lastTickObserved = 0; let lastProduct = null; let lastGateway = null;let pendingSlots=[];let persistedCheckpoints=0;
     for (let index = 0; index < plan.tick_count; index += 1) {
-      if (index % 3 === 0) {
-        const slot = index / 3 + 1; const fault = plan.schedule[slot - 1];
+      if (index % plan.slot_ticks === 0) {
+        const slot = index / plan.slot_ticks + 1; const fault = plan.schedule[slot - 1];
         cross.beginSlot(fault, await child.beginSlot(fault, slot));
       }
       const target = (index + 1) * config.tick_ms;
@@ -177,15 +218,15 @@ async function runControllerCore(options) {
           elapsed <= lastTickObserved || elapsed - lastTickObserved > 12000) fail('O01_CONTROLLER_CLOCK_GAP');
       lastTickObserved = elapsed;
       lastGateway = await child.observe(); cross.acceptTick(lastGateway);
-      if ((index + 1) % 3 === 0) pendingSlots.push(cross.completeSlot());
       if ((index + 1) % 6 === 0) {
         const line = await bounded(readProduct(),15000,'O01_CONTROLLER_PRODUCT_SAMPLE_TIMEOUT'); productState.accept(line);
         lastProduct = parseLine(line); cross.acceptProduct(lastProduct);
       }
+      if ((index + 1) % plan.slot_ticks === 0) pendingSlots.push(cross.completeSlot());
       if ((index + 1) % 30 === 0 && index + 1 < plan.tick_count) {
         const ordinal = (index + 1) / 30;
         const checkpoint = makeCheckpoint({ ordinal, elapsedMs: ordinal * config.checkpoint_ms,
-          faultOrdinal: (index + 1) / 3, executed: cross.snapshot().executed,slots:pendingSlots, product: lastProduct,
+          faultOrdinal: (index + 1) / plan.slot_ticks, executed: cross.snapshot().executed,slots:pendingSlots, product: lastProduct,
           gateway: lastGateway, previousSha256: previous });
         const receipt = await emitCheckpoint(checkpoint);
         if (receipt !== checkpoint.record_sha256) fail('O01_CONTROLLER_CHECKPOINT_NOT_PERSISTED');
@@ -196,7 +237,7 @@ async function runControllerCore(options) {
     if (terminal.schema !== 'ese.v92.o01-product-terminal/v1') fail('O01_CONTROLLER_PRODUCT_TERMINAL');
     const finalGateway = validateObservation(await child.shutdown()); childClosed = true;
     const snapshot = cross.snapshot();
-    if (snapshot.slot_ordinal !== 960 || snapshot.tick_count !== 2880 || snapshot.product_samples !== 480 ||
+    if (snapshot.slot_ordinal !== 96 || snapshot.tick_count !== 2880 || snapshot.product_samples !== 480 ||
         canonical(snapshot.executed) !== canonical(plan.planned) ||
         finalGateway.gateway.mapping_count !== 1 || finalGateway.gateway.foreign_fixture_present !== true ||
         finalGateway.traffic.final_owned_mapping_count !== 0 || finalGateway.product.publisher_active !== false ||

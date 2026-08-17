@@ -57,8 +57,10 @@ PASS requires all of the following:
 
 - exactly 28,800,000 monotonic milliseconds;
 - one accredited eMule process identity for the whole run;
-- 2,880 ten-second observations and 960 thirty-second fault slots;
+- 2,880 ten-second observations and 96 five-minute fault slots;
 - 480 available product samples and 95 intermediate checkpoints;
+- PCP and NAT-PMP lease grants capped at 120 seconds, with eight-second late
+  responses and recovery completed inside the same five-minute slot;
 - all ten frozen fault outcomes consumed through real gateway traffic;
 - atomic TCP/UDP publication, monotonic generations and bounded recovery;
 - no resource-limit or slope violation;

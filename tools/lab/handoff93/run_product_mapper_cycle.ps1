@@ -627,6 +627,8 @@ function Get-R93CandidateProjection {
     return [pscustomobject]@{
         same_generation = $coherent
         generation = $topGeneration
+        tcp_granted_external_port = [int]$tcp.lease.granted_external_port
+        udp_granted_external_port = [int]$udp.lease.granted_external_port
         tcp_candidate = [string]$tcp.gate_state -ceq 'CANDIDATE'
         udp_candidate = [string]$udp.gate_state -ceq 'CANDIDATE'
         tcp_gate_state = if ([string]$tcp.gate_state -in @('CANDIDATE','REACHABLE','BLOCKED','UNKNOWN')) { [string]$tcp.gate_state } else { 'OTHER' }
@@ -634,6 +636,27 @@ function Get-R93CandidateProjection {
         tcp_reason_code = if ([uint64]$tcp.reason_code -le 65535) { [uint16]$tcp.reason_code } else { [uint16]65535 }
         udp_reason_code = if ([uint64]$udp.reason_code -le 65535) { [uint16]$udp.reason_code } else { [uint16]65535 }
     }
+}
+
+function Set-R93ObservedGrantedMappingPair {
+    param(
+        [Parameter(Mandatory = $true)]$Projection,
+        [Parameter(Mandatory = $true)]$State
+    )
+    if (-not [bool]$Projection.same_generation -or
+        -not [bool]$Projection.tcp_candidate -or
+        -not [bool]$Projection.udp_candidate -or
+        [uint64]$Projection.generation -eq 0 -or
+        [int]$Projection.tcp_granted_external_port -lt 1 -or
+        [int]$Projection.tcp_granted_external_port -gt 65535 -or
+        [int]$Projection.udp_granted_external_port -lt 1 -or
+        [int]$Projection.udp_granted_external_port -gt 65535) {
+        return $false
+    }
+    $State.tcp_granted_external_port = [int]$Projection.tcp_granted_external_port
+    $State.udp_granted_external_port = [int]$Projection.udp_granted_external_port
+    $State.generation = [uint64]$Projection.generation
+    return $true
 }
 
 function Invoke-R93PartialCycle {
@@ -810,6 +833,7 @@ function Invoke-R93FormalSoakHold {
         [Parameter(Mandatory = $true)]$State,
         [scriptblock]$ClockMilliseconds,
         [scriptblock]$EmitRecord,
+        [Parameter(Mandatory = $true)][scriptblock]$AwaitControllerRelease,
         [ValidateSet('FORMAL_RELEASE', 'NON_RELEASE_ACCELERATED')]
         [string]$Mode = 'FORMAL_RELEASE'
     )
@@ -906,6 +930,8 @@ function Invoke-R93FormalSoakHold {
     if ([int64]$State.elapsed_ms -lt $durationMs) {
         throw 'Formal soak duration was incomplete.'
     }
+    $null = & $AwaitControllerRelease $Token
+    $State.elapsed_ms = [int64](& $ClockMilliseconds)
     return $true
 }
 
@@ -979,6 +1005,11 @@ $spawnedToken = $null
 $launchedIdentity = $null
 $expectedMfcWindowClass = ''
 $backend = $null
+$mappingObservation = [pscustomobject]@{
+    tcp_granted_external_port = 0
+    udp_granted_external_port = 0
+    generation = [uint64]0
+}
 $identityDiagnosticStream = $null
 $identityDiagnosticEnabled = [Environment]::GetEnvironmentVariable(
     'R93_LOCAL_IDENTITY_DIAGNOSTIC', 'Process') -ceq '1'
@@ -1112,7 +1143,9 @@ $adapters = [pscustomobject]@{
     Sample = { $envelope = Invoke-LabApi -BaseUrl $baseUrl `
             -Path '/api/reach/status' -Token $ApiToken -AllowUnavailable
         if (-not $envelope.available) { return $null }
-        Get-R93CandidateProjection $envelope $TcpPort $UdpPort }
+        $projection = Get-R93CandidateProjection $envelope $TcpPort $UdpPort
+        $null = Set-R93ObservedGrantedMappingPair $projection $script:mappingObservation
+        return $projection }
     Pause = { Start-Sleep -Seconds 1 }
     Close = { param($token) $null = Invoke-R93AccreditedWebShutdown `
             -Token $token -TimeoutSec $ShutdownTimeoutSec `
@@ -1134,10 +1167,15 @@ $adapters = [pscustomobject]@{
             -WaitForExit { param($ignored, $milliseconds)
                 $script:process.WaitForExit($milliseconds) } }
     WaitForExit = { param($token) $script:process.WaitForExit(0) }
-    MappingsAbsent = { if ($null -eq $script:backend) {
+    MappingsAbsent = { if ([int]$script:mappingObservation.tcp_granted_external_port -lt 1 -or
+            [int]$script:mappingObservation.udp_granted_external_port -lt 1 -or
+            [uint64]$script:mappingObservation.generation -eq 0) { return $false }
+        if ($null -eq $script:backend) {
             $script:backend = Get-R93PhysicalSoapBackend }
-        $null -eq (Get-R01UpnpMapping $script:backend $TcpPort TCP) -and
-        $null -eq (Get-R01UpnpMapping $script:backend $UdpPort UDP) }
+        $null -eq (Get-R01UpnpMapping $script:backend `
+            ([int]$script:mappingObservation.tcp_granted_external_port) TCP) -and
+        $null -eq (Get-R01UpnpMapping $script:backend `
+            ([int]$script:mappingObservation.udp_granted_external_port) UDP) }
     RestoreIni = { Restore-R93IniBytes $ini $iniBytes $iniHash }
 }
 function Get-R93FormalCandidateProjection { param([Parameter(Mandatory=$true)]$Envelope,[Parameter(Mandatory=$true)][int]$ExpectedTcpPort,[Parameter(Mandatory=$true)][int]$ExpectedUdpPort);if(-not[bool]$Envelope.available-or$null-eq$Envelope.data-or[string]$Envelope.data.schema-cne'ESE_REACH_STATUS_V1'){throw 'Projected reach status is unavailable or invalid.'};$tcp=$Envelope.data.planes.ed2k_tcp_v4;$udp=$Envelope.data.planes.kad_udp_v4;if($null-eq$tcp-or$null-eq$udp){throw 'Projected reach status lacks mapper planes.'};$top=[uint64]$Envelope.data.topology_generation;$tcpGeneration=[uint64]$tcp.generation;$udpGeneration=[uint64]$udp.generation;$coherent=$top-gt0-and$tcpGeneration-eq$top-and$udpGeneration-eq$top-and[uint64]$tcp.lease.generation-eq$top-and[uint64]$udp.lease.generation-eq$top-and[string]$tcp.lease.transport-ceq'Tcp'-and[string]$udp.lease.transport-ceq'Udp'-and[int]$tcp.local.port-eq$ExpectedTcpPort-and[int]$udp.local.port-eq$ExpectedUdpPort-and[int]$tcp.lease.requested_external_port-eq$ExpectedTcpPort-and[int]$udp.lease.requested_external_port-eq$ExpectedUdpPort-and[int]$tcp.lease.granted_external_port-gt0-and[int]$udp.lease.granted_external_port-gt0-and[int]$tcp.mapped.port-eq[int]$tcp.lease.granted_external_port-and[int]$tcp.advertised.port-eq[int]$tcp.lease.granted_external_port-and[int]$udp.mapped.port-eq[int]$udp.lease.granted_external_port-and[int]$udp.advertised.port-eq[int]$udp.lease.granted_external_port-and[bool]$tcp.lease.owned_by_us-and[bool]$udp.lease.owned_by_us-and[bool]$tcp.lease.structurally_valid-and[bool]$udp.lease.structurally_valid-and[string]$tcp.gate_state-ceq'CANDIDATE'-and[string]$udp.gate_state-ceq'CANDIDATE';[pscustomobject]@{same_generation=$coherent;generation=$top;tcp_candidate=[string]$tcp.gate_state-ceq'CANDIDATE';udp_candidate=[string]$udp.gate_state-ceq'CANDIDATE';tcp_gate_state=if([string]$tcp.gate_state-cin@('DISABLED','DISCOVERING','CANDIDATE','VERIFIED','WITHDRAWN','BLOCKED')){[string]$tcp.gate_state}else{'OTHER'};udp_gate_state=if([string]$udp.gate_state-cin@('DISABLED','DISCOVERING','CANDIDATE','VERIFIED','WITHDRAWN','BLOCKED')){[string]$udp.gate_state}else{'OTHER'};tcp_reason_code=if([uint64]$tcp.reason_code-le65535){[uint16]$tcp.reason_code}else{[uint16]65535};udp_reason_code=if([uint64]$udp.reason_code-le65535){[uint16]$udp.reason_code}else{[uint16]65535}}};function Write-R93FormalFailureRecord { param([Parameter(Mandatory=$true)]$Result,[Parameter(Mandatory=$true)]$State,[IO.TextWriter]$Writer=[Console]::Out);$failure=[string]$Result.failure_class;$cleanup=if($null-eq$Result.cleanup_failure_class){$null}else{[string]$Result.cleanup_failure_class};if($failure-ceq'MAPPING_REMAINS_UNTOUCHED'-and$cleanup-ceq'MAPPING_REMAINS_UNTOUCHED'){$failure='EXECUTION_FAILED'};$allowed=@('CANDIDATE_PAIR_NOT_OBSERVED','EXECUTION_FAILED','IDENTITY_NOT_ACCREDITED','INI_RESTORE_FAILED','PREEXISTING_PROCESS_CHANGED','PROCESS_STILL_ALIVE');$sample=$Result.sample_observation;$sampleKeys=if($null-eq$sample){@()}else{@($sample.PSObject.Properties.Name|Sort-Object)};$counts=@('samples_total','samples_available','tcp_candidate_samples','udp_candidate_samples','same_generation_samples');$states=@('UNAVAILABLE','DISABLED','DISCOVERING','CANDIDATE','VERIFIED','WITHDRAWN','BLOCKED','OTHER');if($null-eq$Writer-or$failure-cnotin$allowed-or($null-ne$cleanup-and$cleanup-cne'MAPPING_REMAINS_UNTOUCHED')-or$State.sequence-isnot[int]-or[int]$State.sequence-lt0-or[int]$State.sequence-ge482-or$null-eq$sample-or($sampleKeys-join',')-cne'last_tcp_gate_state,last_tcp_reason_code,last_udp_gate_state,last_udp_reason_code,same_generation_samples,samples_available,samples_total,tcp_candidate_samples,udp_candidate_samples'){throw 'Formal product failure record is invalid.'};foreach($name in $counts){if($sample.$name-isnot[int]-or[int]$sample.$name-lt0-or[int]$sample.$name-gt180){throw 'Formal product failure record is invalid.'}};if([int]$sample.samples_available-gt[int]$sample.samples_total-or[int]$sample.tcp_candidate_samples-gt[int]$sample.samples_available-or[int]$sample.udp_candidate_samples-gt[int]$sample.samples_available-or[int]$sample.same_generation_samples-gt[int]$sample.samples_available-or$sample.last_tcp_gate_state-isnot[string]-or[string]$sample.last_tcp_gate_state-cnotin$states-or$sample.last_udp_gate_state-isnot[string]-or[string]$sample.last_udp_gate_state-cnotin$states-or$sample.last_tcp_reason_code-isnot[int]-or[int]$sample.last_tcp_reason_code-lt0-or[int]$sample.last_tcp_reason_code-gt65535-or$sample.last_udp_reason_code-isnot[int]-or[int]$sample.last_udp_reason_code-lt0-or[int]$sample.last_udp_reason_code-gt65535-or([int]$sample.samples_available-eq0-and([string]$sample.last_tcp_gate_state-cne'UNAVAILABLE'-or[string]$sample.last_udp_gate_state-cne'UNAVAILABLE'-or[int]$sample.last_tcp_reason_code-ne65535-or[int]$sample.last_udp_reason_code-ne65535))-or([int]$sample.samples_available-gt0-and([string]$sample.last_tcp_gate_state-ceq'UNAVAILABLE'-or[string]$sample.last_udp_gate_state-ceq'UNAVAILABLE'-or[int]$sample.last_tcp_reason_code-gt21-or[int]$sample.last_udp_reason_code-gt21))){throw 'Formal product failure record is invalid.'};$observation=[pscustomobject][ordered]@{samples_total=[int]$sample.samples_total;samples_available=[int]$sample.samples_available;tcp_candidate_samples=[int]$sample.tcp_candidate_samples;udp_candidate_samples=[int]$sample.udp_candidate_samples;same_generation_samples=[int]$sample.same_generation_samples;last_tcp_gate_state=[string]$sample.last_tcp_gate_state;last_udp_gate_state=[string]$sample.last_udp_gate_state;last_tcp_reason_code=[int]$sample.last_tcp_reason_code;last_udp_reason_code=[int]$sample.last_udp_reason_code};$State.sequence++;$record=[pscustomobject][ordered]@{schema='ese.v92.o01-product-failure/v2';sequence=[int]$State.sequence;failure_class=$failure;cleanup_failure_class=$cleanup;sample_observation=$observation};$Writer.WriteLine(($record|ConvertTo-Json -Compress -Depth 3));$Writer.Flush();return $record};$formalState = [pscustomobject]@{ elapsed_ms = [int64]0; sequence = 0 }
@@ -1147,6 +1185,8 @@ if ($FormalSoakChild) {
         throw 'Formal soak child requires canonical observation and shutdown timeouts.'
     }
     $scenarioPath = Join-Path $PSScriptRoot '..\nat_gateway\v92_o01_scenario.json'
+    $controllerReleasePath = 'C:\o01\controller-tick-2880.release'
+    if (Test-Path -LiteralPath $controllerReleasePath) { throw 'Formal controller release signal already exists.' }
     $scenario = Get-Content -Raw -LiteralPath $scenarioPath | ConvertFrom-Json -ErrorAction Stop
     if ([string]$scenario.schema -cne 'ese.v92.o01-scenario/v1' -or
         [int64]$scenario.formal_duration_ms -ne 28800000 -or
@@ -1155,9 +1195,25 @@ if ($FormalSoakChild) {
         [int64]$scenario.limits.checkpoint_max_gap_ms -ne 310000) {
         throw 'Formal soak scenario is not canonical.'
     }
-    $baseConfigure=$adapters.Configure;$adapters.Configure={&$baseConfigure;Set-LabIniValue $ini Connection LastWorkingImplementation 3|Out-Null;Set-LabIniValue $ini Connection DisableMiniUPNPLibImpl 1|Out-Null;Set-LabIniValue $ini Connection DisableWinServImpl 1|Out-Null};$adapters.Sample={$envelope=Invoke-LabApi -BaseUrl $baseUrl -Path '/api/reach/status' -Token $ApiToken -AllowUnavailable;if(-not$envelope.available){return $null};Get-R93FormalCandidateProjection $envelope $TcpPort $UdpPort};$formalSoak = { param($token)
+    $baseConfigure=$adapters.Configure;$adapters.Configure={&$baseConfigure;Set-LabIniValue $ini Connection LastWorkingImplementation 3|Out-Null;Set-LabIniValue $ini Connection DisableMiniUPNPLibImpl 1|Out-Null;Set-LabIniValue $ini Connection DisableWinServImpl 1|Out-Null};$adapters.Sample={$envelope=Invoke-LabApi -BaseUrl $baseUrl -Path '/api/reach/status' -Token $ApiToken -AllowUnavailable;if(-not$envelope.available){return $null};$projection=Get-R93FormalCandidateProjection $envelope $TcpPort $UdpPort;$projection|Add-Member -MemberType NoteProperty -Name tcp_granted_external_port -Value ([int]$envelope.data.planes.ed2k_tcp_v4.lease.granted_external_port);$projection|Add-Member -MemberType NoteProperty -Name udp_granted_external_port -Value ([int]$envelope.data.planes.kad_udp_v4.lease.granted_external_port);$null=Set-R93ObservedGrantedMappingPair $projection $script:mappingObservation;return $projection};$formalSoak = { param($token)
+        $awaitControllerRelease = { param($releaseToken)
+            foreach ($attempt in 1..60) {
+                if (Test-Path -LiteralPath $controllerReleasePath) {
+                    $approvedRelease = Assert-R93NoReparseChain -Root 'C:\o01' -Path $controllerReleasePath -Label FormalControllerRelease
+                    if ((Test-Path -LiteralPath $approvedRelease -PathType Leaf) -and
+                        [IO.File]::ReadAllText($approvedRelease, [Text.Encoding]::ASCII) -ceq "O01_CONTROLLER_TICK_2880_RELEASE`n") { return $true }
+                    throw 'Formal controller release signal is invalid.'
+                }
+                if (-not [bool](& $adapters.Exists $releaseToken) -or
+                    -not [bool](& $adapters.IsAccredited $releaseToken)) { throw 'Formal soak product identity changed before controller release.' }
+                if ($null -ne $adapters.PSObject.Properties['VerifyPreexisting']) { $null = & $adapters.VerifyPreexisting }
+                if ($attempt -lt 60) { & $adapters.Pause }
+            }
+            throw 'Formal controller release signal was not observed.'
+        }.GetNewClosure()
         $null = Invoke-R93FormalSoakHold -Adapters $adapters -Token $token `
-            -Process $script:process -State $formalState
+            -Process $script:process -State $formalState `
+            -AwaitControllerRelease $awaitControllerRelease
     }
 }
 try {

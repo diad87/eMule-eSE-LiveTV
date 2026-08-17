@@ -1,0 +1,409 @@
+{
+  "schema": "ese.v92.o01-physical-repair-governance/v1",
+  "status": "DRAFT_PRE_G10",
+  "predecessor": {
+    "g9_commit": "baa6f59198a96c4c801451e4fcb8052489345724",
+    "g9_tree": "58ce07f127f589843cba13c7361e434dcc1dae6f",
+    "a37_commit": "480b0c58a48fda23d979313715de1e0605d6ba16",
+    "a37_tree": "682e3bdd5dc68751f2e4325c96c7eb697e6d6d89",
+    "m37_commit": "dbf99e6a5837e12bf3fa506d42778b76c4162e90",
+    "m37_tree": "568cceb6e3e6221943be705bf76bc27947ca5f84",
+    "h37_commit": "e3ff85f2f710f25dbd98d8f9be059a5b2aee955d",
+    "h37_tree": "999b81fa83ee7e13caee4c65146b599e0c9c0c4c"
+  },
+  "historical_contract": {
+    "governance_sha256": {
+      "docs/architecture/v92_o01_mapper_hotfix_governance_v1.json": "f74ac5518135593e1bb8f9dea42f301112310ec02cf7546efbb5156fc8808c8d",
+      "tools/architecture/verify_v92_o01_mapper_hotfix_governance.py": "5ad3350ab9a973ff575e837332a54f68fa98bf305e25813cffa6deb5f7d85343",
+      "tools/architecture/test_verify_v92_o01_mapper_hotfix_governance.py": "0f9ea17a7fe1ebbeb0f66915e35c68a456fd67cfe1b4b27bbed2b636d4f1f0d3"
+    },
+    "candidate_path_count": 62,
+    "candidate_add_exact": 1702,
+    "candidate_delete_exact": 136,
+    "candidate_net_exact": 1566,
+    "candidate_paths_sha256": "140557b8694f61af9f660dc990082b2696a0ee1ae6fb46a679f5d2d25e06e828"
+  },
+  "scope": "V92-O01 rc.1 only: repair the real T8 fault-consumption, lease timing, cleanup-port and controller-release contracts exposed by the A37 physical runs, rebuild Release from A38, reseal MOD02 in M38, and permit release only through direct independently validated eight-hour evidence after H38.",
+  "topology": {
+    "G10": "direct child of H37; exactly this amendment, verifier and verifier test",
+    "A38": "direct child of G10; exactly runtime_paths plus test_paths plus documentation_paths at their exact separate budgets and byte identities",
+    "M38": "direct child of A38; exactly four carriers from a fresh official full Release build and MOD02 reseal",
+    "H38": "direct child of M38; exactly four governance carriers with two independent empty-finding approvals",
+    "R": "direct child of H38; exactly 98 formal artifacts from one uninterrupted eight-hour run sourced from A38 and using the executable validated by M38"
+  },
+  "phase_contract": {
+    "schema": "ese.v92.o01-physical-repair-phases/v1",
+    "merge_policy": "Every G10/A38/M38/H38/R commit has exactly one parent; merges, S, intermediate commits and reused build metadata are rejected.",
+    "G10": {
+      "parent": "H37",
+      "delta": "governance_paths"
+    },
+    "A38": {
+      "parent": "G10",
+      "delta": "runtime_paths_plus_test_paths_plus_documentation_paths"
+    },
+    "M38": {
+      "parent": "A38",
+      "delta": "m_carrier_paths",
+      "build": "fresh official full Release rebuild from clean A38"
+    },
+    "H38": {
+      "parent": "M38",
+      "delta": "h_carrier_paths"
+    },
+    "R": {
+      "parent": "H38",
+      "source": "A38",
+      "governance": "H38",
+      "executable": "exact_M38_manifest_executable_sha256",
+      "release_gate": true
+    }
+  },
+  "governance_paths": [
+    "docs/architecture/v92_o01_physical_repair_governance_v1.json",
+    "tools/architecture/verify_v92_o01_physical_repair_governance.py",
+    "tools/architecture/test_verify_v92_o01_physical_repair_governance.py"
+  ],
+  "runtime_paths": [
+    "tools/lab/handoff93/run_product_mapper_cycle.ps1",
+    "tools/lab/nat_gateway/v92_o01_bridge_protocol.js",
+    "tools/lab/nat_gateway/v92_o01_formal_controller.js",
+    "tools/lab/nat_gateway/v92_o01_scenario.json",
+    "tools/lab/nat_gateway/v92_o01_soak.js",
+    "tools/lab/nat_gateway/v92_o01_t8_daemon.js",
+    "tools/lab/nat_gateway/v92_o01_t8_child.js",
+    "tools/lab/nat_gateway/v92_o01_t8_fault_controller.js",
+    "tools/lab/nat_gateway/v92_o01_t8_gateway_adapter.js",
+    "tools/lab/nat_gateway/v92_o01_t8_network_adapter.js",
+    "tools/lab/nat_gateway/v92_o01_t8_udp_mux.js",
+    "tools/lab/nat_gateway/v92_o01_validate_formal.js",
+    "tools/lab/run_v92_o01_formal.ps1",
+    "tools/lab/v92_o01_vm_session.psm1"
+  ],
+  "test_paths": [
+    "tools/lab/handoff93/test_product_mapper_formal_soak_mock.ps1",
+    "tools/lab/nat_gateway/test/v92_o01_bridge_protocol.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_formal_controller.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_soak.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_daemon.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_child.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_fault_controller.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_gateway_adapter.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_network_adapter.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_udp_mux.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_validate_formal.test.js",
+    "tools/lab/test_v92_o01_formal_runner_mock.ps1",
+    "tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1",
+    "tools/lab/test_v92_o01_vm_session_mock.ps1"
+  ],
+  "documentation_paths": [
+    "docs/RELEASE_NOTES_v9.2.0-rc.1.md",
+    "docs/V92_RC1_EXECUTION.md"
+  ],
+  "a38_sha256": {
+    "tools/lab/handoff93/run_product_mapper_cycle.ps1": "700b62b79ab48e34e46ff5b0a7fcde9cf5751925cdee373c3e2784c9a76726fb",
+    "tools/lab/handoff93/test_product_mapper_formal_soak_mock.ps1": "cbc17ba067160bbef96d9ea089dadc2fc1351a8aae195539167f5873e6c6b0d1",
+    "tools/lab/nat_gateway/test/v92_o01_t8_child.test.js": "916a31e03ded40cc5520296d3fc97e5a00113bb849e700a6b95eb7291e491035",
+    "tools/lab/nat_gateway/v92_o01_t8_child.js": "a808b70c7a84b7c141c67d6438b1efd83ea2dc4174377aa0d09ad10521a40ea0",
+    "tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1": "3a34302cd77354e8d4efbd5f11f474331bfd8e8868132bf0a0643c89f7fd2645",
+    "tools/lab/test_v92_o01_vm_session_mock.ps1": "c1dd12cfb23925a7aeb8c984e0a446dd6c3402fae868883a121fe208699abb6e",
+    "docs/RELEASE_NOTES_v9.2.0-rc.1.md": "7e147faa992f515ef8cbfb8e5ed650c3c45c2c3a8727d23f8557d94bbcf410e2",
+    "docs/V92_RC1_EXECUTION.md": "b0ac7e9d0933af69c5ac6bc387a147acd481e333c07bb32f3a4a56debbd6eef3",
+    "tools/lab/nat_gateway/test/v92_o01_bridge_protocol.test.js": "6968c0b0c464f17370caf7c733933b88c26110b748308ee6c0ab072add61ba2a",
+    "tools/lab/nat_gateway/test/v92_o01_formal_controller.test.js": "bdddf52cf794b51df99db593e01dff10bb988acaa4e8525d32d67dc802bcb2bf",
+    "tools/lab/nat_gateway/test/v92_o01_soak.test.js": "aa81fc2c951385e30fbdf2dfbaee926ee63d37c9a2dbdeada0ecb53f2e09c25c",
+    "tools/lab/nat_gateway/test/v92_o01_t8_daemon.test.js": "b35c986ff68903ef9cceb614e229bac84caa8e0e1cf8206670ccef39df5d019d",
+    "tools/lab/nat_gateway/test/v92_o01_t8_fault_controller.test.js": "925a5d098f51ade4575d080703821acf5bebd77bf2768ae93c44c7d8201d6bc1",
+    "tools/lab/nat_gateway/test/v92_o01_t8_gateway_adapter.test.js": "ab5bd1785e1f469615516157aba9b37b76581ec68ba054397466d6666b684beb",
+    "tools/lab/nat_gateway/test/v92_o01_t8_network_adapter.test.js": "88eebfb570e201dc9b8becda6186cd022453e5fd9298083e227d5a8106194e23",
+    "tools/lab/nat_gateway/test/v92_o01_t8_udp_mux.test.js": "194c36754f6911ae9976bb14ffa1eda6e74a8f75aaac0602dd838a6a2ce60f10",
+    "tools/lab/nat_gateway/test/v92_o01_validate_formal.test.js": "7ae90c6c36feb4e1a3418362ff74dbe70bb6eaf586d8b883f1bfd54fbe69bc7a",
+    "tools/lab/nat_gateway/v92_o01_bridge_protocol.js": "f77aea1a2355642d6e74548177b62e3f7f6120e1ff854e068e0775de725e5973",
+    "tools/lab/nat_gateway/v92_o01_formal_controller.js": "7b9ddac2301cbc064a09e3f2a641bf5a987f6f19747f95ca257487919e544324",
+    "tools/lab/nat_gateway/v92_o01_scenario.json": "4c83b0de5afa4576c8e4c14fb146b3b7179a54b8988a3322e3a75a5f70a9cbde",
+    "tools/lab/nat_gateway/v92_o01_soak.js": "aace145bf4698b8648ca4d77b27ea58cab80d81c75e6cd64ba28de8933765452",
+    "tools/lab/nat_gateway/v92_o01_t8_daemon.js": "33193a1a535d5caf593b08e0eb48d5e6b369ad1fa7051cc6f56075e0d297465a",
+    "tools/lab/nat_gateway/v92_o01_t8_fault_controller.js": "8c0b89ace441e44e5c23ddad4c9d376719302769e42e67482fdaa60551421185",
+    "tools/lab/nat_gateway/v92_o01_t8_gateway_adapter.js": "0c15c84833cf03a27c270e72e88674a5edd390edc2d94933951d1936774de207",
+    "tools/lab/nat_gateway/v92_o01_t8_network_adapter.js": "8149b8fd19fc119c2174e62a9fca8ed832856e9df8bcb3bbb93435c7e68875dc",
+    "tools/lab/nat_gateway/v92_o01_t8_udp_mux.js": "a073ba65b00f9054a67527f5695ec30c5abf72fdb235411e8346d7753f5ae243",
+    "tools/lab/nat_gateway/v92_o01_validate_formal.js": "bb797cf7e52c111c2c8a8944400b20cd9ded37cc6a06ce5352377fbc8ee87640",
+    "tools/lab/run_v92_o01_formal.ps1": "e42f9a6b62e2fd34f982a97664ef008dac9ff0abd90b3d057cc523ebbd99173b",
+    "tools/lab/test_v92_o01_formal_runner_mock.ps1": "f26d44b55665f00d3190e73e61af3d848dab8c20f3777d9252d751341a174db5",
+    "tools/lab/v92_o01_vm_session.psm1": "7df6e0ef1b4e6c20be139c31fa334be31ef9156c4e3202811b8e592f8f6be3eb"
+  },
+  "path_budget": {
+    "tools/lab/handoff93/run_product_mapper_cycle.ps1": {
+      "add_exact": 62,
+      "delete_exact": 6
+    },
+    "tools/lab/handoff93/test_product_mapper_formal_soak_mock.ps1": {
+      "add_exact": 10,
+      "delete_exact": 7
+    },
+    "tools/lab/nat_gateway/test/v92_o01_t8_child.test.js": {
+      "add_exact": 1,
+      "delete_exact": 1
+    },
+    "tools/lab/nat_gateway/v92_o01_t8_child.js": {
+      "add_exact": 1,
+      "delete_exact": 1
+    },
+    "tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1": {
+      "add_exact": 1,
+      "delete_exact": 0
+    },
+    "tools/lab/test_v92_o01_vm_session_mock.ps1": {
+      "add_exact": 1,
+      "delete_exact": 1
+    },
+    "docs/RELEASE_NOTES_v9.2.0-rc.1.md": {
+      "add_exact": 5,
+      "delete_exact": 2
+    },
+    "docs/V92_RC1_EXECUTION.md": {
+      "add_exact": 3,
+      "delete_exact": 1
+    },
+    "tools/lab/nat_gateway/test/v92_o01_bridge_protocol.test.js": {
+      "add_exact": 1,
+      "delete_exact": 1
+    },
+    "tools/lab/nat_gateway/test/v92_o01_formal_controller.test.js": {
+      "add_exact": 20,
+      "delete_exact": 65
+    },
+    "tools/lab/nat_gateway/test/v92_o01_soak.test.js": {
+      "add_exact": 2,
+      "delete_exact": 2
+    },
+    "tools/lab/nat_gateway/test/v92_o01_t8_daemon.test.js": {
+      "add_exact": 1,
+      "delete_exact": 1
+    },
+    "tools/lab/nat_gateway/test/v92_o01_t8_fault_controller.test.js": {
+      "add_exact": 68,
+      "delete_exact": 10
+    },
+    "tools/lab/nat_gateway/test/v92_o01_t8_gateway_adapter.test.js": {
+      "add_exact": 174,
+      "delete_exact": 1
+    },
+    "tools/lab/nat_gateway/test/v92_o01_t8_network_adapter.test.js": {
+      "add_exact": 4,
+      "delete_exact": 3
+    },
+    "tools/lab/nat_gateway/test/v92_o01_t8_udp_mux.test.js": {
+      "add_exact": 49,
+      "delete_exact": 11
+    },
+    "tools/lab/nat_gateway/test/v92_o01_validate_formal.test.js": {
+      "add_exact": 34,
+      "delete_exact": 72
+    },
+    "tools/lab/nat_gateway/v92_o01_bridge_protocol.js": {
+      "add_exact": 2,
+      "delete_exact": 2
+    },
+    "tools/lab/nat_gateway/v92_o01_formal_controller.js": {
+      "add_exact": 65,
+      "delete_exact": 24
+    },
+    "tools/lab/nat_gateway/v92_o01_scenario.json": {
+      "add_exact": 4,
+      "delete_exact": 2
+    },
+    "tools/lab/nat_gateway/v92_o01_soak.js": {
+      "add_exact": 3,
+      "delete_exact": 3
+    },
+    "tools/lab/nat_gateway/v92_o01_t8_daemon.js": {
+      "add_exact": 8,
+      "delete_exact": 3
+    },
+    "tools/lab/nat_gateway/v92_o01_t8_fault_controller.js": {
+      "add_exact": 218,
+      "delete_exact": 26
+    },
+    "tools/lab/nat_gateway/v92_o01_t8_gateway_adapter.js": {
+      "add_exact": 110,
+      "delete_exact": 29
+    },
+    "tools/lab/nat_gateway/v92_o01_t8_network_adapter.js": {
+      "add_exact": 21,
+      "delete_exact": 7
+    },
+    "tools/lab/nat_gateway/v92_o01_t8_udp_mux.js": {
+      "add_exact": 20,
+      "delete_exact": 12
+    },
+    "tools/lab/nat_gateway/v92_o01_validate_formal.js": {
+      "add_exact": 92,
+      "delete_exact": 14
+    },
+    "tools/lab/run_v92_o01_formal.ps1": {
+      "add_exact": 6,
+      "delete_exact": 5
+    },
+    "tools/lab/test_v92_o01_formal_runner_mock.ps1": {
+      "add_exact": 2,
+      "delete_exact": 1
+    },
+    "tools/lab/v92_o01_vm_session.psm1": {
+      "add_exact": 4,
+      "delete_exact": 3
+    }
+  },
+  "historical_overlap_paths": [
+    "docs/RELEASE_NOTES_v9.2.0-rc.1.md",
+    "docs/V92_RC1_EXECUTION.md",
+    "tools/lab/handoff93/run_product_mapper_cycle.ps1",
+    "tools/lab/handoff93/test_product_mapper_formal_soak_mock.ps1",
+    "tools/lab/nat_gateway/test/v92_o01_bridge_protocol.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_formal_controller.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_soak.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_child.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_daemon.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_fault_controller.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_gateway_adapter.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_network_adapter.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_t8_udp_mux.test.js",
+    "tools/lab/nat_gateway/test/v92_o01_validate_formal.test.js",
+    "tools/lab/nat_gateway/v92_o01_bridge_protocol.js",
+    "tools/lab/nat_gateway/v92_o01_formal_controller.js",
+    "tools/lab/nat_gateway/v92_o01_scenario.json",
+    "tools/lab/nat_gateway/v92_o01_soak.js",
+    "tools/lab/nat_gateway/v92_o01_t8_child.js",
+    "tools/lab/nat_gateway/v92_o01_t8_daemon.js",
+    "tools/lab/nat_gateway/v92_o01_t8_fault_controller.js",
+    "tools/lab/nat_gateway/v92_o01_t8_gateway_adapter.js",
+    "tools/lab/nat_gateway/v92_o01_t8_network_adapter.js",
+    "tools/lab/nat_gateway/v92_o01_t8_udp_mux.js",
+    "tools/lab/nat_gateway/v92_o01_validate_formal.js",
+    "tools/lab/run_v92_o01_formal.ps1",
+    "tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1",
+    "tools/lab/test_v92_o01_formal_runner_mock.ps1",
+    "tools/lab/test_v92_o01_vm_session_mock.ps1",
+    "tools/lab/v92_o01_vm_session.psm1"
+  ],
+  "new_candidate_paths": [],
+  "budget": {
+    "path_count": 30,
+    "add_exact": 992,
+    "delete_exact": 316,
+    "net_exact": 676,
+    "headroom": 0
+  },
+  "runtime_budget": {
+    "path_count": 12,
+    "add_exact": 437,
+    "delete_exact": 103,
+    "net_exact": 334,
+    "headroom": 0
+  },
+  "test_budget": {
+    "path_count": 10,
+    "add_exact": 133,
+    "delete_exact": 165,
+    "net_exact": -32,
+    "headroom": 0
+  },
+  "documentation_budget": {
+    "path_count": 2,
+    "add_exact": 8,
+    "delete_exact": 3,
+    "net_exact": 5,
+    "headroom": 0
+  },
+  "cumulative_candidate_budget": {
+    "path_count": 62,
+    "add_exact": 2694,
+    "delete_exact": 452,
+    "net_exact": 2242
+  },
+  "cumulative_candidate_paths_sha256": "140557b8694f61af9f660dc990082b2696a0ee1ae6fb46a679f5d2d25e06e828",
+  "release_contract": {
+    "release_tag": "v0.70b-eSE9.2.0-rc.1",
+    "source_fingerprint": "3E1B51DCE2A83DF5DDA10697385FD8C7F05D8C81EB391B967D30E0CD6761ED23",
+    "mod02_identity_sha256": "b9c3c25fece8a80d71eee340e61d8cd5088b95f8b12e221278d9d249f6d29c9d",
+    "mod02_marker_sha256": "17d7cbca262c94f802d59255d0ec41137bd85c12037a393cc5198abd40373cae",
+    "scenario_sha256": "4c83b0de5afa4576c8e4c14fb146b3b7179a54b8988a3322e3a75a5f70a9cbde",
+    "scenario_socket_limit": 2,
+    "fault_slot_ms": 300000,
+    "lease_ms": 120000,
+    "late_delay_ms": 8000,
+    "bound_file_count": 21,
+    "product_mapper_cycle": {
+      "path": "tools/lab/handoff93/run_product_mapper_cycle.ps1",
+      "blob": "ad4ab8518229f638e610ed08b0e9745595ad4147",
+      "sha256": "700b62b79ab48e34e46ff5b0a7fcde9cf5751925cdee373c3e2784c9a76726fb"
+    },
+    "build_policy": "M38 must contain a fresh official full Release x64 build receipt bound to clean A38; M37 binary or metadata reuse is forbidden."
+  },
+  "carrier_paths": {
+    "M38": {
+      "fixed": [
+        "docs/architecture/mod02_build_manifest_v1.json",
+        "docs/architecture/mod02_characterization_matrix_v1.json"
+      ],
+      "summary_pattern": "artifacts/mod02-runtime-v92-<A38[0:8]>/summary.json",
+      "release_build_receipt_pattern": "artifacts/v92-o01-release-build-<A38[0:8]>/emule-release-build.json",
+      "file_count": 4
+    },
+    "H38": [
+      "artifacts/v92-o01-governance/activation.json",
+      "artifacts/v92-o01-governance/offline-summary.json",
+      "artifacts/v92-o01-governance/review-sol.json",
+      "artifacts/v92-o01-governance/review-terra.json"
+    ],
+    "R": {
+      "directory": "artifacts/v92-o01-formal",
+      "checkpoint_pattern": "checkpoint-(01..95).json",
+      "fixed": [
+        "controller-result.json",
+        "formal-run-result.json",
+        "formal-validation.json"
+      ],
+      "file_count": 98
+    }
+  },
+  "required_reviews": [
+    "Terra APPROVE with findings=[]",
+    "Sol APPROVE with findings=[]"
+  ],
+  "offline_gates": [
+    "Node 22 complete nat_gateway suite",
+    "PowerShell parser for every changed ps1/psm1",
+    "formal runner source/mock gate",
+    "G10 hostile governance suite",
+    "exact A38 byte and budget verifier",
+    "official full Release x64 rebuild from clean A38",
+    "M38 MOD02 verifier and runtime reseal",
+    "git diff --check"
+  ],
+  "physical_policy": {
+    "formal": "Exactly 28800000 monotonic milliseconds, 96 five-minute fault slots, no duration override, no resume, no skip-cleanup, Node 22, clean A38 source and the M38 executable.",
+    "claim_rule": "Only independently validated direct-R evidence with exact cleanup and baseline restoration may award V92-O01 PASS.",
+    "preflight": "No S phase exists in G10; diagnostic runs are external NON_RELEASE evidence and cannot enter the release ancestry."
+  },
+  "stop_conditions": [
+    "A38 path 31 or any path outside the three closed A38 slices",
+    "A38 total or slice budget differs by one line or is preserved only by compensated rebalance",
+    "an A38 byte identity differs from its pinned SHA-256",
+    "historical overlap differs from all 30 A38 paths, new candidate count differs from zero, or the 62-path union hash changes",
+    "scenario limits.sockets differs from integer 2, fault_slot_ms differs from 300000, lease_ms differs from 120000, late_delay_ms differs from 8000, or bound_files differs from exactly 21",
+    "the production mapper cycle blob or byte SHA-256 changes",
+    "M38 is not a fresh clean official full Release build bound to A38 and exact MOD02 identity",
+    "source, Node, package or evidence binding changes during a run",
+    "P0, P1, P2 or nonempty review finding",
+    "release_gate=true before independent validation and exact baseline restoration"
+  ],
+  "activation_state": {
+    "G10": null,
+    "A38": null,
+    "M38": null,
+    "H38": null,
+    "R": null,
+    "rule": "The document never stores its own commit; phase identities are derived from exact Git parentage and later carriers."
+  }
+}

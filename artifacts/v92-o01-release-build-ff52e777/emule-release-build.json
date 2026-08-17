@@ -1,0 +1,10 @@
+﻿{
+    "schema":  1,
+    "component":  "emule",
+    "releaseTag":  "v0.70b-eSE9.2.0-rc.1",
+    "commit":  "ff52e777dd96de346328bf7825d1906499980615",
+    "sourceFingerprint":  "3E1B51DCE2A83DF5DDA10697385FD8C7F05D8C81EB391B967D30E0CD6761ED23",
+    "binarySha256":  "665FA27F997D4FA02D622AD7F4877D7EE877B3DE94689601D52C28166B136F3A",
+    "binaryLength":  12339200,
+    "builtAtUtc":  "2026-08-17T15:07:54.5121323Z"
+}

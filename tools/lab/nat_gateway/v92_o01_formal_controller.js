@@ -45,16 +45,17 @@ function validateScenario(config) {
     schedule: Object.freeze(schedule), planned: Object.freeze(countSchedule(schedule)) });
 }
 function assertLimits(config, product, gateway) {
-  if (gateway.resources.gateway_rss_bytes > config.limits.rss_absolute_bytes ||
-      gateway.resources.gateway_heap_bytes > config.limits.heap_absolute_bytes ||
-      gateway.resources.gateway_external_bytes > config.limits.external_absolute_bytes ||
-      gateway.resources.gateway_array_buffers_bytes > config.limits.array_buffers_absolute_bytes ||
-      gateway.resources.gateway_handles > config.limits.handles || gateway.resources.gateway_sockets > config.limits.sockets ||
-      gateway.resources.event_loop_lag_ms > 2000 || gateway.gateway.mapping_count > config.limits.mapping_table ||
-      gateway.product.journal_entry_count > config.limits.journal_entries ||
-      (product && (product.working_set_bytes > config.limits.rss_absolute_bytes || product.handle_count > config.limits.handles))) {
-    fail('O01_CONTROLLER_RESOURCE_LIMIT');
-  }
+  if(gateway.resources.gateway_rss_bytes>config.limits.rss_absolute_bytes)fail('O01_CONTROLLER_RESOURCE_GATEWAY_RSS');
+  if(gateway.resources.gateway_heap_bytes>config.limits.heap_absolute_bytes)fail('O01_CONTROLLER_RESOURCE_GATEWAY_HEAP');
+  if(gateway.resources.gateway_external_bytes>config.limits.external_absolute_bytes)fail('O01_CONTROLLER_RESOURCE_GATEWAY_EXTERNAL');
+  if(gateway.resources.gateway_array_buffers_bytes>config.limits.array_buffers_absolute_bytes)fail('O01_CONTROLLER_RESOURCE_GATEWAY_ARRAY_BUFFERS');
+  if(gateway.resources.gateway_handles>config.limits.handles)fail('O01_CONTROLLER_RESOURCE_GATEWAY_HANDLES');
+  if(gateway.resources.gateway_sockets>config.limits.sockets)fail('O01_CONTROLLER_RESOURCE_GATEWAY_SOCKETS');
+  if(gateway.resources.event_loop_lag_ms>2000)fail('O01_CONTROLLER_RESOURCE_EVENT_LOOP_LAG');
+  if(gateway.gateway.mapping_count>config.limits.mapping_table)fail('O01_CONTROLLER_RESOURCE_MAPPING_TABLE');
+  if(gateway.product.journal_entry_count>config.limits.journal_entries)fail('O01_CONTROLLER_RESOURCE_JOURNAL');
+  if(product&&product.working_set_bytes>config.limits.rss_absolute_bytes)fail('O01_CONTROLLER_RESOURCE_PRODUCT_RSS');
+  if(product&&product.handle_count>config.limits.handles)fail('O01_CONTROLLER_RESOURCE_PRODUCT_HANDLES');
 }
 function createCrossValidator(config) {
   const plan = validateScenario(config);

@@ -14,6 +14,17 @@ function mockChild(){const s={slot:0,fault:'renew_success',attempted:0,committed
 
 test('formal plan has 2880 ticks, 96 five-minute slots and exact counts',()=>{const plan=validateScenario(scenario);assert.equal(plan.tick_count,2880);assert.equal(plan.slot_ticks,30);assert.equal(plan.schedule.length,96);assert.deepEqual(plan.planned,{dropped_late:6,epoch_reset:6,expiry:6,explicit_reject:6,final_boundary:1,malformed:5,partial_pair:5,renew_success:51,replay_duplicate:5,stale:5});for(const mutation of [{fault_slot_ms:30000},{lease_ms:30000},{late_delay_ms:7999}])assert.throws(()=>validateScenario({...scenario,...mutation}),/SCENARIO/);});
 
+test('resource gate reports the exact closed metric',()=>{const gatewayCases=[
+ ['gateway_rss_bytes','rss_absolute_bytes','O01_CONTROLLER_RESOURCE_GATEWAY_RSS'],
+ ['gateway_heap_bytes','heap_absolute_bytes','O01_CONTROLLER_RESOURCE_GATEWAY_HEAP'],
+ ['gateway_external_bytes','external_absolute_bytes','O01_CONTROLLER_RESOURCE_GATEWAY_EXTERNAL'],
+ ['gateway_array_buffers_bytes','array_buffers_absolute_bytes','O01_CONTROLLER_RESOURCE_GATEWAY_ARRAY_BUFFERS'],
+ ['gateway_handles','handles','O01_CONTROLLER_RESOURCE_GATEWAY_HANDLES'],
+ ['gateway_sockets','sockets','O01_CONTROLLER_RESOURCE_GATEWAY_SOCKETS']];
+ for(const [field,limit,code] of gatewayCases){const cross=createCrossValidator(scenario);cross.beginSlot('renew_success',gateway({fault:'renew_success',armed:1,executed:0}));const value=structuredClone(gateway({fault:'renew_success',armed:1,executed:0}));value.resources[field]=scenario.limits[limit]+1;assert.throws(()=>cross.acceptTick(value),new RegExp(code));}
+ for(const [field,code] of [['working_set_bytes','O01_CONTROLLER_RESOURCE_PRODUCT_RSS'],['handle_count','O01_CONTROLLER_RESOURCE_PRODUCT_HANDLES']]){const cross=createCrossValidator(scenario);cross.beginSlot('renew_success',gateway({fault:'renew_success',armed:1,executed:0}));for(let tick=1;tick<=6;tick++)cross.acceptTick(gateway({fault:'renew_success',armed:1,executed:0}));const value=product();value[field]=scenario.limits[field==='working_set_bytes'?'rss_absolute_bytes':'handles']+1;assert.throws(()=>cross.acceptProduct(value),new RegExp(code));}
+});
+
 test('slot timing accepts fault tick 12 and rejects an unconsumed tick 12',()=>{const ok=createCrossValidator(scenario);ok.beginSlot('renew_success',gateway({fault:'renew_success',armed:1,executed:0}));for(let tick=1;tick<=30;tick++){const done=tick>=12;ok.acceptTick(gateway({fault:'renew_success',executed:done?1:0,armed:done?0:1,outcome:done?'committed':'none',candidateCommitted:done,attempted:done?1:0,committed:done?1:0,faultAttempted:done?1:0,recovery:done?1:0}));if(tick%6===0)ok.acceptProduct(product(tick/6+1,tick*10000));}assert.equal(ok.completeSlot().fault_tick_offset,12);
  const late=createCrossValidator(scenario);late.beginSlot('renew_success',gateway({fault:'renew_success',armed:1,executed:0}));for(let tick=1;tick<12;tick++)late.acceptTick(gateway({fault:'renew_success',armed:1,executed:0}));assert.throws(()=>late.acceptTick(gateway({fault:'renew_success',armed:1,executed:0})),/FAULT_NOT_CONSUMED/);});
 

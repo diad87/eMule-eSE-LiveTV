@@ -17,6 +17,17 @@ test('formal plan has 2880 ticks, 96 five-minute slots and exact counts',()=>{co
 test('slot timing accepts fault tick 12 and rejects an unconsumed tick 12',()=>{const ok=createCrossValidator(scenario);ok.beginSlot('renew_success',gateway({fault:'renew_success',armed:1,executed:0}));for(let tick=1;tick<=30;tick++){const done=tick>=12;ok.acceptTick(gateway({fault:'renew_success',executed:done?1:0,armed:done?0:1,outcome:done?'committed':'none',candidateCommitted:done,attempted:done?1:0,committed:done?1:0,faultAttempted:done?1:0,recovery:done?1:0}));if(tick%6===0)ok.acceptProduct(product(tick/6+1,tick*10000));}assert.equal(ok.completeSlot().fault_tick_offset,12);
  const late=createCrossValidator(scenario);late.beginSlot('renew_success',gateway({fault:'renew_success',armed:1,executed:0}));for(let tick=1;tick<12;tick++)late.acceptTick(gateway({fault:'renew_success',armed:1,executed:0}));assert.throws(()=>late.acceptTick(gateway({fault:'renew_success',armed:1,executed:0})),/FAULT_NOT_CONSUMED/);});
 
+test('product gate reports the exact closed predicate that failed',()=>{const cases=[
+ ['O01_CONTROLLER_PRODUCT_SHAPE',(value)=>({...value,schema:'bad'})],
+ ['O01_CONTROLLER_PRODUCT_UNAVAILABLE',(value)=>({...value,available:false})],
+ ['O01_CONTROLLER_PRODUCT_GENERATION',(value)=>({...value,same_generation:false})],
+ ['O01_CONTROLLER_PRODUCT_PAIR_DIVERGED',(value)=>({...value,udp_state:'BLOCKED'})],
+ ['O01_CONTROLLER_PRODUCT_SEQUENCE',(value)=>({...value,sequence:3})],
+ ['O01_CONTROLLER_PRODUCT_TOPOLOGY',(value)=>({...value,generation:2})]
+ ];for(const [code,mutate] of cases){const cross=createCrossValidator(scenario);cross.beginSlot('renew_success',gateway({fault:'renew_success',armed:1,executed:0}));for(let tick=1;tick<=6;tick++)cross.acceptTick(gateway({fault:'renew_success',armed:1,executed:0}));assert.throws(()=>cross.acceptProduct(mutate(product())),new RegExp(code));}
+ const publisher=createCrossValidator(scenario);publisher.beginSlot('renew_success',gateway({fault:'renew_success',armed:1,executed:0}));for(let tick=1;tick<=6;tick++)publisher.acceptTick(gateway({fault:'renew_success',armed:1,executed:0,owned:0}));assert.throws(()=>publisher.acceptProduct(product()),/O01_CONTROLLER_PRODUCT_PUBLISHER/);
+});
+
 function hostileRecovery(recoveryTick){const ordered={...scenario,cycle:['explicit_reject',...scenario.cycle.filter((value)=>value!=='explicit_reject')]};const cross=createCrossValidator(ordered);cross.beginSlot('explicit_reject',gateway({fault:'explicit_reject',armed:1,executed:0}));for(let tick=1;tick<=30;tick++){const faulted=tick>=12,recovered=tick>=recoveryTick;cross.acceptTick(gateway({fault:'explicit_reject',armed:faulted?0:1,executed:faulted?1:0,outcome:faulted?'aborted':'none',attempted:faulted?(recovered?2:1):0,committed:recovered?1:0,aborted:faulted?1:0,faultAttempted:faulted?1:0,recoveryAttempted:recovered?1:0,recovery:recovered?1:0}));if(tick%6===0)cross.acceptProduct(product(tick/6+1,tick*10000));}return cross;}
 test('hostile recovery accepts tick 20 and rejects tick 21',()=>{assert.equal(hostileRecovery(20).completeSlot().recovery_tick_offset,20);assert.throws(()=>hostileRecovery(21).completeSlot(),/RECOVERY_MISSING/);});
 

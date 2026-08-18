@@ -131,11 +131,15 @@ function createCrossValidator(config) {
   }, acceptProduct(productValue) {
     if (!latestGateway || ticks === 0 || ticks % 6 !== 0 || productSamples + 1 !== ticks / 6) fail('O01_CONTROLLER_PRODUCT_PHASE');
     const product = typeof productValue === 'string' ? parseLine(productValue) : productValue;
-    if (product.schema !== 'ese.v92.o01-product-sample/v1' || product.available !== true ||
-        product.same_generation !== true || product.tcp_state !== product.udp_state ||
-        product.sequence !== productSamples + 2) fail('O01_CONTROLLER_PRODUCT');
-    const coherent=product.generation===latestGateway.product.topology_generation&&
-      (!['CANDIDATE','REACHABLE'].includes(product.tcp_state)||(latestGateway.product.publisher_active&&latestGateway.product.journal_entry_count===2));
+    if (product.schema !== 'ese.v92.o01-product-sample/v1') fail('O01_CONTROLLER_PRODUCT_SHAPE');
+    if (product.available !== true) fail('O01_CONTROLLER_PRODUCT_UNAVAILABLE');
+    if (product.same_generation !== true) fail('O01_CONTROLLER_PRODUCT_GENERATION');
+    if (product.tcp_state !== product.udp_state) fail('O01_CONTROLLER_PRODUCT_PAIR_DIVERGED');
+    if (product.sequence !== productSamples + 2) fail('O01_CONTROLLER_PRODUCT_SEQUENCE');
+    if (product.generation !== latestGateway.product.topology_generation) fail('O01_CONTROLLER_PRODUCT_TOPOLOGY');
+    const needsPublisher=['CANDIDATE','REACHABLE'].includes(product.tcp_state);
+    if(needsPublisher&&(!latestGateway.product.publisher_active||latestGateway.product.journal_entry_count!==2))fail('O01_CONTROLLER_PRODUCT_PUBLISHER');
+    const coherent=true;
     if(!coherent){const boundaryTransition=BOUNDARY_FAULTS.has(activeFault)&&faultTickOffset>0&&recoveryTickOffset===0&&
       !latestGateway.product.publisher_active&&latestGateway.product.journal_entry_count===0&&
       ['CANDIDATE','REACHABLE'].includes(product.tcp_state)&&transientProductSamples<MAX_TRANSIENT_PRODUCT_SAMPLES;

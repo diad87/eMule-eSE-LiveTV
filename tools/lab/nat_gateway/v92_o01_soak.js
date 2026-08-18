@@ -20,7 +20,7 @@ function fileHash(filename) { return crypto.createHash('sha256').update(fs.readF
 function readConfig() {
   const value = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
   const keys = ['schema','case_id','formal_duration_ms','tick_ms','fault_slot_ms','lease_ms','late_delay_ms','checkpoint_ms','sample_ms','warmup_ms','slope_window_ms','node_major','owner_tag','transports','cycle','final_fault','limits','bound_files'];
-  const limitKeys = ['rss_absolute_bytes','heap_absolute_bytes','external_absolute_bytes','array_buffers_absolute_bytes','rss_window_growth_bytes','heap_window_growth_bytes','handles','timers','sockets','mapping_table','journal_entries','log_bytes','artifact_bytes','checkpoint_max_gap_ms'];
+  const limitKeys = ['rss_absolute_bytes','heap_absolute_bytes','external_absolute_bytes','array_buffers_absolute_bytes','rss_window_growth_bytes','heap_window_growth_bytes','handles','product_handles','timers','sockets','mapping_table','journal_entries','log_bytes','artifact_bytes','checkpoint_max_gap_ms'];
   if (!value || Array.isArray(value) || canonical(Object.keys(value).sort()) !== canonical(keys.sort()) ||
       value.schema !== 'ese.v92.o01-scenario/v1' || value.case_id !== 'V92-O01' || value.formal_duration_ms !== 28800000 ||
       value.node_major !== 22 || canonical(value.transports) !== canonical(['tcp','udp']) || value.final_fault !== 'final_boundary' ||

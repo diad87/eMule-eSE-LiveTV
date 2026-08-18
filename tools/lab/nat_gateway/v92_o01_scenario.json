@@ -42,6 +42,7 @@
     "rss_window_growth_bytes": 33554432,
     "heap_window_growth_bytes": 33554432,
     "handles": 128,
+    "product_handles": 512,
     "timers": 4,
     "sockets": 2,
     "mapping_table": 3,

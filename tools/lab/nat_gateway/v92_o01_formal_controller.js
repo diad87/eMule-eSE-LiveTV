@@ -30,7 +30,7 @@ function repositoryBinding(repoRoot,config){const root=path.resolve(repoRoot||''
 function validateScenario(config) {
   if (!config || config.schema !== 'ese.v92.o01-scenario/v1' || config.formal_duration_ms !== 28800000 || config.tick_ms !== 10000 ||
       config.fault_slot_ms !== 300000 || config.lease_ms !== 120000 || config.late_delay_ms !== 8000 ||
-      config.sample_ms !== 60000 || config.checkpoint_ms !== 300000 || config.node_major !== 22 ||
+      config.sample_ms !== 60000 || config.checkpoint_ms !== 300000 || config.node_major !== 22 || config.limits.product_handles !== 512 ||
       !Array.isArray(config.cycle) || config.cycle.length !== 18 || config.final_fault !== 'final_boundary' ||
       [...new Set([...config.cycle, config.final_fault])].sort().join(',') !== [...ALL_FAULTS].sort().join(',')) {
     fail('O01_CONTROLLER_SCENARIO');
@@ -55,7 +55,7 @@ function assertLimits(config, product, gateway) {
   if(gateway.gateway.mapping_count>config.limits.mapping_table)fail('O01_CONTROLLER_RESOURCE_MAPPING_TABLE');
   if(gateway.product.journal_entry_count>config.limits.journal_entries)fail('O01_CONTROLLER_RESOURCE_JOURNAL');
   if(product&&product.working_set_bytes>config.limits.rss_absolute_bytes)fail('O01_CONTROLLER_RESOURCE_PRODUCT_RSS');
-  if(product&&product.handle_count>config.limits.handles)fail('O01_CONTROLLER_RESOURCE_PRODUCT_HANDLES');
+  if(product&&product.handle_count>config.limits.product_handles)fail('O01_CONTROLLER_RESOURCE_PRODUCT_HANDLES');
 }
 function createCrossValidator(config) {
   const plan = validateScenario(config);

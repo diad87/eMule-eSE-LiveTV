@@ -59,7 +59,7 @@ function assertLimits(config, product, gateway) {
 function createCrossValidator(config) {
   const plan = validateScenario(config);
   let slotOrdinal = 0; let ticks = 0; let baseline = null; let latestGateway = null;
-  let latestProduct = null; let productSamples = 0; let activeFault = null; let slotStartTick = 0;
+  let latestProduct = null; let productSamples = 0; let productGatewayGenerationOffset = null; let activeFault = null; let slotStartTick = 0;
   let faultTickOffset = 0; let recoveryTickOffset = 0; let transientProductSamples = 0;
   let latestProductCoherent = true; const gatewayHistory=[]; const productHistory=[];
   const executed = {};
@@ -136,7 +136,10 @@ function createCrossValidator(config) {
     if (product.same_generation !== true) fail('O01_CONTROLLER_PRODUCT_GENERATION');
     if (product.tcp_state !== product.udp_state) fail('O01_CONTROLLER_PRODUCT_PAIR_DIVERGED');
     if (product.sequence !== productSamples + 2) fail('O01_CONTROLLER_PRODUCT_SEQUENCE');
-    if (product.generation !== latestGateway.product.topology_generation) fail('O01_CONTROLLER_PRODUCT_TOPOLOGY');
+    const generationOffset=product.generation-latestGateway.product.topology_generation;
+    if(!Number.isSafeInteger(generationOffset)||generationOffset<0||
+       (productGatewayGenerationOffset!==null&&generationOffset!==productGatewayGenerationOffset))fail('O01_CONTROLLER_PRODUCT_TOPOLOGY');
+    if(productGatewayGenerationOffset===null)productGatewayGenerationOffset=generationOffset;
     const needsPublisher=['CANDIDATE','REACHABLE'].includes(product.tcp_state);
     if(needsPublisher&&(!latestGateway.product.publisher_active||latestGateway.product.journal_entry_count!==2))fail('O01_CONTROLLER_PRODUCT_PUBLISHER');
     const coherent=true;

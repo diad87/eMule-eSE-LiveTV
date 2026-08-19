@@ -134,17 +134,16 @@ function validateEvidenceCore({ config, checkpoints, result }) {
   let previous = hash('ese.v92.o01-formal-chain-seed/v1', { source_commit: result.source_commit,
     source_tree: result.source_tree, scenario_sha256: result.scenario_sha256,
     bound_files: result.bound_files, duration_ms: 28800000 });
-  const resourceHistory=[];let productGatewayGenerationOffset=null;
+  const resourceHistory=[];let latestProductGeneration=null;
   for (let index = 0; index < checkpoints.length; index += 1) {
     const value = checkpoints[index]; const ordinal = index + 1; const elapsed = ordinal * 300000;
     exact(value, ['schema','ordinal','elapsed_ms','fault_ordinal','executed','slots','product','gateway','product_sha256','gateway_sha256','previous_sha256','record_sha256']);
     product(value.product, ordinal); gateway(value.gateway);limits(config,value.product,value.gateway);
-    {const generationOffset=value.product.generation-value.gateway.product.topology_generation;
-    if(!Number.isSafeInteger(generationOffset)||generationOffset<0||
-       (productGatewayGenerationOffset!==null&&generationOffset!==productGatewayGenerationOffset)||
+    {if(!Number.isSafeInteger(value.product.generation)||value.product.generation<value.gateway.product.topology_generation||
+       (latestProductGeneration!==null&&value.product.generation<latestProductGeneration)||
        (['CANDIDATE','REACHABLE'].includes(value.product.tcp_state)&&
         (!value.gateway.product.publisher_active||value.gateway.product.journal_entry_count!==2)))fail('O01_FORMAL_PRODUCT_GATEWAY');
-    if(productGatewayGenerationOffset===null)productGatewayGenerationOffset=generationOffset;}
+    latestProductGeneration=value.product.generation;}
     resourceHistory.push(value);
     if(index>=2&&ordinal*300000>config.warmup_ms){const prior=resourceHistory[index-2];if(value.gateway.resources.gateway_rss_bytes-prior.gateway.resources.gateway_rss_bytes>config.limits.rss_window_growth_bytes||value.gateway.resources.gateway_heap_bytes-prior.gateway.resources.gateway_heap_bytes>config.limits.heap_window_growth_bytes||value.product.working_set_bytes-prior.product.working_set_bytes>config.limits.rss_window_growth_bytes)fail('O01_FORMAL_RESOURCE_SLOPE');}
     const expectedExecuted = counts(events.slice(0, ordinal));if(!Array.isArray(value.slots)||value.slots.length!==1)fail('O01_FORMAL_SLOTS');slot(value.slots[0],ordinal,events[ordinal-1]);

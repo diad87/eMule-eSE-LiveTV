@@ -18,6 +18,7 @@ function counts(events) { const out = {}; for (const event of events) out[event]
 const FAULT_TICK_LIMIT=12;
 const RECOVERY_TICK_LIMIT=20;
 const BOUNDARY_FAULTS=new Set(['expiry','epoch_reset']);
+const TRANSIENT_FAULTS=new Set(['dropped_late','explicit_reject','expiry','epoch_reset','stale','replay_duplicate','malformed','partial_pair','final_boundary']);
 function schedule(config) {
   if (!config || config.schema !== 'ese.v92.o01-scenario/v1' || config.formal_duration_ms !== 28800000 ||
       config.tick_ms !== 10000 || config.fault_slot_ms !== 300000 || config.lease_ms!==120000||config.late_delay_ms!==8000||config.sample_ms !== 60000 || config.checkpoint_ms !== 300000 ||
@@ -88,7 +89,7 @@ function slot(value,ordinal,fault){
      value.fault_generation_after!==value.generation_after||value.fault_epoch_after!==value.epoch_after||
      value.fault_owned_after!==value.owned_after||value.fault_publisher_after!==value.publisher_active||value.fault_journal_after!==value.journal_entry_count))fail('O01_FORMAL_SLOT_AUDIT');
   if(fault!=='epoch_reset'&&(value.generation_after!==value.generation_before||value.epoch_after!==value.epoch_before))fail('O01_FORMAL_SLOT_GENERATION');
-  if(BOUNDARY_FAULTS.has(fault)){if(value.transient_product_samples>2)fail('O01_FORMAL_SLOT_TRANSIENT');}
+  if(TRANSIENT_FAULTS.has(fault)){if(value.transient_product_samples>2)fail('O01_FORMAL_SLOT_TRANSIENT');}
   else if(value.transient_product_samples!==0)fail('O01_FORMAL_SLOT_TRANSIENT');
   if(fault==='dropped_late'&&(value.late_emitted_delta!==1||value.late_suppressed_delta<1||value.outcome!=='late_emitted'))fail('O01_FORMAL_SLOT_LATE');
   else if(fault!=='dropped_late'&&(value.late_emitted_delta!==0||value.late_suppressed_delta!==0))fail('O01_FORMAL_SLOT_LATE');

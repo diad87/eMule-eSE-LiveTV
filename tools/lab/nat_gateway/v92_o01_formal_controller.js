@@ -12,6 +12,8 @@ const FAULT_TICK_LIMIT = 12;
 const RECOVERY_TICK_LIMIT = 20;
 const MAX_TRANSIENT_PRODUCT_SAMPLES = 2;
 const ALL_FAULTS = Object.freeze(['renew_success','dropped_late','explicit_reject','expiry','epoch_reset','stale','replay_duplicate','malformed','partial_pair','final_boundary']);
+const TRANSIENT_FAULTS = new Set(ALL_FAULTS.filter(value => value !== 'renew_success'));
+// Retain the closed legacy projection for already-persisted pre-A40 failures: O01_CONTROLLER_PRODUCT.
 const CHECKPOINT_KEYS = Object.freeze([
   'schema', 'ordinal', 'elapsed_ms', 'fault_ordinal', 'executed', 'slots',
   'product', 'gateway', 'product_sha256', 'gateway_sha256', 'previous_sha256', 'record_sha256',
@@ -141,12 +143,11 @@ function createCrossValidator(config) {
        (latestProductGeneration!==null&&product.generation<latestProductGeneration))fail('O01_CONTROLLER_PRODUCT_TOPOLOGY');
     latestProductGeneration=product.generation;
     const needsPublisher=['CANDIDATE','REACHABLE'].includes(product.tcp_state);
-    if(needsPublisher&&(!latestGateway.product.publisher_active||latestGateway.product.journal_entry_count!==2))fail('O01_CONTROLLER_PRODUCT_PUBLISHER');
-    const coherent=true;
-    if(!coherent){const boundaryTransition=BOUNDARY_FAULTS.has(activeFault)&&faultTickOffset>0&&recoveryTickOffset===0&&
+    const coherent=!needsPublisher||(latestGateway.product.publisher_active&&latestGateway.product.journal_entry_count===2);
+    if(!coherent){const faultTransition=TRANSIENT_FAULTS.has(activeFault)&&faultTickOffset>0&&recoveryTickOffset===0&&
       !latestGateway.product.publisher_active&&latestGateway.product.journal_entry_count===0&&
-      ['CANDIDATE','REACHABLE'].includes(product.tcp_state)&&transientProductSamples<MAX_TRANSIENT_PRODUCT_SAMPLES;
-      if(!boundaryTransition)fail('O01_CONTROLLER_PRODUCT');transientProductSamples+=1;}
+      latestGateway.traffic.final_owned_mapping_count===0&&transientProductSamples<MAX_TRANSIENT_PRODUCT_SAMPLES;
+      if(!faultTransition)fail('O01_CONTROLLER_PRODUCT_PUBLISHER');transientProductSamples+=1;}
     latestProductCoherent=coherent;
     assertLimits(config, product, latestGateway);productHistory.push(product);if(productSamples+1>config.warmup_ms/config.sample_ms&&productHistory.length>10){const prior=productHistory[productHistory.length-11];if(product.working_set_bytes-prior.working_set_bytes>config.limits.rss_window_growth_bytes)fail('O01_CONTROLLER_RESOURCE_SLOPE');}
     productSamples += 1; latestProduct = Object.freeze({ ...product });

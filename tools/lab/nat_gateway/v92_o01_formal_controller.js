@@ -78,8 +78,12 @@ function createCrossValidator(config) {
   }, acceptTick(gatewayValue) {
     if (!activeFault) fail('O01_CONTROLLER_SLOT_NOT_STARTED');
     const gateway = validateObservation(gatewayValue); ticks += 1;
-    if (!gateway.gateway.pair_atomic || !gateway.gateway.foreign_fixture_present ||
-        gateway.gateway.mapping_count < 1 || gateway.gateway.mapping_count > 3 || gateway.gateway.mapping_count === 2 ||
+    const pairTransition=TRANSIENT_FAULTS.has(activeFault)&&faultTickOffset>0&&recoveryTickOffset===0&&
+      gateway.gateway.pair_atomic===false&&gateway.gateway.mapping_count===2&&
+      gateway.traffic.final_owned_mapping_count===1;
+    if ((!gateway.gateway.pair_atomic&&!pairTransition) || !gateway.gateway.foreign_fixture_present ||
+        gateway.gateway.mapping_count < 1 || gateway.gateway.mapping_count > 3 ||
+        (gateway.gateway.mapping_count === 2&&!pairTransition) ||
         gateway.traffic.final_owned_mapping_count > gateway.traffic.max_owned_mapping_count) {
       fail('O01_CONTROLLER_GATEWAY');
     }

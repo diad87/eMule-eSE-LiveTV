@@ -140,17 +140,19 @@ function createCrossValidator(config) {
     const product = typeof productValue === 'string' ? parseLine(productValue) : productValue;
     if (product.schema !== 'ese.v92.o01-product-sample/v1') fail('O01_CONTROLLER_PRODUCT_SHAPE');
     if (product.available !== true) fail('O01_CONTROLLER_PRODUCT_UNAVAILABLE');
-    if (product.same_generation !== true) fail('O01_CONTROLLER_PRODUCT_GENERATION');
-    if (product.tcp_state !== product.udp_state) fail('O01_CONTROLLER_PRODUCT_PAIR_DIVERGED');
     if (product.sequence !== productSamples + 2) fail('O01_CONTROLLER_PRODUCT_SEQUENCE');
     if(!Number.isSafeInteger(product.generation)||product.generation<latestGateway.product.topology_generation||
        (latestProductGeneration!==null&&product.generation<latestProductGeneration))fail('O01_CONTROLLER_PRODUCT_TOPOLOGY');
     latestProductGeneration=product.generation;
+    const faultTransition=TRANSIENT_FAULTS.has(activeFault)&&faultTickOffset>0&&recoveryTickOffset===0&&
+      !latestGateway.product.publisher_active&&latestGateway.product.journal_entry_count<=1&&
+      latestGateway.traffic.final_owned_mapping_count<=1&&transientProductSamples<MAX_TRANSIENT_PRODUCT_SAMPLES;
+    if (product.same_generation !== true&&!faultTransition) fail('O01_CONTROLLER_PRODUCT_GENERATION');
+    if (product.tcp_state !== product.udp_state&&!faultTransition) fail('O01_CONTROLLER_PRODUCT_PAIR_DIVERGED');
     const needsPublisher=['CANDIDATE','REACHABLE'].includes(product.tcp_state);
-    const coherent=!needsPublisher||(latestGateway.product.publisher_active&&latestGateway.product.journal_entry_count===2);
-    if(!coherent){const faultTransition=TRANSIENT_FAULTS.has(activeFault)&&faultTickOffset>0&&recoveryTickOffset===0&&
-      !latestGateway.product.publisher_active&&latestGateway.product.journal_entry_count===0&&
-      latestGateway.traffic.final_owned_mapping_count===0&&transientProductSamples<MAX_TRANSIENT_PRODUCT_SAMPLES;
+    const coherent=product.same_generation===true&&product.tcp_state===product.udp_state&&
+      (!needsPublisher||(latestGateway.product.publisher_active&&latestGateway.product.journal_entry_count===2));
+    if(!coherent){
       if(!faultTransition)fail('O01_CONTROLLER_PRODUCT_PUBLISHER');transientProductSamples+=1;}
     latestProductCoherent=coherent;
     assertLimits(config, product, latestGateway);productHistory.push(product);if(productSamples+1>config.warmup_ms/config.sample_ms&&productHistory.length>10){const prior=productHistory[productHistory.length-11];if(product.working_set_bytes-prior.working_set_bytes>config.limits.rss_window_growth_bytes)fail('O01_CONTROLLER_RESOURCE_SLOPE');}

@@ -24,8 +24,40 @@ if ($null -eq $process) {
 }
 
 $expectedNormalized = $ExpectedRemoteAddress.Trim('[', ']').Split('%')[0]
+$socketRows = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue)
+if (@($socketRows | Where-Object { $_.OwningProcess -eq $TargetProcessId }).Count -eq 0) {
+    # Some restricted Windows tokens receive an empty MSFT_NetTCPConnection
+    # view even though the owning-process table is readable. Keep the route
+    # proof fail-closed by falling back to netstat's PID-bearing TCP table.
+    $netstatPath = Join-Path $env:SystemRoot 'System32\netstat.exe'
+    if (Test-Path -LiteralPath $netstatPath -PathType Leaf) {
+        $netstatLines = @(& $netstatPath -ano -p tcp 2>$null)
+        if ($LASTEXITCODE -eq 0) {
+            foreach ($line in $netstatLines) {
+                if ($line -notmatch '^\s*TCP\s+(\S+)\s+(\S+)\s+ESTABLISHED\s+(\d+)\s*$') { continue }
+                $localText = $Matches[1]
+                $remoteText = $Matches[2]
+                $owner = [int]$Matches[3]
+                if ($owner -ne $TargetProcessId) { continue }
+                if ($localText -notmatch '^(?:\[([^\]]+)\]|(.+)):(\d+)$') { continue }
+                $localHost = if ($Matches[1]) { $Matches[1] } else { $Matches[2] }
+                $localPort = [int]$Matches[3]
+                if ($remoteText -notmatch '^(?:\[([^\]]+)\]|(.+)):(\d+)$') { continue }
+                $remoteHost = if ($Matches[1]) { $Matches[1] } else { $Matches[2] }
+                $remotePort = [int]$Matches[3]
+                $socketRows += [pscustomobject]@{
+                    OwningProcess = $owner
+                    LocalAddress = $localHost
+                    LocalPort = $localPort
+                    RemoteAddress = $remoteHost
+                    RemotePort = $remotePort
+                }
+            }
+        }
+    }
+}
 $connections = @()
-foreach ($socket in @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue)) {
+foreach ($socket in $socketRows) {
     if ($socket.OwningProcess -ne $TargetProcessId) { continue }
 
     $localAddress = $socket.LocalAddress.Trim('[', ']').Split('%')[0]

@@ -22,7 +22,12 @@ async function runDaemon(input, output, environment, adapter) {
     for await (const line of lines) {
       let result;
       try { result = await session.dispatch(line); }
-      catch (error) { output.write(`${JSON.stringify({ schema: 'ese.v92.o01-control-result/v1', ok: false, reason_code: error.reason_code || 'O01_DAEMON_INTERNAL' })}\n`); throw error; }
+      catch (error) {
+        const message = String(error && error.message || '');
+        const reasonCode = error && error.reason_code || (/^O01_[A-Z0-9_]{1,59}$/.test(message) ? message : 'O01_DAEMON_INTERNAL');
+        output.write(`${JSON.stringify({ schema: 'ese.v92.o01-control-result/v1', ok: false, reason_code: reasonCode })}\n`);
+        throw error;
+      }
       output.write(`${JSON.stringify(result)}\n`);
       if (result.state === 'closed') break;
     }

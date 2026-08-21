@@ -16,6 +16,16 @@ test('daemon processes authenticated JSONL in order and closes terminally', asyn
   input.end(`${message(1,'hello',{token:TOKEN})}\n${message(2,'observe',{})}\n${message(3,'shutdown',{})}\n`); await running;
   const rows = text.trim().split('\n').map(JSON.parse); assert.equal(rows.length, 3); assert.equal(rows[2].state, 'closed');
 });
+test('daemon preserves a closed adapter failure code at the JSONL boundary', async () => {
+  const input = new PassThrough(); const output = new PassThrough(); let text = ''; output.on('data', (chunk) => { text += chunk; });
+  const adapter = { observe: async () => observation, inject: async () => observation,
+    beginSlot: async () => { throw new Error('O01_FAULT_ARM_INVALID'); }, shutdown: async () => observation };
+  const running = runDaemon(input, output, { O01_MODE: 'NON_RELEASE', O01_CONTROL_TOKEN_SHA256: tokenHash(TOKEN) }, adapter);
+  input.end(`${message(1,'hello',{token:TOKEN})}\n${message(2,'begin_slot',{fault:'replay_duplicate',planned_ordinal:1})}\n`);
+  await assert.rejects(running, /O01_FAULT_ARM_INVALID/);
+  const rows = text.trim().split('\n').map(JSON.parse); assert.equal(rows.length, 2);
+  assert.deepEqual(rows[1], { schema: 'ese.v92.o01-control-result/v1', ok: false, reason_code: 'O01_FAULT_ARM_INVALID' });
+});
 test('formal daemon rejects wrong Node before reading input', async () => {
   if (process.versions.node.split('.')[0] === '22') return;
   await assert.rejects(runDaemon(new PassThrough(), new PassThrough(), { O01_MODE: 'FORMAL_T8', O01_CONTROL_TOKEN_SHA256: tokenHash(TOKEN) }, {}), /O01_DAEMON_NODE22_REQUIRED/);

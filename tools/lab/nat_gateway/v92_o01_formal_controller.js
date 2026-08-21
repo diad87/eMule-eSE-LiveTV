@@ -117,11 +117,15 @@ function createCrossValidator(config) {
       if (current.faults.generation_before!==current.faults.generation_after||current.faults.epoch_before!==current.faults.epoch_after||current.faults.owned_before!==current.faults.owned_after||current.faults.publisher_before!==current.faults.publisher_after||current.faults.journal_before!==current.faults.journal_after) fail('O01_CONTROLLER_HOSTILE_STATE_MUTATED');
       if (current.faults.last_recovery_transaction_ordinal !== ordinal) fail('O01_CONTROLLER_RECOVERY_MISSING');
     } else if(BOUNDARY_FAULTS.has(fault)){
-      if(current.faults.last_fault_candidate_committed||current.faults.pair_transactions_aborted<=baseline.faults.pair_transactions_aborted||
-         current.faults.last_recovery_transaction_ordinal!==ordinal||current.faults.owned_before!==2||current.faults.owned_after!==0||
-         current.faults.publisher_before!==true||current.faults.publisher_after!==false||current.faults.journal_before!==2||current.faults.journal_after!==0||
-         current.traffic.final_owned_mapping_count!==2)fail('O01_CONTROLLER_BOUNDARY_RECOVERY');
-      if(current.faults.generation_before!==baseline.gateway.generation||current.faults.epoch_before!==baseline.gateway.epoch)fail('O01_CONTROLLER_BOUNDARY_RECOVERY');
+      if(current.faults.last_fault_candidate_committed||
+         current.faults.pair_transactions_aborted<=baseline.faults.pair_transactions_aborted)fail('O01_CONTROLLER_REJECT_MUTATED');
+      if(current.faults.last_recovery_transaction_ordinal!==ordinal)fail('O01_CONTROLLER_RECOVERY_MISSING');
+      if(current.faults.owned_before!==2||current.faults.owned_after!==0||
+         current.faults.publisher_before!==true||current.faults.publisher_after!==false||
+         current.faults.journal_before!==2||current.faults.journal_after!==0)fail('O01_CONTROLLER_FAULT_AUDIT');
+      if(current.traffic.final_owned_mapping_count!==2)fail('O01_CONTROLLER_TRANSACTION_ACCOUNTING');
+      if(current.faults.generation_before!==baseline.gateway.generation||
+         current.faults.epoch_before!==baseline.gateway.epoch)fail('O01_CONTROLLER_GENERATION_DRIFT');
       if(fault==='expiry'&&(current.faults.generation_after!==baseline.gateway.generation||current.faults.epoch_after!==baseline.gateway.epoch||current.gateway.generation!==baseline.gateway.generation||current.gateway.epoch!==baseline.gateway.epoch))fail('O01_CONTROLLER_EXPIRY');
       if(fault==='epoch_reset'&&(current.faults.generation_after!==baseline.gateway.generation+1||current.faults.epoch_after!==baseline.gateway.epoch+1||current.gateway.generation!==baseline.gateway.generation+1||current.gateway.epoch!==baseline.gateway.epoch+1))fail('O01_CONTROLLER_EPOCH');
     } else if (current.faults.pair_transactions_committed <= baseline.faults.pair_transactions_committed ||

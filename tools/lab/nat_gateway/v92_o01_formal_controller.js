@@ -144,7 +144,7 @@ function createCrossValidator(config) {
     if(!Number.isSafeInteger(product.generation)||product.generation<latestGateway.product.topology_generation||
        (latestProductGeneration!==null&&product.generation<latestProductGeneration))fail('O01_CONTROLLER_PRODUCT_TOPOLOGY');
     latestProductGeneration=product.generation;
-    const faultTransition=TRANSIENT_FAULTS.has(activeFault)&&faultTickOffset>0&&recoveryTickOffset===0&&
+    const faultTransition=TRANSIENT_FAULTS.has(activeFault)&&faultTickOffset>0&&
       !latestGateway.product.publisher_active&&latestGateway.product.journal_entry_count<=1&&
       latestGateway.traffic.final_owned_mapping_count<=1&&transientProductSamples<MAX_TRANSIENT_PRODUCT_SAMPLES;
     if (product.same_generation !== true&&!faultTransition) fail('O01_CONTROLLER_PRODUCT_GENERATION');

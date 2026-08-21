@@ -33,6 +33,7 @@ function validateScenario(config) {
   if (!config || config.schema !== 'ese.v92.o01-scenario/v1' || config.formal_duration_ms !== 28800000 || config.tick_ms !== 10000 ||
       config.fault_slot_ms !== 300000 || config.lease_ms !== 120000 || config.late_delay_ms !== 8000 ||
       config.sample_ms !== 60000 || config.checkpoint_ms !== 300000 || config.node_major !== 22 || config.limits.product_handles !== 512 ||
+      config.limits.checkpoint_max_gap_ms !== 310000 ||
       !Array.isArray(config.cycle) || config.cycle.length !== 18 || config.final_fault !== 'final_boundary' ||
       [...new Set([...config.cycle, config.final_fault])].sort().join(',') !== [...ALL_FAULTS].sort().join(',')) {
     fail('O01_CONTROLLER_SCENARIO');
@@ -44,6 +45,7 @@ function validateScenario(config) {
   schedule[slotCount - 1] = config.final_fault;
   if (tickCount !== 2880 || slotTicks !== 30 || schedule.length !== 96 || schedule.at(-1) !== 'final_boundary') fail('O01_CONTROLLER_SCHEDULE');
   return Object.freeze({ tick_count: tickCount, slot_ticks: slotTicks,
+    schedule_jitter_ms: config.limits.checkpoint_max_gap_ms - config.checkpoint_ms,
     schedule: Object.freeze(schedule), planned: Object.freeze(countSchedule(schedule)) });
 }
 function assertLimits(config, product, gateway) {
@@ -228,8 +230,8 @@ async function runControllerCore(options) {
       const remaining = target - (clock.now() - epoch);
       if (remaining > 0) await sleep(remaining);
       const elapsed = clock.now() - epoch;
-      if (!Number.isSafeInteger(elapsed) || elapsed < target || elapsed - target > 2000 ||
-          elapsed <= lastTickObserved || elapsed - lastTickObserved > 12000) fail('O01_CONTROLLER_CLOCK_GAP');
+      if (!Number.isSafeInteger(elapsed) || elapsed < target || elapsed - target >= plan.schedule_jitter_ms ||
+          elapsed <= lastTickObserved || elapsed - lastTickObserved >= config.tick_ms + plan.schedule_jitter_ms) fail('O01_CONTROLLER_CLOCK_GAP');
       lastTickObserved = elapsed;
       lastGateway = await child.observe(); cross.acceptTick(lastGateway);
       if ((index + 1) % 6 === 0) {

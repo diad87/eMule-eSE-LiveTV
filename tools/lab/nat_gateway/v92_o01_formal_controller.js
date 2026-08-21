@@ -10,7 +10,9 @@ const REJECT_STABLE = new Set(['explicit_reject', 'stale', 'replay_duplicate', '
 const BOUNDARY_FAULTS = new Set(['expiry', 'epoch_reset']);
 const FAULT_TICK_LIMIT = 12;
 const RECOVERY_TICK_LIMIT = 20;
-const MAX_TRANSIENT_PRODUCT_SAMPLES = 2;
+// Recovery is allowed through tick 20. With a sample every six ticks, samples
+// at ticks 6, 12 and 18 can all legitimately observe the bounded transition.
+const MAX_TRANSIENT_PRODUCT_SAMPLES = 3;
 const ALL_FAULTS = Object.freeze(['renew_success','dropped_late','explicit_reject','expiry','epoch_reset','stale','replay_duplicate','malformed','partial_pair','final_boundary']);
 const TRANSIENT_FAULTS = new Set(ALL_FAULTS.filter(value => value !== 'renew_success'));
 // Retain the closed legacy projection for already-persisted pre-A40 failures: O01_CONTROLLER_PRODUCT.

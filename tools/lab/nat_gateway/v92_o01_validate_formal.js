@@ -89,7 +89,7 @@ function slot(value,ordinal,fault){
      value.fault_generation_after!==value.generation_after||value.fault_epoch_after!==value.epoch_after||
      value.fault_owned_after!==value.owned_after||value.fault_publisher_after!==value.publisher_active||value.fault_journal_after!==value.journal_entry_count))fail('O01_FORMAL_SLOT_AUDIT');
   if(fault!=='epoch_reset'&&(value.generation_after!==value.generation_before||value.epoch_after!==value.epoch_before))fail('O01_FORMAL_SLOT_GENERATION');
-  if(TRANSIENT_FAULTS.has(fault)){if(value.transient_product_samples>2)fail('O01_FORMAL_SLOT_TRANSIENT');}
+  if(TRANSIENT_FAULTS.has(fault)){if(value.transient_product_samples>3)fail('O01_FORMAL_SLOT_TRANSIENT');}
   else if(value.transient_product_samples!==0)fail('O01_FORMAL_SLOT_TRANSIENT');
   if(fault==='dropped_late'&&(value.late_emitted_delta!==1||value.late_suppressed_delta<1||value.outcome!=='late_emitted'))fail('O01_FORMAL_SLOT_LATE');
   else if(fault!=='dropped_late'&&(value.late_emitted_delta!==0||value.late_suppressed_delta!==0))fail('O01_FORMAL_SLOT_LATE');

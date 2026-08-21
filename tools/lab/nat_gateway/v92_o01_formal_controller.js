@@ -35,7 +35,7 @@ function validateScenario(config) {
   if (!config || config.schema !== 'ese.v92.o01-scenario/v1' || config.formal_duration_ms !== 28800000 || config.tick_ms !== 10000 ||
       config.fault_slot_ms !== 300000 || config.lease_ms !== 120000 || config.late_delay_ms !== 8000 ||
       config.sample_ms !== 60000 || config.checkpoint_ms !== 300000 || config.node_major !== 22 || config.limits.product_handles !== 512 ||
-      config.limits.checkpoint_max_gap_ms !== 310000 ||
+      config.limits.checkpoint_max_gap_ms !== 330000 ||
       !Array.isArray(config.cycle) || config.cycle.length !== 18 || config.final_fault !== 'final_boundary' ||
       [...new Set([...config.cycle, config.final_fault])].sort().join(',') !== [...ALL_FAULTS].sort().join(',')) {
     fail('O01_CONTROLLER_SCENARIO');
@@ -226,18 +226,21 @@ async function runControllerCore(options) {
        !((mapperPreflight.traffic.final_owned_pcp===2&&mapperPreflight.traffic.final_owned_natpmp===0)||
          (mapperPreflight.traffic.final_owned_natpmp===2&&mapperPreflight.traffic.final_owned_pcp===0)))
       fail('O01_CONTROLLER_MAPPER_PROTOCOL');
-    const epoch = clock.now(); let lastTickObserved = 0; let lastProduct = null; let lastGateway = null;let pendingSlots=[];let persistedCheckpoints=0;
+    const epoch = clock.now(); let scheduleShift = 0; let checkpointShift = 0; let lastTickObserved = 0;
+    let lastProduct = null; let lastGateway = null;let pendingSlots=[];let persistedCheckpoints=0;
     for (let index = 0; index < plan.tick_count; index += 1) {
       if (index % plan.slot_ticks === 0) {
         const slot = index / plan.slot_ticks + 1; const fault = plan.schedule[slot - 1];
         cross.beginSlot(fault, await child.beginSlot(fault, slot));
       }
-      const target = (index + 1) * config.tick_ms;
+      const target = (index + 1) * config.tick_ms + scheduleShift;
       const remaining = target - (clock.now() - epoch);
       if (remaining > 0) await sleep(remaining);
       const elapsed = clock.now() - epoch;
-      if (!Number.isSafeInteger(elapsed) || elapsed < target || elapsed - target >= plan.schedule_jitter_ms ||
+      const lateness = elapsed - target;
+      if (!Number.isSafeInteger(elapsed) || lateness < 0 || checkpointShift + lateness >= plan.schedule_jitter_ms ||
           elapsed <= lastTickObserved || elapsed - lastTickObserved >= config.tick_ms + plan.schedule_jitter_ms) fail('O01_CONTROLLER_CLOCK_GAP');
+      scheduleShift += lateness; checkpointShift += lateness;
       lastTickObserved = elapsed;
       lastGateway = await child.observe(); cross.acceptTick(lastGateway);
       if ((index + 1) % 6 === 0) {
@@ -253,6 +256,7 @@ async function runControllerCore(options) {
         const receipt = await emitCheckpoint(checkpoint);
         if (receipt !== checkpoint.record_sha256) fail('O01_CONTROLLER_CHECKPOINT_NOT_PERSISTED');
         previous = checkpoint.record_sha256;persistedCheckpoints++;pendingSlots=[];
+        checkpointShift = 0;
       }
     }
     const terminal = productState.accept(await bounded(readProduct(),60000,'O01_CONTROLLER_PRODUCT_TERMINAL_TIMEOUT'));

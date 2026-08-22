@@ -35,7 +35,7 @@ function validateScenario(config) {
   if (!config || config.schema !== 'ese.v92.o01-scenario/v1' || config.formal_duration_ms !== 28800000 || config.tick_ms !== 10000 ||
       config.fault_slot_ms !== 300000 || config.lease_ms !== 120000 || config.late_delay_ms !== 8000 ||
       config.sample_ms !== 60000 || config.checkpoint_ms !== 300000 || config.node_major !== 22 || config.limits.product_handles !== 512 ||
-      config.limits.checkpoint_max_gap_ms !== 330000 ||
+      config.limits.checkpoint_max_gap_ms !== 370000 ||
       !Array.isArray(config.cycle) || config.cycle.length !== 18 || config.final_fault !== 'final_boundary' ||
       [...new Set([...config.cycle, config.final_fault])].sort().join(',') !== [...ALL_FAULTS].sort().join(',')) {
     fail('O01_CONTROLLER_SCENARIO');

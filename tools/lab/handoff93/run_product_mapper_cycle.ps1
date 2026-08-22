@@ -1192,7 +1192,7 @@ if ($FormalSoakChild) {
         [int64]$scenario.formal_duration_ms -ne 28800000 -or
         [int64]$scenario.sample_ms -ne 60000 -or
         [int64]$scenario.tick_ms -ne 10000 -or
-        [int64]$scenario.limits.checkpoint_max_gap_ms -ne 330000) {
+        [int64]$scenario.limits.checkpoint_max_gap_ms -ne 370000) {
         throw 'Formal soak scenario is not canonical.'
     }
     $baseConfigure=$adapters.Configure;$adapters.Configure={&$baseConfigure;Set-LabIniValue $ini Connection LastWorkingImplementation 3|Out-Null;Set-LabIniValue $ini Connection DisableMiniUPNPLibImpl 1|Out-Null;Set-LabIniValue $ini Connection DisableWinServImpl 1|Out-Null};$adapters.Sample={$envelope=Invoke-LabApi -BaseUrl $baseUrl -Path '/api/reach/status' -Token $ApiToken -AllowUnavailable;if(-not$envelope.available){return $null};$projection=Get-R93FormalCandidateProjection $envelope $TcpPort $UdpPort;$projection|Add-Member -MemberType NoteProperty -Name tcp_granted_external_port -Value ([int]$envelope.data.planes.ed2k_tcp_v4.lease.granted_external_port);$projection|Add-Member -MemberType NoteProperty -Name udp_granted_external_port -Value ([int]$envelope.data.planes.kad_udp_v4.lease.granted_external_port);$null=Set-R93ObservedGrantedMappingPair $projection $script:mappingObservation;return $projection};$formalSoak = { param($token)

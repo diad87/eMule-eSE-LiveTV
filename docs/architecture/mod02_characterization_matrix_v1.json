@@ -6,7 +6,7 @@
   "runtime_gate": {
     "runner": "tools/architecture/run_mod02_stream_selftest.ps1",
     "build_manifest": "docs/architecture/mod02_build_manifest_v1.json",
-    "summary": "artifacts/mod02-runtime-v92-ff52e777/summary.json",
+    "summary": "artifacts/mod02-runtime-v92-bba779d0/summary.json",
     "status": "PASS",
     "required_summary": [
       "build_manifest_sha256",
@@ -18,11 +18,11 @@
     ],
     "acceptance": "The manifest commit must be an ancestor of the tested HEAD with zero critical-source drift; the committed source identity marker and binary SHA must match; then exit_code=0, source_tree_clean=true, markers_verified=true and termination_confirmed=true.",
     "evidence": {
-      "source_commit": "ff52e777dd96de346328bf7825d1906499980615",
+      "source_commit": "bba779d073a80c43661c6fe0dca4fc25e0e99f3d",
       "source_identity_sha256": "b9c3c25fece8a80d71eee340e61d8cd5088b95f8b12e221278d9d249f6d29c9d",
-      "executable_sha256": "665fa27f997d4fa02d622ad7f4877d7ee877b3de94689601d52c28166b136f3a",
-      "build_manifest_sha256": "e96280491deada38ae6606e5320557075ebecd4da3098cf2d4188702fdfc479d",
-      "summary_sha256": "472cde87283cb8ca591cec8cf03065e64b47380387d771f018126e189d11bb6f",
+      "executable_sha256": "a865743a3113b81e097d8f7f4cda14ef63524384e9cc60a2803a16c6da0962ab",
+      "build_manifest_sha256": "13a52422f0db3d808e0f0c315a28408532bca56c45595cba9fdbb5375a9d591c",
+      "summary_sha256": "d231c109945d6c443e6441bcc584da0516c8c8270d056c0a8546c97f72a6d5d4",
       "marker_sha256": "17d7cbca262c94f802d59255d0ec41137bd85c12037a393cc5198abd40373cae",
       "timeout_seconds": 180,
       "timed_out": false,
@@ -32,9 +32,9 @@
       "markers_verified": true
     },
     "release_build_receipt": {
-      "path": "artifacts/v92-o01-release-build-ff52e777/emule-release-build.json",
-      "sha256": "3472b9ff3be49faa4e687d7a7070cdfa37c07f655ef735291b0527e318157fff",
-      "source_tree": "ecb70c0dd588632a0bf099ac73ad9256a854e9e2"
+      "path": "artifacts/v92-o01-release-build-bba779d0/emule-release-build.json",
+      "sha256": "abc990429e2286ccf46870e872256f350c79a92024b29475579654fc153a4381",
+      "source_tree": "c823e4b9c6e52c426bc51cbc4ecfb20ccc88a591"
     }
   },
   "rows": [

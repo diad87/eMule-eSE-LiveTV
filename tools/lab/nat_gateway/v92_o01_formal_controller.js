@@ -20,8 +20,25 @@ const CHECKPOINT_KEYS = Object.freeze([
   'schema', 'ordinal', 'elapsed_ms', 'fault_ordinal', 'executed', 'slots',
   'product', 'gateway', 'product_sha256', 'gateway_sha256', 'previous_sha256', 'record_sha256',
 ]);
+const CLOCK_FAILURE_CODES = Object.freeze({
+  invalid: 'O01_CONTROLLER_CLOCK_INVALID',
+  nonmonotonic: 'O01_CONTROLLER_CLOCK_NONMONOTONIC',
+  checkpointGap: 'O01_CONTROLLER_CLOCK_CHECKPOINT_GAP',
+  intertickGap: 'O01_CONTROLLER_CLOCK_INTERTICK_GAP',
+});
 
 function fail(code) { throw new Error(code); }
+function failClock(code, detail) {
+  const clockFailure = Object.freeze({
+    schema: 'ese.v92.o01-clock-failure/v1', code,
+    tick: detail.tick, slot: detail.slot, target: detail.target,
+    elapsed: detail.elapsed, last_tick: detail.lastTick, lateness: detail.lateness,
+    checkpoint_shift: detail.checkpointShift, limits: detail.limits, stage: detail.stage,
+  });
+  const error = new Error(code);
+  Object.defineProperty(error, 'clockFailure', { value: clockFailure, enumerable: true });
+  throw error;
+}
 function hash(domain, value) {
   return crypto.createHash('sha256').update(`${domain}\0`).update(canonical(value)).digest('hex');
 }
@@ -195,12 +212,12 @@ function makeTerminalRecord({ product, gateway, slots, previousSha256 }) {
 }
 
 async function runControllerCore(options) {
-  const { config, child, readProduct, emitCheckpoint, clock, sleep,
+  const { config, child, readProduct, emitCheckpoint, clock, sleep, bound = bounded,
     sourceCommit, sourceTree, scenarioSha256, boundFiles } = options;
   const plan = validateScenario(config);
   if (!child || typeof child.start !== 'function' || typeof child.beginSlot !== 'function' || typeof child.observe !== 'function' ||
       typeof child.shutdown !== 'function' || typeof readProduct !== 'function' ||
-      typeof emitCheckpoint !== 'function' || !clock || typeof clock.now !== 'function' || typeof sleep !== 'function') {
+      typeof emitCheckpoint !== 'function' || !clock || typeof clock.now !== 'function' || typeof sleep !== 'function' || typeof bound !== 'function') {
     fail('O01_CONTROLLER_CONFIG');
   }
   if (typeof sourceCommit !== 'string' || !/^[a-f0-9]{40}$/.test(sourceCommit) ||
@@ -221,31 +238,66 @@ async function runControllerCore(options) {
     await child.start(); childStarted = true;
     const started = productState.accept(await bounded(readProduct(),240000,'O01_CONTROLLER_PRODUCT_START_TIMEOUT'));
     if (started.schema !== 'ese.v92.o01-product-started/v1') fail('O01_CONTROLLER_PRODUCT_NOT_STARTED');
-    const mapperPreflight=validateObservation(await child.observe());
+    const mapperPreflight=validateObservation(await bound(child.observe(),15000,'O01_CONTROLLER_CHILD_OBSERVE_TIMEOUT'));
     if(mapperPreflight.traffic.final_owned_upnp!==0||
        !((mapperPreflight.traffic.final_owned_pcp===2&&mapperPreflight.traffic.final_owned_natpmp===0)||
          (mapperPreflight.traffic.final_owned_natpmp===2&&mapperPreflight.traffic.final_owned_pcp===0)))
       fail('O01_CONTROLLER_MAPPER_PROTOCOL');
-    const epoch = clock.now(); let scheduleShift = 0; let checkpointShift = 0; let lastTickObserved = 0;
-    let lastProduct = null; let lastGateway = null;let pendingSlots=[];let persistedCheckpoints=0;
+    const clockLimits = Object.freeze({ tick_ms: config.tick_ms, checkpoint_ms: config.checkpoint_ms,
+      checkpoint_max_gap_ms: config.limits.checkpoint_max_gap_ms,
+      checkpoint_shift_limit_ms: plan.schedule_jitter_ms,
+      intertick_gap_limit_ms: config.tick_ms + plan.schedule_jitter_ms });
+    const epoch = clock.now();
+    if (!Number.isSafeInteger(epoch) || epoch < 0) failClock(CLOCK_FAILURE_CODES.invalid,
+      { tick:0,slot:0,target:0,elapsed:null,lastTick:0,lateness:null,checkpointShift:0,limits:clockLimits,stage:'EPOCH' });
+    let lastClock = epoch;
+    const readElapsed = ({ tick, slot, target, lastTick, checkpointShift, stage }) => {
+      const value = clock.now();
+      if (!Number.isSafeInteger(value) || value < 0) failClock(CLOCK_FAILURE_CODES.invalid,
+        { tick,slot,target,elapsed:null,lastTick,lateness:null,checkpointShift,limits:clockLimits,stage });
+      const elapsed = value - epoch;
+      const lateness = Number.isSafeInteger(target) ? elapsed - target : null;
+      if (!Number.isSafeInteger(elapsed) || elapsed < 0) failClock(CLOCK_FAILURE_CODES.invalid,
+        { tick,slot,target,elapsed:null,lastTick,lateness:null,checkpointShift,limits:clockLimits,stage });
+      if (value < lastClock) failClock(CLOCK_FAILURE_CODES.nonmonotonic,
+        { tick,slot,target,elapsed,lastTick,lateness,checkpointShift,limits:clockLimits,stage });
+      lastClock = value;
+      return elapsed;
+    };
+    let scheduleShift = 0; let checkpointShift = 0; let lastTickObserved = 0; let timingStage = 'AFTER_PREFLIGHT';
+    let lastProduct = null; let lastGateway = null;let pendingSlots=[];let persistedCheckpoints=0;let lastCheckpointPersisted=0;
     for (let index = 0; index < plan.tick_count; index += 1) {
+      const tick = index + 1; const slot = Math.floor(index / plan.slot_ticks) + 1;
       if (index % plan.slot_ticks === 0) {
-        const slot = index / plan.slot_ticks + 1; const fault = plan.schedule[slot - 1];
-        cross.beginSlot(fault, await child.beginSlot(fault, slot));
+        const fault = plan.schedule[slot - 1];
+        cross.beginSlot(fault, await bound(child.beginSlot(fault, slot),15000,'O01_CONTROLLER_CHILD_BEGIN_TIMEOUT'));
+        timingStage = 'AFTER_BEGIN_SLOT';
       }
-      const target = (index + 1) * config.tick_ms + scheduleShift;
-      const remaining = target - (clock.now() - epoch);
-      if (remaining > 0) await sleep(remaining);
-      const elapsed = clock.now() - epoch;
+      const target = tick * config.tick_ms + scheduleShift;
+      if (!Number.isSafeInteger(target) || target < 0) failClock(CLOCK_FAILURE_CODES.invalid,
+        { tick,slot,target:null,elapsed:lastClock-epoch,lastTick:lastTickObserved,lateness:null,
+          checkpointShift,limits:clockLimits,stage:'TARGET' });
+      let elapsed = readElapsed({ tick,slot,target,lastTick:lastTickObserved,checkpointShift,stage:timingStage });
+      while (elapsed < target) {
+        await sleep(target - elapsed);
+        elapsed = readElapsed({ tick,slot,target,lastTick:lastTickObserved,checkpointShift,stage:'AFTER_SLEEP' });
+      }
       const lateness = elapsed - target;
-      if (!Number.isSafeInteger(elapsed) || lateness < 0 || checkpointShift + lateness >= plan.schedule_jitter_ms ||
-          elapsed <= lastTickObserved || elapsed - lastTickObserved >= config.tick_ms + plan.schedule_jitter_ms) fail('O01_CONTROLLER_CLOCK_GAP');
-      scheduleShift += lateness; checkpointShift += lateness;
+      const nextCheckpointShift = checkpointShift + lateness;
+      if (elapsed <= lastTickObserved) failClock(CLOCK_FAILURE_CODES.nonmonotonic,
+        { tick,slot,target,elapsed,lastTick:lastTickObserved,lateness,checkpointShift:nextCheckpointShift,limits:clockLimits,stage:'TIMING_GATE' });
+      if (elapsed - lastTickObserved >= clockLimits.intertick_gap_limit_ms) failClock(CLOCK_FAILURE_CODES.intertickGap,
+        { tick,slot,target,elapsed,lastTick:lastTickObserved,lateness,checkpointShift:nextCheckpointShift,limits:clockLimits,stage:'TIMING_GATE' });
+      if (nextCheckpointShift >= plan.schedule_jitter_ms) failClock(CLOCK_FAILURE_CODES.checkpointGap,
+        { tick,slot,target,elapsed,lastTick:lastTickObserved,lateness,checkpointShift:nextCheckpointShift,limits:clockLimits,stage:'TIMING_GATE' });
+      scheduleShift += lateness; checkpointShift = nextCheckpointShift;
       lastTickObserved = elapsed;
-      lastGateway = await child.observe(); cross.acceptTick(lastGateway);
+      lastGateway = await bound(child.observe(),15000,'O01_CONTROLLER_CHILD_OBSERVE_TIMEOUT'); cross.acceptTick(lastGateway);
+      timingStage = 'AFTER_OBSERVE';
       if ((index + 1) % 6 === 0) {
         const line = await bounded(readProduct(),15000,'O01_CONTROLLER_PRODUCT_SAMPLE_TIMEOUT'); productState.accept(line);
         lastProduct = parseLine(line); cross.acceptProduct(lastProduct);
+        timingStage = 'AFTER_PRODUCT';
       }
       if ((index + 1) % plan.slot_ticks === 0) pendingSlots.push(cross.completeSlot());
       if ((index + 1) % 30 === 0 && index + 1 < plan.tick_count) {
@@ -255,8 +307,17 @@ async function runControllerCore(options) {
           gateway: lastGateway, previousSha256: previous });
         const receipt = await emitCheckpoint(checkpoint);
         if (receipt !== checkpoint.record_sha256) fail('O01_CONTROLLER_CHECKPOINT_NOT_PERSISTED');
+        const checkpointTarget=lastCheckpointPersisted+config.checkpoint_ms;
+        const persistedElapsed=readElapsed({tick,slot,target:checkpointTarget,lastTick:lastTickObserved,
+          checkpointShift,stage:'AFTER_CHECKPOINT'});
+        const persistedShift=persistedElapsed-checkpointTarget;
+        if(persistedShift>=plan.schedule_jitter_ms)failClock(CLOCK_FAILURE_CODES.checkpointGap,
+          {tick,slot,target:checkpointTarget,elapsed:persistedElapsed,lastTick:lastTickObserved,lateness:persistedShift,
+            checkpointShift:persistedShift,limits:clockLimits,stage:'AFTER_CHECKPOINT'});
+        lastCheckpointPersisted=persistedElapsed;
         previous = checkpoint.record_sha256;persistedCheckpoints++;pendingSlots=[];
         checkpointShift = 0;
+        timingStage = 'AFTER_CHECKPOINT';
       }
     }
     const terminal = productState.accept(await bounded(readProduct(),60000,'O01_CONTROLLER_PRODUCT_TERMINAL_TIMEOUT'));
@@ -285,7 +346,7 @@ async function runControllerCore(options) {
 }
 
 async function runFormalController(options) {
-  if (Number(process.versions.node.split('.')[0]) !== 22 || options.clock || options.sleep || options.sourceCommit || options.sourceTree || options.scenarioSha256 || options.boundFiles) fail('O01_CONTROLLER_FORMAL_AUTHORITY');
+  if (Number(process.versions.node.split('.')[0]) !== 22 || options.clock || options.sleep || options.bound || options.sourceCommit || options.sourceTree || options.scenarioSha256 || options.boundFiles) fail('O01_CONTROLLER_FORMAL_AUTHORITY');
   const clock = { now: () => Math.floor(performance.now()) };
   const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
   return runControllerCore({ ...options,...repositoryBinding(options.repoRoot,options.config), clock, sleep });

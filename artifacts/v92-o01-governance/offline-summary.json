@@ -1,18 +1,19 @@
 {
-  "schema": "ese.v92.o01-physical-repair-offline-summary/v1",
-  "source_commit": "ff52e777dd96de346328bf7825d1906499980615",
-  "source_tree": "ecb70c0dd588632a0bf099ac73ad9256a854e9e2",
-  "m_commit": "cf9abf0103fb855f3fa7df41d89fb9b28897c23c",
-  "m_tree": "4b649a93b62849a906852ecba190dbfe39ef32ce",
-  "amendment_sha256": "ea14ac3bb18fbefac240ce74431ffa5f5adc152914779b27b7892e6ea558781a",
+  "schema": "ese.v92.o01-clock-repair-offline-summary/v1",
+  "source_commit": "bba779d073a80c43661c6fe0dca4fc25e0e99f3d",
+  "source_tree": "c823e4b9c6e52c426bc51cbc4ecfb20ccc88a591",
+  "m_commit": "9ab458cb39fee88c9bf57b758ccd251b36ebc5dc",
+  "m_tree": "5227fe5d27b6563c962cad107d32a37bf32ab01f",
+  "amendment_sha256": "f94199dcc05c69970078fa65f6d93b7d772e99be040c936222439ee70d79d0d6",
   "gates": [
-    {"name":"Node 22 complete nat_gateway suite","command":"npm.cmd test","exit_code":0,"marker":"O01_NODE_SUITE_PASS","body":["O01_NODE_SUITE_PASS"],"body_sha256":"78de767fc05a9e9246ef6a74fe37f533b83a2b929d32285f9d5bb45100a717ea"},
-    {"name":"PowerShell parser for every changed ps1/psm1","command":"powershell parser changed ps1/psm1","exit_code":0,"marker":"O01_POWERSHELL_PARSE_PASS","body":["O01_POWERSHELL_PARSE_PASS"],"body_sha256":"831e26ccbffae3670363535e290e34d4e27eb04f2dd2aa6d3677a4ee3d7babe4"},
-    {"name":"formal runner source/mock gate","command":"powershell -File tools/lab/test_v92_o01_formal_runner_mock.ps1","exit_code":0,"marker":"O01_RUNNER_MOCK_PASS","body":["O01_RUNNER_MOCK_PASS"],"body_sha256":"eda0aa6badc1cab0a2471362656458926f0e2b8a948ba497b07789bf09fc4343"},
-    {"name":"G10 hostile governance suite","command":"python -B tools/architecture/test_verify_v92_o01_physical_repair_governance.py","exit_code":0,"marker":"O01_G10_GOVERNANCE_PASS","body":["O01_G10_GOVERNANCE_PASS"],"body_sha256":"81118d59171cae70cb1ffd09e8f1b39e901fc451ee0c9ff5b2f388272b58676b"},
-    {"name":"exact A38 byte and budget verifier","command":"python -B tools/architecture/verify_v92_o01_physical_repair_governance.py --verify","exit_code":0,"marker":"O01_A38_BINDING_PASS","body":["O01_A38_BINDING_PASS"],"body_sha256":"43f2410fedcd6cdd2f4c3f1bff7e165f0fb1498b26a37becd81bbb47706da6e1"},
-    {"name":"official full Release x64 rebuild from clean A38","command":"powershell -File tools/build_all.ps1 -ReleaseTag v0.70b-eSE9.2.0-rc.1","exit_code":0,"marker":"O01_RELEASE_BUILD_PASS","body":["O01_RELEASE_BUILD_PASS"],"body_sha256":"9036396dee16735e8eb4945ea8458f7757b81c183faee30a189e92891be3afea"},
-    {"name":"M38 MOD02 verifier and runtime reseal","command":"verify M38 MOD02 artifacts","exit_code":0,"marker":"O01_MOD02_RESEAL_PASS","body":["O01_MOD02_RESEAL_PASS"],"body_sha256":"ed380623012a243f5fb9a90633896963d66d6a324aa9955d8cac295a111897a0"},
-    {"name":"git diff --check","command":"git diff --check","exit_code":0,"marker":"O01_DIFF_CHECK_PASS","body":["O01_DIFF_CHECK_PASS"],"body_sha256":"f7f8579baf8e7d4389e39da139568f925e293a83267dc77e7c10bf625f9c8af9"}
+    {"name":"Node 22 complete nat_gateway suite","command":"npm.cmd test","exit_code":0,"marker":"O01_A63_NODE_SUITE_PASS","body":["O01_A63_NODE_SUITE_PASS"],"body_sha256":"cc167aaaa01baa9a937a1e3d41fbe2b56e75418307b93102e3b02a96dc440f7c"},
+    {"name":"A63 controller and host focal suite","command":"node --test A63 controller and host tests","exit_code":0,"marker":"O01_A63_FOCAL_PASS","body":["O01_A63_FOCAL_PASS"],"body_sha256":"941b217d42780f8da864e6259ffda22163dea92b63664747e7577a5c3ce590ee"},
+    {"name":"PowerShell parser for changed ps1 and psm1","command":"powershell parser A63 PowerShell paths","exit_code":0,"marker":"O01_A63_POWERSHELL_PARSE_PASS","body":["O01_A63_POWERSHELL_PARSE_PASS"],"body_sha256":"2c8c8f5fa328ea3231c3cd1d7bb1c443851892d2b0ce708af2318e96a0dd8599"},
+    {"name":"formal RPC VM session and runner mocks","command":"powershell A63 formal mocks","exit_code":0,"marker":"O01_A63_FORMAL_MOCKS_PASS","body":["O01_A63_FORMAL_MOCKS_PASS"],"body_sha256":"545773b5136382eb38559f5424d4be1b4a0342231dd5f8b9a99e97476ef283fd"},
+    {"name":"G11 hostile governance suite","command":"python -B tools/architecture/test_verify_v92_o01_clock_repair_governance.py","exit_code":0,"marker":"O01_G11_GOVERNANCE_PASS","body":["O01_G11_GOVERNANCE_PASS"],"body_sha256":"649a27a2bbd5214aad78df3ec8ff414257aff0431a67da9eeada1b6ac02145f7"},
+    {"name":"exact A63 byte and budget verifier","command":"python -B tools/architecture/verify_v92_o01_clock_repair_governance.py --verify","exit_code":0,"marker":"O01_A63_BINDING_PASS","body":["O01_A63_BINDING_PASS"],"body_sha256":"55f5e3c4f6533976d6e73e6d62d6a377fc6f9bf0b798901a32780eefb3776561"},
+    {"name":"official full Release x64 rebuild from clean A63","command":"powershell -File tools/build_all.ps1 -ReleaseTag v0.70b-eSE9.2.0-rc.1","exit_code":0,"marker":"O01_A63_RELEASE_BUILD_PASS","body":["O01_A63_RELEASE_BUILD_PASS"],"body_sha256":"e6600a9ef66d4e400700eb9f4803f76276e54b54f71e884ec2a49b06bc155cf0"},
+    {"name":"M63 MOD02 verifier and runtime reseal","command":"verify M63 MOD02 artifacts","exit_code":0,"marker":"O01_M63_MOD02_RESEAL_PASS","body":["O01_M63_MOD02_RESEAL_PASS"],"body_sha256":"c3d58b664d26fc94ff1627faa7b2015a62407a19fd824684f3585949518bce26"},
+    {"name":"git diff --check","command":"git diff --check","exit_code":0,"marker":"O01_A63_DIFF_CHECK_PASS","body":["O01_A63_DIFF_CHECK_PASS"],"body_sha256":"03da300cf0e0d1ff8a816353558ff549c923584972660989b1680fbe12ae0778"}
   ]
 }

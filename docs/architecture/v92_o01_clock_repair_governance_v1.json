@@ -1,0 +1,392 @@
+{
+  "schema": "ese.v92.o01-clock-repair-governance/v1",
+  "status": "DRAFT_PRE_G11",
+  "base": {
+    "h37_commit": "e3ff85f2f710f25dbd98d8f9be059a5b2aee955d",
+    "h37_tree": "999b81fa83ee7e13caee4c65146b599e0c9c0c4c",
+    "g10_commit": "3f18b71855b2d5341e8805f09d3c3e9e58901a13",
+    "g10_tree": "2423eac425740f5bfc64d3ffbfce3b030f115d20",
+    "a38_commit": "ff52e777dd96de346328bf7825d1906499980615",
+    "a38_tree": "ecb70c0dd588632a0bf099ac73ad9256a854e9e2",
+    "m38_commit": "cf9abf0103fb855f3fa7df41d89fb9b28897c23c",
+    "m38_tree": "4b649a93b62849a906852ecba190dbfe39ef32ce",
+    "h38_commit": "c033d65f17df7dacade2b3518eade7da3349f956",
+    "h38_tree": "61b3133b9378a0a613050b35676a325b043dc9b1",
+    "h62_commit": "4d1d157e48349b685c2e6d1ee1a8929a2d3a2589",
+    "h62_tree": "72a0e5d1ca37615d3a42c59d47bce26ded74705b"
+  },
+  "historical_contract": {
+    "governance_sha256": {
+      "docs/architecture/v92_o01_governance_amendment_v1.json": "f60a99763774cfdabe988b7e53f1d0d1722e31195f567fd1fc00372c4f8a5bd7",
+      "tools/architecture/verify_v92_o01_governance_amendment.py": "dc7c114a2a31cb465c190392087f5fad3e10064723cd8633e167ed711849eb4e",
+      "tools/architecture/test_verify_v92_o01_governance_amendment.py": "832b16df9f1c47e57676ce5ac19d0f2423809a27a4fc500e64317a6936406f7d",
+      "docs/architecture/v92_o01_mapper_hotfix_governance_v1.json": "f74ac5518135593e1bb8f9dea42f301112310ec02cf7546efbb5156fc8808c8d",
+      "tools/architecture/verify_v92_o01_mapper_hotfix_governance.py": "5ad3350ab9a973ff575e837332a54f68fa98bf305e25813cffa6deb5f7d85343",
+      "tools/architecture/test_verify_v92_o01_mapper_hotfix_governance.py": "0f9ea17a7fe1ebbeb0f66915e35c68a456fd67cfe1b4b27bbed2b636d4f1f0d3",
+      "docs/architecture/v92_o01_physical_repair_governance_v1.json": "ea14ac3bb18fbefac240ce74431ffa5f5adc152914779b27b7892e6ea558781a",
+      "tools/architecture/verify_v92_o01_physical_repair_governance.py": "83c6e7f8c134f6ede26328ef1a491cbb55746fdfa84372dfe9ecb9b8cbecd717",
+      "tools/architecture/test_verify_v92_o01_physical_repair_governance.py": "bd1b2d2f84cd6fd1d61cd117ae8b9a74f5fc54d44013a4695b4e3387e286fb73"
+    },
+    "verified_at_commits": [
+      "c033d65f17df7dacade2b3518eade7da3349f956",
+      "4d1d157e48349b685c2e6d1ee1a8929a2d3a2589"
+    ],
+    "rule": "G10/A38/M38/H38 and every historical governance blob remain byte-exact; G11 does not amend them."
+  },
+  "diagnostic_epoch": {
+    "classification": "NON_RELEASE_DIAGNOSTIC_ONLY",
+    "release_gate": false,
+    "evidence_reuse": "FORBIDDEN",
+    "candidate_aliases": {
+      "A39": "a39ab58bc933136539c643b179856fb4ea4071db",
+      "A40": "a1c60a636d32621a7ec97398bc2d90d34b59c7b5",
+      "A41": "28ac1b4c7b0f124eaa4fce5e63a8fb1a6c3d3a81",
+      "A42": "61daaee9a7437b617da91bcfeccd292b523e2564",
+      "A43": "35cc1d7997521686aff82a5a66c85ccb9e40406c",
+      "A44": "1afbc985edd4a7bf24f9845c400ba80f8eaa5e24",
+      "A45": "a885529137e4a6f4548e2482e8c50ad9d846293f",
+      "A46": "a23982bd849380880f6ed691c4ee3c9fd2da0507",
+      "A47": "873774f38777a6f2c39ad59c5a9b0097b6112410",
+      "A48": "0b1272b52bfea9cb5005270528e48178c3ab5d97",
+      "A49": "258c84dc05c44341b32601805fd1646b49688c56",
+      "A50": "8ddf0751ce13a82ed82a18fbe41ed10a89b9555c",
+      "A51": "63dd44ca3d8a7496f38dcb0ab895fd741302ecd5",
+      "A52": "0e300ab08655178be44253d7d9a62f81582cc628",
+      "A53": "49321b0621d92b5058db18d8664cf0331a5df337",
+      "A54": "832f50f4e5c6f704665c6584189796e22ff721ba",
+      "A55": "816515f52b897169dda8808eb43440b2782c19af",
+      "A56": "976004dc339920556cb157785948f5795822ffbc",
+      "A57": "c1d195b25d0d11cf0a30c7fc4ebbf3b725c2887f",
+      "A58": "b293ce5d385aa97e567257c27a6e3f8eda60c980",
+      "A59": "bd2d95890d06331a5bd1bef0d24593496daebf8b",
+      "A60": "b609ae5cf5c04414e96618bda824d764d7fa9b5e",
+      "A61": "7f30a550e11637edbc84ecc6796b7e3eee34c9bf",
+      "A62": "621aff2b6515315ebb3e2b6940108964cfb28cf5"
+    },
+    "first_parent_commits": [
+      "a39ab58bc933136539c643b179856fb4ea4071db",
+      "715f5363103c0c92fb7cb7a34c25c7899a6e1856",
+      "a1c60a636d32621a7ec97398bc2d90d34b59c7b5",
+      "43c23a8d2016a57a0d22ef441358a013edcf5d7a",
+      "28ac1b4c7b0f124eaa4fce5e63a8fb1a6c3d3a81",
+      "2b45f0bea8190883685013d331ca36a6a6d37070",
+      "61daaee9a7437b617da91bcfeccd292b523e2564",
+      "be4ee6e3069c6fb01b8e9a572712adf93c374396",
+      "35cc1d7997521686aff82a5a66c85ccb9e40406c",
+      "761cae24ecd34b6d43b6ad51c9d7d4dba27a3dc5",
+      "1afbc985edd4a7bf24f9845c400ba80f8eaa5e24",
+      "930ba2b4581313a1bc679bd59f9411883e95ac76",
+      "a885529137e4a6f4548e2482e8c50ad9d846293f",
+      "a2b207250120004b239d77629dc2b3d632460b47",
+      "a23982bd849380880f6ed691c4ee3c9fd2da0507",
+      "ee686b8769922c4e423b5ec917a9a337335af8d5",
+      "873774f38777a6f2c39ad59c5a9b0097b6112410",
+      "7ee5ea029a219a6777e2f40589bd0d6216077b75",
+      "0b1272b52bfea9cb5005270528e48178c3ab5d97",
+      "2bf0641957f35f971f0d461f8c8c70d8e769fef9",
+      "258c84dc05c44341b32601805fd1646b49688c56",
+      "60f91a1cc6b0ce75788c13d1c3d4786cf1fe2a04",
+      "8ddf0751ce13a82ed82a18fbe41ed10a89b9555c",
+      "c6538ac2afd9ca0bdb90c265d276e4cf5e2aba52",
+      "63dd44ca3d8a7496f38dcb0ab895fd741302ecd5",
+      "8fa3caca46444367dd751e6dc4a8f98bbcfed999",
+      "0e300ab08655178be44253d7d9a62f81582cc628",
+      "e78c0adb2198b178b130f54945e882e2f51cbfa2",
+      "49321b0621d92b5058db18d8664cf0331a5df337",
+      "611107374944ac546cfdd7170e04a1990b1c581d",
+      "832f50f4e5c6f704665c6584189796e22ff721ba",
+      "79cfffd5406ab30b349ff1568def95fdaec5b5f1",
+      "816515f52b897169dda8808eb43440b2782c19af",
+      "14ef412b4c49be9e92ee69451812e907679049ae",
+      "976004dc339920556cb157785948f5795822ffbc",
+      "061cce166a1b60dcf9caef290be259b85cd3e083",
+      "c1d195b25d0d11cf0a30c7fc4ebbf3b725c2887f",
+      "e9090e2ac6bf7cef046c554e1719c4f8d4a1a5f0",
+      "b293ce5d385aa97e567257c27a6e3f8eda60c980",
+      "bd2d95890d06331a5bd1bef0d24593496daebf8b",
+      "82d7c299d67329ffbb93abbb316b5ba96712b12f",
+      "b609ae5cf5c04414e96618bda824d764d7fa9b5e",
+      "6b2863d735cb5feef00a0de44065093c2d4bdb18",
+      "7f30a550e11637edbc84ecc6796b7e3eee34c9bf",
+      "09936aecaccc08450f32529aa5fd2d2242a77087",
+      "621aff2b6515315ebb3e2b6940108964cfb28cf5",
+      "4d1d157e48349b685c2e6d1ee1a8929a2d3a2589"
+    ],
+    "commit_count": 47,
+    "commit_list_sha256": "9c05fd97c0fd975bf7f076c3ac49d305436b360687e5900dcd1a78ecad852a27",
+    "cumulative_paths": [
+      "tools/lab/assert_data_route.ps1",
+      "tools/lab/handoff93/run_product_mapper_cycle.ps1",
+      "tools/lab/nat_gateway/test/v92_o01_formal_controller.test.js",
+      "tools/lab/nat_gateway/test/v92_o01_t8_daemon.test.js",
+      "tools/lab/nat_gateway/test/v92_o01_t8_upnp_edge.test.js",
+      "tools/lab/nat_gateway/test/v92_o01_validate_formal.test.js",
+      "tools/lab/nat_gateway/v92_o01_formal_controller.js",
+      "tools/lab/nat_gateway/v92_o01_scenario.json",
+      "tools/lab/nat_gateway/v92_o01_soak.js",
+      "tools/lab/nat_gateway/v92_o01_t8_daemon.js",
+      "tools/lab/nat_gateway/v92_o01_t8_upnp_edge.js",
+      "tools/lab/nat_gateway/v92_o01_validate_formal.js",
+      "tools/lab/run_v92_o01_formal.ps1",
+      "tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1",
+      "tools/lab/test_v92_o01_formal_runner_mock.ps1",
+      "tools/lab/test_v92_o01_vm_session_mock.ps1",
+      "tools/lab/v92_o01_vm_session.psm1"
+    ],
+    "cumulative_path_sha256": {
+      "tools/lab/assert_data_route.ps1": "7b1e968c96bbb10abc72a75e24b01782f63ad848bbbd110a13e9f9a04d76b570",
+      "tools/lab/handoff93/run_product_mapper_cycle.ps1": "46699855502138f8a39cf30bfd0f3f4827a9e02febc79b317218a34924c99027",
+      "tools/lab/nat_gateway/test/v92_o01_formal_controller.test.js": "1b18bf47e1f4b2c8ec28636cb0a7612017bda2c649705d67215f1e36acdc7132",
+      "tools/lab/nat_gateway/test/v92_o01_t8_daemon.test.js": "18676c00987597a83572d1a919dcc9d05eba352aba33decfbffb35635b1d7d5d",
+      "tools/lab/nat_gateway/test/v92_o01_t8_upnp_edge.test.js": "6261096830512e57de87d6503e6b0574a4e0fa053815c2e998f7492d06d3e7a6",
+      "tools/lab/nat_gateway/test/v92_o01_validate_formal.test.js": "4c9825afc36184038fd75cde4793e483f9a0512ffeca5149465da3a9e8e09436",
+      "tools/lab/nat_gateway/v92_o01_formal_controller.js": "04b323ee22dbc5fa74c7a2c5265c8fd436d00c281ff149881758901897fb199f",
+      "tools/lab/nat_gateway/v92_o01_scenario.json": "602874173a0ad69df7da4020f9a8db6ed6f726585c1f3ff983eadd187f74df5d",
+      "tools/lab/nat_gateway/v92_o01_soak.js": "dd7474c8135e735a482ab978931318ceb3e5810865cca2693f774da03d756567",
+      "tools/lab/nat_gateway/v92_o01_t8_daemon.js": "1daccd7fe0a0c35ccf4e30da9dbd111b3fed2270281c53250940efcd25cfa921",
+      "tools/lab/nat_gateway/v92_o01_t8_upnp_edge.js": "61fc600d80865b9a75894cd76929b0dd1261cfab2e0258d37aa5b81d981f2457",
+      "tools/lab/nat_gateway/v92_o01_validate_formal.js": "dba5cdc5332ea66959038d81690cccc7b16560c48eea5274aa79f2bd676c41dd",
+      "tools/lab/run_v92_o01_formal.ps1": "7a5747433b79ffeec3f370cb041aab3f53920753301b8798758e5c5c606eff38",
+      "tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1": "b1202452bec0d6f565d1715e43b9b426929e3e4e71dfd3b79fd068b2f2cda970",
+      "tools/lab/test_v92_o01_formal_runner_mock.ps1": "17b537a087c1e833c9bc7ff8ebf0d42979eedc4d4afb2b26202c79f9b670112b",
+      "tools/lab/test_v92_o01_vm_session_mock.ps1": "58a4f342caa7df61f189e3a69b62cfcf20605405b3caccc3763f93f46d4c8b9a",
+      "tools/lab/v92_o01_vm_session.psm1": "62f264fe0c06e6983539c2594a3c62642ebf650bf75b82dd5c8fb4f5b91b33f8"
+    },
+    "cumulative_delta_manifest_sha256": "8dc25e8c8db251cd05f7df67c9fcd78d914a466082772cd727174f0f0cb8a03f",
+    "cumulative_budget": {
+      "path_count": 17,
+      "add_exact": 188,
+      "delete_exact": 58,
+      "net_exact": 130
+    },
+    "rule": "A39 through A62, their authorization commits, partial checkpoints and failures are diagnostics only and can never enter R63."
+  },
+  "scope": "V92-O01 rc.1 only: classify clock failures without weakening the frozen 70000 ms scheduling bound, persist one closed diagnostic artifact on failure, align the RPC watchdog to 140000 ms, rebuild from A63, reseal MOD02, and admit release only through a new uninterrupted direct-R63 PASS.",
+  "topology": {
+    "G11": "direct child of H62; exactly this amendment, verifier and hostile verifier test",
+    "A63": "direct child of G11; exactly seven frozen functional paths at exact byte and per-path numstat identities",
+    "M63": "direct child of A63; exactly four carriers from one fresh official full Release build and MOD02 reseal",
+    "H63": "direct child of M63; exactly four governance carriers with two independent empty-finding approvals",
+    "R63": "direct child of H63; exactly 98 PASS artifacts from one uninterrupted eight-hour run sourced from A63 and the M63 executable"
+  },
+  "phase_contract": {
+    "schema": "ese.v92.o01-clock-repair-phases/v1",
+    "merge_policy": "Every G11/A63/M63/H63/R63 commit has exactly one parent; merges, squash/rebase substitution, intermediate commits, S, resume and reused evidence are rejected.",
+    "G11": {
+      "parent": "H62",
+      "delta": "governance_paths"
+    },
+    "A63": {
+      "parent": "G11",
+      "delta": "functional_paths"
+    },
+    "M63": {
+      "parent": "A63",
+      "delta": "m_carrier_paths",
+      "build": "fresh official full Release rebuild from clean A63"
+    },
+    "H63": {
+      "parent": "M63",
+      "delta": "h_carrier_paths"
+    },
+    "R63": {
+      "parent": "H63",
+      "source": "A63",
+      "governance": "H63",
+      "executable": "exact_M63_manifest_executable_sha256",
+      "release_gate": true
+    }
+  },
+  "governance_paths": [
+    "docs/architecture/v92_o01_clock_repair_governance_v1.json",
+    "tools/architecture/test_verify_v92_o01_clock_repair_governance.py",
+    "tools/architecture/verify_v92_o01_clock_repair_governance.py"
+  ],
+  "functional_paths": {
+    "runtime": [
+      "tools/lab/nat_gateway/v92_o01_formal_controller.js",
+      "tools/lab/nat_gateway/v92_o01_formal_host.js",
+      "tools/lab/v92_o01_vm_session.psm1"
+    ],
+    "tests": [
+      "tools/lab/nat_gateway/test/v92_o01_formal_controller.test.js",
+      "tools/lab/nat_gateway/test/v92_o01_formal_host.test.js",
+      "tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1",
+      "tools/lab/test_v92_o01_vm_session_mock.ps1"
+    ],
+    "all": [
+      "tools/lab/nat_gateway/test/v92_o01_formal_controller.test.js",
+      "tools/lab/nat_gateway/test/v92_o01_formal_host.test.js",
+      "tools/lab/nat_gateway/v92_o01_formal_controller.js",
+      "tools/lab/nat_gateway/v92_o01_formal_host.js",
+      "tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1",
+      "tools/lab/test_v92_o01_vm_session_mock.ps1",
+      "tools/lab/v92_o01_vm_session.psm1"
+    ],
+    "path_count": 7,
+    "sha256": {
+      "tools/lab/nat_gateway/test/v92_o01_formal_controller.test.js": "9ccc8add9081d3623fe48fa3d80aca1b7b5958ca46b1a2048311fee5033f90c0",
+      "tools/lab/nat_gateway/test/v92_o01_formal_host.test.js": "17ca5bc0d562d4438bf44b3219b6d942c751545297a0b7f46a2675d564fd05a7",
+      "tools/lab/nat_gateway/v92_o01_formal_controller.js": "ce6bb5cb52cf269574c512879fa0bda2db0d1bc8550eff9235662d11ae72c7be",
+      "tools/lab/nat_gateway/v92_o01_formal_host.js": "2d2916c5b8cff0bd5ad871b18912f6b9701f420274cf1c43932e78edc29b5e02",
+      "tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1": "28bc551c3f1dfe0a8563feffb53e7614b380750e0fe5237a7881a30f83d89153",
+      "tools/lab/test_v92_o01_vm_session_mock.ps1": "275e7cff2f1120e3d12278d963af95eb1dba76280ec619fccc912959b1238c28",
+      "tools/lab/v92_o01_vm_session.psm1": "1fc8d05581b35a36ed022906b4cb80f4ddca2e07676c0190e158463ac6d73934"
+    },
+    "paths_sha256": "8cc5e001cda96162c820c84c2c815afc85549ffe60481e65a814b4e2788e5a56",
+    "byte_identity_sha256": "d8cc5843278d1447901ba297bca23c88a23721788c0a9d506d54856db1325660"
+  },
+  "immutable_contract": {
+    "scenario_path": "tools/lab/nat_gateway/v92_o01_scenario.json",
+    "scenario_blob": "720a1359ebdab210f7a670963fb721fc2b8b878f",
+    "scenario_sha256": "602874173a0ad69df7da4020f9a8db6ed6f726585c1f3ff983eadd187f74df5d",
+    "product_mapper_path": "tools/lab/handoff93/run_product_mapper_cycle.ps1",
+    "product_mapper_blob": "bf2494f1b61a27ca0e2af5e4d0197d2137cb06d6",
+    "product_mapper_sha256": "46699855502138f8a39cf30bfd0f3f4827a9e02febc79b317218a34924c99027",
+    "formal_duration_ms": 28800000,
+    "tick_ms": 10000,
+    "checkpoint_ms": 300000,
+    "checkpoint_max_gap_ms": 370000,
+    "controller_schedule_jitter_ms": 70000,
+    "product_stream_max_gap_ms": 70000,
+    "subsequent_rpc_watchdog_ms": 140000,
+    "bound_files_count": 21,
+    "clock_codes": [
+      "O01_CONTROLLER_CLOCK_INVALID",
+      "O01_CONTROLLER_CLOCK_NONMONOTONIC",
+      "O01_CONTROLLER_CLOCK_CHECKPOINT_GAP",
+      "O01_CONTROLLER_CLOCK_INTERTICK_GAP"
+    ],
+    "early_wake_rule": "sleep again until the same absolute target; never turn an early wake into PASS evidence or a false failure",
+    "failure_artifact": "clock-failure.json is exclusive, structured, integer-only diagnostic evidence and is forbidden from PASS/R63"
+  },
+  "budget": {
+    "path_count": 7,
+    "add_exact": 114,
+    "delete_exact": 25,
+    "net_exact": 89,
+    "headroom": 0,
+    "runtime": {
+      "path_count": 3,
+      "add_exact": 98,
+      "delete_exact": 20,
+      "net_exact": 78
+    },
+    "tests": {
+      "path_count": 4,
+      "add_exact": 16,
+      "delete_exact": 5,
+      "net_exact": 11
+    },
+    "path_budget": {
+      "tools/lab/nat_gateway/test/v92_o01_formal_controller.test.js": {
+        "add": 10,
+        "delete": 2,
+        "net": 8
+      },
+      "tools/lab/nat_gateway/test/v92_o01_formal_host.test.js": {
+        "add": 4,
+        "delete": 1,
+        "net": 3
+      },
+      "tools/lab/nat_gateway/v92_o01_formal_controller.js": {
+        "add": 77,
+        "delete": 16,
+        "net": 61
+      },
+      "tools/lab/nat_gateway/v92_o01_formal_host.js": {
+        "add": 19,
+        "delete": 2,
+        "net": 17
+      },
+      "tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1": {
+        "add": 1,
+        "delete": 1,
+        "net": 0
+      },
+      "tools/lab/test_v92_o01_vm_session_mock.ps1": {
+        "add": 1,
+        "delete": 1,
+        "net": 0
+      },
+      "tools/lab/v92_o01_vm_session.psm1": {
+        "add": 2,
+        "delete": 2,
+        "net": 0
+      }
+    },
+    "path_budget_sha256": "b6520967eb3967ec76c2a287801084a5ea573f0eae5e8d8ca781d5b31a860115"
+  },
+  "carrier_paths": {
+    "M63": {
+      "fixed": [
+        "docs/architecture/mod02_build_manifest_v1.json",
+        "docs/architecture/mod02_characterization_matrix_v1.json"
+      ],
+      "summary_pattern": "artifacts/mod02-runtime-v92-<A63[0:8]>/summary.json",
+      "release_build_receipt_pattern": "artifacts/v92-o01-release-build-<A63[0:8]>/emule-release-build.json",
+      "file_count": 4
+    },
+    "H63": [
+      "artifacts/v92-o01-governance/activation.json",
+      "artifacts/v92-o01-governance/offline-summary.json",
+      "artifacts/v92-o01-governance/review-sol.json",
+      "artifacts/v92-o01-governance/review-terra.json"
+    ],
+    "R63": {
+      "directory": "artifacts/v92-o01-formal",
+      "checkpoint_pattern": "checkpoint-(01..95).json",
+      "fixed": [
+        "controller-result.json",
+        "formal-run-result.json",
+        "formal-validation.json"
+      ],
+      "forbidden": [
+        "clock-failure.json",
+        "failure.json"
+      ],
+      "file_count": 98
+    }
+  },
+  "required_reviews": [
+    "Terra APPROVE with findings=[]",
+    "Sol APPROVE with findings=[]"
+  ],
+  "offline_gates": [
+    "Node 22 complete nat_gateway suite",
+    "A63 controller and host focal suite",
+    "PowerShell parser for changed ps1 and psm1",
+    "formal RPC VM session and runner mocks",
+    "G11 hostile governance suite",
+    "exact A63 byte and budget verifier",
+    "official full Release x64 rebuild from clean A63",
+    "M63 MOD02 verifier and runtime reseal",
+    "git diff --check"
+  ],
+  "physical_policy": {
+    "formal": "Exactly 28800000 monotonic milliseconds, 2880 ten-second ticks, 96 five-minute fault slots, 480 product samples and 95 checkpoints; no duration override, resume, skip-cleanup or threshold increase.",
+    "failure": "Any clock subcode remains release_gate=false; its structured clock-failure artifact is diagnostic only and the next attempt starts from a new empty evidence root.",
+    "claim_rule": "Only independently validated direct-R63 evidence with exact cleanup and baseline restoration may award V92-O01 PASS."
+  },
+  "stop_conditions": [
+    "any A63 path outside the exact seven-path slice",
+    "any A63 byte identity or per-path numstat differs by one byte or line",
+    "scenario, mapper, 370000 ms checkpoint gap, derived 70000 ms scheduler bound or 21 bound_files changes",
+    "the 90000 ms watchdog is retained, 140000 ms becomes configurable in the formal path, or any watchdog is unbounded",
+    "clock-failure.json is overwritten, contains an open/free-form field, appears on PASS, or enters R63",
+    "any A39-A62 artifact, checkpoint or failure is reused for M63, H63 or R63",
+    "G11 is not the direct child of H62 or the frozen H38-H62 first-parent chain differs",
+    "M63 is not one fresh clean official full Release build bound to A63 and exact MOD02 identity",
+    "source, Node, package, M63/H63 binding or evidence root changes during the run",
+    "P0, P1, P2 or any nonempty review finding",
+    "release_gate=true before independent validation and exact baseline restoration"
+  ],
+  "activation_state": {
+    "G11": null,
+    "A63": null,
+    "M63": null,
+    "H63": null,
+    "R63": null,
+    "rule": "The document never stores its own commit; later carriers derive phase identities from exact Git parentage."
+  }
+}

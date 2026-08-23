@@ -1,0 +1,563 @@
+{
+  "schema": "ese.v92.o01-rpc-failure-governance/v1",
+  "status": "SEALED_G12_A64_CAUSAL_FREEZE",
+  "amendment": "G12",
+  "base": {
+    "h62_commit": "4d1d157e48349b685c2e6d1ee1a8929a2d3a2589",
+    "h62_tree": "72a0e5d1ca37615d3a42c59d47bce26ded74705b",
+    "g11_commit": "4ffaf1f56347798e7f20c676759c1a1ad95f4970",
+    "g11_tree": "12673a84e88c8aa686bef91715e516e2ac969d68",
+    "a63_commit": "bba779d073a80c43661c6fe0dca4fc25e0e99f3d",
+    "a63_tree": "c823e4b9c6e52c426bc51cbc4ecfb20ccc88a591",
+    "m63_commit": "9ab458cb39fee88c9bf57b758ccd251b36ebc5dc",
+    "m63_tree": "5227fe5d27b6563c962cad107d32a37bf32ab01f",
+    "h63_commit": "bdf2c0ffcb43c519eea950e2125f27fa850076dd",
+    "h63_tree": "d402269a14ef8cd1682eeb3365cd4bad1258f824"
+  },
+  "historical_contract": {
+    "g11_governance_sha256": {
+      "docs/architecture/v92_o01_clock_repair_governance_v1.json": "f94199dcc05c69970078fa65f6d93b7d772e99be040c936222439ee70d79d0d6",
+      "tools/architecture/test_verify_v92_o01_clock_repair_governance.py": "a1b2952e40ed3051da43ac0fd0bbabdfce8cfe9093af4d85e4fad706dad3a2fb",
+      "tools/architecture/verify_v92_o01_clock_repair_governance.py": "b4fad8e71dd307c1437b0c7540d5c264f168c82ea55eaa86ca69ad66e55369c7"
+    },
+    "m63_carrier_sha256": {
+      "artifacts/mod02-runtime-v92-bba779d0/summary.json": "d231c109945d6c443e6441bcc584da0516c8c8270d056c0a8546c97f72a6d5d4",
+      "artifacts/v92-o01-release-build-bba779d0/emule-release-build.json": "abc990429e2286ccf46870e872256f350c79a92024b29475579654fc153a4381",
+      "docs/architecture/mod02_build_manifest_v1.json": "13a52422f0db3d808e0f0c315a28408532bca56c45595cba9fdbb5375a9d591c",
+      "docs/architecture/mod02_characterization_matrix_v1.json": "b4985c9341c6aa03fcf49e6e1cb19436a74ffad34ac5093d796dc7125c1636f3"
+    },
+    "h63_carrier_sha256": {
+      "artifacts/v92-o01-governance/activation.json": "0e7bd1beaf33d33562bb74700e0eb28d13f70cc9f5252bbb926686155b7b7ada",
+      "artifacts/v92-o01-governance/offline-summary.json": "a7be74f7215f4f96e2f6a8eb0bb74e1a4e84b799cbb15d5b8985a8d6f94b9c53",
+      "artifacts/v92-o01-governance/review-sol.json": "12149bca99002a2380d8d41625135e3d04609c838c2f0978dab490af0423e955",
+      "artifacts/v92-o01-governance/review-terra.json": "3334c65bb5f8bf15c07fdf155a4c2696bd5087b77e7c8d10192a31fcf4b9cdce"
+    },
+    "rule": "G11, A63, M63, H63 and all their governed carriers remain byte-exact; G12 is additive and never edits G11."
+  },
+  "diagnostic_attempt": {
+    "attempt_id": "a163",
+    "evidence_id": "eSE-v9.2-o01-formal-bba779d0a163",
+    "classification": "NON_RELEASE_DIAGNOSTIC_ONLY",
+    "release_gate": false,
+    "evidence_reuse": "FORBIDDEN",
+    "source_commit": "bba779d073a80c43661c6fe0dca4fc25e0e99f3d",
+    "source_tree": "c823e4b9c6e52c426bc51cbc4ecfb20ccc88a591",
+    "governance_h_commit": "bdf2c0ffcb43c519eea950e2125f27fa850076dd",
+    "checkpoint_schema": "ese.v92.o01-checkpoint/v2",
+    "checkpoint_count": 6,
+    "checkpoint_ordinals": [1, 2, 3, 4, 5, 6],
+    "checkpoint_file_sha256": {
+      "checkpoint-01.json": "cf47bf18e9b31e6c8c9474cbbc13c8bbc8bce3e40a5ebde64af947c3358e4ed0",
+      "checkpoint-02.json": "660bbdd2cbbe36df947e1522dedeb14e620be150ee1ed5af3d838a09e72059e2",
+      "checkpoint-03.json": "f9cb8b581bcc80bda4249b54cc5d95c1b12df8c741e5df6954ce1a4734872026",
+      "checkpoint-04.json": "169e6be9ac7a7598de7564a130f1021748f3835c8235d5df4a597fffff1015c7",
+      "checkpoint-05.json": "08570d63ceb7a5c940b14888aa01386e59b9e2183078c4d5dcc1e26b01c3cd7c",
+      "checkpoint-06.json": "76ceb45c21aee4251f0447e892ef40fe9e38a68dde0db4222c1d9d12887bff73"
+    },
+    "checkpoint_chain": [
+      {
+        "ordinal": 1,
+        "elapsed_ms": 300000,
+        "product_sequence": 6,
+        "previous_sha256": "11a762a4a70ecb6ad80fa9a179ba08b0ffbda416a357729ed1b6a79e52a27572",
+        "record_sha256": "7b866446b1688f5d65deeb14c8895e801e96ec332e944062dddd77b7c8cdf5aa"
+      },
+      {
+        "ordinal": 2,
+        "elapsed_ms": 600000,
+        "product_sequence": 11,
+        "previous_sha256": "7b866446b1688f5d65deeb14c8895e801e96ec332e944062dddd77b7c8cdf5aa",
+        "record_sha256": "0819b1243c108de7c78f287674cbb6e8af2159d43d89a2d730796e543e57ed2d"
+      },
+      {
+        "ordinal": 3,
+        "elapsed_ms": 900000,
+        "product_sequence": 16,
+        "previous_sha256": "0819b1243c108de7c78f287674cbb6e8af2159d43d89a2d730796e543e57ed2d",
+        "record_sha256": "76c48a002febda9f4700ab9bc76fd7a9c7e55a93cb56c7875b21b93007cb24c0"
+      },
+      {
+        "ordinal": 4,
+        "elapsed_ms": 1200000,
+        "product_sequence": 21,
+        "previous_sha256": "76c48a002febda9f4700ab9bc76fd7a9c7e55a93cb56c7875b21b93007cb24c0",
+        "record_sha256": "805806219d9a33221788158e2656ffdb5e78856bb4f2ffe7b3d027b353393211"
+      },
+      {
+        "ordinal": 5,
+        "elapsed_ms": 1500000,
+        "product_sequence": 26,
+        "previous_sha256": "805806219d9a33221788158e2656ffdb5e78856bb4f2ffe7b3d027b353393211",
+        "record_sha256": "ec390b4fa1b313198c694358c5f1190344690fa1bdbfbb0ac3ceba48218bf"
+      },
+      {
+        "ordinal": 6,
+        "elapsed_ms": 1800000,
+        "product_sequence": 31,
+        "previous_sha256": "ec390b4fa1b313198c694358c5f1190344690fa1bdbfbb0ac3ceba48218bf",
+        "record_sha256": "e8ad8bcbac7a1c7e7d40c6de39053a4a42c5dd4b50af845c6a65354e02683ae5"
+      }
+    ],
+    "terminal_failure": {
+      "schema": "ese.v92.o01-formal-failure/v2",
+      "file_sha256": "72dbdcf0f0fe525e39087a98094d6b2177a4958d563b348998ed4b5b9297b8cc",
+      "verdict": "FAIL",
+      "release_gate": false,
+      "primary_failure": "O01_RPC_HOST_FAILED",
+      "failure_codes": ["O01_RPC_HOST_FAILED"],
+      "error_types": ["INVALID_OPERATION"],
+      "records_examined": 1,
+      "product_cycle_observation": null
+    },
+    "launcher": {
+      "schema": "ese.v92.o01-formal-launcher/v1",
+      "file_sha256": "ee08371000a2cc45cab148c4888804f79fc0137e6f411f4d5c4a4c42960bbdb4",
+      "state": "FAILED",
+      "stage": "FORMAL_RECONCILE",
+      "code": "O01_FORMAL_FAILURE_EVIDENCE",
+      "exit_code": 1
+    },
+    "rollback": {
+      "state_schema": "ese.v92.t8-hyperv-state/v1",
+      "state_file_sha256": "79cf24d70d216e276f659b8a1ab7024c157faddde6ea065e3d9956c2dfbb7140",
+      "phase": "TORN_DOWN",
+      "completed": true,
+      "created_resource_flags": {
+        "switch": false,
+        "gateway_address": false,
+        "nat": false
+      },
+      "rollback_failures": []
+    },
+    "rule": "The six checkpoints and terminal failure are coherent diagnostic evidence only; none may be copied, resumed or admitted into M64, H64 or R64."
+  },
+  "scope": "V92-O01 rc.1 only: preserve a closed structured RPC failure observation, freeze the deterministic reproducers and release-gate hardening without attributing a unique a163 root cause, rebuild from frozen A64, reseal MOD02 and admit release only through a fresh uninterrupted direct-R64 PASS.",
+  "threat_model": {
+    "evidence_root": "Concurrent mutation of EvidenceRoot/controller is adversarial and is guarded during validation by persistent FileShare.Read handles over the exact 98 admitted carrier files, plan.json and state.json, plus guarded root/controller directories and exact-set rechecks.",
+    "persistent_inputs": "Persistent tracked-source identity is enforced byte-exactly outside libutp; libutp is recursively bound to its exact gitlink, index and Git-blob contents under fixed core.autocrlf=true, so LF/CRLF-only worktree materializations are intentionally equivalent and every other persistent tracked-source change fails. Persistent build Python dependency projection, Node/npm/pkg-base inputs, host PackageRoot manifest/set, initial guest runtime projection, process inputs and enumerated VM identity/topology/baseline fields fail the forced-worktree, byte-hash, identity, baseline-restoration and binding checks.",
+    "distribution_artifact": "The release ZIP is a post-build distribution artifact bound by the M64/H64 package audit and reviews; it is not read by the physical runner and is not claimed as a runtime input.",
+    "trusted_host_toolchain": "The Windows kernel/filesystem, System32 PowerShell/cmd, canonical Program Files Git and installed MSVC/Windows SDK targets, plus the native DLLs and standard library of the pinned Python installation, are trusted host TCB. Entry executables are path/hash/version checked and ambient redirection variables/configuration are closed, but G12 does not claim a byte-reproducible attestation of the complete host toolchain.",
+    "trusted_lab_fixture": "The pre-provisioned v92-o01-client VM, its initial base-VHD bytes, firmware/configuration, guest OS and credential semantics are trusted lab TCB for the full physical run. The gate fixes the VM name and checks initial Off/Disabled/no-checkpoint state, VMId, one NIC/MAC/switch, one disk path/slot, a fresh differencing child and exact restoration of those enumerated fields; it does not authenticate the initial base VHD or every guest/configuration byte.",
+    "out_of_scope": "Any writer capable of altering or controlling the trusted host TCB, trusted lab fixture or validating process itself, and any privileged adaptive writer capable of replacing or controlling the repository, Node runtime or PackageRoot while evading the closed checks, is outside this release gate's threat boundary.",
+    "claim_limit": "G12 does not claim universal TOCTOU protection, byte authentication of the initial base VHD or every VM/guest setting; it claims only the explicit handle, hash, clean-worktree, enumerated-baseline and binding guarantees above."
+  },
+  "topology": {
+    "G12": "direct child of H63; exactly this amendment, verifier and hostile verifier test",
+    "A64": "direct child of G12; exact functional paths, bytes and per-path numstat are frozen only after causal stabilization",
+    "M64": "direct child of A64; exactly four carriers from one fresh official full Release build and MOD02 reseal",
+    "H64": "direct child of M64; exactly four governance carriers with two independent empty-finding approvals",
+    "R64": "direct child of H64; exactly 98 PASS artifacts from one uninterrupted eight-hour run sourced from A64 and the M64 executable"
+  },
+  "phase_contract": {
+    "schema": "ese.v92.o01-rpc-repair-phases/v1",
+    "merge_policy": "Every G12/A64/M64/H64/R64 commit has exactly one parent; merges, squash/rebase substitution, intermediate commits, resume and reused evidence are rejected.",
+    "G12": {"parent": "H63", "delta": "governance_paths"},
+    "A64": {"parent": "G12", "delta": "frozen_functional_paths_after_causal_stabilization"},
+    "M64": {"parent": "A64", "delta": "m_carrier_paths", "build": "fresh official full Release rebuild from clean A64"},
+    "H64": {"parent": "M64", "delta": "h_carrier_paths"},
+    "R64": {"parent": "H64", "source": "A64", "governance": "H64", "executable": "exact_M64_manifest_executable_sha256", "release_gate": true}
+  },
+  "governance_paths": [
+    "docs/architecture/v92_o01_rpc_failure_governance_v1.json",
+    "tools/architecture/test_verify_v92_o01_rpc_failure_governance.py",
+    "tools/architecture/verify_v92_o01_rpc_failure_governance.py"
+  ],
+  "governance_paths_sha256": "5296046b68bc18e2ed7be811eac5911d5d62283bbd97ca382f24bf06dc4943ca",
+  "governance_tool_identity": {
+    "verifier_normalization": "Replace the unique DOCUMENT_SHA256 assignment value in the verifier by 64 zeroes before SHA-256; reject zero or multiple assignments.",
+    "verifier_normalized_sha256": "e67aedef1abe3ee3370d0770fcd22109922fe8e8b58a80f9d7263bfba613c0ce",
+    "hostile_test_sha256": "47c6477a4d4ad98a67fb4a31f589d0e3c07cb5692834099f6712cc2916c4381d"
+  },
+  "functional_surface": {
+    "freeze_status": "SEALED_EXACT_ZERO_HEADROOM",
+    "frozen_paths": [
+      "tools/lab/nat_gateway/test/v92_o01_formal_controller.test.js",
+      "tools/lab/nat_gateway/test/v92_o01_product_stream.test.js",
+      "tools/lab/nat_gateway/test/v92_o01_t8_daemon.test.js",
+      "tools/lab/nat_gateway/test/v92_o01_t8_fault_controller.test.js",
+      "tools/lab/nat_gateway/test/v92_o01_validate_formal.test.js",
+      "tools/lab/nat_gateway/v92_o01_formal_controller.js",
+      "tools/lab/nat_gateway/v92_o01_product_stream.js",
+      "tools/lab/nat_gateway/v92_o01_t8_fault_controller.js",
+      "tools/lab/nat_gateway/v92_o01_validate_formal.js",
+      "tools/lab/run_v92_o01_formal.ps1",
+      "tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1",
+      "tools/lab/test_v92_o01_formal_runner_mock.ps1",
+      "tools/lab/v92_o01_vm_session.psm1"
+    ],
+    "runtime_paths": [
+      "tools/lab/nat_gateway/v92_o01_formal_controller.js",
+      "tools/lab/nat_gateway/v92_o01_product_stream.js",
+      "tools/lab/nat_gateway/v92_o01_t8_fault_controller.js",
+      "tools/lab/nat_gateway/v92_o01_validate_formal.js",
+      "tools/lab/run_v92_o01_formal.ps1",
+      "tools/lab/v92_o01_vm_session.psm1"
+    ],
+    "test_paths": [
+      "tools/lab/nat_gateway/test/v92_o01_formal_controller.test.js",
+      "tools/lab/nat_gateway/test/v92_o01_product_stream.test.js",
+      "tools/lab/nat_gateway/test/v92_o01_t8_daemon.test.js",
+      "tools/lab/nat_gateway/test/v92_o01_t8_fault_controller.test.js",
+      "tools/lab/nat_gateway/test/v92_o01_validate_formal.test.js",
+      "tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1",
+      "tools/lab/test_v92_o01_formal_runner_mock.ps1"
+    ],
+    "path_sha256": {
+      "tools/lab/nat_gateway/test/v92_o01_formal_controller.test.js": "6582b334a209376bef5affe45d217a777038b0d25d94c0719ce232022fe350f1",
+      "tools/lab/nat_gateway/test/v92_o01_product_stream.test.js": "23d8287473b514e483cc34bddd01682f341fc8e9e4af99d85a0b55aba8af0d4a",
+      "tools/lab/nat_gateway/test/v92_o01_t8_daemon.test.js": "808883ae44f714c4a784b8ac6bd5b38fa5f6a4787388587e826d2bfb90a25518",
+      "tools/lab/nat_gateway/test/v92_o01_t8_fault_controller.test.js": "035497cc96aa020b2a17a94cdc4207aed2e2a9745882eb36037a16505c8bb45e",
+      "tools/lab/nat_gateway/test/v92_o01_validate_formal.test.js": "114e36daf1641f7efe7ad76d43a2d1315b1d1f0938f0330b8f5e8eccdb6867ae",
+      "tools/lab/nat_gateway/v92_o01_formal_controller.js": "51fd16617074519e9c3e4b5fa6def91b246f0b9168cbc635617e1678be7cecf2",
+      "tools/lab/nat_gateway/v92_o01_product_stream.js": "e60901bd560b538de5dee2e9be6e595ee607a6fa302d04c5f9dee27f0e59efb0",
+      "tools/lab/nat_gateway/v92_o01_t8_fault_controller.js": "1497d8916f9ad9ed151717e3ab3274a9b518f998f118b2c465a71da3a79b8c3c",
+      "tools/lab/nat_gateway/v92_o01_validate_formal.js": "c71d9245a8a8b4d06cf7b9ce0c8f06b0dbcbaf13b1331f736a27ba9c147e5f44",
+      "tools/lab/run_v92_o01_formal.ps1": "727f6dbe4603181d973f4fe367eed051e033ea1ce6ec5fe949b0ea93e4e1b88d",
+      "tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1": "2796891eefa8e34d5e92be543d47eaf0f25b9fe94a9e83e745b7eb99016985ab",
+      "tools/lab/test_v92_o01_formal_runner_mock.ps1": "7b57bc1dfbc682a9104bf508d2b924682a4a746b7f1d7a9b2ff162c696c2ec4e",
+      "tools/lab/v92_o01_vm_session.psm1": "ecefa47cedea683ad014b273eca36a0a1b1a6efc2ea8dee7b0febb1925ca4280"
+    },
+    "paths_sha256": "b4eae66756761df10e056a858b1e8fab2fbb9aa684a4a33fb4f3698bb8179471",
+    "byte_identity_sha256": "5374ad9b7edeb335e48f12e714f29bb1c5b13231defc365e80eb3f7e47843a35",
+    "per_path_numstat": {
+      "tools/lab/nat_gateway/test/v92_o01_formal_controller.test.js": {"add": 37, "delete": 12, "net": 25},
+      "tools/lab/nat_gateway/test/v92_o01_product_stream.test.js": {"add": 20, "delete": 2, "net": 18},
+      "tools/lab/nat_gateway/test/v92_o01_t8_daemon.test.js": {"add": 2, "delete": 1, "net": 1},
+      "tools/lab/nat_gateway/test/v92_o01_t8_fault_controller.test.js": {"add": 72, "delete": 5, "net": 67},
+      "tools/lab/nat_gateway/test/v92_o01_validate_formal.test.js": {"add": 11, "delete": 4, "net": 7},
+      "tools/lab/nat_gateway/v92_o01_formal_controller.js": {"add": 162, "delete": 22, "net": 140},
+      "tools/lab/nat_gateway/v92_o01_product_stream.js": {"add": 12, "delete": 2, "net": 10},
+      "tools/lab/nat_gateway/v92_o01_t8_fault_controller.js": {"add": 47, "delete": 13, "net": 34},
+      "tools/lab/nat_gateway/v92_o01_validate_formal.js": {"add": 42, "delete": 9, "net": 33},
+      "tools/lab/run_v92_o01_formal.ps1": {"add": 109, "delete": 27, "net": 82},
+      "tools/lab/test_v92_o01_formal_rpc_pump_mock.ps1": {"add": 365, "delete": 5, "net": 360},
+      "tools/lab/test_v92_o01_formal_runner_mock.ps1": {"add": 379, "delete": 10, "net": 369},
+      "tools/lab/v92_o01_vm_session.psm1": {"add": 82, "delete": 13, "net": 69}
+    },
+    "numstat_identity_sha256": "bbb993a0d0d30c8c6fcfe8d1de77e562f43e245071ce2d36c6c4967cef369cff",
+    "budget": {
+      "all": {"path_count": 13, "add_exact": 1340, "delete_exact": 125, "net_exact": 1215, "headroom": 0},
+      "runtime": {"path_count": 6, "add_exact": 454, "delete_exact": 86, "net_exact": 368, "headroom": 0},
+      "tests": {"path_count": 7, "add_exact": 886, "delete_exact": 39, "net_exact": 847, "headroom": 0}
+    },
+    "causal_closure": {
+      "status": "DETERMINISTIC_REPRODUCERS_REPAIRED_WITHOUT_HISTORICAL_ATTRIBUTION",
+      "a163_observation": "a163 proves six linked checkpoints through product sequence 31, then a generic O01_RPC_HOST_FAILED terminal and a clean TORN_DOWN rollback; it does not preserve the exact sample-32 state, exception or a unique underlying root cause.",
+      "historical_attribution": "No underlying mechanism is attributed to a163 from the generic fallback alone.",
+      "deterministic_reproducers": [
+        {
+          "id": "PRODUCT_STATE_ENUM_CONTRACT",
+          "mechanism": "The formal mapper can emit DISABLED, DISCOVERING, VERIFIED and WITHDRAWN while the product stream previously rejected those legitimate closed states.",
+          "repair": "The stream, controller and independent validator now share the closed product-state contract with bounded transient and terminal semantics.",
+          "tests": "Node 22 product-stream, controller and rechained-validator hostile tests"
+        },
+        {
+          "id": "REPLAY_EXACT_KEY_TRANSACTION",
+          "mechanism": "replay_duplicate previously consumed its armed fault before an exact committed response cache existed and could expose or correlate an uncommitted replay buffer.",
+          "repair": "Exact-key replay is primed and promoted only transactionally after pair commit; mismatched keys remain armed and correlated retries are closed over both pair members.",
+          "tests": "Node 22 fault-controller and UDP-mux transactional replay tests"
+        }
+      ],
+      "hardening": "Structured rpc-failure evidence, origin-stage-code binding, checkpoint causality, evidence-root handle guards and independent validator tightening are defensive closure and are not retrospective attribution.",
+      "release_adjudication": "Only a fresh uninterrupted R64 exact-98 PASS sourced from frozen A64 and the M64 executable may adjudicate release readiness."
+    },
+    "rule": "A64 is frozen to these exact thirteen paths, bytes and zero-headroom per-path and slice budgets; compensation, extra paths and byte drift are rejected."
+  },
+  "rpc_failure_contract": {
+    "status": "FROZEN_A64_EXACT",
+    "path": "controller/rpc-failure.json",
+    "schema": "ese.v92.o01-rpc-failure/v1",
+    "write_policy": "create-exclusive and durable; never overwrite, append, resume or reuse",
+    "required_exact_keys": [
+      "schema",
+      "verdict",
+      "release_gate",
+      "origin",
+      "stage",
+      "failure_code",
+      "requests_handled",
+      "next_sequence",
+      "maximum_requests",
+      "host_exit_code",
+      "stderr_tail_chars",
+      "stderr_tail_utf8_bytes",
+      "stderr_tail_sha256",
+      "last_checkpoint_ordinal",
+      "last_checkpoint_record_sha256",
+      "last_checkpoint_file_sha256"
+    ],
+    "origin_enum": ["FORMAL_HOST", "LOCAL_PRODUCT", "RPC_PUMP"],
+    "stage_enum": ["HOST_EXIT", "PRODUCT_READ", "REQUEST_WAIT", "REQUEST_PARSE", "RESPONSE_WRITE"],
+    "origin_stage_pairs": [
+      "FORMAL_HOST:HOST_EXIT",
+      "LOCAL_PRODUCT:PRODUCT_READ",
+      "RPC_PUMP:REQUEST_PARSE",
+      "RPC_PUMP:REQUEST_WAIT",
+      "RPC_PUMP:RESPONSE_WRITE"
+    ],
+    "code_policy": "Unknown or open FORMAL_HOST messages map to O01_RPC_HOST_FAILED; unknown or open LOCAL_PRODUCT messages map to O01_PRODUCT_READ_REMOTE; RPC_PUMP admits only the four exact tuple codes; no free-form message is copied.",
+    "code_allowlist": {
+      "derivation_source": "tools/lab/v92_o01_vm_session.psm1",
+      "source_sha256": "ecefa47cedea683ad014b273eca36a0a1b1a6efc2ea8dee7b0febb1925ca4280",
+      "literal_source_counts": {
+        "O01RpcHostFailureCodes": 96,
+        "O01RpcDependencyFailureCodes": 26,
+        "O01RpcProductStreamFailureCodes": 14,
+        "O01LocalProductFailureCodes": 17
+      },
+      "tuple_counts": {
+        "FORMAL_HOST:HOST_EXIT": 137,
+        "LOCAL_PRODUCT:PRODUCT_READ": 17,
+        "RPC_PUMP:REQUEST_PARSE": 1,
+        "RPC_PUMP:REQUEST_WAIT": 2,
+        "RPC_PUMP:RESPONSE_WRITE": 1
+      },
+      "pump_codes": {
+        "RPC_PUMP:REQUEST_PARSE": ["O01_RPC_HOST_REQUEST_INVALID"],
+        "RPC_PUMP:REQUEST_WAIT": ["O01_RPC_HOST_OUTPUT_CLOSED", "O01_RPC_HOST_REQUEST_TIMEOUT"],
+        "RPC_PUMP:RESPONSE_WRITE": ["O01_RPC_HOST_WRITE_FAILED"]
+      },
+      "tuple_slot_count": 158,
+      "unique_code_count": 158,
+      "canonical_representation": "Deduplicate exact strings, sort with Windows PowerShell Sort-Object under Spanish_Spain.1252 collation, serialize the resulting array as compact ASCII JSON without a trailing newline; tuple strings are origin:stage:code.",
+      "code_allowlist_sha256": "6d8b980de18f481a7eeeae71e3df1f1b608d72f135bf6f34188daabb69dc3163",
+      "tuple_allowlist_sha256": "b34608e728957967092bc02dbe4bf197d5e642528f94b61685f7a7a54101a5ed"
+    },
+    "integer_bounds": {
+      "requests_handled": [0, 482],
+      "next_sequence": [1, 483],
+      "maximum_requests": [1, 482],
+      "host_exit_code_when_present": [-2147483648, 2147483647],
+      "stderr_tail_chars": [0, 16384],
+      "stderr_tail_utf8_bytes": [0, 49152],
+      "last_checkpoint_ordinal": [0, 95]
+    },
+    "relational_rules": [
+      "next_sequence equals requests_handled plus one",
+      "requests_handled is not greater than maximum_requests",
+      "next_sequence is not greater than maximum_requests plus one",
+      "FORMAL_HOST requires a nonzero signed-32-bit host_exit_code; LOCAL_PRODUCT requires null; RPC_PUMP permits null or a nonzero signed-32-bit value",
+      "LOCAL_PRODUCT requires at least one handled request because its failing response is included before checkpoint causality is evaluated",
+      "stderr_tail_utf8_bytes is not less than stderr_tail_chars and zero characters iff zero bytes iff stderr_tail_sha256 equals SHA-256 of the empty string",
+      "last_checkpoint_ordinal is at most max(0,floor((effective_requests-1)/5)); effective_requests is requests_handled for FORMAL_HOST and RPC_PUMP and requests_handled minus one for LOCAL_PRODUCT",
+      "last_checkpoint_ordinal zero requires both checkpoint hashes null; nonzero requires both lowercase SHA-256 values and the reader revalidates their exact persisted checkpoint chain",
+      "the failure/v3 projection binds the exact rpc-failure.json SHA-256, its failure_code as primary_failure and the unique current checkpoint binding"
+    ],
+    "nullable_fields": ["host_exit_code", "last_checkpoint_record_sha256", "last_checkpoint_file_sha256"],
+    "sha256_fields": ["stderr_tail_sha256", "last_checkpoint_record_sha256", "last_checkpoint_file_sha256"],
+    "forbidden_fields": ["message", "stack", "stderr", "stdout", "path", "username", "hostname", "ip", "command_line", "environment", "secret", "timestamp"],
+    "binding_rule": "The ese.v92.o01-formal-failure/v3 terminal projection rereads and validates the exclusive rpc-failure.json, binds its exact byte identity in rpc_failure_sha256, agrees on the unique closed primary failure_code and revalidates the persisted checkpoint chain named by the sidecar.",
+    "pass_rule": "rpc-failure.json is diagnostic-only, release_gate=false and absent from every PASS result and R64."
+  },
+  "immutable_contract": {
+    "scenario_path": "tools/lab/nat_gateway/v92_o01_scenario.json",
+    "scenario_sha256": "602874173a0ad69df7da4020f9a8db6ed6f726585c1f3ff983eadd187f74df5d",
+    "scenario_blob": "720a1359ebdab210f7a670963fb721fc2b8b878f",
+    "product_mapper_path": "tools/lab/handoff93/run_product_mapper_cycle.ps1",
+    "product_mapper_sha256": "46699855502138f8a39cf30bfd0f3f4827a9e02febc79b317218a34924c99027",
+    "product_mapper_blob": "bf2494f1b61a27ca0e2af5e4d0197d2137cb06d6",
+    "formal_duration_ms": 28800000,
+    "tick_ms": 10000,
+    "checkpoint_ms": 300000,
+    "checkpoint_max_gap_ms": 370000,
+    "controller_schedule_jitter_ms": 70000,
+    "product_stream_max_gap_ms": 70000,
+    "initial_rpc_watchdog_ms": 300000,
+    "subsequent_rpc_watchdog_ms": 140000,
+    "bound_files_count": 21,
+    "node_version": "22.23.2",
+    "node_sha256": "0d0f5e39f9f3d9587bc19f73eab3c2c9c4903fd02d6dbf9c853dd81b3d95fad4",
+    "node_distribution_file_count": 2032,
+    "node_distribution_directory_count": 507,
+    "node_distribution_identity_sha256": "b36841250caf4e868cf68f616e203abdc8aa82d83eb04acaa92e9750f27cde58",
+    "node_distribution_identity_rule": "SHA-256 of compact ASCII canonical JSON with exact keys directories and files; directories is the ordinal-sorted list of every relative POSIX directory path excluding the root, and files is the ordinal path-sorted list of exact objects {path,bytes,sha256}. Lexical reparse points and case-insensitive collisions across all relative file and directory paths are rejected.",
+    "npm_version": "10.9.8",
+    "npm_cmd_sha256": "21b46c69ad6e2f231f02a9e120f4ba6c8e75fef5a45637103002eab99f888ab8",
+    "npm_cli_sha256": "3ce7cba6f5128dd5f54c98b6a5036b0f850496878cc2e21044b675fe3c594e3e",
+    "pkg_node_version": "22.23.1",
+    "pkg_node_bytes": 57440768,
+    "pkg_node_sha256": "588055f6dd40513c16ecf705f9db5e4744eb8b9074e4979246a306b2d7315d1d",
+    "ajv_version": "8.20.0",
+    "package_lock_path": "tools/lab/nat_gateway/package-lock.json",
+    "package_lock_sha256": "0d5f46ff0e004c43c7511ce1f31367469d989746c4c1725fc5131b6d04c0eeaf",
+    "nat_gateway_node_modules_file_count": 528,
+    "nat_gateway_node_modules_directory_count": 61,
+    "nat_gateway_node_modules_identity_sha256": "ded983de6732b386dec8ec71385ed7259da38bf7aede9e66287db402868fb8e5",
+    "release_inputs_path": "tools/release_inputs.json",
+    "release_inputs_sha256": "6aef8bb28d6633725a4da1f4560e91463db5845d872f55378bf1a52ef76c9d55",
+    "release_inputs_blob": "83428e17b40e044c191c5922a9446d6e2c6e8822",
+    "nodes_dat_pin_path": "srchybrid/config/nodes.dat.sha256",
+    "nodes_dat_pin_sha256": "3a645fc9b5868a6599bbab22b62d85b434bb8ed4591b16ba98dc694d712dc2ef",
+    "nodes_dat_pin_blob": "2f665c392e4a16096a1c358a9f1dc1310b1adf46",
+    "ffmpeg_sha256": "d1e2a156261ecc675081943197a85f08f2868784a0af499171ede89353edad31",
+    "ffprobe_sha256": "70872c3ffbc43d0b2c570f9837f54d6e9a832f4ca25463e9735b6a3ec0621478",
+    "python_version": "3.12.10",
+    "python_sha256": "4d6f5f81a4bca11191c4c7c6b43632694d0a4ce74e068619d8fdc161d469859a",
+    "build_python_dependency_file_count": 113,
+    "build_python_dependency_directory_count": 21,
+    "build_python_dependency_identity_sha256": "71b8a04b2258767d06583ce2652396e7a8e9ce554fe70d60c94141aaa617ee6d",
+    "build_python_dependency_identity_rule": "SHA-256 of compact ASCII canonical JSON with exact keys directories and files for the attr, attrs, jsonschema, jsonschema_specifications, referencing and rpds package roots plus typing_extensions.py; source selection excludes __pycache__ directories and .pyc files, while the strict projection prohibits every non-admitted entry including caches and bytecode. All admitted relative paths are ordinal-sorted and case-insensitive collisions or lexical reparse points are rejected. The exact projection is copied create-exclusive to a fresh temporary root and both source and projection are remeasured after BUILD_ALL.",
+    "git_version": "2.51.0.windows.1",
+    "git_sha256": "34a408843194be320d8a87a3c12cd5c7d2e08d03b24567a41db32e21d12569d2",
+    "git_core_sha256": "755d4896d35663d0ff08924f84507f35236b83d240635b512c519bf43cc71a87",
+    "powershell_sha256": "7600ffe12da441fe89d035b13801e8e91d064bc544a27b19a5cf49f6ab8b18f5",
+    "cmd_sha256": "8dd1ebb0b969370c70a5ee7f7ee347949aa7046aa5e1a33fcd7b1e9415b21fc3",
+    "msbuild_version": "17.14.40.60911",
+    "msbuild_sha256": "0f7daba445ba37b652ae4180270ab3eff27acbbe5d411d3b05dad51aab16404c",
+    "package_snapshot_identity_rule": "SHA-256 of compact ASCII canonical JSON with exact keys runtime_bindings and build_artifact_bindings; BUILD_ALL v3 measures it immediately after the official build and PACKAGE_AUDIT v2 must independently reproduce the identical value.",
+    "rule": "No scenario, mapper, timing threshold, 300000 ms initial watchdog, 140000 ms subsequent watchdog, duration override, resume or evidence reuse is authorized by G12."
+  },
+  "carrier_paths": {
+    "M64": {
+      "fixed": [
+        "docs/architecture/mod02_build_manifest_v1.json",
+        "docs/architecture/mod02_characterization_matrix_v1.json"
+      ],
+      "summary_pattern": "artifacts/mod02-runtime-v92-<A64[0:8]>/summary.json",
+      "release_build_receipt_pattern": "artifacts/v92-o01-release-build-<A64[0:8]>/emule-release-build.json",
+      "file_count": 4,
+      "reuse_m63": "FORBIDDEN"
+    },
+    "H64": [
+      "artifacts/v92-o01-governance/activation.json",
+      "artifacts/v92-o01-governance/offline-summary.json",
+      "artifacts/v92-o01-governance/review-sol.json",
+      "artifacts/v92-o01-governance/review-terra.json"
+    ],
+    "R64": {
+      "directory": "artifacts/v92-o01-formal",
+      "checkpoint_pattern": "checkpoint-(01..95).json",
+      "fixed": ["controller-result.json", "formal-run-result.json", "formal-validation.json"],
+      "formal_run_schema": "ese.v92.o01-formal-run/v2",
+      "forbidden": ["clock-failure.json", "failure.json", "rpc-failure.json"],
+      "file_count": 98
+    }
+  },
+  "formal_launch_contract": {
+    "schema": "ese.v92.o01-formal-launch-contract/v1",
+    "state": "A64_ONLY_AFTER_VERIFIED_H64",
+    "mode": "G12 --formal-run",
+    "required_arguments": ["--h-commit", "--evidence-root", "--package-root", "--node", "--credential-path"],
+    "powershell_rule": "Launch only the canonical System32 Windows PowerShell 5.1 executable with its immutable SHA-256, in a new noninteractive no-profile process; the A64 runner rejects every different executable, flag order, VM name, GovernanceS value or parameter tail before operational cmdlets.",
+    "argv_rule": "The outer formal CLI requires the five named arguments exactly once in the documented order, without abbreviations or equals-form aliases. The launcher derives ExpectedExeSha256, ExpectedBuildInfoSha256, ExpectedPackageManifestSha256 and ExpectedNodeSha256 from verified H64 activation, fixes VMName=v92-o01-client and omits GovernanceSCommit; caller-supplied expected hashes or free-form runner flags are forbidden.",
+    "environment_rule": "The child cwd and profile directories are fresh private temporary directories. The environment is rebuilt case-insensitively with closed SystemRoot/cmd/PATH/PATHEXT/PSModulePath and Git configuration; inherited GIT_, NODE/NODE_*, OPENSSL_*, COR_, COMPLUS_, DOTNET_, MSBuild and PowerShell injection variables are absent.",
+    "receipt_exact_keys": ["schema", "verdict", "release_gate", "source_commit", "source_tree", "governance_h_commit", "governance_s_commit", "artifact_count", "evidence_set_sha256", "formal_run_sha256", "formal_validation_sha256", "plan_sha256", "state_sha256", "raw_streams_retained"],
+    "receipt_identity_rule": "The runner emits one compact ASCII JSON receipt with CRLF. evidence_set_sha256 is SHA-256 of compact ASCII canonical JSON {artifacts:[{name,sha256}]} for the 98 ordinal-sorted controller file names and bytes; plan_sha256 and state_sha256 bind the final root metadata; the launcher recomputes and requires exact receipt equality.",
+    "stream_rule": "stdout is bounded to 65536 bytes and must be exactly the single receipt plus CRLF; stderr is drained without retention and must be empty. Raw child streams, credential bytes and free-form child errors never enter EvidenceRoot, the gate result or failure reason.",
+    "evidence_rule": "EvidenceRoot is fresh and ends with eSE-v9.2-o01-formal-<12 lowercase hex>; its final top level is exactly controller, plan.json and state.json, state phase is TORN_DOWN, controller is exact98, and the receipt, formal schemas, hashes and independent Node validator all agree.",
+    "sandwich_rule": "Before PASS, G12 revalidates exact A64 source identity (byte-exact tracked files outside libutp; exact libutp gitlink, index and Git-blob contents under fixed core.autocrlf=true), H64 topology/activation, runner, canonical PowerShell, full pinned Node distribution, PackageRoot manifest/set/bindings, credential source, guarded exact98 and guarded plan/state; one handle epoch remains open from authenticated receipt admission through the final stdout write and flush.",
+    "cleanup_rule": "The isolated credential, child runtime/scratch, raw captures and temporary launcher tree must be absent before PASS. Any failure after authenticated ownership marks the exact formal-run and formal-validation handles delete-pending before guard release, applies an identity-checked fallback, and emits no release result.",
+    "r64_validator_node_path": "C:\\tmp\\node-v22.23.2-win-x64\\node.exe",
+    "direct_runner_invocation": "NON_RELEASE"
+  },
+  "required_reviews": [
+    "Terra v2 APPROVE binds G12/A64/M64, offline summary, gate attestations and runtime/build-artifact identities with findings=[]",
+    "Sol v2 APPROVE binds G12/A64/M64, offline summary, gate attestations and runtime/build-artifact identities with findings=[]"
+  ],
+  "draft_gates": [
+    "<PINNED_PYTHON> -I -S -B tools/architecture/test_verify_v92_o01_rpc_failure_governance.py",
+    "<PINNED_PYTHON> -I -S -B tools/architecture/verify_v92_o01_rpc_failure_governance.py --document",
+    "<PINNED_PYTHON> -I -S -B tools/architecture/verify_v92_o01_rpc_failure_governance.py --check-worktree"
+  ],
+  "sealed_gates": [
+    "Node 22 complete nat_gateway suite",
+    "A64 focal product stream, fault controller, formal controller, host and RPC suite",
+    "PowerShell parser for every changed ps1 and psm1",
+    "formal RPC pump, VM session and runner mocks",
+    "G12 hostile governance suite",
+    "exact A64 byte and zero-headroom budget verifier",
+    "official full Release x64 rebuild from clean A64",
+    "post-build package manifest and distribution ZIP audit",
+    "M64 MOD02 verifier and runtime reseal",
+    "H64 independent Sol and Terra empty-finding reviews",
+    "git diff --check"
+  ],
+  "stop_conditions": [
+    "A64 paths, SHA-256, numstat or budget are frozen before causal stabilization",
+    "a speculative underlying host fix is claimed from O01_RPC_HOST_FAILED alone",
+    "any a163 checkpoint, failure or launcher artifact is reused or enters M64, H64 or R64",
+    "rpc-failure.json is overwritten, contains an open or free-form field, appears on PASS or enters R64",
+    "failure projection and rpc-failure.json code or byte identity disagree",
+    "scenario, mapper, 370000 ms checkpoint gap, derived 70000 ms bounds, 300000 ms initial watchdog, 140000 ms subsequent watchdog or 21 bound files change",
+    "G12 is not the direct child of H63, G11 changes, or any phase has a merge or intermediate commit",
+    "M64 reuses M63 build evidence or is not one fresh clean official full Release build bound to A64",
+    "source, Node, host PackageRoot manifest/set, initial guest runtime projection, M64/H64 binding, enumerated VM identity/topology/baseline fields or evidence root changes during the run",
+    "the post-build distribution ZIP identity is absent from the review-attested H64 build-artifact binding",
+    "BUILD_ALL and PACKAGE_AUDIT package snapshot identities disagree",
+    "the physical runner is invoked directly or without the exact G12 --formal-run argv, environment, receipt, guarded evidence and final sandwich contract",
+    "initial base-VHD, guest OS, firmware or unenumerated VM configuration is claimed as byte-authenticated rather than trusted lab TCB",
+    "P0, P1, P2 or any nonempty review finding",
+    "release_gate=true before independent validation and exact baseline restoration"
+  ],
+  "gate_attestation_contract": {
+    "schema": "ese.v92.o01-gate-attestations/v1",
+    "record_exact_keys": ["evidence_kind", "name", "phase", "source_commit", "source_tree", "input_worktree_state", "normalized_cwd", "cwd_sha256", "normalized_argv", "argv_sha256", "exit_code", "result", "stdout_sha256", "stderr_sha256"],
+    "evidence_kind": "REVIEW_ATTESTED_EXECUTION",
+    "input_worktree_state": "CLEAN",
+    "gate_names": ["BUILD_ALL", "NODE22_FULL", "A64_FOCAL", "MOD02_RUNTIME", "G12_HOSTILE", "G12_VERIFY", "POWERSHELL_PARSE", "RPC_PUMP_MOCK", "FORMAL_RUNNER_MOCK", "VM_SESSION_MOCK", "FORMAL_PRODUCT_MOCK", "PACKAGE_AUDIT", "DIFF_CHECK"],
+    "cwd_normalization": "normalized_cwd is exactly <FRESH_A64_WORKTREE> for BUILD_ALL, NODE22_FULL, A64_FOCAL and MOD02_RUNTIME, and <M64_WORKTREE> for every other gate. cwd_sha256 is SHA-256 of compact ASCII JSON of that string.",
+    "argv_normalization": "normalized_argv is an ordered string array. Replace only the exact isolated pinned Python executable by <PINNED_PYTHON>, the canonical pinned System32 PowerShell by <PINNED_POWERSHELL>, the canonical pinned Program Files Git entrypoint by <PINNED_GIT>, the absolute clean A64 build-worktree root by <FRESH_A64_WORKTREE>, the pinned Node executable by <PINNED_NODE>, the pinned pkg base Node by <PINNED_PKG_NODE>, the pinned FFmpeg executable by <PINNED_FFMPEG>, the fresh MOD02 output root by <FRESH_MOD02_ROOT>, the fresh temporary A64-bound MOD02 manifest by <FRESH_MOD02_MANIFEST>, and the exact H63-to-M64 commit range by H63..M64; reject every other absolute or unexpanded placeholder. Every Python gate uses -I -S -B. argv_sha256 is SHA-256 of compact ASCII JSON of normalized_argv preserving array order.",
+    "result_policy": "result is the exact JSON object emitted by a JSON gate, a closed counter summary parsed from the same captured TAP or unittest stdout, or the exact closed projection of the M64 receipt or MOD02 summary. BUILD_ALL v3 binds isolated Python, the exact 113-file build dependency projection, the exact Node/npm distribution, pkg base Node, entry hashes for the trusted host tools, the fresh receipt and an immediate complete runtime/build-artifact package snapshot. MOD02 binds the compiled executable and the package FFmpeg as the only two loadable binaries in a fresh runtime capsule, plus the exact fixed non-code config/preferences.ini seed that forces portable state into that capsule. PACKAGE_AUDIT v2 independently remeasures that snapshot and must produce the identical canonical package_snapshot_sha256. NODE22_FULL and A64_FOCAL bootstrap the exact lock with pinned npm ci --ignore-scripts and emit the installed dependency-tree identity. No free-form marker is an admitted result.",
+    "capture_rule": "Each record binds its normalized cwd, normalized argv and phase to the exact A64 or M64 commit/tree, exit_code=0, a closed parsed PASS result, and SHA-256 of the actual captured stdout and stderr bytes; raw streams are not committed. Python gates require the exact executable/version under -I -S -B. The build wrapper exposes Python only through its temporary python.cmd shim and one in-session python.exe function: ordinary scripts invoke the pinned absolute Python with -E -s -S -B, while the exact test_v92_mx05_handoff.py consumer alone uses -I -S -B with the create-exclusive pinned 113-file dependency projection. MOD02 copies only the authenticated compiled emule.exe and package ffmpeg.exe and creates the exact fixed non-code config/preferences.ini portable seed in a fresh closed initial runtime, preserves the executable build timestamp, executes only that capsule, rejects new loadable code, then remeasures both executable files and their sources before recursively removing the private portable outputs. M64 loads the byte-pinned G11-to-physical legacy verifier chain only from authenticated source bytes; both legacy ambient shells are disabled, Git/blob/parent/delta calls are rebound to G12 closed adapters, and the release fingerprint runs in a new pinned System32 PowerShell process with closed Git and PSModule environment. PowerShell child commands resolve only to the canonical pinned System32 executable under the closed PATH and PSModulePath. Build and Node-test wrappers close Git, Node/npm/pkg, PowerShell-module and MSBuild/user-import environment redirection; use empty npm user/global configuration; reject project npm overrides; force byte-exact tracked files outside libutp and exact libutp gitlink, index and Git-blob contents under fixed core.autocrlf=true against per-worktree temporary indexes; and remeasure inputs after execution. Closed Git fixes core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol; DIFF_CHECK therefore treats only the CR immediately before LF in the byte-required Release receipt as a line terminator, while blank-at-eol, blank-at-eof and space-before-tab remain errors. Sol and Terra v2 reviews independently compare the actual invocation to the closed normalization, verify the parser or carrier projection against the captured stream or artifact, and bind the canonical identity of the complete record list."
+  },
+  "h64_review_contract": {
+    "schema": "ese.v92.o01-review/v2",
+    "required_exact_keys": ["schema", "role", "g_commit", "g_tree", "a_commit", "a_tree", "m_commit", "m_tree", "offline_summary_sha256", "gate_attestations_sha256", "runtime_bindings_sha256", "build_artifact_bindings_sha256", "verdict", "findings"],
+    "rule": "Both independent reviews bind the exact post-build offline summary and canonical gate, runtime and distribution-artifact identities, and must be APPROVE with findings=[]."
+  },
+  "h64_activation_contract": {
+    "schema": "ese.v92.o01-rpc-repair-activation/v1",
+    "required_exact_keys": [
+      "schema",
+      "predecessor_h_commit",
+      "g_commit",
+      "g_tree",
+      "g12_governance_sha256",
+      "g12_governance_identity_sha256",
+      "amendment_sha256",
+      "a_commit",
+      "a_tree",
+      "a64_paths_sha256",
+      "a64_byte_identity_sha256",
+      "a64_numstat_identity_sha256",
+      "code_allowlist_sha256",
+      "tuple_allowlist_sha256",
+      "scenario_sha256",
+      "scenario_blob",
+      "product_mapper_sha256",
+      "product_mapper_blob",
+      "m_commit",
+      "m_tree",
+      "runtime_bindings",
+      "build_artifact_bindings",
+      "gate_attestations_sha256",
+      "artifact_sha256"
+    ],
+    "artifact_sha256_keys": [
+      "artifacts/v92-o01-governance/offline-summary.json",
+      "artifacts/v92-o01-governance/review-sol.json",
+      "artifacts/v92-o01-governance/review-terra.json"
+    ],
+    "runtime_binding_exact_keys": [
+      "node_version",
+      "node_sha256",
+      "executable_sha256",
+      "build_info_sha256",
+      "package_manifest_sha256",
+      "package_manifest_entry_count",
+      "package_file_count"
+    ],
+    "build_artifact_binding_exact_keys": ["release_tag", "package_zip_path", "package_zip_sha256", "package_zip_bytes", "package_zip_entry_count", "package_zip_sidecar_path", "package_zip_sidecar_bytes", "package_zip_sidecar_sha256"],
+    "runtime_binding_derivation": "H64 offline summary records the post-build audit of package/BUILD_INFO.txt bytes, package/SHA256SUMS.txt bytes and exact valid entry count excluding the manifest itself, and the package directory file count including the manifest. A64 runner binds these values to H64, revalidates the full host manifest/set before copy and pre-seal, validates the exact initial guest runtime projection before product start, and emits all runtime bindings in formal-run/v2.",
+    "build_artifact_binding_derivation": "PACKAGE_AUDIT derives the exact release tag, ZIP and .sha256 relative paths, ZIP byte length, entry count and SHA-256, and sidecar byte length and SHA-256 from the fresh A64 build; requires sidecar bytes to equal uppercase ZIP_SHA256, two spaces, the ZIP basename and CRLF; rejects any ZIP preamble, suffix, comment, extra field, uncovered local byte or trailing DEFLATE payload; and proves that the ZIP exact file set and every file hash equal the same audited PackageRoot manifest/set. The ZIP is a review-attested distribution artifact, is rehashed before publication, and is not claimed as a runtime input consumed during R64.",
+    "rule": "H64 activation binds predecessor H63; G12 commit/tree, all three governance bytes and their canonical identity; A64 commit/tree and exact path, byte and numstat identities; both RPC allowlist identities; immutable scenario and mapper SHA/blob identities; M64 commit/tree; exact Node, executable, BUILD_INFO and PackageRoot manifest runtime inputs; the separately classified distribution ZIP identity; the gate-attestation identity; and exact offline/Sol/Terra carrier hashes."
+  },
+  "activation_state": {
+    "G12": null,
+    "A64": null,
+    "M64": null,
+    "H64": null,
+    "R64": null,
+    "rule": "This sealed amendment stores no invented future commit identity. The verifier derives exact direct Git parentage, and H64 activation must bind the complete G12 triad, A64 path/byte/numstat identities, both RPC allowlist identities, immutable blobs and M64/H64 carrier identities."
+  }
+}

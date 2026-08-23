@@ -27,7 +27,8 @@ function createO01FaultController(dependencies = {}) {
   }
 
   let armed = null; let boundaryClaim = null; let boundaryAudit = null; let lateWindow = null;
-  const captured = new Map(); const pairKeys = new Map();
+  const captured = new Map(); const pairKeys = new Map(); const stagedCaptures = new WeakMap();
+  const pendingTcpCaptures = new Map(); const latestPairOrdinals = new Map();
   let wireOrdinal = 0; let lastPlannedOrdinal = 0;
   let lastExecutedOrdinal = 0; let lastExecutedName = 'renew_success'; let lastOutcome = 'none';
   let pairAttempted = 0; let pairCommitted = 0; let pairAborted = 0; let faultAttempted = 0;
@@ -44,6 +45,31 @@ function createO01FaultController(dependencies = {}) {
     publisher_before: before.product.publisher_active, publisher_after: after.product.publisher_active,
     journal_before: before.product.journal_entry_count, journal_after: after.product.journal_entry_count,
   });
+  const stageCapture = (decision, key, packet, command, clientIdentity) => {
+    if (key) {
+      const pairIdentity = `${command.protocol}:${clientIdentity || 'none'}`;
+      let correlatedTcp = null;
+      if (command.transport === 'tcp') {
+        pendingTcpCaptures.delete(pairIdentity);
+      } else {
+        const pendingTcp = pendingTcpCaptures.get(pairIdentity);
+        pendingTcpCaptures.delete(pairIdentity);
+        if (pendingTcp && pendingTcp.ordinal < decision.ordinal &&
+            (command.protocol !== 'pcp' || pendingTcp.identity === command.nonce)) correlatedTcp = pendingTcp;
+      }
+      latestPairOrdinals.set(pairIdentity, decision.ordinal);
+      stagedCaptures.set(decision, Object.freeze({ key, packet: Buffer.from(packet), pair_identity: pairIdentity,
+        transport: command.transport, protocol: command.protocol, ordinal: decision.ordinal,
+        identity: command.protocol === 'pcp' ? command.nonce : String(command.internal_port), correlated_tcp: correlatedTcp }));
+    }
+    return decision;
+  };
+  const promoteCapture = (capture) => {
+    captured.set(capture.key, Buffer.from(capture.packet));
+    const correlated = Object.freeze(capture.correlated_tcp ?
+      [capture.correlated_tcp.key, capture.key] : [capture.key]);
+    for (const memberKey of correlated) pairKeys.set(memberKey, correlated);
+  };
 
   return Object.freeze({
     arm(name, options = {}) {
@@ -101,25 +127,28 @@ function createO01FaultController(dependencies = {}) {
       const consume = Boolean(armed && pairMember && command.transport === 'udp' &&
         (!BOUNDARY_FAULTS.has(armed.name) || boundaryMatches && boundaryAudit));
       const fault = consume ? armed : null;
+      const replay = fault?.name === 'replay_duplicate' && key ? captured.get(key) : null;
+      if (fault?.name === 'replay_duplicate' && !replay) {
+        const decision = Object.freeze({ packets: Object.freeze([Buffer.from(packet)]), fault: 'renew_success',
+          ordinal: wireOrdinal, commit: true, consumed: false, planned_ordinal: lastExecutedOrdinal });
+        return stageCapture(decision, key, packet, command, clientIdentity);
+      }
       if (consume) {
         armed = null;
         lastExecutedOrdinal = fault.planned_ordinal;
         lastExecutedName = fault.name;
       }
       if (!fault) {
-        if (key) {
-          captured.set(key, Buffer.from(packet));
-          const pairIdentity = `${command.protocol}:${clientIdentity || 'none'}`;
-          const keys = pairKeys.get(pairIdentity) || new Map(); keys.set(command.transport, key); pairKeys.set(pairIdentity, keys);
-        }
-        return Object.freeze({ packets: Object.freeze([Buffer.from(packet)]), fault: 'renew_success',
+        const decision = Object.freeze({ packets: Object.freeze([Buffer.from(packet)]), fault: 'renew_success',
           ordinal: wireOrdinal, commit: true, consumed: false, planned_ordinal: lastExecutedOrdinal });
+        return stageCapture(decision, key, packet, command, clientIdentity);
       }
 
       if (fault.name === 'renew_success') {
-        if (key) captured.set(key, Buffer.from(packet)); lastOutcome = 'committed';
-        return Object.freeze({ packets: Object.freeze([Buffer.from(packet)]), fault: fault.name,
+        lastOutcome = 'committed';
+        const decision = Object.freeze({ packets: Object.freeze([Buffer.from(packet)]), fault: fault.name,
           ordinal: wireOrdinal, commit: true, consumed: true, planned_ordinal: fault.planned_ordinal });
+        return stageCapture(decision, key, packet, command, clientIdentity);
       }
       if (BOUNDARY_FAULTS.has(fault.name)) {
         if (!boundaryAudit || boundaryAudit.planned_ordinal !== fault.planned_ordinal || boundaryAudit.name !== fault.name ||
@@ -131,16 +160,13 @@ function createO01FaultController(dependencies = {}) {
           commit: false, consumed: true, planned_ordinal: fault.planned_ordinal });
       }
       if (fault.name === 'replay_duplicate') {
-        const replay = key ? captured.get(key) : null;
-        if (!replay) throw new Error('O01_FAULT_REPLAY_EMPTY');
         lastOutcome = 'aborted';
         return Object.freeze({ packets: Object.freeze([Buffer.from(replay), Buffer.from(replay)]),
           fault: fault.name, ordinal: wireOrdinal, commit: false, consumed: true,
           planned_ordinal: fault.planned_ordinal });
       }
       if (fault.name === 'dropped_late') {
-        const pairIdentity = `${command.protocol}:${clientIdentity || 'none'}`;
-        const correlated = new Set([key]); for (const item of (pairKeys.get(pairIdentity) || new Map()).values()) correlated.add(item);
+        const correlated = new Set([key]); for (const item of pairKeys.get(key) || []) correlated.add(item);
         const window = Object.freeze({ protocol: command.protocol, planned_ordinal: fault.planned_ordinal,
           keys: Object.freeze(correlated) });
         lateWindow = window;
@@ -184,7 +210,15 @@ function createO01FaultController(dependencies = {}) {
           !['pcp','natpmp'].includes(protocol)) {
         throw new Error('O01_FAULT_TRANSACTION_INVALID');
       }
+      const stagedCapture = stagedCaptures.get(decision);
+      stagedCaptures.delete(decision);
+      if (stagedCapture && stagedCapture.protocol !== protocol) throw new Error('O01_FAULT_TRANSACTION_INVALID');
       if (!pairMember) return;
+      if (stagedCapture && stagedCapture.transport === 'tcp' && !pairWasCommitted &&
+          latestPairOrdinals.get(stagedCapture.pair_identity) === stagedCapture.ordinal) {
+        pendingTcpCaptures.set(stagedCapture.pair_identity, stagedCapture);
+      }
+      if (stagedCapture && stagedCapture.transport === 'udp' && pairWasCommitted) promoteCapture(stagedCapture);
       if (decision.consumed) {
         pairAttempted += 1; faultAttempted += 1; lastCandidateCommitted = pairWasCommitted;
         lastWireProtocol = protocol;

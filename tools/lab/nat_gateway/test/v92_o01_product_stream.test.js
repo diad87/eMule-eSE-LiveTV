@@ -27,10 +27,28 @@ function fillEightHours(state) {
 test('product stream accepts only closed privacy-safe samples', () => {
   assert.equal(parseLine(sample()).generation, 7);
   assert.equal(parseLine(started()).elapsed_ms, 0);
+  assert.equal(parseLine(sample({ available: false, tcp_state: 'UNAVAILABLE', udp_state: 'UNAVAILABLE',
+    same_generation: false, generation: 0, tcp_reason_code: 65535, udp_reason_code: 65535 })).available, false);
+  for (const state of ['DISABLED', 'DISCOVERING', 'CANDIDATE', 'VERIFIED',
+    'WITHDRAWN', 'BLOCKED', 'OTHER']) {
+    assert.equal(parseLine(sample({ tcp_state: state, udp_state: state })).tcp_state, state);
+  }
   for (const hostile of [
     sample({ path: 'C:\\secret' }), sample({ available: 'true' }),
-    sample({ tcp_state: 'DISCOVERING' }), sample({ tcp_reason_code: 65536 }),
-    sample({ available: false }), `${sample()}\n`, '{',
+    sample({ tcp_state: 'REACHABLE' }), sample({ tcp_state: 'UNKNOWN' }),
+    sample({ tcp_state: 'OPEN' }), sample({ tcp_reason_code: 65536 }), sample({ available: false }),
+    sample({ tcp_reason_code: 22 }), sample({ udp_reason_code: 22 }),
+    sample({ available: true, tcp_state: 'UNAVAILABLE' }),
+    sample({ available: true, udp_state: 'UNAVAILABLE' }),
+    sample({ available: true, tcp_state: 'UNAVAILABLE', udp_state: 'UNAVAILABLE' }),
+    sample({ available: false, tcp_state: 'UNAVAILABLE', udp_state: 'UNAVAILABLE', generation: 0 }),
+    sample({ available: false, tcp_state: 'UNAVAILABLE', udp_state: 'UNAVAILABLE', same_generation: false }),
+    sample({ available: false, tcp_state: 'UNAVAILABLE', udp_state: 'UNAVAILABLE',
+      same_generation: false, generation: 0, tcp_reason_code: 65535 }),
+    sample({ available: false, tcp_state: 'UNAVAILABLE', udp_state: 'UNAVAILABLE',
+      same_generation: false, generation: 0, udp_reason_code: 65535 }),
+    sample({ available: false, tcp_state: 'UNAVAILABLE', same_generation: false, generation: 0 }),
+    `${sample()}\n`, '{',
   ]) assert.throws(() => parseLine(hostile), /O01_PRODUCT_/);
   assert.doesNotMatch(sample(), /(?:path|address|port|nonce|pid|credential)/i);
 });

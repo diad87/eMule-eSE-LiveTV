@@ -26,6 +26,22 @@ const CLOCK_FAILURE_CODES = Object.freeze({
   checkpointGap: 'O01_CONTROLLER_CLOCK_CHECKPOINT_GAP',
   intertickGap: 'O01_CONTROLLER_CLOCK_INTERTICK_GAP',
 });
+const CUMULATIVE_TRAFFIC_KEYS = Object.freeze([
+  'pcp_requests','natpmp_requests','upnp_add_requests','upnp_get_requests','upnp_delete_requests',
+  'accepted_outcomes','rejected_outcomes','pcp_accepted','pcp_rejected','natpmp_accepted',
+  'natpmp_rejected','upnp_accepted','upnp_rejected','max_owned_mapping_count',
+]);
+const CUMULATIVE_FAULT_KEYS = Object.freeze([
+  'last_executed_fault_ordinal','pair_transactions_attempted','pair_transactions_committed',
+  'pair_transactions_aborted','fault_transactions_attempted','recovery_transactions_attempted',
+  'last_recovery_transaction_ordinal','late_packets_emitted','late_packets_suppressed',
+]);
+const EXECUTED_FAULT_PROJECTION_KEYS = Object.freeze([
+  'last_executed_fault_ordinal','last_executed_fault_name','last_executed_outcome',
+  'last_fault_candidate_committed','last_wire_protocol','generation_before','generation_after',
+  'epoch_before','epoch_after','owned_before','owned_after','publisher_before','publisher_after',
+  'journal_before','journal_after',
+]);
 
 function fail(code) { throw new Error(code); }
 function failClock(code, detail) {
@@ -45,6 +61,76 @@ function hash(domain, value) {
 function exactKeys(value, expected) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
       Object.keys(value).sort().join(',') !== [...expected].sort().join(',')) fail('O01_CONTROLLER_SHAPE');
+}
+function trafficAccounting(value) {
+  const traffic = value && value.traffic;
+  return Boolean(traffic &&
+    traffic.pcp_requests === traffic.pcp_accepted + traffic.pcp_rejected &&
+    traffic.natpmp_requests === traffic.natpmp_accepted + traffic.natpmp_rejected &&
+    traffic.upnp_add_requests + traffic.upnp_get_requests + traffic.upnp_delete_requests ===
+      traffic.upnp_accepted + traffic.upnp_rejected &&
+    traffic.accepted_outcomes === traffic.pcp_accepted + traffic.natpmp_accepted + traffic.upnp_accepted &&
+    traffic.rejected_outcomes === traffic.pcp_rejected + traffic.natpmp_rejected + traffic.upnp_rejected);
+}
+function faultAccounting(value) {
+  const faults = value && value.faults;
+  return Boolean(faults &&
+    faults.pair_transactions_attempted === faults.pair_transactions_committed + faults.pair_transactions_aborted &&
+    faults.pair_transactions_attempted === faults.fault_transactions_attempted + faults.recovery_transactions_attempted);
+}
+function closedProtocolOwnership(value, owned) {
+  const traffic = value && value.traffic;
+  return Boolean(traffic && traffic.max_owned_mapping_count === 2 &&
+    traffic.final_owned_mapping_count === owned && traffic.final_owned_upnp === 0 &&
+    (traffic.final_owned_pcp === owned && traffic.final_owned_natpmp === 0 ||
+     traffic.final_owned_pcp === 0 && traffic.final_owned_natpmp === owned));
+}
+function cumulativeMonotonic(value, previous) {
+  return !previous ||
+    CUMULATIVE_TRAFFIC_KEYS.every(key => value.traffic[key] >= previous.traffic[key]) &&
+    CUMULATIVE_FAULT_KEYS.every(key => value.faults[key] >= previous.faults[key]);
+}
+function sameFaultProjection(value, baseline) {
+  return Object.keys(baseline.faults).every(key => ['armed_fault_ordinal','armed_fault_name'].includes(key) ||
+    value.faults[key] === baseline.faults[key]);
+}
+function faultNameBound(value) {
+  return Boolean(value && value.gateway && value.faults &&
+    value.gateway.last_fault === value.faults.last_executed_fault_name);
+}
+function verifiedGatewayPair(value) {
+  return Boolean(value && value.gateway && value.product && value.traffic &&
+    value.gateway.mapping_count === 3 && value.gateway.pair_atomic === true &&
+    value.gateway.foreign_fixture_present === true &&
+    value.product.topology_generation === value.gateway.generation &&
+    value.product.tcp_state === 'VERIFIED' && value.product.udp_state === 'VERIFIED' &&
+    value.product.publisher_active === true && value.product.journal_entry_count === 2 &&
+    trafficAccounting(value) && faultAccounting(value) && faultNameBound(value) && closedProtocolOwnership(value, 2));
+}
+function withdrawnGateway(value) {
+  return Boolean(value && value.gateway && value.product && value.traffic &&
+    value.gateway.mapping_count === 1 && value.gateway.pair_atomic === true &&
+    value.gateway.foreign_fixture_present === true &&
+    value.product.topology_generation === value.gateway.generation &&
+    value.product.tcp_state === 'WITHDRAWN' && value.product.udp_state === 'WITHDRAWN' &&
+    value.product.publisher_active === false && value.product.journal_entry_count === 0 &&
+    trafficAccounting(value) && faultAccounting(value) && faultNameBound(value) && closedProtocolOwnership(value, 0));
+}
+function degradedGatewayPair(value) {
+  if (!value || !value.gateway || !value.product || !value.traffic ||
+      value.gateway.foreign_fixture_present !== true ||
+      value.product.topology_generation !== value.gateway.generation ||
+      value.product.publisher_active !== false || !trafficAccounting(value) || !faultAccounting(value) ||
+      !faultNameBound(value)) return false;
+  const owned = value.traffic.final_owned_mapping_count;
+  if (!closedProtocolOwnership(value, owned)) return false;
+  if (owned === 0) return value.gateway.mapping_count === 1 && value.gateway.pair_atomic === true &&
+    value.product.journal_entry_count === 0 &&
+    value.product.tcp_state === 'WITHDRAWN' && value.product.udp_state === 'WITHDRAWN';
+  const oneVerified = value.product.tcp_state === 'VERIFIED' && value.product.udp_state === 'WITHDRAWN' ||
+    value.product.tcp_state === 'WITHDRAWN' && value.product.udp_state === 'VERIFIED';
+  return owned === 1 && value.product.journal_entry_count === 1 &&
+    value.gateway.pair_atomic === false && value.gateway.mapping_count === 2 && oneVerified;
 }
 function bounded(promise,milliseconds,code){let timer;return Promise.race([Promise.resolve(promise),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(code)),milliseconds);})]).finally(()=>clearTimeout(timer));}
 function repositoryBinding(repoRoot,config){const root=path.resolve(repoRoot||'');const git=(args)=>execFileSync('git',['-C',root,...args],{encoding:'utf8',windowsHide:true}).trim();if(git(['status','--porcelain=v1','--untracked-files=all'])!=='')fail('O01_CONTROLLER_SOURCE_DIRTY');const sourceCommit=git(['rev-parse','HEAD']);const sourceTree=git(['rev-parse','HEAD^{tree}']);const scenarioPath=path.join(root,'tools/lab/nat_gateway/v92_o01_scenario.json');const scenarioSha256=crypto.createHash('sha256').update(fs.readFileSync(scenarioPath)).digest('hex');const boundFiles=config.bound_files.map((relative)=>({path:relative,sha256:crypto.createHash('sha256').update(fs.readFileSync(path.join(root,...relative.split('/')))).digest('hex')}));return{sourceCommit,sourceTree,scenarioSha256,boundFiles};}
@@ -80,39 +166,81 @@ function assertLimits(config, product, gateway) {
   if(product&&product.working_set_bytes>config.limits.rss_absolute_bytes)fail('O01_CONTROLLER_RESOURCE_PRODUCT_RSS');
   if(product&&product.handle_count>config.limits.product_handles)fail('O01_CONTROLLER_RESOURCE_PRODUCT_HANDLES');
 }
-function createCrossValidator(config) {
+function createCrossValidator(config, initialGatewayValue) {
   const plan = validateScenario(config);
-  let slotOrdinal = 0; let ticks = 0; let baseline = null; let latestGateway = null;
+  const initialGateway=initialGatewayValue===undefined?null:validateObservation(initialGatewayValue);
+  if(initialGateway&&!verifiedGatewayPair(initialGateway))fail('O01_CONTROLLER_GATEWAY_PRODUCT');
+  let slotOrdinal = 0; let ticks = 0; let baseline = null;
+  let latestGateway = initialGateway ? structuredClone(initialGateway) : null;
   let latestProduct = null; let productSamples = 0; let latestProductGeneration = null; let activeFault = null; let slotStartTick = 0;
   let faultTickOffset = 0; let recoveryTickOffset = 0; let transientProductSamples = 0;
-  let latestProductCoherent = true; const gatewayHistory=[]; const productHistory=[];
+  let latestProductCoherent = true; let executedFaultProjection = null; let latestGatewayBoundaryInflight = false;
+  const gatewayHistory=[]; const productHistory=[];
   const executed = {};
   return Object.freeze({ beginSlot(fault, gatewayValue) {
     const gateway = validateObservation(gatewayValue);
     const expected = plan.schedule[slotOrdinal];
     if (activeFault || fault !== expected || gateway.faults.armed_fault_ordinal!==slotOrdinal+1 ||
         gateway.faults.armed_fault_name!==fault||gateway.faults.last_executed_fault_ordinal!==slotOrdinal) fail('O01_CONTROLLER_FAULT_ORDER');
-    baseline = latestGateway ? structuredClone(latestGateway) : structuredClone(gateway);
+    if(!verifiedGatewayPair(gateway))fail('O01_CONTROLLER_GATEWAY_PRODUCT');
+    if(!cumulativeMonotonic(gateway,latestGateway))fail('O01_CONTROLLER_GATEWAY');
+    if(latestGateway&&(gateway.gateway.generation!==latestGateway.gateway.generation||
+       gateway.gateway.epoch!==latestGateway.gateway.epoch))fail('O01_CONTROLLER_GENERATION_DRIFT');
+    if(latestGateway&&(gateway.gateway.last_fault!==latestGateway.gateway.last_fault||
+       Object.keys(latestGateway.faults).some(key=>!['armed_fault_ordinal','armed_fault_name'].includes(key)&&
+         gateway.faults[key]!==latestGateway.faults[key])))fail('O01_CONTROLLER_FAULT_ORDER');
+    baseline = structuredClone(gateway);
     activeFault = fault; latestGateway = structuredClone(gateway); slotStartTick = ticks;
     faultTickOffset = 0; recoveryTickOffset = 0; transientProductSamples = 0;
-    latestProductCoherent = true; return gateway;
+    latestProductCoherent = true; executedFaultProjection = null; latestGatewayBoundaryInflight = false; return gateway;
   }, acceptTick(gatewayValue) {
     if (!activeFault) fail('O01_CONTROLLER_SLOT_NOT_STARTED');
     const gateway = validateObservation(gatewayValue); ticks += 1;
-    const pairTransition=TRANSIENT_FAULTS.has(activeFault)&&faultTickOffset>0&&
-      gateway.gateway.pair_atomic===false&&gateway.gateway.mapping_count===2&&
+    const ordinal=slotOrdinal+1;const offset=ticks-slotStartTick;
+    const executedNow=gateway.faults.last_executed_fault_ordinal===ordinal;
+    const pendingNow=gateway.faults.last_executed_fault_ordinal===ordinal-1;
+    if(executedNow){
+      if(gateway.faults.armed_fault_ordinal!==0||gateway.faults.armed_fault_name!=='none'||
+         gateway.faults.last_executed_fault_name!==activeFault||gateway.gateway.last_fault!==activeFault)fail('O01_CONTROLLER_FAULT_ORDER');
+      const projection=Object.fromEntries(EXECUTED_FAULT_PROJECTION_KEYS.map(key=>[key,gateway.faults[key]]));
+      if(executedFaultProjection&&EXECUTED_FAULT_PROJECTION_KEYS.some(key=>projection[key]!==executedFaultProjection[key]))fail('O01_CONTROLLER_FAULT_AUDIT');
+      if(!executedFaultProjection)executedFaultProjection=projection;
+    }else if(pendingNow){
+      if(gateway.faults.armed_fault_ordinal!==ordinal||gateway.faults.armed_fault_name!==activeFault||
+         gateway.faults.last_executed_fault_name!==baseline.faults.last_executed_fault_name||
+         gateway.gateway.last_fault!==baseline.gateway.last_fault)fail('O01_CONTROLLER_FAULT_ORDER');
+      if(!sameFaultProjection(gateway,baseline))fail('O01_CONTROLLER_FAULT_AUDIT');
+    }else fail('O01_CONTROLLER_FAULT_ORDER');
+    if(gateway.faults.last_recovery_transaction_ordinal>ordinal||
+       (gateway.faults.last_recovery_transaction_ordinal===ordinal&&!executedNow))fail('O01_CONTROLLER_FAULT_ORDER');
+    if(gateway.faults.last_executed_fault_ordinal===ordinal&&faultTickOffset===0)faultTickOffset=offset;
+    if(gateway.faults.last_recovery_transaction_ordinal===ordinal&&recoveryTickOffset===0)recoveryTickOffset=offset;
+    const boundaryInflight=BOUNDARY_FAULTS.has(activeFault)&&faultTickOffset===0&&recoveryTickOffset===0&&
+      gateway.faults.armed_fault_ordinal===ordinal&&gateway.faults.armed_fault_name===activeFault&&
+      gateway.faults.last_executed_fault_ordinal===ordinal-1&&
+      gateway.traffic.final_owned_mapping_count===0&&degradedGatewayPair(gateway)&&
+      sameFaultProjection(gateway,baseline);
+    const epochResetObserved=activeFault==='epoch_reset'&&
+      (gateway.faults.last_executed_fault_ordinal===ordinal||boundaryInflight);
+    const expectedGeneration=baseline.gateway.generation+(epochResetObserved?1:0);
+    const expectedEpoch=baseline.gateway.epoch+(epochResetObserved?1:0);
+    if(gateway.gateway.generation!==expectedGeneration||gateway.gateway.epoch!==expectedEpoch)fail('O01_CONTROLLER_GENERATION_DRIFT');
+    const stableGateway=verifiedGatewayPair(gateway);
+    const postFaultTransition=TRANSIENT_FAULTS.has(activeFault)&&faultTickOffset>0&&recoveryTickOffset===0&&
+      offset<=RECOVERY_TICK_LIMIT&&degradedGatewayPair(gateway);
+    const transition=boundaryInflight||postFaultTransition;
+    const pairTransition=transition&&
       gateway.traffic.final_owned_mapping_count===1;
     if ((!gateway.gateway.pair_atomic&&!pairTransition) || !gateway.gateway.foreign_fixture_present ||
         gateway.gateway.mapping_count < 1 || gateway.gateway.mapping_count > 3 ||
         (gateway.gateway.mapping_count === 2&&!pairTransition) ||
-        gateway.traffic.final_owned_mapping_count > gateway.traffic.max_owned_mapping_count) {
+        (!stableGateway&&!transition) ||
+        gateway.traffic.final_owned_mapping_count > gateway.traffic.max_owned_mapping_count ||
+        !cumulativeMonotonic(gateway,latestGateway)) {
       fail('O01_CONTROLLER_GATEWAY');
     }
-    const ordinal=slotOrdinal+1;const offset=ticks-slotStartTick;
-    if(gateway.faults.last_executed_fault_ordinal===ordinal&&faultTickOffset===0)faultTickOffset=offset;
-    if(gateway.faults.last_recovery_transaction_ordinal===ordinal&&recoveryTickOffset===0)recoveryTickOffset=offset;
     if(faultTickOffset>FAULT_TICK_LIMIT||(offset>=FAULT_TICK_LIMIT&&faultTickOffset===0))fail('O01_CONTROLLER_FAULT_NOT_CONSUMED');
-    assertLimits(config, null, gateway);gatewayHistory.push(gateway);if(ticks>config.warmup_ms/config.tick_ms&&gatewayHistory.length>60){const prior=gatewayHistory[gatewayHistory.length-61];if(gateway.resources.gateway_rss_bytes-prior.resources.gateway_rss_bytes>config.limits.rss_window_growth_bytes||gateway.resources.gateway_heap_bytes-prior.resources.gateway_heap_bytes>config.limits.heap_window_growth_bytes)fail('O01_CONTROLLER_RESOURCE_SLOPE');} latestGateway = structuredClone(gateway); return gateway;
+    assertLimits(config, null, gateway);gatewayHistory.push(gateway);if(ticks>config.warmup_ms/config.tick_ms&&gatewayHistory.length>60){const prior=gatewayHistory[gatewayHistory.length-61];if(gateway.resources.gateway_rss_bytes-prior.resources.gateway_rss_bytes>config.limits.rss_window_growth_bytes||gateway.resources.gateway_heap_bytes-prior.resources.gateway_heap_bytes>config.limits.heap_window_growth_bytes)fail('O01_CONTROLLER_RESOURCE_SLOPE');} latestGatewayBoundaryInflight=boundaryInflight; latestGateway = structuredClone(gateway); return gateway;
   }, completeSlot() {
     if (!activeFault || ticks !== (slotOrdinal + 1) * plan.slot_ticks) fail('O01_CONTROLLER_SLOT_TICKS');
     const fault = activeFault; const current = latestGateway; const ordinal = slotOrdinal + 1;
@@ -121,6 +249,7 @@ function createCrossValidator(config) {
         current.faults.pair_transactions_attempted <= baseline.faults.pair_transactions_attempted) fail('O01_CONTROLLER_FAULT_NOT_CONSUMED');
     if(faultTickOffset<1||faultTickOffset>FAULT_TICK_LIMIT||
        recoveryTickOffset<faultTickOffset||recoveryTickOffset>RECOVERY_TICK_LIMIT||!latestProductCoherent)fail('O01_CONTROLLER_RECOVERY_MISSING');
+    if(!verifiedGatewayPair(current))fail('O01_CONTROLLER_GATEWAY_PRODUCT');
     if (!['pcp','natpmp'].includes(current.faults.last_wire_protocol)) fail('O01_CONTROLLER_MAPPER_PROTOCOL');
     if (current.faults.pair_transactions_attempted !== current.faults.pair_transactions_committed + current.faults.pair_transactions_aborted ||
         current.faults.pair_transactions_attempted !== current.faults.fault_transactions_attempted + current.faults.recovery_transactions_attempted) fail('O01_CONTROLLER_TRANSACTION_ACCOUNTING');
@@ -169,14 +298,17 @@ function createCrossValidator(config) {
     if(!Number.isSafeInteger(product.generation)||product.generation<latestGateway.product.topology_generation||
        (latestProductGeneration!==null&&product.generation<latestProductGeneration))fail('O01_CONTROLLER_PRODUCT_TOPOLOGY');
     latestProductGeneration=product.generation;
-    const faultTransition=TRANSIENT_FAULTS.has(activeFault)&&faultTickOffset>0&&
-      !latestGateway.product.publisher_active&&latestGateway.product.journal_entry_count<=1&&
-      latestGateway.traffic.final_owned_mapping_count<=1&&transientProductSamples<MAX_TRANSIENT_PRODUCT_SAMPLES;
+    const retainedStablePair=verifiedGatewayPair(latestGateway);
+    const degradedTransition=degradedGatewayPair(latestGateway);
+    const boundaryPendingProduct=BOUNDARY_FAULTS.has(activeFault)&&latestGatewayBoundaryInflight;
+    const faultTransition=TRANSIENT_FAULTS.has(activeFault)&&(faultTickOffset>0||boundaryPendingProduct)&&
+      ticks-slotStartTick<=RECOVERY_TICK_LIMIT&&
+      transientProductSamples<MAX_TRANSIENT_PRODUCT_SAMPLES&&
+      (retainedStablePair||degradedTransition);
     if (product.same_generation !== true&&!faultTransition) fail('O01_CONTROLLER_PRODUCT_GENERATION');
     if (product.tcp_state !== product.udp_state&&!faultTransition) fail('O01_CONTROLLER_PRODUCT_PAIR_DIVERGED');
-    const needsPublisher=['CANDIDATE','REACHABLE'].includes(product.tcp_state);
-    const coherent=product.same_generation===true&&product.tcp_state===product.udp_state&&
-      (!needsPublisher||(latestGateway.product.publisher_active&&latestGateway.product.journal_entry_count===2));
+    const coherent=product.same_generation===true&&product.tcp_state==='CANDIDATE'&&
+      product.udp_state==='CANDIDATE'&&verifiedGatewayPair(latestGateway);
     if(!coherent){
       if(!faultTransition)fail('O01_CONTROLLER_PRODUCT_PUBLISHER');transientProductSamples+=1;}
     latestProductCoherent=coherent;
@@ -193,7 +325,10 @@ function makeCheckpoint({ ordinal, elapsedMs, faultOrdinal, executed, slots, pro
   if (!Number.isSafeInteger(ordinal) || ordinal < 1 || ordinal > 95 ||
       elapsedMs !== ordinal * 300000 || !Number.isSafeInteger(faultOrdinal) || faultOrdinal !== ordinal ||
       !Array.isArray(slots)||slots.length!==1||slots[0].ordinal!==faultOrdinal||
-      typeof previousSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(previousSha256)) fail('O01_CONTROLLER_CHECKPOINT');
+      typeof previousSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(previousSha256)||
+      !product||product.available!==true||product.same_generation!==true||
+      product.tcp_state!=='CANDIDATE'||product.udp_state!=='CANDIDATE'||
+      !verifiedGatewayPair(gateway)) fail('O01_CONTROLLER_CHECKPOINT');
   const body = { schema: 'ese.v92.o01-checkpoint/v2', ordinal, elapsed_ms: elapsedMs,
     fault_ordinal: faultOrdinal, executed: Object.fromEntries(Object.entries(executed).sort()), slots,
     product, gateway,
@@ -205,6 +340,8 @@ function makeCheckpoint({ ordinal, elapsedMs, faultOrdinal, executed, slots, pro
 }
 function makeTerminalRecord({ product, gateway, slots, previousSha256 }) {
   if(!Array.isArray(slots)||slots.length!==1||slots[0].ordinal!==96)fail('O01_CONTROLLER_TERMINAL_SLOTS');
+  if(!withdrawnGateway(gateway)||gateway.gateway.generation!==slots[0].generation_after||
+     gateway.gateway.epoch!==slots[0].epoch_after)fail('O01_CONTROLLER_FINAL');
   const body = { schema: 'ese.v92.o01-terminal/v1', elapsed_ms: product.elapsed_ms,
     slots,product, gateway, product_sha256: hash('ese.v92.o01-product-terminal/v1', product),
     gateway_sha256: hash('ese.v92.o01-gateway-terminal/v1', gateway), previous_sha256: previousSha256 };
@@ -230,7 +367,7 @@ async function runControllerCore(options) {
       new Set(boundFiles.map((entry)=>entry.path.toLowerCase())).size !== boundFiles.length) fail('O01_CONTROLLER_BINDING');
   const productState = createProductStreamState({ durationMs: config.formal_duration_ms,
     maxGapMs: config.limits.checkpoint_max_gap_ms > 70000 ? 70000 : config.limits.checkpoint_max_gap_ms });
-  const cross = createCrossValidator(config); let childStarted = false; let childClosed = false;
+  let cross = null; let childStarted = false; let childClosed = false;
   let previous = hash('ese.v92.o01-formal-chain-seed/v1', { source_commit: sourceCommit,
     source_tree: sourceTree, scenario_sha256: scenarioSha256, bound_files: boundFiles,
     duration_ms: config.formal_duration_ms });
@@ -243,6 +380,7 @@ async function runControllerCore(options) {
        !((mapperPreflight.traffic.final_owned_pcp===2&&mapperPreflight.traffic.final_owned_natpmp===0)||
          (mapperPreflight.traffic.final_owned_natpmp===2&&mapperPreflight.traffic.final_owned_pcp===0)))
       fail('O01_CONTROLLER_MAPPER_PROTOCOL');
+    cross=createCrossValidator(config,mapperPreflight);
     const clockLimits = Object.freeze({ tick_ms: config.tick_ms, checkpoint_ms: config.checkpoint_ms,
       checkpoint_max_gap_ms: config.limits.checkpoint_max_gap_ms,
       checkpoint_shift_limit_ms: plan.schedule_jitter_ms,
@@ -326,9 +464,11 @@ async function runControllerCore(options) {
     const snapshot = cross.snapshot();
     if (snapshot.slot_ordinal !== 96 || snapshot.tick_count !== 2880 || snapshot.product_samples !== 480 ||
         canonical(snapshot.executed) !== canonical(plan.planned) ||
+        finalGateway.gateway.generation !== snapshot.latest_gateway.gateway.generation ||
+        finalGateway.gateway.epoch !== snapshot.latest_gateway.gateway.epoch ||
+        finalGateway.product.topology_generation !== snapshot.latest_gateway.product.topology_generation ||
         finalGateway.gateway.mapping_count !== 1 || finalGateway.gateway.foreign_fixture_present !== true ||
-        finalGateway.traffic.final_owned_mapping_count !== 0 || finalGateway.product.publisher_active !== false ||
-        finalGateway.product.journal_entry_count !== 0) fail('O01_CONTROLLER_FINAL');
+        !withdrawnGateway(finalGateway)) fail('O01_CONTROLLER_FINAL');
     assertLimits(config, lastProduct, finalGateway);
     if(persistedCheckpoints!==95)fail('O01_CONTROLLER_CHECKPOINT_COUNT');
     const terminalRecord = makeTerminalRecord({ product: terminal, gateway: finalGateway,slots:pendingSlots, previousSha256: previous });

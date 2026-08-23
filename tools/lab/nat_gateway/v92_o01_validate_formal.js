@@ -28,18 +28,34 @@ function schedule(config) {
 }
 function product(value, ordinal) {
   exact(value, ['schema','sequence','elapsed_ms','available','tcp_state','udp_state','same_generation','generation','tcp_reason_code','udp_reason_code','working_set_bytes','handle_count']);
-  for(const key of ['sequence','elapsed_ms','generation','tcp_reason_code','udp_reason_code','working_set_bytes','handle_count'])uint(value[key],['tcp_reason_code','udp_reason_code'].includes(key)?65535:Number.MAX_SAFE_INTEGER);
+  for(const key of ['sequence','elapsed_ms','generation','tcp_reason_code','udp_reason_code','working_set_bytes','handle_count'])uint(value[key],['tcp_reason_code','udp_reason_code'].includes(key)?21:Number.MAX_SAFE_INTEGER);
   if (value.schema !== 'ese.v92.o01-product-sample/v1' || value.sequence !== ordinal * 5 + 1 ||
       value.elapsed_ms < ordinal * 300000 || value.elapsed_ms > ordinal * 300000 + 10000 ||
-      value.available !== true || value.same_generation !== true || value.tcp_state !== value.udp_state || !['CANDIDATE','REACHABLE','BLOCKED','UNKNOWN','OTHER'].includes(value.tcp_state)) fail('O01_FORMAL_PRODUCT');
+      value.available !== true || value.same_generation !== true ||
+      value.tcp_state !== 'CANDIDATE' || value.udp_state !== 'CANDIDATE') fail('O01_FORMAL_PRODUCT');
 }
 const GATEWAY_KEYS=['generation','epoch','mapping_count','pair_atomic','foreign_fixture_present','last_fault'];
 const PRODUCT_KEYS=['topology_generation','tcp_state','udp_state','publisher_active','journal_entry_count'];
 const RESOURCE_KEYS=['gateway_rss_bytes','gateway_heap_bytes','gateway_external_bytes','gateway_array_buffers_bytes','product_working_set_bytes','gateway_handles','product_handles','gateway_sockets','product_sockets','event_loop_lag_ms'];
 const TRAFFIC_KEYS=['pcp_requests','natpmp_requests','upnp_add_requests','upnp_get_requests','upnp_delete_requests','accepted_outcomes','rejected_outcomes','pcp_accepted','pcp_rejected','natpmp_accepted','natpmp_rejected','upnp_accepted','upnp_rejected','max_owned_mapping_count','final_owned_mapping_count','final_owned_pcp','final_owned_natpmp','final_owned_upnp'];
 const FAULT_KEYS=['armed_fault_ordinal','armed_fault_name','last_executed_fault_ordinal','last_executed_fault_name','last_executed_outcome','last_fault_candidate_committed','last_wire_protocol','pair_transactions_attempted','pair_transactions_committed','pair_transactions_aborted','fault_transactions_attempted','recovery_transactions_attempted','last_recovery_transaction_ordinal','late_packets_emitted','late_packets_suppressed','generation_before','generation_after','epoch_before','epoch_after','owned_before','owned_after','publisher_before','publisher_after','journal_before','journal_after'];
+const CUMULATIVE_TRAFFIC_KEYS=['pcp_requests','natpmp_requests','upnp_add_requests','upnp_get_requests','upnp_delete_requests','accepted_outcomes','rejected_outcomes','pcp_accepted','pcp_rejected','natpmp_accepted','natpmp_rejected','upnp_accepted','upnp_rejected','max_owned_mapping_count'];
+const CUMULATIVE_FAULT_KEYS=['last_executed_fault_ordinal','pair_transactions_attempted','pair_transactions_committed','pair_transactions_aborted','fault_transactions_attempted','recovery_transactions_attempted','last_recovery_transaction_ordinal','late_packets_emitted','late_packets_suppressed'];
 const SLOT_KEYS=['schema','ordinal','fault','fault_tick_offset','recovery_tick_offset','transient_product_samples','generation_before','generation_after','epoch_before','epoch_after','owned_before','owned_after','attempted_delta','committed_delta','aborted_delta','late_emitted_delta','late_suppressed_delta','candidate_committed','recovery_ordinal','outcome','wire_protocol','fault_generation_before','fault_generation_after','fault_epoch_before','fault_epoch_after','fault_owned_before','fault_owned_after','fault_publisher_before','fault_publisher_after','fault_journal_before','fault_journal_after','pair_atomic','foreign_fixture_present','publisher_active','journal_entry_count'];
 function privacy(value){if(value&&typeof value==='object'){for(const [key,item] of Object.entries(value)){if(/address|port|pid|nonce|credential|token|secret|path/i.test(key))fail('O01_FORMAL_PRIVACY');privacy(item);}}else if(typeof value==='string'&&/(?:[A-Z]:\\|\/home\/|(?:\d{1,3}\.){3}\d{1,3})/i.test(value))fail('O01_FORMAL_PRIVACY');}
+function trafficAccounting(value){const traffic=value&&value.traffic;return Boolean(traffic&&
+  traffic.pcp_requests===traffic.pcp_accepted+traffic.pcp_rejected&&
+  traffic.natpmp_requests===traffic.natpmp_accepted+traffic.natpmp_rejected&&
+  traffic.upnp_add_requests+traffic.upnp_get_requests+traffic.upnp_delete_requests===traffic.upnp_accepted+traffic.upnp_rejected&&
+  traffic.accepted_outcomes===traffic.pcp_accepted+traffic.natpmp_accepted+traffic.upnp_accepted&&
+  traffic.rejected_outcomes===traffic.pcp_rejected+traffic.natpmp_rejected+traffic.upnp_rejected);}
+function closedProtocolOwnership(value,owned){const traffic=value&&value.traffic;return Boolean(traffic&&
+  traffic.max_owned_mapping_count===2&&traffic.final_owned_mapping_count===owned&&traffic.final_owned_upnp===0&&
+  (traffic.final_owned_pcp===owned&&traffic.final_owned_natpmp===0||traffic.final_owned_pcp===0&&traffic.final_owned_natpmp===owned));}
+function cumulativeMonotonic(value,previous){return CUMULATIVE_TRAFFIC_KEYS.every(key=>value.traffic[key]>=previous.traffic[key])&&
+  CUMULATIVE_FAULT_KEYS.every(key=>value.faults[key]>=previous.faults[key]);}
+function faultNameBound(value){return Boolean(value&&value.gateway&&value.faults&&
+  value.gateway.last_fault===value.faults.last_executed_fault_name);}
 function gateway(value) {
   exact(value, ['gateway','product','resources','traffic','faults']);
   exact(value.gateway,GATEWAY_KEYS);exact(value.product,PRODUCT_KEYS);exact(value.resources,RESOURCE_KEYS);exact(value.traffic,TRAFFIC_KEYS);exact(value.faults,FAULT_KEYS);privacy(value);
@@ -50,12 +66,22 @@ function gateway(value) {
       !['renew_success','dropped_late','explicit_reject','expiry','epoch_reset','stale','replay_duplicate','malformed','partial_pair','final_boundary'].includes(value.gateway.last_fault)||
       !['none','renew_success','dropped_late','explicit_reject','expiry','epoch_reset','stale','replay_duplicate','malformed','partial_pair','final_boundary'].includes(value.faults.armed_fault_name)||
       !['none','event','committed','aborted','late_emitted'].includes(value.faults.last_executed_outcome)||
-      value.traffic.final_owned_mapping_count > value.traffic.max_owned_mapping_count||
+      !faultNameBound(value)||value.traffic.final_owned_mapping_count > value.traffic.max_owned_mapping_count||
       value.traffic.final_owned_mapping_count!==value.traffic.final_owned_pcp+value.traffic.final_owned_natpmp+value.traffic.final_owned_upnp||
       value.faults.pair_transactions_attempted!==value.faults.pair_transactions_committed+value.faults.pair_transactions_aborted||
       value.faults.pair_transactions_attempted!==value.faults.fault_transactions_attempted+value.faults.recovery_transactions_attempted||
-      value.traffic.pcp_requests+value.traffic.natpmp_requests+value.traffic.upnp_add_requests+value.traffic.upnp_get_requests+value.traffic.upnp_delete_requests!==value.traffic.accepted_outcomes+value.traffic.rejected_outcomes) fail('O01_FORMAL_GATEWAY');
+      !trafficAccounting(value)) fail('O01_FORMAL_GATEWAY');
 }
+function verifiedGatewayPair(value){return value.product.topology_generation===value.gateway.generation&&
+  value.gateway.mapping_count===3&&value.gateway.pair_atomic===true&&value.gateway.foreign_fixture_present===true&&
+  value.product.tcp_state==='VERIFIED'&&value.product.udp_state==='VERIFIED'&&
+  value.product.publisher_active===true&&value.product.journal_entry_count===2&&
+  trafficAccounting(value)&&faultNameBound(value)&&closedProtocolOwnership(value,2);}
+function withdrawnGateway(value){return value.product.topology_generation===value.gateway.generation&&
+  value.gateway.mapping_count===1&&value.gateway.pair_atomic===true&&value.gateway.foreign_fixture_present===true&&
+  value.product.tcp_state==='WITHDRAWN'&&value.product.udp_state==='WITHDRAWN'&&
+  value.product.publisher_active===false&&value.product.journal_entry_count===0&&
+  trafficAccounting(value)&&faultNameBound(value)&&closedProtocolOwnership(value,0);}
 function limits(config,p,g){if(g.resources.gateway_rss_bytes>config.limits.rss_absolute_bytes||g.resources.gateway_heap_bytes>config.limits.heap_absolute_bytes||g.resources.gateway_external_bytes>config.limits.external_absolute_bytes||g.resources.gateway_array_buffers_bytes>config.limits.array_buffers_absolute_bytes||g.resources.gateway_handles>config.limits.handles||g.resources.gateway_sockets>config.limits.sockets||g.resources.event_loop_lag_ms>2000||g.gateway.mapping_count>config.limits.mapping_table||g.product.journal_entry_count>config.limits.journal_entries||p.working_set_bytes>config.limits.rss_absolute_bytes||p.handle_count>config.limits.product_handles)fail('O01_FORMAL_RESOURCE');}
 function slotContinuity(value,generation,epoch,owned,publisher,journal){
   if(value.generation_before!==generation||value.epoch_before!==epoch||value.owned_before!==owned||
@@ -125,6 +151,7 @@ function validateEvidenceCore({ config, checkpoints, result }) {
   const events = schedule(config); const planned = counts(events);
   exact(result, ['schema','verdict','source_commit','source_tree','scenario_sha256','bound_files','elapsed_ms',
     'tick_count','fault_slot_count','product_sample_count','checkpoint_count','planned','executed','chain_tip_sha256','terminal_record']);
+  uint(result.elapsed_ms);
   if (result.schema !== 'ese.v92.o01-controller-result/v1' || result.verdict !== 'PASS' ||
       !/^[a-f0-9]{40}$/.test(result.source_commit) || !/^[a-f0-9]{40}$/.test(result.source_tree) ||
       !/^[a-f0-9]{64}$/.test(result.scenario_sha256) || !Array.isArray(result.bound_files) || result.bound_files.length < 1 ||
@@ -142,9 +169,9 @@ function validateEvidenceCore({ config, checkpoints, result }) {
     product(value.product, ordinal); gateway(value.gateway);limits(config,value.product,value.gateway);
     {if(!Number.isSafeInteger(value.product.generation)||value.product.generation<value.gateway.product.topology_generation||
        (latestProductGeneration!==null&&value.product.generation<latestProductGeneration)||
-       (['CANDIDATE','REACHABLE'].includes(value.product.tcp_state)&&
-        (!value.gateway.product.publisher_active||value.gateway.product.journal_entry_count!==2)))fail('O01_FORMAL_PRODUCT_GATEWAY');
+       !verifiedGatewayPair(value.gateway))fail('O01_FORMAL_PRODUCT_GATEWAY');
     latestProductGeneration=value.product.generation;}
+    if(index>0&&!cumulativeMonotonic(value.gateway,checkpoints[index-1].gateway))fail('O01_FORMAL_GATEWAY');
     resourceHistory.push(value);
     if(index>=2&&ordinal*300000>config.warmup_ms){const prior=resourceHistory[index-2];if(value.gateway.resources.gateway_rss_bytes-prior.gateway.resources.gateway_rss_bytes>config.limits.rss_window_growth_bytes||value.gateway.resources.gateway_heap_bytes-prior.gateway.resources.gateway_heap_bytes>config.limits.heap_window_growth_bytes||value.product.working_set_bytes-prior.product.working_set_bytes>config.limits.rss_window_growth_bytes)fail('O01_FORMAL_RESOURCE_SLOPE');}
     const expectedExecuted = counts(events.slice(0, ordinal));if(!Array.isArray(value.slots)||value.slots.length!==1)fail('O01_FORMAL_SLOTS');slot(value.slots[0],ordinal,events[ordinal-1]);
@@ -164,17 +191,23 @@ function validateEvidenceCore({ config, checkpoints, result }) {
   }
   const terminal=result.terminal_record;
   exact(terminal,['schema','elapsed_ms','slots','product','gateway','product_sha256','gateway_sha256','previous_sha256','record_sha256']);
+  uint(terminal.elapsed_ms);
   if(!Array.isArray(terminal.slots)||terminal.slots.length!==1)fail('O01_FORMAL_SLOTS');slot(terminal.slots[0],96,events[95]);
   {const prior=checkpoints[94].gateway;slotContinuity(terminal.slots[0],prior.gateway.generation,prior.gateway.epoch,prior.traffic.final_owned_mapping_count,prior.product.publisher_active,prior.product.journal_entry_count);slotFaultBinding(terminal.slots[0],terminal.gateway,prior.faults,96,events[95]);}
-  gateway(terminal.gateway);limits(config,checkpoints[94].product,terminal.gateway);const slopeBase=checkpoints[93];if(terminal.gateway.resources.gateway_rss_bytes-slopeBase.gateway.resources.gateway_rss_bytes>config.limits.rss_window_growth_bytes||terminal.gateway.resources.gateway_heap_bytes-slopeBase.gateway.resources.gateway_heap_bytes>config.limits.heap_window_growth_bytes)fail('O01_FORMAL_RESOURCE_SLOPE');exact(terminal.product,['schema','sequence','elapsed_ms','graceful_exit','mappings_absent','ini_restored_byte_exact','preexisting_processes_unchanged']);const terminalBody={...terminal};delete terminalBody.record_sha256;
+  gateway(terminal.gateway);limits(config,checkpoints[94].product,terminal.gateway);const slopeBase=checkpoints[93];if(terminal.gateway.resources.gateway_rss_bytes-slopeBase.gateway.resources.gateway_rss_bytes>config.limits.rss_window_growth_bytes||terminal.gateway.resources.gateway_heap_bytes-slopeBase.gateway.resources.gateway_heap_bytes>config.limits.heap_window_growth_bytes)fail('O01_FORMAL_RESOURCE_SLOPE');exact(terminal.product,['schema','sequence','elapsed_ms','graceful_exit','mappings_absent','ini_restored_byte_exact','preexisting_processes_unchanged']);uint(terminal.product.elapsed_ms);const terminalBody={...terminal};delete terminalBody.record_sha256;
+  if(!cumulativeMonotonic(terminal.gateway,checkpoints[94].gateway))fail('O01_FORMAL_GATEWAY');
   if (terminal.schema!=='ese.v92.o01-terminal/v1'||terminal.previous_sha256!==previous||
       terminal.product_sha256!==hash('ese.v92.o01-product-terminal/v1',terminal.product)||
       terminal.gateway_sha256!==hash('ese.v92.o01-gateway-terminal/v1',terminal.gateway)||
       terminal.record_sha256!==hash('ese.v92.o01-terminal/v1',terminalBody)||result.chain_tip_sha256!==terminal.record_sha256||
-      terminal.product.schema !== 'ese.v92.o01-product-terminal/v1' || terminal.product.sequence !== 482 || terminal.product.elapsed_ms < 28800000 ||
+      terminal.product.schema !== 'ese.v92.o01-product-terminal/v1' || terminal.product.sequence !== 482 ||
+      terminal.product.elapsed_ms < 28800000 || terminal.product.elapsed_ms > 28880000 ||
+      terminal.elapsed_ms !== terminal.product.elapsed_ms || result.elapsed_ms !== terminal.product.elapsed_ms ||
       terminal.product.graceful_exit !== true || terminal.product.mappings_absent !== true || terminal.product.ini_restored_byte_exact !== true || terminal.product.preexisting_processes_unchanged !== true ||
+      terminal.gateway.gateway.generation !== terminal.slots[0].generation_after ||
+      terminal.gateway.gateway.epoch !== terminal.slots[0].epoch_after ||
       terminal.gateway.gateway.mapping_count !== 1 || terminal.gateway.gateway.foreign_fixture_present !== true ||
-      terminal.gateway.traffic.final_owned_mapping_count !== 0 || terminal.gateway.product.publisher_active !== false || terminal.gateway.product.journal_entry_count !== 0) fail('O01_FORMAL_TERMINAL');
+      !withdrawnGateway(terminal.gateway)) fail('O01_FORMAL_TERMINAL');
   return Object.freeze({ verdict: 'PASS', checkpoints: 95, fault_slots: 96, ticks:2880, samples: 480 });
 }
 function validateRepository(repoRoot,config,result){const root=path.resolve(repoRoot||'');const git=(args)=>execFileSync('git',['-C',root,...args],{encoding:'utf8',windowsHide:true}).trim();if(git(['status','--porcelain=v1','--untracked-files=all'])!=='')fail('O01_FORMAL_SOURCE_DIRTY');if(git(['rev-parse','HEAD'])!==result.source_commit||git(['rev-parse','HEAD^{tree}'])!==result.source_tree)fail('O01_FORMAL_SOURCE_BINDING');const scenarioBytes=fs.readFileSync(path.join(root,'tools/lab/nat_gateway/v92_o01_scenario.json'));const diskConfig=JSON.parse(scenarioBytes.toString('utf8'));if(canonical(diskConfig)!==canonical(config))fail('O01_FORMAL_SCENARIO_SEMANTICS');const scenarioSha=crypto.createHash('sha256').update(scenarioBytes).digest('hex');if(scenarioSha!==result.scenario_sha256||config.bound_files.length!==21)fail('O01_FORMAL_SCENARIO_BINDING');for(let index=0;index<config.bound_files.length;index++){const relative=config.bound_files[index];const digest=crypto.createHash('sha256').update(fs.readFileSync(path.join(root,...relative.split('/')))).digest('hex');if(result.bound_files[index].path!==relative||result.bound_files[index].sha256!==digest)fail('O01_FORMAL_FILE_BINDING');}}

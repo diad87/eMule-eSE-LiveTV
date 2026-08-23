@@ -2,7 +2,13 @@
 
 const { types } = require('node:util');
 
-const STATES = new Set(['UNAVAILABLE', 'CANDIDATE', 'REACHABLE', 'BLOCKED', 'UNKNOWN', 'OTHER']);
+// Keep this closed set byte-for-byte aligned with Get-R93FormalCandidateProjection.
+// Transitional states are parsed here; the controller decides whether each one is
+// admissible for the currently active, bounded fault window.
+const STATES = new Set([
+  'UNAVAILABLE', 'DISABLED', 'DISCOVERING', 'CANDIDATE',
+  'VERIFIED', 'WITHDRAWN', 'BLOCKED', 'OTHER',
+]);
 const STARTED_KEYS = Object.freeze([
   'schema', 'sequence', 'elapsed_ms', 'identity_accredited', 'preexisting_processes_unchanged',
 ]);
@@ -50,7 +56,11 @@ function parseLine(line) {
     if (typeof value.available !== 'boolean' || typeof value.same_generation !== 'boolean' ||
         !STATES.has(value.tcp_state) || !STATES.has(value.udp_state)) fail('O01_PRODUCT_SAMPLE');
     if (!value.available && (value.same_generation || value.generation !== 0 ||
-        value.tcp_state !== 'UNAVAILABLE' || value.udp_state !== 'UNAVAILABLE')) fail('O01_PRODUCT_SAMPLE');
+        value.tcp_state !== 'UNAVAILABLE' || value.udp_state !== 'UNAVAILABLE' ||
+        value.tcp_reason_code !== 65535 || value.udp_reason_code !== 65535)) fail('O01_PRODUCT_SAMPLE');
+    if (value.available &&
+        (value.tcp_state === 'UNAVAILABLE' || value.udp_state === 'UNAVAILABLE' ||
+         value.tcp_reason_code > 21 || value.udp_reason_code > 21)) fail('O01_PRODUCT_SAMPLE');
     return Object.freeze({ ...value });
   }
   if (value?.schema === 'ese.v92.o01-product-terminal/v1') {

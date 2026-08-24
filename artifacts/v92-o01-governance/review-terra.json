@@ -1,8 +1,1 @@
-{
-  "schema": "ese.v92.o01-review/v1",
-  "role": "Terra",
-  "reviewed_commit": "bba779d073a80c43661c6fe0dca4fc25e0e99f3d",
-  "reviewed_tree": "c823e4b9c6e52c426bc51cbc4ecfb20ccc88a591",
-  "verdict": "APPROVE",
-  "findings": []
-}
+{"a_commit":"f5a141bdb152c9a0ba91ab4b57356bbc840f9cd2","a_tree":"81ee7106e7b2729aeb7eafb194b2385873905988","build_artifact_bindings_sha256":"ce386f9e140019eea032e7d75d5cf4a17494bd84f67b95f75303b07d5bea2f45","findings":[],"g_commit":"329603544f3ba76f9cccb2a2da46e02fc98e6065","g_tree":"8a4123be886a2b44e169cfaf03ab10e2574fbbcf","gate_attestations_sha256":"9d8e4ede1b1a70199fa144a3848840641f12fab2fc4fa90f425f68772ffe0c86","m_commit":"2a8fd15f14c18057c88551872349fbe9d13767a8","m_tree":"e7a8e4e96c626bb9f8c5354618e6c1d4ee4e0b59","offline_summary_sha256":"c56cf8fb3cb441ea2f45644277e9edff34c269589689bbd6afc2d4408250ee56","role":"Terra","runtime_bindings_sha256":"ae70afb97395ab4ab475610f350ac98a7baf083a11d379c9504a435adf4973d0","schema":"ese.v92.o01-review/v2","verdict":"APPROVE"}

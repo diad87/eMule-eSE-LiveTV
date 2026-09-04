@@ -26,7 +26,7 @@ function createO01FaultController(dependencies = {}) {
     throw new Error('O01_FAULT_LATE_DELAY_INVALID');
   }
 
-  let armed = null; let boundaryClaim = null; let boundaryAudit = null; let lateWindow = null;
+  let armed = null; let pendingFault = null; let boundaryClaim = null; let boundaryAudit = null; let lateWindow = null;
   const captured = new Map(); const pairKeys = new Map(); const stagedCaptures = new WeakMap();
   const pendingTcpCaptures = new Map(); const latestPairOrdinals = new Map();
   let wireOrdinal = 0; let lastPlannedOrdinal = 0;
@@ -70,12 +70,21 @@ function createO01FaultController(dependencies = {}) {
       [capture.correlated_tcp.key, capture.key] : [capture.key]);
     for (const memberKey of correlated) pairKeys.set(memberKey, correlated);
   };
+  const bindConsumedDecision = (decision, outcome) => {
+    if (!pendingFault || pendingFault.decision || decision.fault !== pendingFault.fault.name ||
+        decision.planned_ordinal !== pendingFault.fault.planned_ordinal ||
+        !['committed','aborted','late_emitted'].includes(outcome)) {
+      throw new Error('O01_FAULT_TRANSACTION_INVALID');
+    }
+    pendingFault.decision = decision; pendingFault.outcome = outcome;
+    return decision;
+  };
 
   return Object.freeze({
     arm(name, options = {}) {
       const planned = options.planned_ordinal || lastPlannedOrdinal + 1;
       const delayMs = options.delay_ms ?? options.deadline_ms ?? defaultLateDelayMs;
-      if (armed || boundaryClaim || boundaryAudit || lateWindow || !NAMES.has(name) ||
+      if (armed || pendingFault || boundaryClaim || boundaryAudit || lateWindow || !NAMES.has(name) ||
           !Number.isSafeInteger(planned) || planned !== lastPlannedOrdinal + 1 ||
           !Number.isSafeInteger(delayMs) || delayMs < 1 || delayMs > 10000) {
         throw new Error('O01_FAULT_ARM_INVALID');
@@ -111,7 +120,10 @@ function createO01FaultController(dependencies = {}) {
       const key = mappingKey(command, clientIdentity);
 
       if (lateWindow && key && lateWindow.keys.has(key)) {
-        lateSuppressed += 1;
+        if (!pendingFault || pendingFault.fault.planned_ordinal !== lateWindow.planned_ordinal) {
+          throw new Error('O01_FAULT_TRANSACTION_INVALID');
+        }
+        pendingFault.late_suppressed += 1;
         return Object.freeze({ packets: Object.freeze([]), fault: 'dropped_late', ordinal: wireOrdinal,
           late: false, commit: false, consumed: false, planned_ordinal: lateWindow.planned_ordinal });
       }
@@ -135,8 +147,8 @@ function createO01FaultController(dependencies = {}) {
       }
       if (consume) {
         armed = null;
-        lastExecutedOrdinal = fault.planned_ordinal;
-        lastExecutedName = fault.name;
+        pendingFault = { fault, protocol: command.protocol, decision: null, outcome: null,
+          late_emitted: 0, late_suppressed: 0 };
       }
       if (!fault) {
         const decision = Object.freeze({ packets: Object.freeze([Buffer.from(packet)]), fault: 'renew_success',
@@ -144,26 +156,24 @@ function createO01FaultController(dependencies = {}) {
         return stageCapture(decision, key, packet, command, clientIdentity);
       }
 
+      try {
       if (fault.name === 'renew_success') {
-        lastOutcome = 'committed';
         const decision = Object.freeze({ packets: Object.freeze([Buffer.from(packet)]), fault: fault.name,
           ordinal: wireOrdinal, commit: true, consumed: true, planned_ordinal: fault.planned_ordinal });
-        return stageCapture(decision, key, packet, command, clientIdentity);
+        return bindConsumedDecision(stageCapture(decision, key, packet, command, clientIdentity), 'committed');
       }
       if (BOUNDARY_FAULTS.has(fault.name)) {
         if (!boundaryAudit || boundaryAudit.planned_ordinal !== fault.planned_ordinal || boundaryAudit.name !== fault.name ||
             boundaryAudit.protocol !== command.protocol || boundaryAudit.client_identity !== clientIdentity) {
           throw new Error('O01_FAULT_BOUNDARY_MISSING');
         }
-        lastOutcome = 'aborted';
-        return Object.freeze({ packets: Object.freeze([]), fault: fault.name, ordinal: wireOrdinal,
-          commit: false, consumed: true, planned_ordinal: fault.planned_ordinal });
+        return bindConsumedDecision(Object.freeze({ packets: Object.freeze([]), fault: fault.name, ordinal: wireOrdinal,
+          commit: false, consumed: true, planned_ordinal: fault.planned_ordinal }), 'aborted');
       }
       if (fault.name === 'replay_duplicate') {
-        lastOutcome = 'aborted';
-        return Object.freeze({ packets: Object.freeze([Buffer.from(replay), Buffer.from(replay)]),
+        return bindConsumedDecision(Object.freeze({ packets: Object.freeze([Buffer.from(replay), Buffer.from(replay)]),
           fault: fault.name, ordinal: wireOrdinal, commit: false, consumed: true,
-          planned_ordinal: fault.planned_ordinal });
+          planned_ordinal: fault.planned_ordinal }), 'aborted');
       }
       if (fault.name === 'dropped_late') {
         const correlated = new Set([key]); for (const item of pairKeys.get(key) || []) correlated.add(item);
@@ -172,10 +182,10 @@ function createO01FaultController(dependencies = {}) {
         lateWindow = window;
         try {
           await sleep(fault.delay_ms, signal);
-          lateEmitted += 1; lastOutcome = 'late_emitted';
-          return Object.freeze({ packets: Object.freeze([Buffer.from(packet)]), fault: fault.name,
+          pendingFault.late_emitted += 1;
+          return bindConsumedDecision(Object.freeze({ packets: Object.freeze([Buffer.from(packet)]), fault: fault.name,
             ordinal: wireOrdinal, late: true, commit: false, consumed: true,
-            planned_ordinal: fault.planned_ordinal });
+            planned_ordinal: fault.planned_ordinal }), 'late_emitted');
         } finally {
           if (lateWindow === window) lateWindow = null;
         }
@@ -185,24 +195,28 @@ function createO01FaultController(dependencies = {}) {
           ? { type: 'reject', result_code: 'not-authorized' }
           : fault.name === 'malformed' ? { type: 'truncate', length_bytes: 3 } : { type: 'drop' };
         const out = await createNatPmpFaultInjector(action, { sleep })(packet, command, signal);
-        lastOutcome = 'aborted';
-        return Object.freeze({ packets: Object.freeze(out ? [Buffer.from(out)] : []), fault: fault.name,
+        return bindConsumedDecision(Object.freeze({ packets: Object.freeze(out ? [Buffer.from(out)] : []), fault: fault.name,
           ordinal: wireOrdinal, late: false, commit: false, consumed: true,
-          planned_ordinal: fault.planned_ordinal });
+          planned_ordinal: fault.planned_ordinal }), 'aborted');
       }
       if (['explicit_reject','stale'].includes(fault.name)) {
-        const out = Buffer.from(packet); out[3] = 2; out.fill(0, 12, 24); lastOutcome = 'aborted';
-        return Object.freeze({ packets: Object.freeze([out]), fault: fault.name, ordinal: wireOrdinal,
-          commit: false, consumed: true, planned_ordinal: fault.planned_ordinal });
+        const out = Buffer.from(packet); out[3] = 2; out.fill(0, 12, 24);
+        return bindConsumedDecision(Object.freeze({ packets: Object.freeze([out]), fault: fault.name, ordinal: wireOrdinal,
+          commit: false, consumed: true, planned_ordinal: fault.planned_ordinal }), 'aborted');
       }
       if (fault.name === 'malformed') {
-        lastOutcome = 'aborted';
-        return Object.freeze({ packets: Object.freeze([Buffer.from(packet.subarray(0, 3))]), fault: fault.name,
-          ordinal: wireOrdinal, commit: false, consumed: true, planned_ordinal: fault.planned_ordinal });
+        return bindConsumedDecision(Object.freeze({ packets: Object.freeze([Buffer.from(packet.subarray(0, 3))]), fault: fault.name,
+          ordinal: wireOrdinal, commit: false, consumed: true, planned_ordinal: fault.planned_ordinal }), 'aborted');
       }
-      lastOutcome = 'aborted';
-      return Object.freeze({ packets: Object.freeze([]), fault: fault.name, ordinal: wireOrdinal,
-        late: false, commit: false, consumed: true, planned_ordinal: fault.planned_ordinal });
+      return bindConsumedDecision(Object.freeze({ packets: Object.freeze([]), fault: fault.name, ordinal: wireOrdinal,
+        late: false, commit: false, consumed: true, planned_ordinal: fault.planned_ordinal }), 'aborted');
+      } catch (error) {
+        if (pendingFault && pendingFault.fault === fault && !pendingFault.decision) {
+          lateSuppressed += pendingFault.late_suppressed;
+          armed = fault; pendingFault = null;
+        }
+        throw error;
+      }
     },
 
     recordTransaction(decision, pairWasCommitted, before, after, protocol, pairMember) {
@@ -211,22 +225,32 @@ function createO01FaultController(dependencies = {}) {
         throw new Error('O01_FAULT_TRANSACTION_INVALID');
       }
       const stagedCapture = stagedCaptures.get(decision);
-      stagedCaptures.delete(decision);
       if (stagedCapture && stagedCapture.protocol !== protocol) throw new Error('O01_FAULT_TRANSACTION_INVALID');
+      if (decision.consumed && (!pendingFault || pendingFault.decision !== decision ||
+          pendingFault.protocol !== protocol || !pairMember)) throw new Error('O01_FAULT_TRANSACTION_INVALID');
+      if (stagedCapture && !pairMember) throw new Error('O01_FAULT_TRANSACTION_INVALID');
+      const completed = decision.consumed ? pendingFault : null;
+      const nextAudit = decision.consumed
+        ? boundaryAudit && boundaryAudit.planned_ordinal === decision.planned_ordinal
+          ? { ...boundaryAudit.values } : snapshotAudit(before, after)
+        : null;
       if (!pairMember) return;
+      stagedCaptures.delete(decision);
       if (stagedCapture && stagedCapture.transport === 'tcp' && !pairWasCommitted &&
           latestPairOrdinals.get(stagedCapture.pair_identity) === stagedCapture.ordinal) {
         pendingTcpCaptures.set(stagedCapture.pair_identity, stagedCapture);
       }
       if (stagedCapture && stagedCapture.transport === 'udp' && pairWasCommitted) promoteCapture(stagedCapture);
       if (decision.consumed) {
+        lastExecutedOrdinal = completed.fault.planned_ordinal;
+        lastExecutedName = completed.fault.name; lastOutcome = completed.outcome;
         pairAttempted += 1; faultAttempted += 1; lastCandidateCommitted = pairWasCommitted;
-        lastWireProtocol = protocol;
+        lastWireProtocol = completed.protocol;
         if (boundaryAudit && boundaryAudit.planned_ordinal === decision.planned_ordinal) {
-          audit = { ...boundaryAudit.values }; boundaryAudit = null; boundaryClaim = null;
-        } else {
-          audit = snapshotAudit(before, after);
+          boundaryAudit = null; boundaryClaim = null;
         }
+        audit = nextAudit; lateEmitted += completed.late_emitted; lateSuppressed += completed.late_suppressed;
+        pendingFault = null;
       }
       if (decision.consumed && pairWasCommitted) {
         pairCommitted += 1; lastRecoveryOrdinal = decision.planned_ordinal;
@@ -234,13 +258,14 @@ function createO01FaultController(dependencies = {}) {
         pairAborted += 1;
       } else if (pairWasCommitted && lastExecutedOrdinal > lastRecoveryOrdinal) {
         pairAttempted += 1; recoveryAttempted += 1; pairCommitted += 1;
-        lastRecoveryOrdinal = lastExecutedOrdinal; lastWireProtocol = protocol;
+        lastRecoveryOrdinal = lastExecutedOrdinal;
       }
     },
 
     state() {
-      return Object.freeze({ armed_fault_ordinal: armed ? armed.planned_ordinal : 0,
-        armed_fault_name: armed ? armed.name : 'none', last_executed_fault_ordinal: lastExecutedOrdinal,
+      const projectedArmed = armed || pendingFault?.fault;
+      return Object.freeze({ armed_fault_ordinal: projectedArmed ? projectedArmed.planned_ordinal : 0,
+        armed_fault_name: projectedArmed ? projectedArmed.name : 'none', last_executed_fault_ordinal: lastExecutedOrdinal,
         last_executed_fault_name: lastExecutedName, last_executed_outcome: lastOutcome,
         last_fault_candidate_committed: lastCandidateCommitted, last_wire_protocol: lastWireProtocol,
         pair_transactions_attempted: pairAttempted, pair_transactions_committed: pairCommitted,

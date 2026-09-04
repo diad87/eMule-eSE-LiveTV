@@ -2,6 +2,7 @@
 const assert=require('node:assert/strict');const test=require('node:test');
 const {decodeNatPmpRequest}=require('../natpmp_request_decoder');const {NATPMP_VECTORS}=require('../natpmp_vectors');
 const {createO01FaultController}=require('../v92_o01_t8_fault_controller');
+const {createCrossValidator}=require('../v92_o01_formal_controller');const scenario=require('../v92_o01_scenario.json');
 
 const udpRequest=()=>decodeNatPmpRequest(Buffer.from(NATPMP_VECTORS.map_udp_request.hex,'hex'));
 const tcpRequest=()=>decodeNatPmpRequest(Buffer.from(NATPMP_VECTORS.map_tcp_request.hex,'hex'));
@@ -9,6 +10,7 @@ const pcpUdpRequest=()=>({...udpRequest(),protocol:'pcp',nonce:'ab'.repeat(12)})
 const pcpTcpRequest=()=>({...tcpRequest(),protocol:'pcp',nonce:'ab'.repeat(12)});
 const response=(fill=0x31)=>{const value=Buffer.from(NATPMP_VECTORS.map_tcp_response.hex,'hex');value[1]=129;value.fill(fill,12);return value;};
 const observation=(generation=1,epoch=1,owned=2)=>({gateway:{generation,epoch},traffic:{final_owned_mapping_count:owned},product:{publisher_active:owned===2,journal_entry_count:owned}});
+const gatewayProjection=(faults)=>({gateway:{generation:1,epoch:1,mapping_count:3,pair_atomic:true,foreign_fixture_present:true,last_fault:faults.last_executed_fault_name},product:{topology_generation:1,tcp_state:'VERIFIED',udp_state:'VERIFIED',publisher_active:true,journal_entry_count:2},resources:{gateway_rss_bytes:1,gateway_heap_bytes:1,gateway_external_bytes:1,gateway_array_buffers_bytes:1,product_working_set_bytes:1,gateway_handles:1,product_handles:1,gateway_sockets:2,product_sockets:1,event_loop_lag_ms:1},traffic:{pcp_requests:0,natpmp_requests:0,upnp_add_requests:0,upnp_get_requests:0,upnp_delete_requests:0,accepted_outcomes:0,rejected_outcomes:0,pcp_accepted:0,pcp_rejected:0,natpmp_accepted:0,natpmp_rejected:0,upnp_accepted:0,upnp_rejected:0,max_owned_mapping_count:2,final_owned_mapping_count:2,final_owned_pcp:2,final_owned_natpmp:0,final_owned_upnp:0},faults});
 
 test('dropped-late waits 8000 ms, suppresses correlated retries and emits one packet',async()=>{
  let release;let waited=0;const c=createO01FaultController({lateDelayMs:8000,sleep:async(ms)=>{waited=ms;await new Promise(resolve=>{release=resolve;});}});const signal=new AbortController().signal;
@@ -18,8 +20,40 @@ test('dropped-late waits 8000 ms, suppresses correlated retries and emits one pa
  assert.equal(waited,8000);const retry=await c.apply(response(0x44),udpRequest(),signal,'client-a');assert.equal(retry.packets.length,0);assert.equal(retry.consumed,false);
  const tcpRetry=await c.apply(response(0x44),tcpRequest(),signal,'client-a');assert.equal(tcpRetry.packets.length,0);assert.equal(tcpRetry.consumed,false);
  const differentPort={...udpRequest(),suggested_external_port:udpRequest().suggested_external_port+1};const independent=await c.apply(response(0x45),differentPort,signal,'client-a');assert.equal(independent.packets.length,1);assert.equal(independent.consumed,false);
- const otherClient=await c.apply(response(0x46),udpRequest(),signal,'client-b');assert.equal(otherClient.packets.length,1);assert.equal(otherClient.consumed,false);assert.equal(c.state().late_packets_suppressed,2);
- release();const late=await pending;assert.equal(late.packets.length,1);assert.equal(late.late,true);assert.equal(c.state().late_packets_emitted,1);assert.equal(c.state().late_packets_suppressed,2);
+ const otherClient=await c.apply(response(0x46),udpRequest(),signal,'client-b');assert.equal(otherClient.packets.length,1);assert.equal(otherClient.consumed,false);assert.equal(c.state().late_packets_suppressed,0);
+ release();const late=await pending;assert.equal(late.packets.length,1);assert.equal(late.late,true);assert.equal(c.state().late_packets_emitted,0);assert.equal(c.state().late_packets_suppressed,0);
+ c.recordTransaction(late,false,observation(),observation(),'natpmp',true);assert.equal(c.state().late_packets_emitted,1);assert.equal(c.state().late_packets_suppressed,2);
+});
+
+test('dropped-late state is published atomically and accepted by the formal cross-validator',async()=>{
+ let release;const c=createO01FaultController({sleep:()=>new Promise(resolve=>{release=resolve;})});const signal=new AbortController().signal;
+ const ordered={...scenario,cycle:['dropped_late',...scenario.cycle.filter(value=>value!=='dropped_late')]};const cross=createCrossValidator(ordered);
+ c.arm('dropped_late');const baseline=c.state();cross.beginSlot('dropped_late',gatewayProjection(baseline));
+ const pending=c.apply(response(0x70),udpRequest(),signal,'client-a');await new Promise(resolve=>setImmediate(resolve));
+ const first=c.state();assert.deepEqual(first,baseline);cross.acceptTick(gatewayProjection(first));
+ const retry=await c.apply(response(0x71),udpRequest(),signal,'client-a');assert.equal(retry.consumed,false);assert.deepEqual(c.state(),baseline);cross.acceptTick(gatewayProjection(c.state()));
+ assert.throws(()=>c.arm('renew_success'),/O01_FAULT_ARM_INVALID/);release();const late=await pending;
+ assert.deepEqual(c.state(),baseline);cross.acceptTick(gatewayProjection(c.state()));
+ c.recordTransaction(late,false,observation(),observation(),'natpmp',true);const published=c.state();
+ assert.deepEqual({armed:published.armed_fault_ordinal,executed:published.last_executed_fault_ordinal,name:published.last_executed_fault_name,outcome:published.last_executed_outcome,emitted:published.late_packets_emitted,suppressed:published.late_packets_suppressed},{armed:0,executed:1,name:'dropped_late',outcome:'late_emitted',emitted:1,suppressed:1});
+ assert.doesNotThrow(()=>cross.acceptTick(gatewayProjection(published)));
+ assert.throws(()=>c.recordTransaction(late,false,observation(),observation(),'natpmp',true),/O01_FAULT_TRANSACTION_INVALID/);
+});
+
+test('dropped-late restores the armed fault when its delay is interrupted',async()=>{
+ let rejectDelay,attempts=0;const c=createO01FaultController({sleep:async()=>{attempts+=1;if(attempts===1)await new Promise((_,reject)=>{rejectDelay=reject;});}});const signal=new AbortController().signal;
+ c.arm('dropped_late');const baseline=c.state();const interrupted=c.apply(response(0x72),udpRequest(),signal,'client-a');await new Promise(resolve=>setImmediate(resolve));
+ const suppressed=await c.apply(response(0x73),udpRequest(),signal,'client-a');assert.equal(suppressed.packets.length,0);assert.deepEqual(c.state(),baseline);
+ rejectDelay(new Error('interrupted'));await assert.rejects(interrupted,/interrupted/);const restored=c.state();assert.equal(restored.armed_fault_ordinal,1);assert.equal(restored.last_executed_fault_ordinal,0);assert.equal(restored.late_packets_suppressed,1);
+ const retry=await c.apply(response(0x74),udpRequest(),signal,'client-a');assert.equal(retry.consumed,true);assert.deepEqual(c.state(),restored);
+ c.recordTransaction(retry,false,observation(),observation(),'natpmp',true);assert.equal(c.state().armed_fault_ordinal,0);assert.equal(c.state().last_executed_fault_ordinal,1);assert.equal(c.state().late_packets_emitted,1);assert.equal(c.state().late_packets_suppressed,1);
+});
+
+test('invalid transaction metadata cannot discard a staged replay capture',async()=>{
+ const c=createO01FaultController();const signal=new AbortController().signal,packet=response(0x75);c.arm('renew_success');
+ const consumed=await c.apply(packet,udpRequest(),signal,'client-a');assert.throws(()=>c.recordTransaction(consumed,true,observation(),observation(),'natpmp',false),/O01_FAULT_TRANSACTION_INVALID/);
+ assert.equal(c.state().last_executed_fault_ordinal,0);c.recordTransaction(consumed,true,observation(),observation(),'natpmp',true);c.arm('replay_duplicate');
+ const replay=await c.apply(response(0x76),udpRequest(),signal,'client-a');assert.equal(replay.consumed,true);assert.deepEqual(replay.packets,[packet,packet]);
 });
 
 test('dropped-late pair correlation is promoted only by the exact closing UDP commit',async()=>{
@@ -57,7 +91,8 @@ test('external, delete and TCP map never consume; UDP map consumes exactly once'
  const deletion=decodeNatPmpRequest(Buffer.from(NATPMP_VECTORS.map_tcp_delete_request.hex,'hex'));
  assert.equal((await c.apply(response(),external,signal)).consumed,false);assert.equal((await c.apply(response(),deletion,signal)).consumed,false);
  assert.equal((await c.apply(response(),tcpRequest(),signal)).consumed,false);assert.equal(c.state().armed_fault_ordinal,1);
- const consumed=await c.apply(response(),udpRequest(),signal);assert.equal(consumed.consumed,true);assert.equal(consumed.packets[0].readUInt16BE(2),2);assert.equal(c.state().armed_fault_ordinal,0);
+ const consumed=await c.apply(response(),udpRequest(),signal);assert.equal(consumed.consumed,true);assert.equal(consumed.packets[0].readUInt16BE(2),2);assert.equal(c.state().armed_fault_ordinal,1);assert.equal(c.state().last_executed_fault_ordinal,0);
+ c.recordTransaction(consumed,false,observation(),observation(),'natpmp',true);assert.equal(c.state().armed_fault_ordinal,0);assert.equal(c.state().last_executed_fault_ordinal,1);
 });
 
 test('replay cache is typed by the exact UDP member, never overwritten by TCP',async()=>{
@@ -121,7 +156,15 @@ test('boundary audit is fail-closed and only its protocol and client identity ca
  c.recordBoundary(token,before,after,false);
  const otherProtocol=await c.apply(response(),pcpUdpRequest(),signal,'client-a');assert.equal(otherProtocol.consumed,false);assert.equal(otherProtocol.packets.length,1);
  const otherClient=await c.apply(response(),udpRequest(),signal,'client-b');assert.equal(otherClient.consumed,false);assert.equal(otherClient.packets.length,1);assert.equal(c.state().last_executed_fault_ordinal,0);
- const matched=await c.apply(response(),udpRequest(),signal,'client-a');assert.equal(matched.consumed,true);assert.equal(matched.packets.length,0);assert.equal(c.state().last_executed_fault_ordinal,1);
+ const matched=await c.apply(response(),udpRequest(),signal,'client-a');assert.equal(matched.consumed,true);assert.equal(matched.packets.length,0);assert.equal(c.state().last_executed_fault_ordinal,0);
+ c.recordTransaction(matched,false,after,after,'natpmp',true);assert.equal(c.state().armed_fault_ordinal,0);assert.equal(c.state().last_executed_fault_ordinal,1);
+});
+
+test('recovery keeps the protocol of the audited fault transaction',async()=>{
+ const c=createO01FaultController({sleep:async()=>{}});const signal=new AbortController().signal;c.arm('explicit_reject');
+ const failed=await c.apply(response(),udpRequest(),signal,'client-a');c.recordTransaction(failed,false,observation(),observation(),'natpmp',true);
+ const recovered=await c.apply(response(),pcpUdpRequest(),signal,'client-a');c.recordTransaction(recovered,true,observation(),observation(),'pcp',true);
+ assert.equal(c.state().last_recovery_transaction_ordinal,1);assert.equal(c.state().last_wire_protocol,'natpmp');
 });
 
 test('final boundary aborts one pair, then permits one accredited recovery and cleanup',async()=>{

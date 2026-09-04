@@ -5,8 +5,8 @@
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const apiKeys = require('./api_keys');
 
-const OMDB_KEY = '26d99967';
 
 // ─── SPANISH → ENGLISH DICTIONARY ──────────────────────────────
 
@@ -107,14 +107,133 @@ function downloadPoster(posterUrl, posterPath, retries) {
 
 // ─── OMDB API ──────────────────────────────────────────────────
 
-function omdbRequest(params, cb, type) {
-  const t = type || 'movie';
-  const url = 'https://www.omdbapi.com/?' + params + '&apikey=' + OMDB_KEY + '&type=' + t;
-  https.get(url, (r) => {
-    let data = '';
-    r.on('data', d => data += d);
-    r.on('end', () => { try { cb(JSON.parse(data)); } catch(e) { cb(null); } });
-  }).on('error', () => cb(null));
+const OMDB_NOT_CONFIGURED = 'omdb_not_configured';
+const OMDB_UNREACHABLE = 'omdb_unreachable';
+const OMDB_RESPONSE_LIMIT = 5 * 1024 * 1024;
+const OMDB_TIMEOUT_MS = 15000;
+
+function getOmdbKey() {
+  try {
+    return typeof apiKeys.getOmdbKey === 'function' ? apiKeys.getOmdbKey() : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function resolveOmdbKey(provided) {
+  if (typeof provided !== 'string' || provided.length === 0) return null;
+  const configured = getOmdbKey();
+  return configured && configured === provided ? configured : null;
+}
+
+function redactCredential(value, credential) {
+  if (typeof value === 'string') {
+    const formEncoded = new URLSearchParams([['apikey', credential]])
+      .toString().slice('apikey='.length);
+    const variants = new Set([
+      credential,
+      encodeURIComponent(credential),
+      formEncoded
+    ]);
+    let redacted = value;
+    for (const variant of variants) {
+      if (variant) redacted = redacted.split(variant).join('[redacted]');
+    }
+    return redacted;
+  }
+  if (Array.isArray(value)) return value.map(item => redactCredential(item, credential));
+  if (value && typeof value === 'object') {
+    const output = Object.create(null);
+    for (const [key, item] of Object.entries(value)) {
+      const safeKey = redactCredential(key, credential);
+      if (Object.prototype.hasOwnProperty.call(output, safeKey)) continue;
+      output[safeKey] = redactCredential(item, credential);
+    }
+    return output;
+  }
+  return value;
+}
+
+function buildOmdbUrl(params, credential, type) {
+  const query = new URLSearchParams(typeof params === 'string' ? params : '');
+  for (const name of [...query.keys()]) {
+    const lower = name.toLowerCase();
+    if (lower === 'apikey' || lower === 'api_key') query.delete(name);
+  }
+  query.set('apikey', credential);
+  query.set('type', type === 'series' ? 'series' : 'movie');
+  return 'https://www.omdbapi.com/?' + query.toString();
+}
+
+function omdbRequest(params, cb, type, omdbKey) {
+  const callback = typeof cb === 'function' ? cb : function () {};
+  const credential = resolveOmdbKey(omdbKey);
+  if (!credential) {
+    queueMicrotask(() => callback(null, OMDB_NOT_CONFIGURED));
+    return null;
+  }
+
+  const url = buildOmdbUrl(params, credential, type);
+  let finished = false;
+  function finish(data, error) {
+    if (finished) return;
+    finished = true;
+    callback(data, error || null);
+  }
+
+  let request;
+  try {
+    const signal = AbortSignal.timeout(OMDB_TIMEOUT_MS);
+    request = https.get(url, { signal }, (r) => {
+      const chunks = [];
+      let total = 0;
+      r.on('data', (chunk) => {
+        if (finished) return;
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+        total += bytes.length;
+        if (total > OMDB_RESPONSE_LIMIT) {
+          finish(null, OMDB_UNREACHABLE);
+          if (typeof r.destroy === 'function') r.destroy();
+          return;
+        }
+        chunks.push(bytes);
+      });
+      r.on('end', () => {
+        if (finished) return;
+        try {
+          const parsed = JSON.parse(Buffer.concat(chunks, total).toString('utf8'));
+          finish(redactCredential(parsed, credential), null);
+        } catch (_) {
+          finish(null, OMDB_UNREACHABLE);
+        }
+      });
+      r.on('error', () => finish(null, OMDB_UNREACHABLE));
+    });
+    request.on('error', () => finish(null, OMDB_UNREACHABLE));
+    if (typeof request.setTimeout === 'function') {
+      request.setTimeout(OMDB_TIMEOUT_MS, () => {
+        finish(null, OMDB_UNREACHABLE);
+        if (typeof request.destroy === 'function') request.destroy();
+      });
+    }
+  } catch (_) {
+    queueMicrotask(() => finish(null, OMDB_UNREACHABLE));
+    return null;
+  }
+  return request;
+}
+
+function proxyOMDB(params, res, omdbKey) {
+  return omdbRequest(params, (info, error) => {
+    if (res.headersSent || res.writableEnded) return;
+    const statusCode = error === OMDB_NOT_CONFIGURED ? 503 : (error ? 502 : 200);
+    const payload = error ? { error } : info;
+    res.writeHead(statusCode, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store'
+    });
+    res.end(JSON.stringify(payload));
+  }, 'movie', omdbKey);
 }
 
 // ─── MOVIE LOOKUP ──────────────────────────────────────────────
@@ -126,21 +245,45 @@ function omdbRequest(params, cb, type) {
  *
  * @param {string}   title     - Clean title (from cleanTitle())
  * @param {string}   cacheDir
- * @param {function} callback  - (omdbData|null)
+ * @param {function} callback  - (omdbData|null, errorCode|null)
  * @param {string}   [rawFilename] - Original P2P filename for AI fallback
  * @param {object}   [settings]    - App settings (for AI provider/key)
+ * @param {string}   [omdbKey]     - Credential resolved by the trusted route
  */
-function fetchAndCacheMovie(title, cacheDir, callback, rawFilename, settings) {
+function fetchAndCacheMovie(title, cacheDir, callback, rawFilename, settings, omdbKey) {
   // Defensive: never throw if a caller passes a bad callback (signature drift).
   // A 2-arg wrapper once shifted CACHE_DIR into `callback`, crashing the poster
   // lookup with an uncaught "callback is not a function".
   if (typeof callback !== 'function') callback = function () {};
+  const operationKey = resolveOmdbKey(omdbKey);
+  if (!operationKey) {
+    queueMicrotask(() => callback(null, OMDB_NOT_CONFIGURED));
+    return null;
+  }
+  let completed = false;
+  function finish(info, error) {
+    if (completed) return;
+    completed = true;
+    callback(info, error || null);
+  }
+  function request(params, handler, type) {
+    return omdbRequest(params, (info, error) => {
+      if (error) {
+        finish(null, error);
+        return;
+      }
+      if (!completed) handler(info);
+    }, type, operationKey);
+  }
   const cached = getCachedInfo(title, cacheDir);
-  if (cached && cached.Poster && cached.Poster !== 'N/A') { callback(cached); return; }
+  if (cached && cached.Poster && cached.Poster !== 'N/A') {
+    finish(cached, null);
+    return null;
+  }
   
   function hasPoster(info) { return info && info.Response !== 'False' && info.Poster && info.Poster !== 'N/A'; }
   function done(info) {
-    if (hasPoster(info)) { cacheMovieInfo(title, info, cacheDir); callback(info); return true; }
+    if (hasPoster(info)) { cacheMovieInfo(title, info, cacheDir); finish(info, null); return true; }
     return false;
   }
   
@@ -171,7 +314,7 @@ function fetchAndCacheMovie(title, cacheDir, callback, rawFilename, settings) {
     if (franchiseKey && FRANCHISE_IDS[franchiseKey]) {
       const imdbId = FRANCHISE_IDS[franchiseKey][seqNum];
       if (imdbId) {
-        omdbRequest('i=' + imdbId, (info) => { if (!done(info)) fallback(); });
+        request('i=' + imdbId, (info) => { if (!done(info)) fallback(); });
         return;
       }
     }
@@ -182,16 +325,16 @@ function fetchAndCacheMovie(title, cacheDir, callback, rawFilename, settings) {
   function fallback() {
     const q = engBase || title;
     // Try movie first
-    omdbRequest('t=' + encodeURIComponent(q), (info) => {
+    request('t=' + encodeURIComponent(q), (info) => {
       if (done(info)) return;
       // Retry as series (catches TV shows like Breaking Bad, Game of Thrones, etc.)
-      omdbRequest('t=' + encodeURIComponent(q), (seriesInfo) => {
+      request('t=' + encodeURIComponent(q), (seriesInfo) => {
         if (done(seriesInfo)) return;
         const withApos = q.replace(/([a-z])s\b/gi, "$1's").replace(/([a-z])t\b/gi, "$1't");
         if (withApos !== q) {
-          omdbRequest('t=' + encodeURIComponent(withApos), (info2) => {
+          request('t=' + encodeURIComponent(withApos), (info2) => {
             if (done(info2)) return;
-            omdbRequest('t=' + encodeURIComponent(withApos), (info2s) => {
+            request('t=' + encodeURIComponent(withApos), (info2s) => {
               if (done(info2s)) return;
               searchFallback(q);
             }, 'series');
@@ -204,16 +347,16 @@ function fetchAndCacheMovie(title, cacheDir, callback, rawFilename, settings) {
   }
   
   function searchFallback(q) {
-    omdbRequest('s=' + encodeURIComponent(q), (sInfo) => {
+    request('s=' + encodeURIComponent(q), (sInfo) => {
       if (sInfo && sInfo.Search) {
         const wp = sInfo.Search.find(s => s.Poster && s.Poster !== 'N/A');
         if (wp) {
-          omdbRequest('i=' + wp.imdbID, (d) => {
+          request('i=' + wp.imdbID, (d) => {
             if (done(d)) return;
-            omdbRequest('s=' + encodeURIComponent(title), (s2) => {
+            request('s=' + encodeURIComponent(title), (s2) => {
               if (s2 && s2.Search) {
                 const wp2 = s2.Search.find(s => s.Poster && s.Poster !== 'N/A');
-                if (wp2) omdbRequest('i=' + wp2.imdbID, (d2) => { if (!done(d2)) aiFallback(); });
+                if (wp2) request('i=' + wp2.imdbID, (d2) => { if (!done(d2)) aiFallback(); });
                 else aiFallback();
               } else aiFallback();
             });
@@ -237,14 +380,16 @@ function fetchAndCacheMovie(title, cacheDir, callback, rawFilename, settings) {
 
     if (!aiAssistant.isEnabled(settings) || !source) {
       console.log('[Poster] No AI configured — OMDB lookup failed for:', title);
-      return callback(null);
+      finish(null, null);
+      return;
     }
 
     console.log('[Poster] OMDB failed, trying AI title extraction for:', source.substring(0, 60));
     aiAssistant.extractTitle(source, settings, (err, extracted) => {
       if (err || !extracted || !extracted.title) {
         console.log('[Poster] AI extraction returned nothing for:', source.substring(0, 60));
-        return callback(null);
+        finish(null, null);
+        return;
       }
 
       const aiTitle = extracted.title.trim();
@@ -254,20 +399,20 @@ function fetchAndCacheMovie(title, cacheDir, callback, rawFilename, settings) {
       const yearParam = extracted.year ? '&y=' + extracted.year : '';
       const typeParam = extracted.type === 'series' ? 'series' : 'movie';
 
-      omdbRequest('t=' + encodeURIComponent(aiTitle) + yearParam, (info) => {
+      request('t=' + encodeURIComponent(aiTitle) + yearParam, (info) => {
         if (done(info)) return;
         // Try without year, try other type
-        omdbRequest('t=' + encodeURIComponent(aiTitle), (info2) => {
+        request('t=' + encodeURIComponent(aiTitle), (info2) => {
           if (done(info2)) return;
-          omdbRequest('t=' + encodeURIComponent(aiTitle), (info3) => {
+          request('t=' + encodeURIComponent(aiTitle), (info3) => {
             if (done(info3)) return;
             // Last shot: search
-            omdbRequest('s=' + encodeURIComponent(aiTitle), (sInfo) => {
+            request('s=' + encodeURIComponent(aiTitle), (sInfo) => {
               if (sInfo && sInfo.Search) {
                 const wp = sInfo.Search.find(s => s.Poster && s.Poster !== 'N/A');
-                if (wp) { omdbRequest('i=' + wp.imdbID, (d) => { done(d) || callback(null); }); }
-                else callback(null);
-              } else callback(null);
+                if (wp) { request('i=' + wp.imdbID, (d) => { if (!done(d)) finish(null, null); }); }
+                else finish(null, null);
+              } else finish(null, null);
             });
           }, typeParam === 'movie' ? 'series' : 'movie');
         });
@@ -281,8 +426,9 @@ module.exports = {
   cacheMovieInfo,
   fetchAndCacheMovie,
   omdbRequest,
+  proxyOMDB,
   downloadPoster,
   TITLE_DICTIONARY,
   FRANCHISE_IDS,
-  OMDB_KEY
+  OMDB_NOT_CONFIGURED
 };

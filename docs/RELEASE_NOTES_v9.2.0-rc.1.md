@@ -28,6 +28,12 @@ not a declaration that the v9.2 physical exit gate has passed.
 
 ## Safety and privacy
 
+Shared TMDB and OMDb credentials have been removed. Optional movie metadata
+requires the user's own local configuration or environment credentials; see
+the user guide. The browser uses the local metadata proxy and receives no
+provider credential. Upstream metadata responses are bounded and scrubbed,
+and movie titles are no longer interpolated into Explore click-handler code.
+
 The mapper continues to fail closed. It does not relax address classification,
 ownership proof, structural validation or cleanup authorization. Formal
 evidence contains counters, enums and hashes only; it excludes raw endpoints,

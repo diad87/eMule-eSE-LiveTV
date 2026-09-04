@@ -1,4 +1,4 @@
-﻿// ════════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
 //  player.js — LEGACY MONOLITH (kept as fallback only)
 // ════════════════════════════════════════════════════════════════════════════
 //  This file is NOT served when the prebuilt _player_bundle.js exists, which
@@ -8,7 +8,7 @@
 //
 //  Audit 2026-05-17 backported the following blocking fixes here so the
 //  fallback path is not catastrophically broken:
-//    - C1: TMDB_KEY declared globally
+//    - TMDB requests use the local credential-free browser proxy
 //    - C2: var meta/details added in showMovieDetail
 //    - C5: duplicate setTimeout(fetchLocalPosters) removed
 //    - I5: TMDB fetches routed through /api/tmdb/* proxy
@@ -56,11 +56,7 @@ let bytesReceived = 0;
 let lastBitrateCheck = 0;
 let currentBitrate = 0;
 
-// C1 fix: declare TMDB_KEY at module level so heroInfo/showMovieDetail can use it.
-// (Was previously only declared inside fetchLocalPosters/loadHero, causing
-//  ReferenceError in the other call sites.) The key is now also kept
-//  server-side via the /api/tmdb/* proxy — fetches below should use that.
-var TMDB_KEY = (typeof window !== 'undefined' && window.ESE_TMDB_KEY) || '2dca580c2a14b55200e784d157207b4d';
+// Authentication stays on the server; browser requests use /api/tmdb/*.
 
 var video = document.getElementById('video-player');
 

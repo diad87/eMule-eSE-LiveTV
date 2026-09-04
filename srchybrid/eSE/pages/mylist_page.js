@@ -1,7 +1,6 @@
 // filepath: pages/mylist_page.js
 'use strict';
 const navbar = require('../shared/navbar');
-const { TMDB_KEY } = require('../api_keys');
 
 let _ctx = null;
 function init(ctx) { _ctx = ctx; }

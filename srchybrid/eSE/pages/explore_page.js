@@ -1,7 +1,6 @@
 // filepath: pages/explore_page.js
 'use strict';
 const navbar = require('../shared/navbar');
-const { TMDB_KEY } = require('../api_keys');
 
 let _ctx = null;
 function init(ctx) { _ctx = ctx; }
@@ -25,8 +24,8 @@ function buildSections(genreId) {
   const g = GENRES.find(x => x.id === genreId) || GENRES[0];
   const type = g.type;
   const genreParam = g.tmdbGenre ? '&with_genres=' + g.tmdbGenre : '';
-  const base = 'https://api.themoviedb.org/3/';
-  const key = '?api_key=' + TMDB_KEY + '&language=es-ES&page=1';
+  const base = '/api/tmdb/';
+  const key = '?language=es-ES&page=1';
 
   if (genreId === 'all') {
     return [
@@ -77,27 +76,35 @@ function loadSections(cat){
       '</div></div>'
   }).join("");
   sections.forEach(function(s,i){
-    fetch(s.url).then(function(r){return r.json()}).then(function(data){
+    fetch(s.url).then(function(r){return r.json().then(function(body){
+      if(!r.ok)throw new Error(body.error||'tmdb_unavailable');
+      return body;
+    })}).then(function(data){
       var items=data.results||[];
       var el=document.getElementById("carousel-"+i);
       if(!el)return;
       if(!items.length){el.innerHTML='<div style="color:#555;padding:20px">Sin resultados</div>';return}
-      el.innerHTML=items.map(function(m){
+      el.innerHTML='';
+      items.forEach(function(m){
         var poster=m.poster_path?"https://image.tmdb.org/t/p/w342"+_a(m.poster_path):"";
         var title=m.title||m.name||"";
         var year=(m.release_date||m.first_air_date||"").slice(0,4);
         var rating=m.vote_average?m.vote_average.toFixed(1):"";
         var mediaType=m.media_type||(m.first_air_date?"tv":"movie");
-        var safe=_a(title);
-        return '<div class="ex-card" onclick="openTMDB('+m.id+',\\''+_a(mediaType)+'\\',\\''+safe+'\\')">'
-          +(poster?'<img src="'+poster+'" alt="" loading="lazy">':'<div style="width:170px;aspect-ratio:2/3;background:#1a1a2e;border-radius:10px"></div>')
+        var card=document.createElement('div');
+        card.className='ex-card';
+        card.onclick=function(){openTMDB(m.id,mediaType,title)};
+        card.innerHTML=(poster?'<img src="'+poster+'" alt="" loading="lazy">':'<div style="width:170px;aspect-ratio:2/3;background:#1a1a2e;border-radius:10px"></div>')
           +(rating?'<div class="ex-card-rating">\\u2605 '+_e(rating)+'</div>':'')
           +'<div class="ex-card-info"><div class="ex-card-title">'+_e(title)+'</div>'
-          +'<div class="ex-card-meta">'+_e(year)+(mediaType==="tv"?" \\u00b7 Serie":"")+'</div></div></div>'
-      }).join("");
-    }).catch(function(){
+          +'<div class="ex-card-meta">'+_e(year)+(mediaType==="tv"?" \\u00b7 Serie":"")+'</div></div>';
+        el.appendChild(card);
+      });
+    }).catch(function(error){
       var el=document.getElementById("carousel-"+i);
-      if(el)el.innerHTML='<div style="color:#e74c3c;padding:20px">Error de conexi\\xf3n</div>';
+      if(el)el.textContent=error.message==='tmdb_not_configured'
+        ? 'Configura tu clave TMDB local para consultar el catálogo.'
+        : 'El catálogo no está disponible en este momento.';
     });
   });
 }
@@ -108,7 +115,7 @@ function scrollCarousel(idx,dir){
 }
 
 function openTMDB(tmdbId,mediaType,title){
-  var findUrl="https://api.themoviedb.org/3/"+mediaType+"/"+tmdbId+"/external_ids?api_key=${TMDB_KEY}";
+  var findUrl="/api/tmdb/"+encodeURIComponent(mediaType)+"/"+encodeURIComponent(tmdbId)+"/external_ids";
   fetch(findUrl).then(function(r){return r.json()}).then(function(ids){
     if(ids.imdb_id){
       window.location.href="/?detail="+ids.imdb_id+"&title="+encodeURIComponent(title);

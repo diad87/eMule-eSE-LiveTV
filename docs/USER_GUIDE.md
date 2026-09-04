@@ -54,6 +54,35 @@ follow the update/rollback procedure in the release notes.
 
 To uninstall, delete the install folder + both `%APPDATA%` folders.
 
+### Optional movie metadata (TMDB and OMDb)
+
+The movie catalogue and online movie information require your own provider
+credentials. No shared TMDB or OMDb key is included. LiveTV and normal eD2K/Kad
+use do not require these credentials.
+
+Close eMule and `ese-server.exe` before editing
+`%APPDATA%\eSE\config.json`. Back up an existing file and add only the fields
+you need, preserving its other settings. For a new file, the structure is:
+
+```json
+{
+  "tmdbKey": "REPLACE_WITH_YOUR_TMDB_V3_API_KEY",
+  "omdbKey": "REPLACE_WITH_YOUR_OMDB_API_KEY"
+}
+```
+
+Replace the placeholders with your own keys; omit any service you do not use.
+Alternatively, set `ESE_TMDB_API_KEY` and/or `ESE_OMDB_API_KEY` in the
+environment inherited by eMule and the server. A non-empty environment value
+takes precedence over the corresponding configuration field. Restart the
+applications after changing their environment.
+
+The server sends a configured key only to its provider, not to the browser.
+Without a key, that provider's metadata requests fail locally with a
+not-configured message and make no provider request. Keep `config.json` and
+your environment values private; do not include them in screenshots, bug
+reports or shared packages.
+
 ---
 
 ## 2. Watch a stream

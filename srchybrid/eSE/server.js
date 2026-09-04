@@ -4,7 +4,6 @@ debugLog.install();
 process.on('uncaughtException', err => { console.log('[Uncaught]', err); });
 process.on('unhandledRejection', err => { console.log('[Unhandled]', err); });
 const http = require('http');
-const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const APP_VERSION = require('./package.json').version;
@@ -13,6 +12,7 @@ const APP_VERSION = require('./package.json').version;
 const mediaResolver = require('./media_resolver');
 const emuleApi = require('./emule_api');
 const tmdbApi = require('./tmdb_api');
+const apiKeys = require('./api_keys');
 const utils = require('./utils');
 const liveApi = require('./eSE-live/channel_api');
 const thumbExtractor = require('./eSE-live/thumbnail_extractor');
@@ -87,7 +87,6 @@ emuleApi.setSettingsFunctions(loadSettings, saveSettings);
 // Session/password proxies (getters so they always reflect module state)
 Object.defineProperty(global, 'emuleSession', { get: () => emuleApi.getSession() });
 Object.defineProperty(global, 'emulePassword', { get: () => emuleApi.getPassword() });
-const OMDB_KEY = tmdbApi.OMDB_KEY;
 
 function emuleRequest(url, cb)  { return emuleApi.emuleRequest(url, cb); }
 function emuleSearch(q, s, cb)  { return emuleApi.emuleSearch(q, s, cb); }
@@ -95,11 +94,27 @@ function emuleDownload(h, cb, meta) { return emuleApi.emuleDownload(h, cb, meta)
 function emuleTransferAction(params, cb) { return emuleApi.emuleTransferAction(params, cb); }
 function emuleAddEd2kLink(l, cb){ return emuleApi.emuleAddEd2kLink(l, cb); }
 function autoLoginEmule()       { return emuleApi.autoLoginEmule(); }
-// NOTE: pass-through to tmdb_api's full 5-arg signature
-// (title, cacheDir, callback, rawFilename, settings). The old 2-arg wrapper
-// shifted CACHE_DIR into `callback` when movies_routes called it with 5 args
+// NOTE: pass-through to tmdb_api's full 6-arg signature
+// (title, cacheDir, callback, rawFilename, settings, omdbKey). The old 2-arg
+// wrapper shifted CACHE_DIR into `callback` when movies_routes called it
 // -> "TypeError: callback is not a function". Keep the arity aligned.
-function fetchAndCacheMovie(title, cacheDir, cb, rawFilename, settings) { return tmdbApi.fetchAndCacheMovie(title, cacheDir, cb, rawFilename, settings); }
+function getConfiguredOmdbKey() {
+  try {
+    return typeof apiKeys.getOmdbKey === 'function' ? apiKeys.getOmdbKey() : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function fetchAndCacheMovie(title, cacheDir, cb, rawFilename, settings, omdbKey) {
+  const callback = typeof cb === 'function' ? cb : function () {};
+  const configured = getConfiguredOmdbKey();
+  if (!configured || configured !== omdbKey) {
+    queueMicrotask(() => callback(null, 'omdb_not_configured'));
+    return null;
+  }
+  return tmdbApi.fetchAndCacheMovie(title, cacheDir, callback, rawFilename, settings, configured);
+}
 function getCompletedFiles(options) { return mediaResolver.getCompletedFiles(EMULE_INCOMING, options); }
 
 // Auto-login eMule + keepalive
@@ -143,18 +158,19 @@ cleanup.init(activeStreams, TEMP_DIR);
 
 // OMDb API proxy
 
-function proxyOMDB(params, res) {
-  const fullUrl = 'https://www.omdbapi.com/?' + params + '&apikey=' + OMDB_KEY + '&type=movie';
-  https.get(fullUrl, (omdbRes) => {
-    let data = '';
-    omdbRes.on('data', d => data += d);
-    omdbRes.on('end', () => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(data);
-    });
-  }).on('error', (e) => {
-    res.writeHead(500); res.end(JSON.stringify({ error: e.message }));
-  });
+function proxyOMDB(params, res, omdbKey) {
+  const configured = getConfiguredOmdbKey();
+  if (!configured || configured !== omdbKey) {
+    if (!res.headersSent && !res.writableEnded) {
+      res.writeHead(503, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store'
+      });
+      res.end(JSON.stringify({ error: 'omdb_not_configured' }));
+    }
+    return null;
+  }
+  return tmdbApi.proxyOMDB(params, res, configured);
 }
 
 

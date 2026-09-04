@@ -1,6 +1,6 @@
 // filepath: srchybrid/eSE/api_keys.js
 // ─── Single Source of Truth for external API keys ────────────────────────────
-// All API keys MUST be imported from this module.
+// All external API credentials MUST be loaded through this module.
 // DO NOT hardcode keys inline in other files.
 'use strict';
 
@@ -13,25 +13,47 @@ const runtimeDir = require('./runtime_dir');
 const CONFIG_PATH = runtimeDir.join('config.json');
 
 /**
- * Loads TMDB API key from config.json.
- * Falls back to built-in default if config is missing or key is empty.
+ * Return a non-empty credential string without retaining surrounding
+ * whitespace.  Credentials are deliberately not validated or logged here:
+ * TMDB owns the accepted format and may change it independently of eSE.
  */
-function getTmdbKey() {
-  try {
-    if (fs.existsSync(CONFIG_PATH)) {
-      const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-      if (cfg.tmdbKey && cfg.tmdbKey.length > 0) {
-        return cfg.tmdbKey;
-      }
-    }
-  } catch (e) {
-    console.warn('[api_keys] Failed to read config.json:', e.message);
-  }
-  // Default key — move to env var in production
-  return '2dca580c2a14b55200e784d157207b4d';
+function _credential(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
-/** Cached TMDB key — loaded once at module init */
-const TMDB_KEY = getTmdbKey();
+function _getConfiguredCredential(environmentName, configName, options = {}) {
+  const environment = options.environment || process.env;
+  const fileSystem = options.fileSystem || fs;
+  const configPath = options.configPath || CONFIG_PATH;
 
-module.exports = { TMDB_KEY };
+  const environmentKey = _credential(environment[environmentName]);
+  if (environmentKey) return environmentKey;
+
+  try {
+    if (!fileSystem.existsSync(configPath)) return null;
+    const cfg = JSON.parse(fileSystem.readFileSync(configPath, 'utf8'));
+    return _credential(cfg && cfg[configName]);
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Loads the TMDB v3 application credential from local configuration.
+ * ESE_TMDB_API_KEY takes precedence over config.json's `tmdbKey`.
+ */
+function getTmdbKey(options = {}) {
+  return _getConfiguredCredential('ESE_TMDB_API_KEY', 'tmdbKey', options);
+}
+
+/**
+ * Loads the OMDb application credential from local configuration.
+ * ESE_OMDB_API_KEY takes precedence over config.json's `omdbKey`.
+ */
+function getOmdbKey(options = {}) {
+  return _getConfiguredCredential('ESE_OMDB_API_KEY', 'omdbKey', options);
+}
+
+module.exports = { getTmdbKey, getOmdbKey };

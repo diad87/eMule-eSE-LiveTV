@@ -1,5 +1,4 @@
 'use strict';
-const { TMDB_KEY } = require('../api_keys');
 
 let _ctx = null;
 function init(ctx) { _ctx = ctx; }
@@ -46,6 +45,7 @@ body{background:#0a0a0f;color:#fff;font-family:'Inter',system-ui,sans-serif;min-
 <button class="close-btn" onclick="location.href='/'">&#10005;</button>
 </div>
 <div class="content">
+<div id="metadata-status" class="section-title" role="status" hidden></div>
 <div id="trending-section">
 <div class="section-title"> Tendencias esta semana</div>
 <div class="grid" id="trending-grid"></div>
@@ -57,23 +57,37 @@ body{background:#0a0a0f;color:#fff;font-family:'Inter',system-ui,sans-serif;min-
 </div>
 </div>
 <script>
-var TMDB = '${TMDB_KEY}';
 var GENRES = {};
 var searchTimer = null;
+function showTmdbError(error) {
+  var status = document.getElementById('metadata-status');
+  status.hidden = false;
+  status.textContent = error.message === 'tmdb_not_configured'
+    ? 'Configura tu clave TMDB local para consultar el catálogo.'
+    : 'El catálogo no está disponible en este momento.';
+}
+function fetchTmdb(path) {
+  return fetch('/api/tmdb/' + path).then(function(response) {
+    return response.json().then(function(body) {
+      if (!response.ok) throw new Error(body.error || 'tmdb_unavailable');
+      document.getElementById('metadata-status').hidden = true;
+      return body;
+    });
+  });
+}
 function _e(s){return String(s).replace(/&/g,'\u0026amp;').replace(/</g,'\u0026lt;').replace(/>/g,'\u0026gt;').replace(/"/g,'\u0026quot;')}
 function _a(s){return String(s).replace(/&/g,'\u0026amp;').replace(/"/g,'\u0026quot;').replace(/'/g,'\u0026#39;').replace(/</g,'\u0026lt;').replace(/>/g,'\u0026gt;')}
 
 // Load genre map
-fetch('https://api.themoviedb.org/3/genre/movie/list?api_key='+TMDB+'&language=es-ES')
-  .then(function(r){return r.json()})
-  .then(function(d){d.genres.forEach(function(g){GENRES[g.id]=g.name})});
+fetchTmdb('genre/movie/list?language=es-ES')
+  .then(function(d){(d.genres || []).forEach(function(g){GENRES[g.id]=g.name})})
+  .catch(showTmdbError);
 
 // Load trending
-fetch('https://api.themoviedb.org/3/trending/movie/week?api_key='+TMDB+'&language=es-ES')
-  .then(function(r){return r.json()})
+fetchTmdb('trending/movie/week?language=es-ES')
   .then(function(d){
     if(d.results) renderGrid('trending-grid', d.results);
-  });
+  }).catch(showTmdbError);
 
 function renderGrid(containerId, movies) {
   var grid = document.getElementById(containerId);
@@ -102,8 +116,7 @@ function renderGrid(containerId, movies) {
 function openMovie(m) {
   var title = m.title || m.name;
   // Get IMDB ID directly from TMDB (more reliable than OMDB search)
-  fetch('https://api.themoviedb.org/3/movie/'+m.id+'/external_ids?api_key='+TMDB)
-    .then(function(r){return r.json()})
+  fetchTmdb('movie/'+encodeURIComponent(m.id)+'/external_ids')
     .then(function(ids) {
       if (ids.imdb_id) {
         window.location.href = '/?detail=' + ids.imdb_id + '&ltitle=' + encodeURIComponent(title);
@@ -130,8 +143,7 @@ document.getElementById('q').addEventListener('input', function() {
     document.getElementById('results-section').style.display = '';
     document.getElementById('results-label').textContent = 'Resultados para "'+val+'"';
     
-    fetch('https://api.themoviedb.org/3/search/movie?api_key='+TMDB+'&language=es-ES&query='+encodeURIComponent(val))
-      .then(function(r){return r.json()})
+    fetchTmdb('search/movie?language=es-ES&query='+encodeURIComponent(val))
       .then(function(d) {
         if (d.results && d.results.length > 0) {
           document.getElementById('no-results').style.display = 'none';
@@ -140,7 +152,7 @@ document.getElementById('q').addEventListener('input', function() {
           document.getElementById('results-grid').innerHTML = '';
           document.getElementById('no-results').style.display = '';
         }
-      });
+      }).catch(showTmdbError);
   }, 300);
 });
 </script></body></html>`);

@@ -145,7 +145,7 @@ test('explore passes upstream titles and IDs as data instead of inline event-han
 
 test('legacy and fallback browser sources contain neither TMDB credentials nor direct API calls', () => {
   for (const relative of ['player.js', 'hero_ui.js', '_deprecated/player_combined_test.js',
-    'pages/search_page.js', 'pages/explore_page.js', 'pages/mylist_page.js']) {
+    'pages/search_page.js', 'pages/explore_page.js', 'pages/mylist_page.js', 'pages/main_page.js']) {
     const source = fs.readFileSync(path.join(root, relative), 'utf8');
     assert.doesNotMatch(source, /TMDB_KEY|ESE_TMDB_KEY|api_key|api\.themoviedb\.org/, relative);
     // These two historical extraction fragments already fail standalone parsing

@@ -19,6 +19,9 @@ not a declaration that the v9.2 physical exit gate has passed.
   foreign mappings are never cleanup targets.
 - The v9.2 T8 laboratory provides real PCP/NAT-PMP wire exchanges, hostile
   replies, bounded recovery, privacy-safe observations and exact teardown.
+- The dashboard home page waits for asynchronous media lists before replying,
+  reports a failed load without leaving the request open, and uses the completed
+  file player for completed videos. File names remain data in card click handlers.
 - The formal O01 controller requires 8 uninterrupted hours, 2,880 observation
   ticks, 96 five-minute fault slots, 480 product samples, 95 checkpoints and a
   chained terminal record. The live gateway caps PCP and NAT-PMP grants at 120
@@ -33,6 +36,10 @@ requires the user's own local configuration or environment credentials; see
 the user guide. The browser uses the local metadata proxy and receives no
 provider credential. Upstream metadata responses are bounded and scrubbed,
 and movie titles are no longer interpolated into Explore click-handler code.
+
+Native `--selftest` skips secure-user relaunch, link-association changes,
+Windows autostart registration and startup firewall configuration. Tests still
+require a fresh portable profile; they must not reuse a user's active profile.
 
 The mapper continues to fail closed. It does not relax address classification,
 ownership proof, structural validation or cleanup authorization. Formal

@@ -288,6 +288,7 @@ END_MESSAGE_MAP()
 CemuleApp::CemuleApp(LPCTSTR lpszAppName)
 	: CWinApp(lpszAppName)
 	, emuledlg()
+	, m_pFirewallOpener()
 	, relayclient()
 	, directreachability()
 	, m_iDfltImageListColorFlags(ILC_COLOR)
@@ -547,7 +548,7 @@ BOOL CemuleApp::InitInstance()
 		CPreferences::RegenerateUserHash();
 
 	// check if we have to restart eMule as Secure user
-	if (thePrefs.IsRunAsUserEnabled()) {
+	if (!m_bSelfTest && thePrefs.IsRunAsUserEnabled()) {
 		CSecRunAsUser rau;
 		eResult res = rau.RestartSecure();
 		if (res == RES_OK_NEED_RESTART)
@@ -583,32 +584,34 @@ BOOL CemuleApp::InitInstance()
 
 	emuledlg = new CemuleDlg;
 	m_pMainWnd = emuledlg;
-	// Barry - Auto-take ed2k links
-	if (thePrefs.AutoTakeED2KLinks())
-		Ask4RegFix(false, true, false);
+	if (!m_bSelfTest) {
+		// Barry - Auto-take ed2k links
+		if (thePrefs.AutoTakeED2KLinks())
+			Ask4RegFix(false, true, false);
 
-	SetAutoStart(thePrefs.GetAutoStart());
+		SetAutoStart(thePrefs.GetAutoStart());
 
-	m_pFirewallOpener = new CFirewallOpener();
-	m_pFirewallOpener->Init(true); // we need to init it now (even if we may not use it yet) because of CoInitializeSecurity - which kinda ruins the sense of the class interface but ooohh well :P
-	// Open WinXP firewall ports if set in preferences and possible
-	if (thePrefs.IsOpenPortsOnStartupEnabled()) {
-		if (m_pFirewallOpener->Init()) {
-			// delete old rules added by eMule
-			m_pFirewallOpener->RemoveRule(EMULE_DEFAULTRULENAME_UDP);
-			m_pFirewallOpener->RemoveRule(EMULE_DEFAULTRULENAME_TCP);
-			// open port for this session
-			if (m_pFirewallOpener->OpenPort(thePrefs.GetPort(), NAT_PROTOCOL_TCP, EMULE_DEFAULTRULENAME_TCP, true))
-				QueueLogLine(false, GetResString(IDS_FO_TEMPTCP_S), thePrefs.GetPort());
-			else
-				QueueLogLine(false, GetResString(IDS_FO_TEMPTCP_F), thePrefs.GetPort());
-
-			if (thePrefs.GetUDPPort()) {
+		m_pFirewallOpener = new CFirewallOpener();
+		m_pFirewallOpener->Init(true); // we need to init it now (even if we may not use it yet) because of CoInitializeSecurity - which kinda ruins the sense of the class interface but ooohh well :P
+		// Open WinXP firewall ports if set in preferences and possible
+		if (thePrefs.IsOpenPortsOnStartupEnabled()) {
+			if (m_pFirewallOpener->Init()) {
+				// delete old rules added by eMule
+				m_pFirewallOpener->RemoveRule(EMULE_DEFAULTRULENAME_UDP);
+				m_pFirewallOpener->RemoveRule(EMULE_DEFAULTRULENAME_TCP);
 				// open port for this session
-				if (m_pFirewallOpener->OpenPort(thePrefs.GetUDPPort(), NAT_PROTOCOL_UDP, EMULE_DEFAULTRULENAME_UDP, true))
-					QueueLogLine(false, GetResString(IDS_FO_TEMPUDP_S), thePrefs.GetUDPPort());
+				if (m_pFirewallOpener->OpenPort(thePrefs.GetPort(), NAT_PROTOCOL_TCP, EMULE_DEFAULTRULENAME_TCP, true))
+					QueueLogLine(false, GetResString(IDS_FO_TEMPTCP_S), thePrefs.GetPort());
 				else
-					QueueLogLine(false, GetResString(IDS_FO_TEMPUDP_F), thePrefs.GetUDPPort());
+					QueueLogLine(false, GetResString(IDS_FO_TEMPTCP_F), thePrefs.GetPort());
+
+				if (thePrefs.GetUDPPort()) {
+					// open port for this session
+					if (m_pFirewallOpener->OpenPort(thePrefs.GetUDPPort(), NAT_PROTOCOL_UDP, EMULE_DEFAULTRULENAME_UDP, true))
+						QueueLogLine(false, GetResString(IDS_FO_TEMPUDP_S), thePrefs.GetUDPPort());
+					else
+						QueueLogLine(false, GetResString(IDS_FO_TEMPUDP_F), thePrefs.GetUDPPort());
+				}
 			}
 		}
 	}
@@ -683,7 +686,7 @@ BOOL CemuleApp::InitInstance()
 	DisableRTLWindowsLayout();
 
 	// Barry - Restore old registry if required
-	if (thePrefs.AutoTakeED2KLinks())
+	if (!m_bSelfTest && thePrefs.AutoTakeED2KLinks())
 		RevertReg();
 
 	::CloseHandle(m_hMutexOneInstance);

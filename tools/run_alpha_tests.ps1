@@ -74,6 +74,9 @@ if ($Suite -eq 'Core' -or $Suite -eq 'All') {
     Run 'IPv6 callback wire tests' { & python (Join-Path $RepoRoot 'tests\test_callback_v6_wire.py') }
     Run 'IPv6 transport wire tests' { & python (Join-Path $RepoRoot 'tests\test_ipv6_transport_wire.py') }
     Run 'tunnel framing tests' { & python (Join-Path $RepoRoot 'tests\test_tunnel_framing.py') }
+    Run 'selftest startup isolation' {
+        & python (Join-Path $RepoRoot 'tests\test_v92_selftest_startup_isolation.py')
+    }
     Run 'libreach' { & cmd /d /c (Join-Path $RepoRoot 'libreach\make.bat') }
     Run 'libnatmap' { & cmd /d /c (Join-Path $RepoRoot 'libnatmap\make.bat') }
     Run 'Crypto++ Release x64 dependency' { Ensure-CryptoPP }

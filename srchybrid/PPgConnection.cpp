@@ -563,6 +563,10 @@ BOOL CPPgConnection::OnHelpInfo(HELPINFO*)
 
 void CPPgConnection::OnBnClickedOpenports()
 {
+	// Selftest intentionally skips firewall setup, so no opener exists there.
+	if (theApp.m_bSelfTest || theApp.m_pFirewallOpener == NULL)
+		return;
+
 	OnApply();
 	theApp.m_pFirewallOpener->RemoveRule(EMULE_DEFAULTRULENAME_UDP);
 	theApp.m_pFirewallOpener->RemoveRule(EMULE_DEFAULTRULENAME_TCP);

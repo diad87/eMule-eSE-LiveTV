@@ -1,0 +1,58 @@
+{
+    "schema":  "ese.v92.close-runtime-probe/v1",
+    "commit":  "1546ab57",
+    "package_root":  "C:\\tmp\\emule-rc1",
+    "started_utc":  "2026-09-05T21:57:51.2691646Z",
+    "steps":  [
+                  {
+                      "name":  "preconditions",
+                      "status":  "PASS",
+                      "detail":  "attached to already-running candidate pid 36676"
+                  },
+                  {
+                      "name":  "configure",
+                      "status":  "PASS",
+                      "detail":  "EnableUPnP=0 Autoconnect=0 headless profile"
+                  },
+                  {
+                      "name":  "launch",
+                      "status":  "PASS",
+                      "detail":  "pid 36676, /api/status reachable"
+                  },
+                  {
+                      "name":  "capture",
+                      "status":  "PASS",
+                      "detail":  "reach available=True status available=True"
+                  },
+                  {
+                      "name":  "validate_reach_status -Live",
+                      "status":  "PASS",
+                      "detail":  "exit 0"
+                  },
+                  {
+                      "name":  "reach_probe",
+                      "status":  "INFO",
+                      "detail":  "exit 0 (INSUFFICIENT_OBSERVABILITY expected with mappings OFF)"
+                  },
+                  {
+                      "name":  "capture_status",
+                      "status":  "PASS",
+                      "detail":  "exit 0"
+                  },
+                  {
+                      "name":  "shutdown",
+                      "status":  "FAIL",
+                      "detail":  "WM_CLOSE posted to 40 window(s); forced=True"
+                  },
+                  {
+                      "name":  "leftover",
+                      "status":  "PASS",
+                      "detail":  "no child process left"
+                  }
+              ],
+    "forced_kill":  true,
+    "verdict":  "FAIL",
+    "executable_sha256":  "4d7eae90c73778a6b147e7798424461889cbea816ce10990389fd1fef775d9f0",
+    "pid":  36676,
+    "finished_utc":  "2026-09-05T21:58:58.9137162Z"
+}

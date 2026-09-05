@@ -1,0 +1,169 @@
+{
+    "available":  true,
+    "path":  "/api/reach/status",
+    "captured_at_utc":  "2026-09-05T21:57:53.523Z",
+    "data":  {
+                 "schema":  "ESE_REACH_STATUS_V1",
+                 "available":  true,
+                 "topology_generation":  1,
+                 "planes":  {
+                                "ed2k_tcp_v4":  {
+                                                    "state":  "Disabled",
+                                                    "gate_state":  "DISABLED",
+                                                    "reason":  "DisabledByPreference",
+                                                    "reason_code":  1,
+                                                    "generation":  1,
+                                                    "expired":  false,
+                                                    "stale":  false,
+                                                    "local":  {
+                                                                  "family":  "IPv4",
+                                                                  "address_class":  "unspecified",
+                                                                  "port":  4662,
+                                                                  "source":  "LocalInterface",
+                                                                  "usable":  true
+                                                              },
+                                                    "mapped":  {
+                                                                   "family":  "Unspecified",
+                                                                   "address_class":  "unspecified",
+                                                                   "port":  0,
+                                                                   "source":  "None",
+                                                                   "usable":  false
+                                                               },
+                                                    "advertised":  {
+                                                                       "family":  "IPv4",
+                                                                       "address_class":  "unspecified",
+                                                                       "port":  4662,
+                                                                       "source":  "LocalInterface",
+                                                                       "usable":  true
+                                                                   },
+                                                    "lease":  {
+                                                                  "mapper":  "None",
+                                                                  "transport":  "Tcp",
+                                                                  "requested_external_port":  0,
+                                                                  "granted_external_port":  0,
+                                                                  "lifetime_seconds":  0,
+                                                                  "mapper_epoch":  0,
+                                                                  "generation":  0,
+                                                                  "owned_by_us":  false,
+                                                                  "structurally_valid":  false
+                                                              },
+                                                    "primary_evidence":  {
+                                                                             "kind":  "None",
+                                                                             "generation":  0,
+                                                                             "current":  false
+                                                                         },
+                                                    "inbound_evidence":  {
+                                                                             "kind":  "None",
+                                                                             "generation":  0,
+                                                                             "current":  false
+                                                                         },
+                                                    "classic_high_id_evidence":  false
+                                                },
+                                "kad_udp_v4":  {
+                                                   "state":  "Disabled",
+                                                   "gate_state":  "DISABLED",
+                                                   "reason":  "DisabledByPreference",
+                                                   "reason_code":  1,
+                                                   "generation":  1,
+                                                   "expired":  false,
+                                                   "stale":  false,
+                                                   "local":  {
+                                                                 "family":  "IPv4",
+                                                                 "address_class":  "unspecified",
+                                                                 "port":  4672,
+                                                                 "source":  "LocalInterface",
+                                                                 "usable":  true
+                                                             },
+                                                   "mapped":  {
+                                                                  "family":  "Unspecified",
+                                                                  "address_class":  "unspecified",
+                                                                  "port":  0,
+                                                                  "source":  "None",
+                                                                  "usable":  false
+                                                              },
+                                                   "advertised":  {
+                                                                      "family":  "IPv4",
+                                                                      "address_class":  "unspecified",
+                                                                      "port":  4672,
+                                                                      "source":  "LocalInterface",
+                                                                      "usable":  true
+                                                                  },
+                                                   "lease":  {
+                                                                 "mapper":  "None",
+                                                                 "transport":  "Tcp",
+                                                                 "requested_external_port":  0,
+                                                                 "granted_external_port":  0,
+                                                                 "lifetime_seconds":  0,
+                                                                 "mapper_epoch":  0,
+                                                                 "generation":  0,
+                                                                 "owned_by_us":  false,
+                                                                 "structurally_valid":  false
+                                                             },
+                                                   "primary_evidence":  {
+                                                                            "kind":  "None",
+                                                                            "generation":  0,
+                                                                            "current":  false
+                                                                        },
+                                                   "inbound_evidence":  {
+                                                                            "kind":  "None",
+                                                                            "generation":  0,
+                                                                            "current":  false
+                                                                        },
+                                                   "classic_high_id_evidence":  false
+                                               },
+                                "direct_v6":  {
+                                                  "state":  "Disabled",
+                                                  "gate_state":  "DISABLED",
+                                                  "reason":  "DisabledByPreference",
+                                                  "reason_code":  1,
+                                                  "generation":  1,
+                                                  "expired":  false,
+                                                  "stale":  false,
+                                                  "local":  {
+                                                                "family":  "Unspecified",
+                                                                "address_class":  "unspecified",
+                                                                "port":  0,
+                                                                "source":  "None",
+                                                                "usable":  false
+                                                            },
+                                                  "mapped":  {
+                                                                 "family":  "Unspecified",
+                                                                 "address_class":  "unspecified",
+                                                                 "port":  0,
+                                                                 "source":  "None",
+                                                                 "usable":  false
+                                                             },
+                                                  "advertised":  {
+                                                                     "family":  "Unspecified",
+                                                                     "address_class":  "unspecified",
+                                                                     "port":  0,
+                                                                     "source":  "None",
+                                                                     "usable":  false
+                                                                 },
+                                                  "lease":  {
+                                                                "mapper":  "None",
+                                                                "transport":  "Tcp",
+                                                                "requested_external_port":  0,
+                                                                "granted_external_port":  0,
+                                                                "lifetime_seconds":  0,
+                                                                "mapper_epoch":  0,
+                                                                "generation":  0,
+                                                                "owned_by_us":  false,
+                                                                "structurally_valid":  false
+                                                            },
+                                                  "primary_evidence":  {
+                                                                           "kind":  "None",
+                                                                           "generation":  0,
+                                                                           "current":  false
+                                                                       },
+                                                  "inbound_evidence":  {
+                                                                           "kind":  "None",
+                                                                           "generation":  0,
+                                                                           "current":  false
+                                                                       },
+                                                  "classic_high_id_evidence":  false
+                                              }
+                            }
+             },
+    "error":  null
+}

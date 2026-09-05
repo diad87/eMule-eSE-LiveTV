@@ -1,0 +1,147 @@
+{
+  "gate": "G92-93-DEV",
+  "commit": "1546ab57",
+  "rows": [
+    {
+      "id": "H93-01",
+      "verdict": "PASS",
+      "note": "checkout limpio de claude/v92-close (dirty=false), commit y toolchain registrados; producto idéntico al tag rc.1",
+      "artifacts": [
+        "manifest.json"
+      ]
+    },
+    {
+      "id": "H93-02",
+      "verdict": "PASS",
+      "note": "primera pasada = paquete rc.1 oficial (BUILD_INFO dirty=false); segunda pasada desde checkout limpio: Release x64, Core (salvo libkad6 por entorno, repetido aparte), Integration, libnatmap y libreach completos",
+      "artifacts": [
+        "logs/release_build_2.log",
+        "logs/core_suite_node22.log",
+        "logs/libkad6_test_all_3.log",
+        "logs/integration_suite_3.log",
+        "logs/libnatmap_make.log",
+        "logs/libreach_make.log"
+      ]
+    },
+    {
+      "id": "H93-03",
+      "verdict": "PASS",
+      "note": "cinco goldens empty/candidate/verified/expired/stale, mock de envelope y validación -Live contra el exe del tag",
+      "artifacts": [
+        "logs/goldens.log",
+        "logs/reach_envelope_mock.log",
+        "runtime/validate-live.log"
+      ]
+    },
+    {
+      "id": "H93-04",
+      "verdict": "PASS",
+      "note": "test_mapped_candidate_adapter 193/193 y test_legacy_mapper_projection 100/100 (schema anterior, campos futuros, enum desconocido)",
+      "artifacts": [
+        "logs/libnatmap_make.log"
+      ]
+    },
+    {
+      "id": "H93-05",
+      "verdict": "PASS",
+      "note": "consumer fake 9.3 (tests/fixtures/v93_candidate_gatherer_fake.py, direct_candidate_snapshot_v1_consumer.py) dentro de la suite Python v9.2; ver failing en manifest.suites.v92_python",
+      "artifacts": [
+        "logs/v92_python_suite.log"
+      ]
+    },
+    {
+      "id": "H93-06",
+      "verdict": "PASS",
+      "note": "T8 WP0 autotest 439 pass / 0 fail (UPnP, PCP, NAT-PMP, timeout, denegación)",
+      "artifacts": [
+        "logs/core_suite_node22.log"
+      ]
+    },
+    {
+      "id": "H93-07",
+      "verdict": "PASS",
+      "note": "test_false_highid, test_mapping_request 113/113, test_mapping_result_mailbox 126/126",
+      "artifacts": [
+        "logs/libnatmap_make.log"
+      ]
+    },
+    {
+      "id": "H93-08",
+      "verdict": "PASS",
+      "note": "test_pcp_pair_transaction y test_natpmp_pair_transaction (par TCP/UDP atómico, fallo parcial)",
+      "artifacts": [
+        "logs/libnatmap_make.log"
+      ]
+    },
+    {
+      "id": "H93-09",
+      "verdict": "PASS",
+      "note": "test_lease_policy, test_ownership_cleanup_policy, test_mapping_recovery, test_network_change, test_state_machine",
+      "artifacts": [
+        "logs/libnatmap_make.log"
+      ]
+    },
+    {
+      "id": "H93-10",
+      "verdict": "PASS",
+      "note": "test_address_policy, test_nat_chain, test_direct_route_selection",
+      "artifacts": [
+        "logs/libnatmap_make.log"
+      ]
+    },
+    {
+      "id": "H93-11",
+      "verdict": "PASS",
+      "note": "test_network_signature, test_network_change, test_state_machine (callbacks stale)",
+      "artifacts": [
+        "logs/libnatmap_make.log"
+      ]
+    },
+    {
+      "id": "H93-12",
+      "verdict": "PASS",
+      "note": "test_ipv6_scope_policy; deuda explícita: IPv6 física pendiente antes de Core Alpha 9.3 (plan §26A.2)",
+      "artifacts": [
+        "logs/libnatmap_make.log"
+      ]
+    },
+    {
+      "id": "H93-13",
+      "verdict": "PASS",
+      "note": "srchybrid standalone tests (Integration) + runtime del exe del tag con mappings OFF: schema V1, tres planos DISABLED/DisabledByPreference, generación 1, READY; cierre forzado por el probe ad hoc, no por el producto",
+      "artifacts": [
+        "logs/integration_suite_3.log",
+        "runtime/summary.json",
+        "runtime/api-reach-status.json",
+        "runtime/reach-probe.json"
+      ]
+    },
+    {
+      "id": "H93-14",
+      "verdict": "PASS",
+      "note": "corpus hostil L07 2245/2245, smoke de redacción WP0, goldens sin nonce/IP; logs copiados con direcciones y rutas de usuario redactadas",
+      "artifacts": [
+        "logs/libnatmap_make.log",
+        "logs/core_suite_node22.log",
+        "logs/goldens.log"
+      ]
+    },
+    {
+      "id": "H93-15",
+      "verdict": "PENDING",
+      "note": "físico: el gateway actual (TP-Link Deco, doble NAT tras router Movistar) no responde SSDP/NAT-PMP/PCP; sesión con router real pendiente (runbook §2)",
+      "artifacts": [
+        "logs/router_probe.log",
+        "logs/router_census.log"
+      ],
+      "simulated": false
+    },
+    {
+      "id": "H93-16",
+      "verdict": "PENDING",
+      "note": "físico: segundo nodo no disponible en esta sesión; no intentado",
+      "artifacts": [],
+      "simulated": false
+    }
+  ]
+}

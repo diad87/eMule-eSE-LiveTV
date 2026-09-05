@@ -1,0 +1,178 @@
+{
+    "schema":  "ese.lab.report/v1",
+    "generated_at_utc":  "2026-09-05T22:03:50.931Z",
+    "case_id":  "G92-93-DEV",
+    "outcome":  "BLOCKED",
+    "build":  {
+                  "version":  "9.2",
+                  "commit":  "1546ab57ca2f0136352d892accbb3023ed7eab5e"
+              },
+    "notes":  "",
+    "evidence_count":  24,
+    "evidence":  [
+                     {
+                         "path":  "handoff-9.3/gate-matrix.json",
+                         "bytes":  23066,
+                         "sha256":  "6426854ec736cad7fc7a9792598c4fbe474e6acfac2d9a1565802710cb16341d",
+                         "kind":  "json",
+                         "schema":  "ese.lab.handoff-gate-matrix/v1",
+                         "verdict":  "BLOCKED"
+                     },
+                     {
+                         "path":  "logs/core_suite_node22.log",
+                         "bytes":  180695,
+                         "sha256":  "4a778e7b35fd069a0d59ae6f287c23beb98de66ce829f0ef9ad22fd61640eb06",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "logs/goldens.log",
+                         "bytes":  148,
+                         "sha256":  "c2043cf7e384aec40c312dfd045de24fec79ca3619525f2b4e912350eed07e91",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "logs/integration_suite_3.log",
+                         "bytes":  9732,
+                         "sha256":  "9768380e5d17b8d79c486d28872e7500134a887890a31c4cf7c33813c0c4f57b",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "logs/libkad6_test_all_3.log",
+                         "bytes":  12904,
+                         "sha256":  "a5993a0823d19b4b8f58d69083ee0bacbca48f92bf8aee1d731b153122dfd380",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "logs/libnatmap_make.log",
+                         "bytes":  5584,
+                         "sha256":  "786108d1841731ddfcce00910e7a8fcf5048282e7a59b4eb6512902b107b486e",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "logs/libreach_make.log",
+                         "bytes":  669,
+                         "sha256":  "72b5e2d3bc36cd5fb51aae2d0518c270286067caf486291711b5b356e0e606b6",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "logs/reach_envelope_mock.log",
+                         "bytes":  182,
+                         "sha256":  "52f84aafafa445a1cafc6c518d0faa6623f827be2cfb78f275cc8186e8f93064",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "logs/release_build_2.log",
+                         "bytes":  460434,
+                         "sha256":  "ea2469635f9807147eea57be9fa52410d45e8d11be91f95c2a918947af98acaa",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "logs/router_census.log",
+                         "bytes":  993,
+                         "sha256":  "0bb546a79cc44bc1c93cd40a6c4e71d845eb6a2dc7b64079d35a23d51128be2b",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "logs/router_probe.log",
+                         "bytes":  116,
+                         "sha256":  "844f3669306c578241f4fa990bd7d00cc4bc3431f9b19c5d801bcc1c6668fe70",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "logs/v92_python_suite.log",
+                         "bytes":  5741,
+                         "sha256":  "a5774c5219c18ddb6dd590c52206120c9b35cc10b5229fbaeff5ae9c3b38e22d",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "manifest.json",
+                         "bytes":  6439,
+                         "sha256":  "3d4792880203de2d7ac181a68cbb6f6e8992b5a3b96fa640944e3f4ac0650e29",
+                         "kind":  "json",
+                         "schema":  "ese.v92.close-handoff-manifest/v1"
+                     },
+                     {
+                         "path":  "runtime/api-reach-status.json",
+                         "bytes":  12987,
+                         "sha256":  "bdcbbf7773d74bbe25fd10ac15ec5ddd56adfb7f72be6f59e46d566be305a849",
+                         "kind":  "json",
+                         "captured_at_utc":  "2026-09-05T21:57:53.523Z"
+                     },
+                     {
+                         "path":  "runtime/api-status.json",
+                         "bytes":  1929,
+                         "sha256":  "ab679a32639952e1c35fbec8ae23ea178f448d33e60e0a431d5410580e1e4756",
+                         "kind":  "json",
+                         "captured_at_utc":  "2026-09-05T21:57:53.514Z"
+                     },
+                     {
+                         "path":  "runtime/capture-status.json",
+                         "bytes":  5072,
+                         "sha256":  "0b904b9b0610c92481d936063d67fbaa40e99b41e98adc29df33e93b9e364073",
+                         "kind":  "json",
+                         "schema":  "ese.lab.status/v1",
+                         "captured_at_utc":  "2026-09-05T21:57:55.443Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "runtime/capture-status.log",
+                         "bytes":  73,
+                         "sha256":  "a5bed752559658d65230ecb8ba4f25688f904798226e41e1b3047d7a840d3983",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "runtime/preferences.probe.ini",
+                         "bytes":  700,
+                         "sha256":  "5652b9c6c1ff2304390183648dd86307ac09a4f542219d1a62e3a6834f4f7273",
+                         "kind":  "ini"
+                     },
+                     {
+                         "path":  "runtime/preferences.shipped.ini",
+                         "bytes":  700,
+                         "sha256":  "5652b9c6c1ff2304390183648dd86307ac09a4f542219d1a62e3a6834f4f7273",
+                         "kind":  "ini"
+                     },
+                     {
+                         "path":  "runtime/reach-probe.json",
+                         "bytes":  15050,
+                         "sha256":  "18eb34519f53a61c9777c3aee2aea26ec4250a8ad6b6d85b79cd41509b50c05e",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-05T21:57:54.903Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "runtime/reach-probe.log",
+                         "bytes":  93,
+                         "sha256":  "59de3d1114d9b0192a65044fc1f06a7bf3e27490177901280efff6c587c36c13",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "runtime/summary.json",
+                         "bytes":  2205,
+                         "sha256":  "b2345f08ea460b1908edf6c04d14c97a67dbb5f62e780013512c6748ef3eda0a",
+                         "kind":  "json",
+                         "schema":  "ese.v92.close-runtime-probe/v1",
+                         "verdict":  "FAIL"
+                     },
+                     {
+                         "path":  "runtime/validate-live.log",
+                         "bytes":  87,
+                         "sha256":  "b825378271a32a5613ebfb941809387143ccba0b7843b539bece62c297aafe6e",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "verdicts.json",
+                         "bytes":  4728,
+                         "sha256":  "9be9c3eb870e0828af1129bf2f3f4b5d16f30f81af481e1d638a56ca14a0e81c",
+                         "kind":  "json"
+                     }
+                 ],
+    "warnings":  {
+
+                 },
+    "privacy":  {
+                    "sensitive_values_included":  false,
+                    "evidence_contents_embedded":  false
+                }
+}

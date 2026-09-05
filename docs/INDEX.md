@@ -10,6 +10,10 @@ maintain eMule eSE.
   and rollback boundary.
 - [eSE 9.2.0-rc.1 execution contract](V92_RC1_EXECUTION.md)
   - exact build, package, physical campaign and promotion requirements.
+- [eSE 9.2 estado de cierre (tablero vivo)](V9.2_STATE.md)
+- [eSE 9.2 runbook de la sesión física](V9.2_PHYSICAL_SESSION_RUNBOOK.md)
+- [eSE 9.2 soak simple V92-O01](V9.2_O01_SIMPLE_SOAK.md)
+- [Cierre del gate G91 (9.1.0 con huecos declarados)](V9.1_G91_DECISION_2026-09-05.md)
 - [eSE 9.1.0 release notes](RELEASE_NOTES_v9.1.0.md)
   — final Windows x64 scope, cumulative qualification limits, safe defaults,
   update procedure and rollback.

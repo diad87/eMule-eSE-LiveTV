@@ -59,8 +59,8 @@ if ($null -eq $first) { throw 'No emule.exe process found; start the candidate f
 $pidLocked = $first.Id
 $durationSeconds = [int]($DurationHours * 3600)
 $clock = [Diagnostics.Stopwatch]::StartNew()
-$samples = New-Object Collections.Generic.List[object]
-$reasons = New-Object Collections.Generic.List[string]
+$samples = [Collections.Generic.List[object]]::new()
+$reasons = [Collections.Generic.List[string]]::new()
 $exitedEarly = $false
 
 Write-Host "V92-O01 simple soak: pid $pidLocked, $DurationHours h, every $IntervalSeconds s -> $runRoot"
@@ -127,7 +127,7 @@ if ($firstSample.working_set_bytes -gt 0) {
     $wsGrowthPercent = [Math]::Round((($lastSample.working_set_bytes - $firstSample.working_set_bytes) * 100.0) / $firstSample.working_set_bytes, 2)
 }
 $handleGrowth = $lastSample.handles - $firstSample.handles
-$generations = New-Object Collections.Generic.List[object]
+$generations = [Collections.Generic.List[object]]::new()
 $generationChanges = 0
 $previousGeneration = $null
 $reachAvailableCount = 0

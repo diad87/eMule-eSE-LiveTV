@@ -5,6 +5,12 @@ maintain eMule eSE.
 
 ## User documentation
 
+- [eSE 9.2.0-rc.2 release notes](RELEASE_NOTES_v9.2.0-rc.2.md)
+  - candidate that replaces rc.1 with the profile-template upgrade fix.
+- [eSE 9.2.0-rc.2 execution contract](V92_RC2_EXECUTION.md)
+  - build, local gates, physical session, soak and decision for rc.2.
+- [eSE 9.2.0 release notes (draft)](RELEASE_NOTES_v9.2.0.md)
+  - final-release text pending the physical session; disclosed gaps.
 - [eSE 9.2.0-rc.1 release notes](RELEASE_NOTES_v9.2.0-rc.1.md)
   - qualification-candidate scope, `NO_GO` release state, fixed limitations
   and rollback boundary.

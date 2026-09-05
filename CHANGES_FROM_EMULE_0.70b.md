@@ -1,7 +1,7 @@
 # Changes from upstream eMule 0.70b
 
 This repository is a modified eMule 0.70b source tree. The changes below
-describe the cumulative first-party differences through eMule eSE 9.2.0-rc.1.
+describe the cumulative first-party differences through eMule eSE 9.2.0-rc.2.
 
 The list is intentionally limited to implemented behavior. Experimental code
 is identified as gated and is not presented as a supported public service.
@@ -139,7 +139,7 @@ First-party hardening includes:
 - CSPRNG-backed identity and nonce generation;
 - crash dump support.
 
-Automatic updating remains disabled in 9.2.0-rc.1. No updater executable or
+Automatic updating remains disabled in 9.2.0-rc.2. No updater executable or
 installer is packaged or invoked; update and rollback are manual, with an
 explicit profile/download backup.
 

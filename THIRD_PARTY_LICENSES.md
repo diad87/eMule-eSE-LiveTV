@@ -1,4 +1,4 @@
-# Third-party notices for eMule eSE 9.2.0-rc.1
+# Third-party notices for eMule eSE 9.2.0-rc.2
 
 This inventory describes the content of the Windows x64 portable release,
 not every development tool installed on a build machine. eMule eSE and its
@@ -63,6 +63,6 @@ toolchain are not redistributed as standalone files by this package.
 Data/configuration files are not presented here as separately licensed
 executable dependencies.
 
-_Inventory revalidated against the 9.2.0-rc.1 source and package-smoke requirements on
+_Inventory revalidated against the 9.2.0-rc.2 source and package-smoke requirements on
 2026-08-16. The release pipeline verifies the listed notices and runtime files
 inside the final package._

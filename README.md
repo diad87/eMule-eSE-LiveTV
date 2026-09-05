@@ -11,13 +11,13 @@ Windows x64 package.
 
 ## Current candidate
 
-### eSE 9.2.0-rc.1 for Windows x64
+### eSE 9.2.0-rc.2 for Windows x64
 
-This source tree builds the `9.2.0-rc.1` Windows x64 qualification candidate.
+This source tree builds the `9.2.0-rc.2` Windows x64 qualification candidate.
 It remains **NO_GO** until its physical O01 evidence is complete and independently
 validated. The latest published stable release remains `9.1.0`.
 
-[9.2.0-rc.1 release notes](docs/RELEASE_NOTES_v9.2.0-rc.1.md)
+[9.2.0-rc.2 release notes](docs/RELEASE_NOTES_v9.2.0-rc.2.md)
 · [RC1 execution contract](docs/V92_RC1_EXECUTION.md)
 · [All releases](https://github.com/diad87/eMule-eSE-LiveTV/releases)
 
@@ -162,7 +162,7 @@ For a local developer build:
 
 ```powershell
 .\tools\build_all.ps1 `
-  -ReleaseTag v0.70b-eSE9.2.0-rc.1 `
+  -ReleaseTag v0.70b-eSE9.2.0-rc.2 `
   -AllowDirty `
   -MaxCpuCount 1
 ```

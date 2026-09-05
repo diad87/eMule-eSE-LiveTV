@@ -1,11 +1,11 @@
-# Guía rápida de eMule eSE 9.2.0-rc.1
+# Guía rápida de eMule eSE 9.2.0-rc.2
 
 Esta candidata de cualificación funciona como una aplicación portable para
 Windows 10/11 x64. Sigue en estado **NO_GO** hasta completar su evidencia física.
 
 ## 1. Descargar
 
-Usa únicamente el paquete `9.2.0-rc.1` entregado para la campaña y verifica su
+Usa únicamente el paquete `9.2.0-rc.2` entregado para la campaña y verifica su
 SHA-256, `BUILD_INFO.txt` y `RELEASE_NOTES.md`. No descargues copias de terceros
 ni interpretes esta candidata como una versión pública. Hasta que exista una
 publicación aprobada, la última versión estable sigue siendo `9.1.0`.

@@ -1,0 +1,173 @@
+{
+  "schema": "ese.v92.o01-candidate-refresh-governance/v1",
+  "status": "SEALED_G14_PREPARED_NOT_RUN",
+  "gate": "V92-O01",
+  "scope": "Bind the unchanged O01 physical harness to the final b2 release candidate without reusing any H65/A65 physical result, then admit only a fresh uninterrupted R66 eight-hour campaign.",
+  "candidate": {
+    "commit": "b2a9a56cfc25b2604980dee1bb7577a7de7496ad",
+    "tree": "f8367adc1458cba6d499486beb34f0f4697fa4b3",
+    "parent_commit": "6379d88484091ca1469f9201dc4f61a49db209f6",
+    "parent_tree": "b8dc2c1cd7122d33dc777f92ed54d93f292efced",
+    "tag_name": "v0.70b-eSE9.2.0-rc.1",
+    "annotated_tag_object": "bf7c165a6acc6cfcd3fc90b756fee1006b44a057",
+    "libutp_gitlink": "2b364cbb0650bdab64a5de2abb4518f9f228ec44"
+  },
+  "historical_chain": {
+    "g13_commit": "ddd2731fe49685ce4ec49482b1bf6ff71bb6c913",
+    "a65_commit": "d41b7a41a736507124578d223cdeb3575b5f04a6",
+    "m65_commit": "6848811238b6d5c7bde7fca87cd699226156cf16",
+    "h65_commit": "4448d3b835f2ecc832117fd7246d650c79daeaf3",
+    "h65_tree": "778c163634b5d3cd54ef4e57719a50e385221ffc",
+    "classification": "HISTORICAL_INPUT_ONLY",
+    "physical_evidence_reusable": false,
+    "activation_reusable": false,
+    "rule": "Every A65/H65 physical PASS, failure, checkpoint, activation, executable and package binding is excluded from R66 and from the b2 release decision."
+  },
+  "candidate_refresh_delta": {
+    "from_commit": "4448d3b835f2ecc832117fd7246d650c79daeaf3",
+    "to_commit": "b2a9a56cfc25b2604980dee1bb7577a7de7496ad",
+    "path_count": 22,
+    "projection_sha256": "494b3abda4a0087709256666330e432b910349b64039adaebbcb79675fe5ef9c",
+    "projection_rule": "SHA-256 of compact ASCII JSON {files:[{status,path,old_blob,new_blob},...]} in git diff --name-status ordinal order.",
+    "paths": [
+      "docs/RELEASE_NOTES_v9.2.0-rc.1.md",
+      "docs/USER_GUIDE.md",
+      "srchybrid/Emule.cpp",
+      "srchybrid/PPgConnection.cpp",
+      "srchybrid/eSE/API_CREDENTIALS.md",
+      "srchybrid/eSE/_deprecated/player_combined_test.js",
+      "srchybrid/eSE/api_keys.js",
+      "srchybrid/eSE/hero_ui.js",
+      "srchybrid/eSE/pages/explore_page.js",
+      "srchybrid/eSE/pages/main_page.js",
+      "srchybrid/eSE/pages/mylist_page.js",
+      "srchybrid/eSE/pages/search_page.js",
+      "srchybrid/eSE/player.js",
+      "srchybrid/eSE/routes/movies_routes.js",
+      "srchybrid/eSE/server.js",
+      "srchybrid/eSE/test/main_page_async.test.js",
+      "srchybrid/eSE/test/omdb_credentials.test.js",
+      "srchybrid/eSE/test/tmdb_browser_privacy.test.js",
+      "srchybrid/eSE/test/tmdb_credentials.test.js",
+      "srchybrid/eSE/tmdb_api.js",
+      "tests/test_v92_selftest_startup_isolation.py",
+      "tools/run_alpha_tests.ps1"
+    ]
+  },
+  "harness_binding": {
+    "file_count": 21,
+    "projection_sha256": "438ff9eabff90ec122470176f19c3572d97853bc1d4109280b2c83fc3bfd48e8",
+    "projection_rule": "SHA-256 of compact ASCII JSON {files:[{path,blob,sha256,bytes},...]} in the declared bound-file order.",
+    "unchanged_h65_to_candidate": true,
+    "g13_verifier_sha256": "a00a5a08faff06c86c6d284c29a82e98a4b364b1684fe7a7d6eedf7efd57c573",
+    "formal_runner_sha256": "727f6dbe4603181d973f4fe367eed051e033ea1ce6ec5fe949b0ea93e4e1b88d",
+    "scenario_sha256": "602874173a0ad69df7da4020f9a8db6ed6f726585c1f3ff983eadd187f74df5d"
+  },
+  "runtime_bindings": {
+    "node_version": "22.23.2",
+    "node_sha256": "0d0f5e39f9f3d9587bc19f73eab3c2c9c4903fd02d6dbf9c853dd81b3d95fad4",
+    "executable_sha256": "4d7eae90c73778a6b147e7798424461889cbea816ce10990389fd1fef775d9f0",
+    "build_info_sha256": "627dd148a1c7ae7d40d996c4c6c2d961fb7b364add2f8b7a245c8b9bb980ad54",
+    "package_manifest_sha256": "122d814070ea8036cda9ed1d58afad031d66bfba846ba6b7e986bdcccefc30a3",
+    "package_manifest_entry_count": 276,
+    "package_file_count": 277
+  },
+  "distribution_binding": {
+    "release_tag": "v0.70b-eSE9.2.0-rc.1",
+    "zip_path": "dist/v0.70b-eSE9.2.0-rc.1/eSE-LiveTV-v0.70b-eSE9.2.0-rc.1-x64.zip",
+    "zip_bytes": 213436329,
+    "zip_sha256": "e2d888a6cb49e9e4918077f130b78b7e0515a0123fa28c590db93b6b4e924bfd",
+    "sidecar_path": "dist/v0.70b-eSE9.2.0-rc.1/eSE-LiveTV-v0.70b-eSE9.2.0-rc.1-x64.zip.sha256",
+    "sidecar_bytes": 107,
+    "sidecar_sha256": "71959a370b20fd64553d17e197ed98c60e5a336904fdb85e4746c51f010d7df6"
+  },
+  "topology": {
+    "G14": {
+      "parent": "candidate",
+      "delta_paths": [
+        "docs/architecture/v92_o01_candidate_refresh_governance_v1.json",
+        "tools/architecture/test_verify_v92_o01_candidate_refresh_governance.py",
+        "tools/architecture/verify_v92_o01_candidate_refresh_governance.py"
+      ]
+    },
+    "H66": {
+      "parent": "G14",
+      "delta_paths": [
+        "artifacts/v92-o01-governance/activation.json",
+        "artifacts/v92-o01-governance/offline-summary.json",
+        "artifacts/v92-o01-governance/review-sol.json",
+        "artifacts/v92-o01-governance/review-terra.json"
+      ]
+    },
+    "R66": {
+      "source": "candidate",
+      "governance": "H66",
+      "fresh_evidence_only": true,
+      "resume_allowed": false,
+      "release_gate": true
+    },
+    "merge_policy": "G14 and H66 each have exactly one parent and exactly their declared paths; G14 adds only its governance triad and H66 replaces only the four inherited governance carriers. No merge, intermediate commit, other tracked mutation or old-run artifact is admitted."
+  },
+  "offline_preflight": {
+    "node22_tests": 143,
+    "node22_pass": 143,
+    "node22_fail": 0,
+    "powershell_mock_count": 4,
+    "powershell_mocks_pass": 4,
+    "hyperv_executed": false,
+    "release_gate_emitted": false,
+    "classification": "OFFLINE_PRECHECK_ONLY_NOT_GATE"
+  },
+  "physical_contract": {
+    "vm_name": "v92-o01-client",
+    "vm_id": "0229dd0f-c167-4c6a-ab71-9466fe08df6a",
+    "base_vhd_path": "C:\\tmp\\v92-o01-vm\\v92-o01-client.vhdx",
+    "base_vhd_bytes": 17955815424,
+    "base_vhd_sha256": "de54f2c890d62324569a57f3d1123801546b2fcc1f94a10bf1e156af8d6abd50",
+    "duration_ms": 28800000,
+    "observations": 2880,
+    "fault_slots": 96,
+    "samples": 480,
+    "checkpoints": 95,
+    "artifact_count": 98,
+    "administrator_required": true,
+    "physical_ethernet_scope_authorization_required": true,
+    "fresh_uninterrupted_run_required": true,
+    "baseline_restoration_required": true
+  },
+  "activation_contract": {
+    "schema": "ese.v92.o01-candidate-refresh-activation/v1",
+    "required_bindings": [
+      "candidate_commit",
+      "candidate_tree",
+      "g14_commit",
+      "g14_tree",
+      "h66_parent_commit",
+      "historical_h65_commit",
+      "governance_sha256",
+      "runtime_bindings",
+      "distribution_binding",
+      "offline_summary_sha256",
+      "review_sol_sha256",
+      "review_terra_sha256"
+    ],
+    "review_rule": "Two independent reviews must each bind candidate, G14, exact governance bytes, offline summary and runtime/distribution identities; verdict APPROVE, findings empty, physical gate NOT_RUN.",
+    "activation_rule": "H66 activation is valid only when every binding is exact and its own commit is the direct single-parent child of G14."
+  },
+  "formal_launch": {
+    "mode": "G14 --formal-run",
+    "source_worktree": "exact clean detached or dedicated checkout at candidate commit",
+    "governance_commit": "exact verified H66 descendant",
+    "hash_arguments": "derived only from authenticated activation; callers cannot supply expected hashes",
+    "credential_rule": "credential source is copied into a private temporary runtime and never serialized to stdout, stderr or committed artifacts",
+    "input_rule": "candidate source, runner, package, Node, H66 activation and admitted evidence are checked before and after; retained handles guard critical files across launch and validation",
+    "failure_rule": "any mismatch, old evidence, partial PASS carrier, timeout, cleanup failure or baseline drift fails closed and cannot emit a release PASS"
+  },
+  "decision": {
+    "g14_release_gate": false,
+    "h66_release_gate": false,
+    "r66_current_state": "NOT_RUN",
+    "promotion_authorized": false,
+    "rule": "Only the independently validated 98-artifact R66 result may set the V92-O01 gate to PASS; preparation and accelerated tests never do."
+  }
+}

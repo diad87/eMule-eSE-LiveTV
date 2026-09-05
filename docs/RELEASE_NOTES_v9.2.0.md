@@ -1,0 +1,85 @@
+# eMule eSE 9.2.0 (DRAFT)
+
+Status: **draft, not published**. This text becomes final only after the
+physical session recorded in `V9.2_PHYSICAL_SESSION_RUNBOOK.md` and the
+eight-hour soak of `V9.2_O01_SIMPLE_SOAK.md` have run. Until then the
+candidate is `v0.70b-eSE9.2.0-rc.2` and its qualification state is `NO_GO`.
+rc.1 was withdrawn after local upgrade qualification found that a profile
+restored from 9.1.0 silently disabled the web server (fixed in rc.2).
+
+## What 9.2 delivers
+
+- Automatic direct reachability over IPv4: UPnP IGD, PCP and NAT-PMP mappings
+  are requested, read back, owned and cleaned up by the client, and the TCP
+  and UDP halves are published together or not at all.
+- A mapping accepted by the router is only a *candidate*. It becomes
+  *verified* when the eD2K server evidence and a real inbound connection
+  belong to the same network generation. No green icon is shown on a
+  router acknowledgement alone.
+- Every change of interface, address, gateway, external port, lease or
+  mapper epoch starts a new generation; stale callbacks from an older
+  generation can never modify the current state.
+- Honest failure: behind a double NAT, a carrier-grade NAT or a router that
+  answers no mapping protocol, the client reports the blocked state and its
+  reason instead of claiming a high ID. Verified on the maintainer's own
+  double-NAT setup during qualification.
+- `GET /api/reach/status`: a read-only, privacy-bounded snapshot of the three
+  reachability planes (eD2K TCP, Kad UDP, direct IPv6) with state, reason,
+  generation and lease, without addresses, nonces or tokens.
+- A frozen, versioned candidate snapshot (`DirectCandidateSnapshotV1`) that
+  9.3 consumes without reading logs or GUI state.
+- Upgrade safety: a profile restored from an older release carries an older
+  `config\eMule.tmpl`; 9.2 now falls back to the template shipped next to the
+  executable instead of disabling the web server (found by the 9.1.0 → 9.2
+  upgrade test, fixed in rc.2).
+- Internal: the LiveTunnel, WebServer and LiveStream coordinators were split
+  into owned modules with enforced size and dependency limits; the wire
+  format and on-disk files stay byte-compatible with 0.70b, 8.1 and 9.1.
+
+## Qualification status
+
+Automated qualification of the candidate passed twice, the second time from
+a clean checkout: Release x64 build, Core and Integration suites, the full
+`libnatmap`, `libreach` and `libkad6` gates, the simulated NAT gateway (T8)
+matrix, the reach-status schema goldens and a runtime check of the exact
+executable with mappings off and with mappings on behind a double NAT. Local
+upgrade and rollback between 9.1.0 and this candidate on one profile passed,
+including a simulated crash.
+
+The following physical results are required before this note is final:
+
+| Case | Status |
+|---|---|
+| `H93-15` three mapping cycles on a real router (candidate → verified → withdrawn) | pending |
+| `H93-16` data path outside the overlay and LAN → hotspot → LAN change | pending |
+| `V92-O01` eight-hour lease soak on a real router | pending |
+| T7 (UPnP on a second router brand) and a remote topology | not planned for 9.2.0; disclosed limitation |
+
+## Known limitations
+
+- Disclosed gaps inherited from 9.1.0 and still unverified: public dual-stack
+  route selection (`V91-I03`), silent native-IPv6 drop with bounded IPv4
+  fallback (`V91-I04`), native mobile-IPv6 LiveTV (`V91-I07`) and controlled
+  A+AAAA DNS fallback (`V91-D01`). They require native IPv6 in the lab.
+- Direct IPv6 reachability ships disabled by preference in the default
+  profile of this candidate.
+- When no gateway answers any mapping protocol, the reported reason is
+  `MappingDenied`; a more specific `NoRoute` reason may follow in a later
+  release. The state itself is correct (blocked, never verified).
+- The WebServer is never mapped automatically.
+- No universal HighID is promised. Routers that reject or limit UPnP (the
+  maintainer's ISP router returned SOAP fault 501 with 64 table entries
+  during 9.1 qualification) still produce a LowID, reported honestly.
+
+## Backup, installation and rollback
+
+Automatic updating is disabled. Before installing, close eMule and back up
+the profile (`config` directory: `preferences.ini`, credits, keys,
+`known.met`, `.part` and `.part.met` files). Install into a new empty
+directory and restore a copy of the profile there while eMule is stopped.
+Verify `BUILD_INFO.txt` and `SHA256SUMS.txt` before starting.
+
+To roll back, stop 9.2.0, restore the previous application directory and
+the profile snapshot. Files that 9.2.0 adds to the profile can be left in
+place or removed; 9.1.0 starts with either. Never open one profile with two
+versions at the same time.

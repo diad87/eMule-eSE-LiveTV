@@ -5,6 +5,8 @@
 #include "Log.h"
 #include "MD5Sum.h"
 #include "OtherFunctions.h"
+#include "Preferences.h"
+#include <shlwapi.h>
 #include <locale.h>
 #include <memory>
 namespace eSELive {
@@ -104,6 +106,17 @@ bool WebTemplateRenderer::Reload(const CString& path, bool enabled,
 	file.Close();
 	const CString version(ExtractTemplate(all, _T("TMPL_VERSION"), true));
 	if (_tstol(version) < WEB_SERVER_TEMPLATES_VERSION) {
+		// eSE 9.2 upgrade path (92-8.2): a profile restored from an older
+		// release carries config\eMule.tmpl with an older TMPL_VERSION. Fall
+		// back to the template shipped next to the executable instead of
+		// disabling the WebServer and raising a modal box on a headless start.
+		const CString packaged(CPreferences::GetMuleDirectory(EMULE_EXECUTABLEDIR) + _T("eMule.tmpl"));
+		if (path.CompareNoCase(packaged) != 0 && ::PathFileExists(packaged)) {
+			AddLogLine(true, _T("WebServer: template \"%s\" is version %s, need %d; using packaged template \"%s\""),
+				(LPCTSTR)path, (LPCTSTR)version, WEB_SERVER_TEMPLATES_VERSION, (LPCTSTR)packaged);
+			LIVE_LOG("WS", "ReloadTemplates: profile template too old (v%S), falling back to packaged template", (LPCWSTR)version);
+			return Reload(packaged, enabled, working, stopServer);
+		}
 		if (enabled || working) {
 			CString message;
 			message.Format(GetResString(IDS_WS_ERR_LOADTEMPLATE), (LPCTSTR)path);

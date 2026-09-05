@@ -116,10 +116,13 @@ start = dialog[
     dialog.index("void CemuleDlg::StartUPnP(")
     : dialog.index("void CemuleDlg::StopUPnP()")
 ]
-no_route = start[
-    start.index("if (!hasRoute) {")
-    : start.index("impl->BeginMappingRequest(")
-]
+no_route_begin = start.index("if (!hasRoute) {")
+no_route_end = start.index("}", start.index("return;", no_route_begin)) + 1
+no_route = start[no_route_begin:no_route_end]
+require(
+    no_route_end < start.index("impl->BeginMappingRequest("),
+    "the no-route guard must precede the mapping request",
+)
 require(
     "m_bUPnPRouteRecoveryPending = true;" in no_route
     and "PostLocalUPnPFailure" not in no_route,

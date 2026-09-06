@@ -1,0 +1,45 @@
+{
+    "schema":  "ese.v92.close-normal-launch/v1",
+    "package_root":  "C:\\tmp\\emule-rc2",
+    "launch_args":  [
+                        "--portable"
+                    ],
+    "steps":  [
+                  {
+                      "name":  "launch",
+                      "status":  "PASS",
+                      "detail":  "pid 14500 args=[--portable]"
+                  },
+                  {
+                      "name":  "native-api-4711",
+                      "status":  "PASS",
+                      "detail":  "reachable=True"
+                  },
+                  {
+                      "name":  "dashboard-spawn",
+                      "status":  "PASS",
+                      "detail":  "children of emule: 54064:ese-server.exe"
+                  },
+                  {
+                      "name":  "dashboard-http-8080",
+                      "status":  "PASS",
+                      "detail":  "root 200=True"
+                  },
+                  {
+                      "name":  "dashboard-pages",
+                      "status":  "INFO",
+                      "detail":  "/live=200/39040B /api/live/status=200/153B"
+                  },
+                  {
+                      "name":  "config-location",
+                      "status":  "PASS",
+                      "detail":  "package config used=True appdata files before/after=2/2"
+                  },
+                  {
+                      "name":  "shutdown",
+                      "status":  "PASS",
+                      "detail":  "forced=False leftover=0"
+                  }
+              ],
+    "verdict":  "PASS"
+}

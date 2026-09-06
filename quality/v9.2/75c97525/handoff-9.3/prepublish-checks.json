@@ -1,0 +1,61 @@
+{
+  "schema": "ese.v92.close-prepublish-checks/v1",
+  "commit": "75c97525",
+  "tag": "v0.70b-eSE9.2.0-rc.2",
+  "generated_utc": "2026-09-06T00:49:24Z",
+  "zip_sidecar_matches": true,
+  "zip_sha256": "4d565926f40c152b9941b0f40d2e995edb0baea55f8e4b6d660c039dbf21fc32",
+  "defender": {
+    "zip": "no threats",
+    "extracted_package": "no threats",
+    "engine": "MpCmdRun -Scan -ScanType 3"
+  },
+  "selftest": {
+    "args": "--portable --ignoreinstances --selftest",
+    "exit_code": 0,
+    "seconds": 9,
+    "marker_log": "mod02-selftest-markers.log"
+  },
+  "normal_portable_launch": {
+    "verdict": "PASS",
+    "steps": {
+      "launch": "PASS",
+      "native-api-4711": "PASS",
+      "dashboard-spawn": "PASS",
+      "dashboard-http-8080": "PASS",
+      "dashboard-pages": "INFO",
+      "config-location": "PASS",
+      "shutdown": "PASS"
+    },
+    "note": "--portable, wizard skipped via AppVersion, UPnP on, Autoconnect off; ese-server.exe spawned as child; 8080 root, /live and /api/live/status 200; package config used, AppData untouched; clean exit, no leftover"
+  },
+  "real_profile_upgrade": {
+    "verdict": "PASS",
+    "steps": {
+      "profile-copy": "PASS",
+      "1-rc2-first-start-on-real-profile": "PASS",
+      "2-rc2-restart": "PASS",
+      "profile-files-after-rc2": "INFO",
+      "3-rollback-9.1.0-on-upgraded-profile": "PASS",
+      "live-profile-untouched": "PASS"
+    },
+    "files_rewritten_by_rc2": [
+      "server.met",
+      "clients.met",
+      "preferences.dat",
+      "known.met"
+    ],
+    "deviations": [
+      "IncomingDir/TempDir repointed to empty dirs",
+      "shareddir.dat/sharedfiles.dat removed (no hashing of owner files)",
+      "WebServer password cleared for the probe",
+      "headless, Autoconnect=0, mappings OFF"
+    ],
+    "note": "copy of the owner's 9.1.0 LocalAppData profile (36 files, known.met 715 KB); rc.2 start + restart, rollback to 9.1.0; live profile untouched"
+  },
+  "directory_mode_note": "no HKCU\\Software\\eMule\\UsePublicUserDirectories on this machine: a double-click on the package uses its own config dir (portable); an install without config next to emule.exe uses %LOCALAPPDATA%\\eMule",
+  "known_non_blocking": [
+    "GET / on the native WebServer closes the connection (also rc.1, clean profile); /api/* and the 8080 dashboard work",
+    "reason MappingDenied when no gateway answers (plan wording: NoRoute)"
+  ]
+}

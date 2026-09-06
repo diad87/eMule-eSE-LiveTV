@@ -1,0 +1,51 @@
+{
+    "schema":  "ese.v92.close-upgrade-real-profile/v1",
+    "source":  "copy of %LOCALAPPDATA%\\eMule\\config (9.1.0, 39 files)",
+    "candidate_exe_sha256":  "403a3719a3c902404ccdd3887f52bc79e0917edf97526c25c31e4c0770fc0f3d",
+    "stable_exe_sha256":  "c0030d867b19a0beb583f773ad79f22ade193aea074720af38e360cd00505713",
+    "steps":  [
+                  {
+                      "name":  "profile-copy",
+                      "status":  "PASS",
+                      "detail":  "36 files; known.met 715512 bytes; AppVersion 9.1.0"
+                  },
+                  {
+                      "name":  "1-rc2-first-start-on-real-profile",
+                      "status":  "PASS",
+                      "detail":  "api_up=True forced=False leftover=0"
+                  },
+                  {
+                      "name":  "2-rc2-restart",
+                      "status":  "PASS",
+                      "detail":  "api_up=True forced=False leftover=0"
+                  },
+                  {
+                      "name":  "profile-files-after-rc2",
+                      "status":  "INFO",
+                      "detail":  "changed by rc.2: server.met,clients.met,preferences.dat,known.met"
+                  },
+                  {
+                      "name":  "3-rollback-9.1.0-on-upgraded-profile",
+                      "status":  "PASS",
+                      "detail":  "api_up=True forced=False leftover=0"
+                  },
+                  {
+                      "name":  "live-profile-untouched",
+                      "status":  "PASS",
+                      "detail":  "touched: none"
+                  }
+              ],
+    "files_changed_by_rc2":  [
+                                 "server.met",
+                                 "clients.met",
+                                 "preferences.dat",
+                                 "known.met"
+                             ],
+    "deviations":  [
+                       "IncomingDir/TempDir repointed to empty dirs",
+                       "shareddir.dat/sharedfiles.dat removed (no hashing of owner files)",
+                       "WebServer password cleared for the probe",
+                       "headless, Autoconnect=0, mappings OFF"
+                   ],
+    "verdict":  "PASS"
+}

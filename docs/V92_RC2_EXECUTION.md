@@ -31,7 +31,13 @@ Required beyond the pipeline, on the same commit:
    `ESE_REACH_STATUS_V1`, `READY`) and with mappings on over a topology
    without a usable mapper (blocked, never verified);
 4. the 9.1.0 → rc.2 → 9.1.0 profile upgrade, restart, crash and rollback cycle;
-5. `tools\lab\handoff93\gate_matrix.ps1` on the commit, expected
+5. pre-publication checks on the produced package: Windows Defender scan of
+   the zip and the extracted directory, zip sidecar hash, `--selftest` of the
+   packaged executable, a user-style `--portable` launch with the dashboard
+   auto-spawn, and an upgrade with a copy of a real 9.1.0 profile followed by
+   rollback (all recorded PASS for `75c97525` in
+   `quality/v9.2/75c97525/handoff-9.3/prepublish-checks.json`);
+6. `tools\lab\handoff93\gate_matrix.ps1` on the commit, expected
    `BLOCKED` with fourteen `PASS` and only `H93-15`/`H93-16` pending until
    the physical session.
 

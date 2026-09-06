@@ -1,0 +1,32 @@
+{
+    "schema":  "ese.v92.o01-simple-soak/v1",
+    "verdict":  "PASS",
+    "reasons":  [
+
+                ],
+    "pid":  8888,
+    "duration_seconds_requested":  28800,
+    "duration_seconds_measured":  28800,
+    "interval_seconds":  300,
+    "samples":  97,
+    "working_set_first_bytes":  39276544,
+    "working_set_last_bytes":  45334528,
+    "working_set_max_bytes":  45338624,
+    "working_set_growth_percent":  15.42,
+    "handles_first":  425,
+    "handles_last":  466,
+    "threads_first":  17,
+    "threads_last":  16,
+    "reach_availability_percent":  100,
+    "topology_generations_seen":  [
+                                      1
+                                  ],
+    "topology_generation_changes":  0,
+    "process_exited_early":  false,
+    "operator_checks":  [
+                            "UPnP census after natural shutdown: zero owned mappings, foreign entries intact",
+                            "No emule.exe or ese-server.exe left running after shutdown",
+                            "Operator interventions (mapping deleted, router restarted) logged with UTC time in operator.txt"
+                        ],
+    "samples_file":  "samples.jsonl"
+}

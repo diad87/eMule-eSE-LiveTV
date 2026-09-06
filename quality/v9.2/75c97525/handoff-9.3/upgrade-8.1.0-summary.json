@@ -1,0 +1,12 @@
+{
+    "schema":  "ese.v92.close-upgrade-hotfix-retest/v1",
+    "candidate_exe_sha256":  "403a3719a3c902404ccdd3887f52bc79e0917edf97526c25c31e4c0770fc0f3d",
+    "profile_template_version":  "7",
+    "upgrade_start_api_up":  true,
+    "upgrade_root_page":  "error: Se ha terminado la conexión: La conexión ha terminado de forma inesperada.",
+    "upgrade_reach_schema":  "ESE_REACH_STATUS_V1",
+    "upgrade_stop_forced":  false,
+    "restart_api_up":  true,
+    "rollback_9_1_0_api_up":  true,
+    "verdict":  "PASS"
+}

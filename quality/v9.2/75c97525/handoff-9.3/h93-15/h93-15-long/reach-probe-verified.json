@@ -1,0 +1,211 @@
+{
+    "schema":  "ese.lab.reach-probe/v1",
+    "captured_at_utc":  "2026-09-06T13:38:53.306Z",
+    "node_role":  "A",
+    "label":  "",
+    "commit":  "75c97525",
+    "api_origin":  {
+                       "scheme":  "http",
+                       "loopback":  true,
+                       "path":  "/api/reach/status"
+                   },
+    "gate_readiness":  "READY",
+    "observability":  {
+                          "planes_available":  true,
+                          "mapping_state_readable":  true,
+                          "generation_readable":  true,
+                          "legacy_upnp_tristate":  "true"
+                      },
+    "gaps":  {
+
+             },
+    "reach":  {
+                  "schema":  "ESE_REACH_STATUS_V1",
+                  "available":  true,
+                  "topology_generation":  2,
+                  "planes":  {
+                                 "ed2k_tcp_v4":  {
+                                                     "state":  "Reachable",
+                                                     "gate_state":  "VERIFIED",
+                                                     "reason":  "None",
+                                                     "reason_code":  0,
+                                                     "generation":  2,
+                                                     "expired":  false,
+                                                     "stale":  false,
+                                                     "local":  {
+                                                                   "family":  "IPv4",
+                                                                   "address_class":  "unspecified",
+                                                                   "port":  4662,
+                                                                   "source":  "LocalInterface",
+                                                                   "usable":  true
+                                                               },
+                                                     "mapped":  {
+                                                                    "family":  "IPv4",
+                                                                    "address_class":  "public",
+                                                                    "port":  4662,
+                                                                    "source":  "UpnpExternalAddress",
+                                                                    "usable":  true
+                                                                },
+                                                     "advertised":  {
+                                                                        "family":  "IPv4",
+                                                                        "address_class":  "public",
+                                                                        "port":  4662,
+                                                                        "source":  "UpnpExternalAddress",
+                                                                        "usable":  true
+                                                                    },
+                                                     "lease":  {
+                                                                   "mapper":  "UpnpIgd",
+                                                                   "transport":  "Tcp",
+                                                                   "requested_external_port":  4662,
+                                                                   "granted_external_port":  4662,
+                                                                   "lifetime_seconds":  7200,
+                                                                   "mapper_epoch":  0,
+                                                                   "generation":  2,
+                                                                   "owned_by_us":  true,
+                                                                   "structurally_valid":  true
+                                                               },
+                                                     "primary_evidence":  {
+                                                                              "kind":  "ServerHighId",
+                                                                              "generation":  2,
+                                                                              "current":  true
+                                                                          },
+                                                     "inbound_evidence":  {
+                                                                              "kind":  "InboundTcpAccept",
+                                                                              "generation":  2,
+                                                                              "current":  true
+                                                                          },
+                                                     "classic_high_id_evidence":  true
+                                                 },
+                                 "kad_udp_v4":  {
+                                                    "state":  "CandidateMapped",
+                                                    "gate_state":  "CANDIDATE",
+                                                    "reason":  "None",
+                                                    "reason_code":  0,
+                                                    "generation":  2,
+                                                    "expired":  false,
+                                                    "stale":  false,
+                                                    "local":  {
+                                                                  "family":  "IPv4",
+                                                                  "address_class":  "unspecified",
+                                                                  "port":  4672,
+                                                                  "source":  "LocalInterface",
+                                                                  "usable":  true
+                                                              },
+                                                    "mapped":  {
+                                                                   "family":  "IPv4",
+                                                                   "address_class":  "public",
+                                                                   "port":  4672,
+                                                                   "source":  "UpnpExternalAddress",
+                                                                   "usable":  true
+                                                               },
+                                                    "advertised":  {
+                                                                       "family":  "IPv4",
+                                                                       "address_class":  "public",
+                                                                       "port":  4672,
+                                                                       "source":  "UpnpExternalAddress",
+                                                                       "usable":  true
+                                                                   },
+                                                    "lease":  {
+                                                                  "mapper":  "UpnpIgd",
+                                                                  "transport":  "Udp",
+                                                                  "requested_external_port":  4672,
+                                                                  "granted_external_port":  4672,
+                                                                  "lifetime_seconds":  7200,
+                                                                  "mapper_epoch":  0,
+                                                                  "generation":  2,
+                                                                  "owned_by_us":  true,
+                                                                  "structurally_valid":  true
+                                                              },
+                                                    "primary_evidence":  {
+                                                                             "kind":  "None",
+                                                                             "generation":  0,
+                                                                             "current":  false
+                                                                         },
+                                                    "inbound_evidence":  {
+                                                                             "kind":  "None",
+                                                                             "generation":  0,
+                                                                             "current":  false
+                                                                         },
+                                                    "classic_high_id_evidence":  false
+                                                },
+                                 "direct_v6":  {
+                                                   "state":  "Disabled",
+                                                   "gate_state":  "DISABLED",
+                                                   "reason":  "DisabledByPreference",
+                                                   "reason_code":  1,
+                                                   "generation":  1,
+                                                   "expired":  false,
+                                                   "stale":  false,
+                                                   "local":  {
+                                                                 "family":  "Unspecified",
+                                                                 "address_class":  "unspecified",
+                                                                 "port":  0,
+                                                                 "source":  "None",
+                                                                 "usable":  false
+                                                             },
+                                                   "mapped":  {
+                                                                  "family":  "Unspecified",
+                                                                  "address_class":  "unspecified",
+                                                                  "port":  0,
+                                                                  "source":  "None",
+                                                                  "usable":  false
+                                                              },
+                                                   "advertised":  {
+                                                                      "family":  "Unspecified",
+                                                                      "address_class":  "unspecified",
+                                                                      "port":  0,
+                                                                      "source":  "None",
+                                                                      "usable":  false
+                                                                  },
+                                                   "lease":  {
+                                                                 "mapper":  "None",
+                                                                 "transport":  "Tcp",
+                                                                 "requested_external_port":  0,
+                                                                 "granted_external_port":  0,
+                                                                 "lifetime_seconds":  0,
+                                                                 "mapper_epoch":  0,
+                                                                 "generation":  0,
+                                                                 "owned_by_us":  false,
+                                                                 "structurally_valid":  false
+                                                             },
+                                                   "primary_evidence":  {
+                                                                            "kind":  "None",
+                                                                            "generation":  0,
+                                                                            "current":  false
+                                                                        },
+                                                   "inbound_evidence":  {
+                                                                            "kind":  "None",
+                                                                            "generation":  0,
+                                                                            "current":  false
+                                                                        },
+                                                   "classic_high_id_evidence":  false
+                                               }
+                             }
+              },
+    "status":  {
+                   "upnp_ports_forwarded":  "true"
+               },
+    "live_preflight":  {
+                           "ready":  false
+                       },
+    "api_envelopes":  {
+                          "reach":  {
+                                        "available":  true,
+                                        "path":  "/api/reach/status",
+                                        "captured_at":  "2026-09-06T13:38:52.751Z",
+                                        "error_present":  false
+                                    },
+                          "status":  {
+                                         "available":  true,
+                                         "path":  "/api/status",
+                                         "captured_at":  "2026-09-06T13:38:52.758Z",
+                                         "error_present":  false
+                                     },
+                          "live_preflight":  {
+                                                 "available":  true,
+                                                 "path":  "/api/live/preflight",
+                                                 "captured_at":  "2026-09-06T13:38:52.760Z",
+                                                 "error_present":  false
+                                             }
+                      }
+}

@@ -50,9 +50,9 @@ The following physical results are required before this note is final:
 
 | Case | Status |
 |---|---|
-| `H93-15` three mapping cycles on a real router (candidate → verified → withdrawn) | pending |
+| `H93-15` three mapping cycles on a real router (candidate → verified → withdrawn) | passed on 2026-09-06: 3 consecutive cycles on the maintainer's ISP router (Movistar HGU, UPnP IGD, single NAT); mapping granted within 5 s, verified through an eD2K server HighID plus an accepted inbound TCP connection within 5 s, mappings withdrawn on a clean exit |
 | `H93-16` data path outside the overlay and LAN → hotspot → LAN change | pending |
-| `V92-O01` eight-hour lease soak on a real router | pending |
+| `V92-O01` eight-hour lease soak on a real router | running since the evening of 2026-09-06 |
 | T7 (UPnP on a second router brand) and a remote topology | not planned for 9.2.0; disclosed limitation |
 
 ## Known limitations
@@ -76,6 +76,20 @@ The following physical results are required before this note is final:
   discarded as non-routable; LAN-only transfers must go through the normal
   discovery path.
 - The WebServer is never mapped automatically.
+- A mapping deleted by the router administrator is not noticed between lease
+  renewals. With the 7200 s leases the product requests, the renewal at 45 %
+  (about 54 minutes) re-creates the entry, so the plane can report `VERIFIED`
+  for up to that long while the router has no mapping. Periodic readback for
+  finite leases is planned for 9.3.
+- Some eD2K servers answer the port check negatively at once, or refuse to
+  re-check a client that reconnects within about ten minutes. The product then
+  reports `WITHDRAWN` with reason `ServerCallbackFailed` (a LowID) even though
+  the mapping works; connecting to another server, or waiting, restores
+  `VERIFIED`.
+- The dashboard (`ese-server.exe`) listens on `127.0.0.1:8080` and does not
+  start when another local program holds that port. The `ESE_PORT` environment
+  variable selects another port. The native client and the reachability state
+  machine do not depend on the dashboard.
 - No universal HighID is promised. Routers that reject or limit UPnP (the
   maintainer's ISP router returned SOAP fault 501 with 64 table entries
   during 9.1 qualification) still produce a LowID, reported honestly.

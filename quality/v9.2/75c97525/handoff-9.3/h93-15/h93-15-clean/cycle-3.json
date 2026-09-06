@@ -1,0 +1,486 @@
+{
+    "cycle":  3,
+    "timeline":  [
+                     {
+                         "utc":  "16:25:36",
+                         "topology_generation":  1,
+                         "tcp":  "DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False",
+                         "udp":  "DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False",
+                         "tcp_gate":  "DISCOVERING",
+                         "udp_gate":  "DISCOVERING",
+                         "tcp_reason":  "None"
+                     },
+                     {
+                         "utc":  "16:25:41",
+                         "topology_generation":  2,
+                         "tcp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "CANDIDATE",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "None"
+                     },
+                     {
+                         "utc":  "16:26:12",
+                         "topology_generation":  2,
+                         "tcp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "CANDIDATE",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "None"
+                     },
+                     {
+                         "utc":  "16:26:17",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:26:22",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:26:27",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:26:32",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:26:37",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:26:42",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:26:47",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:26:52",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:26:57",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:27:02",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:27:07",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:27:12",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:27:17",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:27:22",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:27:27",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:27:32",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:27:37",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:27:42",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:27:47",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:27:52",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:27:57",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:28:02",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:28:07",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:28:12",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:28:17",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:28:22",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:28:27",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:28:32",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:28:37",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:28:42",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:28:47",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:28:52",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:28:57",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:29:02",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:29:07",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:29:12",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:29:17",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:29:22",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:29:27",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:29:32",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:29:37",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:29:42",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:29:47",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:29:52",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:29:57",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:30:03",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     },
+                     {
+                         "utc":  "16:30:08",
+                         "topology_generation":  2,
+                         "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "WITHDRAWN",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "ServerCallbackFailed"
+                     }
+                 ],
+    "verdict":  "FAIL",
+    "census_before":  {
+                          "foreign":  null,
+                          "owned":  0,
+                          "total":  null
+                      },
+    "candidate_at":  5,
+    "census_mapped":  {
+                          "entries":  [
+                                          "TCP:4662-\u003e4662 \u0027eTEKYVT0RZCYVH7\u0027 lease=7179",
+                                          "UDP:4672-\u003e4672 \u0027eUEKYVT0RZCYVH7\u0027 lease=7180"
+                                      ],
+                          "owned":  2
+                      },
+    "connect_requested_utc":  "16:26:12",
+    "last_snapshot_before_exit":  {
+                                      "utc":  "16:30:14",
+                                      "topology_generation":  2,
+                                      "tcp":  "WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False",
+                                      "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                                      "tcp_gate":  "WITHDRAWN",
+                                      "udp_gate":  "CANDIDATE",
+                                      "tcp_reason":  "ServerCallbackFailed"
+                                  },
+    "exit_utc":  "16:30:17",
+    "census_after":  {
+                         "foreign":  null,
+                         "owned":  0,
+                         "total":  null
+                     },
+    "clean_exit":  true
+}

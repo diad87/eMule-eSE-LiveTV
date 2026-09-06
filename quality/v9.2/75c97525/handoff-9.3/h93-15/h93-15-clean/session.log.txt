@@ -1,0 +1,42 @@
+18:03:44 ===== clean cycle 1 =====
+18:03:44 census before: total= owned=0 foreign=
+18:03:47 candidate pid 50260 api=True
+18:03:47   gen=1 TCP[DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False] UDP[DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False]
+18:03:52   gen=2 TCP[CANDIDATE/CandidateMapped/None gen=2 ext=4662 prim=None:False in=None:False] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False]
+18:03:52 CANDIDATE pair at 5s
+18:04:23 census with mapping: owned=2 [TCP:4662->4662 'eT7JPJAGN1E7ZDT' lease=7175; UDP:4672->4672 'eU7JPJAGN1E7ZDT' lease=7175]
+18:04:23 server connect requested
+18:04:23   gen=2 TCP[CANDIDATE/CandidateMapped/None gen=2 ext=4662 prim=None:False in=None:False] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False]
+18:04:28   gen=2 TCP[VERIFIED/Reachable/None gen=2 ext=4662 prim=ServerHighId:True in=InboundTcpAccept:True] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False]
+18:04:28 VERIFIED at 5s after connect: VERIFIED/Reachable/None gen=2 ext=4662 prim=ServerHighId:True in=InboundTcpAccept:True
+18:04:38 clean exit=True; census after: total= owned=0 foreign=
+18:04:38 clean cycle 1: PASS
+18:04:38 gap 600s before the next server connection
+18:14:38 ===== clean cycle 2 =====
+18:14:39 census before: total= owned=0 foreign=
+18:14:41 candidate pid 41432 api=True
+18:14:41   gen=1 TCP[DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False] UDP[DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False]
+18:14:46   gen=2 TCP[CANDIDATE/CandidateMapped/None gen=2 ext=4662 prim=None:False in=None:False] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False]
+18:14:46 CANDIDATE pair at 5s
+18:15:17 census with mapping: owned=2 [TCP:4662->4662 'eT4B4B3W57BT6Z3' lease=7170; UDP:4672->4672 'eU4B4B3W57BT6Z3' lease=7170]
+18:15:18 server connect requested
+18:15:18   gen=2 TCP[CANDIDATE/CandidateMapped/None gen=2 ext=4662 prim=None:False in=None:False] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False]
+18:15:23   gen=2 TCP[VERIFIED/Reachable/None gen=2 ext=4662 prim=ServerHighId:True in=InboundTcpAccept:True] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False]
+18:15:23 VERIFIED at 5s after connect: VERIFIED/Reachable/None gen=2 ext=4662 prim=ServerHighId:True in=InboundTcpAccept:True
+18:15:33 clean exit=True; census after: total= owned=0 foreign=
+18:15:33 clean cycle 2: PASS
+18:15:33 gap 600s before the next server connection
+18:25:33 ===== clean cycle 3 =====
+18:25:34 census before: total= owned=0 foreign=
+18:25:36 candidate pid 32344 api=True
+18:25:36   gen=1 TCP[DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False] UDP[DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False]
+18:25:41   gen=2 TCP[CANDIDATE/CandidateMapped/None gen=2 ext=4662 prim=None:False in=None:False] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False]
+18:25:41 CANDIDATE pair at 5s
+18:26:12 census with mapping: owned=2 [TCP:4662->4662 'eTEKYVT0RZCYVH7' lease=7179; UDP:4672->4672 'eUEKYVT0RZCYVH7' lease=7180]
+18:26:12 server connect requested
+18:26:12   gen=2 TCP[CANDIDATE/CandidateMapped/None gen=2 ext=4662 prim=None:False in=None:False] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False]
+18:26:17   gen=2 TCP[WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False]
+18:30:13 no VERIFIED within 240s; last TCP state: WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False
+18:30:23 clean exit=True; census after: total= owned=0 foreign=
+18:30:23 clean cycle 3: FAIL
+18:30:23 H93-15 clean cycles verdict: FAIL

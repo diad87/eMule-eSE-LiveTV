@@ -1,0 +1,38 @@
+15:03:15 profile ready: mappings ON, autoconnect ON, server list borrowed from the owner's profile
+15:03:15 router external address class: public
+15:03:15 ===== cycle 1 =====
+15:03:16 census before: 1 entries, owned=0, foreign=
+15:03:18 candidate pid 3828 api=True
+15:03:19   gen=1 TCP[DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False] UDP[DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False] ed2k=False kad=False
+15:03:24   gen=2 TCP[CANDIDATE/Verifying/None gen=2 ext=4662 prim=None:False in=InboundTcpAccept:True] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False] ed2k=False kad=False
+15:03:24   CANDIDATE at 5s
+15:03:29   gen=2 TCP[VERIFIED/Reachable/None gen=2 ext=4662 prim=ServerHighId:True in=InboundTcpAccept:True] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False] ed2k=True kad=False
+15:03:29   VERIFIED at 10s
+15:03:29 census at verified/timeout: owned=2 [TCP:4662->4662 'eT1M7NH210A1D23' lease=7200; UDP:4672->4672 'eU1M7NH210A1D23' lease=7200]
+15:03:32 deleted on router: {"action": "delete", "protocol": "TCP", "external_port": 4662, "http": 200, "error": null} | {"action": "delete", "protocol": "UDP", "external_port": 4672, "http": 200, "error": null}
+15:03:32   gen=2 TCP[VERIFIED/Reachable/None gen=2 ext=4662 prim=ServerHighId:True in=InboundTcpAccept:True] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False]
+15:08:43 clean exit=True; census after: owned=0, foreign=
+15:08:43 cycle 1: FAIL
+15:08:53 ===== cycle 2 =====
+15:08:53 census before: 1 entries, owned=0, foreign=
+15:08:56 candidate pid 51100 api=True
+15:08:56   gen=1 TCP[DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False] UDP[DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False] ed2k=False kad=False
+15:09:01   gen=2 TCP[WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False] ed2k=True kad=False
+15:13:57 census at verified/timeout: owned=2 [TCP:4662->4662 'eT8NGC2DZMC7Z35' lease=6912; UDP:4672->4672 'eU8NGC2DZMC7Z35' lease=6912]
+15:13:59 deleted on router: {"action": "delete", "protocol": "TCP", "external_port": 4662, "http": 200, "error": null} | {"action": "delete", "protocol": "UDP", "external_port": 4672, "http": 200, "error": null}
+15:13:59   gen=2 TCP[WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False]
+15:13:59   loss noticed (WITHDRAWN) at 0s after deletion
+15:14:09 clean exit=True; census after: owned=0, foreign=
+15:14:09 cycle 2: FAIL
+15:14:19 ===== cycle 3 =====
+15:14:19 census before: 1 entries, owned=0, foreign=
+15:14:22 candidate pid 48572 api=True
+15:14:22   gen=1 TCP[DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False] UDP[DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False] ed2k=False kad=False
+15:14:27   gen=2 TCP[WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False] ed2k=True kad=True
+15:19:23 census at verified/timeout: owned=2 [TCP:4662->4662 'eT7J6MTVYXFKRMB' lease=6908; UDP:4672->4672 'eU7J6MTVYXFKRMB' lease=6908]
+15:19:25 deleted on router: {"action": "delete", "protocol": "TCP", "external_port": 4662, "http": 200, "error": null} | {"action": "delete", "protocol": "UDP", "external_port": 4672, "http": 200, "error": null}
+15:19:25   gen=2 TCP[WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False]
+15:19:25   loss noticed (WITHDRAWN) at 0s after deletion
+15:19:36 clean exit=True; census after: owned=0, foreign=
+15:19:36 cycle 3: FAIL
+15:19:46 H93-15 verdict: FAIL

@@ -1,0 +1,38 @@
+06/09/2026 18:25:34: Encontrados 0 archivos compartidos
+06/09/2026 18:25:36: Servidor Web: activado
+06/09/2026 18:25:36: Intentando redirigir los puertos mediante UPnP
+06/09/2026 18:25:37: Error al abrir el puerto 4662 (TCP) en el cortafuegos interno de WinXP para esta sesión de eMule
+06/09/2026 18:25:37: Error al abrir el puerto 4672 (UDP) en el cortafuegos interno de WinXP para esta sesión de eMule
+06/09/2026 18:25:37: Encontrados 34 servidores en server.met
+06/09/2026 18:25:37: eSE Kad2: no se puede buscar — Kad2 no está conectado
+06/09/2026 18:25:37: No se han encontrado archivos pendientes para descargar
+06/09/2026 18:25:37: Versión 0.70b x64 - eSE 9.2.0-rc.2 de eMule lista
+06/09/2026 18:25:38: No se ha detectado una nueva versión de eMule.
+06/09/2026 18:25:40: Se han redirigido correctamente los puertos 4662 (TCP) y 4672 (UDP) mediante UPnP
+06/09/2026 18:25:41: Servidor Web-Admin-Inicio de sesión (127.0.0.x)
+06/09/2026 18:25:42: eSE Kad: emisión descubierta "" desde 100.69.24.x:47964 (0 viewers, 1kbps) [synthetic]
+06/09/2026 18:25:42: eSE Kad: emisión descubierta "" desde 100.69.24.x:47944 (0 viewers, 1kbps) [synthetic]
+06/09/2026 18:25:42: eSE Kad: emisión descubierta "" desde 100.69.24.x:47944 (0 viewers, 1kbps) [synthetic]
+06/09/2026 18:25:42: eSE Kad: emisión descubierta "" desde 100.69.24.x:47944 (0 viewers, 1kbps) [synthetic]
+06/09/2026 18:25:42: eSE Kad: emisión descubierta "" desde 100.74.178.x:47860 (0 viewers, 1kbps) [synthetic]
+06/09/2026 18:25:42: eSE Kad: emisión descubierta "" desde 100.74.178.x:47860 (0 viewers, 1kbps) [synthetic]
+06/09/2026 18:25:42: eSE Kad: emisión descubierta "" desde 100.74.178.x:47860 (0 viewers, 1kbps) [synthetic]
+06/09/2026 18:25:42: eSE Kad: emisión descubierta "" desde 100.74.178.x:47870 (0 viewers, 1kbps) [synthetic]
+06/09/2026 18:25:42: eSE Kad: resultado RECHAZADO — IP no enrutable (127.0.0.x:47910, title="")
+06/09/2026 18:25:42: eSE Kad: resultado RECHAZADO — IP no enrutable (127.0.0.x:47850, title="")
+06/09/2026 18:25:42: eSE Kad: resultado RECHAZADO — IP no enrutable (127.0.0.x:47850, title="")
+06/09/2026 18:25:42: eSE Kad: resultado RECHAZADO — IP no enrutable (127.0.0.x:47850, title="")
+06/09/2026 18:25:42: eSE Kad: resultado RECHAZADO — IP no enrutable (127.0.0.x:47850, title="")
+06/09/2026 18:25:42: eSE Kad: resultado RECHAZADO — IP no enrutable (127.0.0.x:47850, title="")
+06/09/2026 18:25:42: eSE Kad: resultado RECHAZADO — IP no enrutable (127.0.0.x:14500, title="")
+06/09/2026 18:25:42: eSE Kad: resultado RECHAZADO — IP no enrutable (127.0.0.x:14500, title="")
+06/09/2026 18:25:42: eSE Kad: resultado RECHAZADO — IP no enrutable (192.168.68.x:47840, title="")
+06/09/2026 18:26:12: Conectando con eDonkey Server 1 (91.148.135.x:9197 - utilizando Ofuscación de Protocolo) ...
+06/09/2026 18:26:12: Servidor Web-Admin-Inicio de sesión (127.0.0.x)
+06/09/2026 18:26:12: Conectado a eDonkey Server 1 (91.148.135.x:9197), enviando petición de login
+06/09/2026 18:26:12: Conectando con aMule Server  (85.137.248.x:56612 - utilizando Ofuscación de Protocolo) ...
+06/09/2026 18:26:12: Conectado a aMule Server  (85.137.248.x:56612), enviando petición de login
+06/09/2026 18:26:12: Precaución aMule Server  (85.137.248.x:56612) - Your 4662 port is not reachable. Please review your network config.
+06/09/2026 18:26:12: Conexión ofuscada establecida con: aMule Server  (85.137.248.x:56612)
+06/09/2026 18:26:12: El nuevo [ID]entificador de Cliente es 1377598
+06/09/2026 18:28:08: eSE Kad: 8 entradas de emisión obsoletas eliminadas

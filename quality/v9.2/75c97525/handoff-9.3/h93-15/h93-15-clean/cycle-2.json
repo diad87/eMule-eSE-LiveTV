@@ -1,0 +1,73 @@
+{
+    "cycle":  2,
+    "timeline":  [
+                     {
+                         "utc":  "16:14:41",
+                         "topology_generation":  1,
+                         "tcp":  "DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False",
+                         "udp":  "DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False",
+                         "tcp_gate":  "DISCOVERING",
+                         "udp_gate":  "DISCOVERING",
+                         "tcp_reason":  "None"
+                     },
+                     {
+                         "utc":  "16:14:46",
+                         "topology_generation":  2,
+                         "tcp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "CANDIDATE",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "None"
+                     },
+                     {
+                         "utc":  "16:15:18",
+                         "topology_generation":  2,
+                         "tcp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4662 prim=None:False in=None:False",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "CANDIDATE",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "None"
+                     },
+                     {
+                         "utc":  "16:15:23",
+                         "topology_generation":  2,
+                         "tcp":  "VERIFIED/Reachable/None gen=2 ext=4662 prim=ServerHighId:True in=InboundTcpAccept:True",
+                         "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                         "tcp_gate":  "VERIFIED",
+                         "udp_gate":  "CANDIDATE",
+                         "tcp_reason":  "None"
+                     }
+                 ],
+    "verdict":  "PASS",
+    "census_before":  {
+                          "foreign":  null,
+                          "owned":  0,
+                          "total":  null
+                      },
+    "candidate_at":  5,
+    "census_mapped":  {
+                          "entries":  [
+                                          "TCP:4662-\u003e4662 \u0027eT4B4B3W57BT6Z3\u0027 lease=7170",
+                                          "UDP:4672-\u003e4672 \u0027eU4B4B3W57BT6Z3\u0027 lease=7170"
+                                      ],
+                          "owned":  2
+                      },
+    "connect_requested_utc":  "16:15:18",
+    "verified_at":  5,
+    "last_snapshot_before_exit":  {
+                                      "utc":  "16:15:24",
+                                      "topology_generation":  2,
+                                      "tcp":  "VERIFIED/Reachable/None gen=2 ext=4662 prim=ServerHighId:True in=InboundTcpAccept:True",
+                                      "udp":  "CANDIDATE/CandidateMapped/None gen=2 ext=4672 prim=None:False in=None:False",
+                                      "tcp_gate":  "VERIFIED",
+                                      "udp_gate":  "CANDIDATE",
+                                      "tcp_reason":  "None"
+                                  },
+    "exit_utc":  "16:15:28",
+    "census_after":  {
+                         "foreign":  null,
+                         "owned":  0,
+                         "total":  null
+                     },
+    "clean_exit":  true
+}

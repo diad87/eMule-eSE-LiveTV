@@ -1,0 +1,19 @@
+15:22:07 pre-wait 300s (server reconnect throttling)
+15:27:08 census before: total= owned=0 foreign=
+15:27:11 [PASS] launch pid 40784 api=True (portable, dashboard on, autoconnect OFF)
+15:27:11   [mapping] gen=1 TCP[DISCOVERING/Discovering/None gen=1 ext=0 prim=None:False in=None:False] UDP[DISCOVERING/Discovering/None gen=1 ext=0] ed2k=False kad=False
+15:27:16   [mapping] gen=2 TCP[CANDIDATE/CandidateMapped/None gen=2 ext=4662 prim=None:False in=None:False] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672] ed2k=False kad=False
+15:27:16 [PASS] candidate tcp gate CANDIDATE after 5s
+15:27:16 settling 90s before the server connect
+15:28:46 census with mapping: owned=2 [TCP:4662->4662 'eTBMK56W59A6J7M' lease=7122; UDP:4672->4672 'eUBMK56W59A6J7M' lease=7122]
+15:28:46 [PASS] dashboard-session ses=348409177
+15:28:47 server connect requested (attempt 1)
+15:28:52   [verify1] gen=2 TCP[WITHDRAWN/Degraded/ServerCallbackFailed gen=2 ext=4662 prim=None:False in=None:False] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672] ed2k=True kad=False
+15:28:52 attempt 1: tcp gate WITHDRAWN after 5s
+15:28:52 disconnected; waiting 600s before retry
+15:38:52 server connect requested (attempt 2)
+15:38:52 attempt 2: tcp gate WITHDRAWN after 0s
+15:38:52 [FAIL] verified no VERIFIED after 2 attempt(s)
+15:38:54 router admin deleted: {"action": "delete", "protocol": "TCP", "external_port": 4662, "http": 200, "error": null} | {"action": "delete", "protocol": "UDP", "external_port": 4672, "http": 200, "error": null}
+15:38:54   [loss] gen=2 TCP[VERIFIED/Reachable/None gen=2 ext=4662 prim=ServerHighId:True in=InboundTcpAccept:True] UDP[CANDIDATE/CandidateMapped/None gen=2 ext=4672] ed2k=True kad=False
+16:43:56 [FAIL] loss-detected not detected within 3900s

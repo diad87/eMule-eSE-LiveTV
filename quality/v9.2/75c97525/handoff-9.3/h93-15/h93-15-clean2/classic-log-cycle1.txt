@@ -1,0 +1,37 @@
+06/09/2026 18:41:52: Encontrados 0 archivos compartidos
+06/09/2026 18:41:54: Servidor Web: activado
+06/09/2026 18:41:55: Intentando redirigir los puertos mediante UPnP
+06/09/2026 18:41:56: Error al abrir el puerto 4662 (TCP) en el cortafuegos interno de WinXP para esta sesión de eMule
+06/09/2026 18:41:56: Error al abrir el puerto 4672 (UDP) en el cortafuegos interno de WinXP para esta sesión de eMule
+06/09/2026 18:41:56: eSE Kad2: no se puede buscar — Kad2 no está conectado
+06/09/2026 18:41:56: Encontrados 34 servidores en server.met
+06/09/2026 18:41:56: No se han encontrado archivos pendientes para descargar
+06/09/2026 18:41:56: Versión 0.70b x64 - eSE 9.2.0-rc.2 de eMule lista
+06/09/2026 18:41:57: No se ha detectado una nueva versión de eMule.
+06/09/2026 18:41:58: Se han redirigido correctamente los puertos 4662 (TCP) y 4672 (UDP) mediante UPnP
+06/09/2026 18:41:59: Servidor Web-Admin-Inicio de sesión (127.0.0.x)
+06/09/2026 18:42:01: eSE Kad: emisión descubierta "" desde 100.69.24.x:47964 (0 viewers, 1kbps) [synthetic]
+06/09/2026 18:42:01: eSE Kad: emisión descubierta "" desde 100.69.24.x:47944 (0 viewers, 1kbps) [synthetic]
+06/09/2026 18:42:01: eSE Kad: emisión descubierta "" desde 100.69.24.x:47944 (0 viewers, 1kbps) [synthetic]
+06/09/2026 18:42:01: eSE Kad: emisión descubierta "" desde 100.69.24.x:47944 (0 viewers, 1kbps) [synthetic]
+06/09/2026 18:42:01: eSE Kad: emisión descubierta "" desde 100.74.178.x:47860 (0 viewers, 1kbps) [synthetic]
+06/09/2026 18:42:01: eSE Kad: emisión descubierta "" desde 100.74.178.x:47860 (0 viewers, 1kbps) [synthetic]
+06/09/2026 18:42:01: eSE Kad: emisión descubierta "" desde 100.74.178.x:47860 (0 viewers, 1kbps) [synthetic]
+06/09/2026 18:42:01: eSE Kad: emisión descubierta "" desde 100.74.178.x:47870 (0 viewers, 1kbps) [synthetic]
+06/09/2026 18:42:01: eSE Kad: resultado RECHAZADO — IP no enrutable (127.0.0.x:47910, title="")
+06/09/2026 18:42:01: eSE Kad: resultado RECHAZADO — IP no enrutable (127.0.0.x:47850, title="")
+06/09/2026 18:42:01: eSE Kad: resultado RECHAZADO — IP no enrutable (127.0.0.x:47850, title="")
+06/09/2026 18:42:01: eSE Kad: resultado RECHAZADO — IP no enrutable (127.0.0.x:47850, title="")
+06/09/2026 18:42:01: eSE Kad: resultado RECHAZADO — IP no enrutable (127.0.0.x:47850, title="")
+06/09/2026 18:42:01: eSE Kad: resultado RECHAZADO — IP no enrutable (127.0.0.x:47850, title="")
+06/09/2026 18:42:01: eSE Kad: resultado RECHAZADO — IP no enrutable (127.0.0.x:14500, title="")
+06/09/2026 18:42:01: eSE Kad: resultado RECHAZADO — IP no enrutable (127.0.0.x:14500, title="")
+06/09/2026 18:42:01: eSE Kad: resultado RECHAZADO — IP no enrutable (192.168.68.x:47840, title="")
+06/09/2026 18:42:31: Conectando con Astra-5 (213.252.245.x:33333 - utilizando Ofuscación de Protocolo) ...
+06/09/2026 18:42:31: Servidor Web-Admin-Inicio de sesión (127.0.0.x)
+06/09/2026 18:42:31: Conectado a Astra-5 (213.252.245.x:33333), enviando petición de login
+06/09/2026 18:42:31: Astra-5 (213.252.245.x:33333) parece estar lleno
+06/09/2026 18:42:31: Conectando a Astra-5 (213.252.245.x:33333)...
+06/09/2026 18:42:31: Conectado a Astra-5 (213.252.245.x:33333), enviando petición de login
+06/09/2026 18:42:31: Conexión establecida con: Astra-5 (213.252.245.x:33333)
+06/09/2026 18:42:31: El nuevo [ID]entificador de Cliente es <redacted-highid>

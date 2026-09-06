@@ -1,22 +1,984 @@
 {
     "schema":  "ese.lab.report/v1",
-    "generated_at_utc":  "2026-09-06T00:23:35.142Z",
+    "generated_at_utc":  "2026-09-06T17:06:19.962Z",
     "case_id":  "G92-93-DEV",
     "outcome":  "BLOCKED",
     "build":  {
                   "version":  "9.2",
                   "commit":  "75c975251d9887aabbc48ed03642c1b286cfd777"
               },
-    "notes":  "",
-    "evidence_count":  20,
+    "notes":  "H93-15 PASS on the ISP router (6 Sep 2026, 3 pinned clean cycles); H93-16 pending (needs cable route change and a second node)",
+    "evidence_count":  223,
     "evidence":  [
                      {
+                         "path":  "after-soak-wrapper.log",
+                         "bytes":  0,
+                         "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15/cycle-1.json",
+                         "bytes":  41662,
+                         "sha256":  "06b450065ab780fa620d86c8fc5e19d5c3d00638091a7b3abb584c7e38609b65",
+                         "kind":  "json",
+                         "verdict":  "FAIL"
+                     },
+                     {
+                         "path":  "h93-15/cycle-2.json",
+                         "bytes":  40352,
+                         "sha256":  "c499087987916252057e3027205f4880d2e5748f66404b90700ff66853918971",
+                         "kind":  "json",
+                         "verdict":  "FAIL"
+                     },
+                     {
+                         "path":  "h93-15/cycle-3.json",
+                         "bytes":  40349,
+                         "sha256":  "47b4fd93dc42da829578814003feb8126b7eff8818545c21495ab8603e6c21f0",
+                         "kind":  "json",
+                         "verdict":  "FAIL"
+                     },
+                     {
+                         "path":  "h93-15/rc2-config-pristine/eMule.tmpl",
+                         "bytes":  118949,
+                         "sha256":  "1391a6a1ed70878e6fb99d1226912e2007ca45b1e3bff1f9fd5fbe154b121cb5",
+                         "kind":  "tmpl"
+                     },
+                     {
+                         "path":  "h93-15/rc2-config-pristine/nodes.dat",
+                         "bytes":  6778,
+                         "sha256":  "c2c2055a8f09678654dbecac6184ac275efd90e194673055b044f6bb06d1cda0",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "h93-15/rc2-config-pristine/preferences.ini",
+                         "bytes":  658,
+                         "sha256":  "af02db760adefcb69e4ee5b46767de8abe1fb7dcb9bcd55edb2f1f393a166d36",
+                         "kind":  "ini"
+                     },
+                     {
+                         "path":  "h93-15/reach-probe-cycle1.json",
+                         "bytes":  15283,
+                         "sha256":  "fc9a9cccc4e8cb4fa7dd58b448c2e76ebd1b9fb6b6dbe68e62bef4b8ed6746cd",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T13:03:30.944Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15/reach-probe-cycle1.log",
+                         "bytes":  198,
+                         "sha256":  "26855542fe06e0f72270ca6f0c12f343ddba9f7479bedfaadedf0127421da7b8",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15/reach-probe-cycle2.json",
+                         "bytes":  15283,
+                         "sha256":  "a26092d98d656bc686cf1fdfd4df6800d5f70cbd470b36052a96b6d177135743",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T13:13:58.351Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15/reach-probe-cycle2.log",
+                         "bytes":  198,
+                         "sha256":  "2c5cbb9bebc6193c299844a3a612f536a5685015b044b499db902209a383471c",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15/reach-probe-cycle3.json",
+                         "bytes":  15283,
+                         "sha256":  "6126f259bd0f871d1c1f9a618a1f179f804ad856d41d72fb4cf3a5b65d8451b5",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T13:19:24.677Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15/reach-probe-cycle3.log",
+                         "bytes":  198,
+                         "sha256":  "d771d3e54f14b65da9b046aaa5bf556fb51a4154d9077a839e1e844be494b84f",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15/session.log",
+                         "bytes":  3997,
+                         "sha256":  "2877a63d314206cb1a7005e9d63ba96d04aa1f30a54d232f0fd5d9c3e18373b4",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15/summary.json",
+                         "bytes":  163044,
+                         "sha256":  "460f8a7f10de396bdc946db683231acd80ba6270bc8ee85d24cc81b42a8dc9cc",
+                         "kind":  "json",
+                         "schema":  "ese.v92.h93-15-router-cycles/v1",
+                         "verdict":  "FAIL"
+                     },
+                     {
+                         "path":  "h93-15-clean/classic-log-cycle1.html",
+                         "bytes":  51668,
+                         "sha256":  "469dc11c020f245d4b1bee9c7a171a688fb07e584c87dda562b918fe78aacda1",
+                         "kind":  "html"
+                     },
+                     {
+                         "path":  "h93-15-clean/classic-log-cycle2.html",
+                         "bytes":  51377,
+                         "sha256":  "d8b6768140f12797d90b39dec81ed9340e8b0d8a6bf648fe298c74a783ec76a8",
+                         "kind":  "html"
+                     },
+                     {
+                         "path":  "h93-15-clean/classic-log-cycle3.html",
+                         "bytes":  51536,
+                         "sha256":  "08eb17afde21e3fc22a15effd1257cb7d59c04126d75222df71afd0c9b308199",
+                         "kind":  "html"
+                     },
+                     {
+                         "path":  "h93-15-clean/cycle-1.json",
+                         "bytes":  3729,
+                         "sha256":  "5bde298dd6b511f5aca89de9df366a6ba4a7beb5132995c9c3af554815ceedd6",
+                         "kind":  "json",
+                         "verdict":  "PASS"
+                     },
+                     {
+                         "path":  "h93-15-clean/cycle-2.json",
+                         "bytes":  3729,
+                         "sha256":  "b176e90468c9e303da27dc61345b545d11431ddfc21ce05bc3163daabd1ea4ec",
+                         "kind":  "json",
+                         "verdict":  "PASS"
+                     },
+                     {
+                         "path":  "h93-15-clean/cycle-3.json",
+                         "bytes":  29081,
+                         "sha256":  "8ab4138d0423f29ebdce592966f1c17a2a8f354b2abf890c149283af785fd6af",
+                         "kind":  "json",
+                         "verdict":  "FAIL"
+                     },
+                     {
+                         "path":  "h93-15-clean/rc2-config-pristine/eMule.tmpl",
+                         "bytes":  118949,
+                         "sha256":  "1391a6a1ed70878e6fb99d1226912e2007ca45b1e3bff1f9fd5fbe154b121cb5",
+                         "kind":  "tmpl"
+                     },
+                     {
+                         "path":  "h93-15-clean/rc2-config-pristine/nodes.dat",
+                         "bytes":  6778,
+                         "sha256":  "c2c2055a8f09678654dbecac6184ac275efd90e194673055b044f6bb06d1cda0",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "h93-15-clean/rc2-config-pristine/preferences.ini",
+                         "bytes":  658,
+                         "sha256":  "af02db760adefcb69e4ee5b46767de8abe1fb7dcb9bcd55edb2f1f393a166d36",
+                         "kind":  "ini"
+                     },
+                     {
+                         "path":  "h93-15-clean/reach-probe-cycle1.json",
+                         "bytes":  15283,
+                         "sha256":  "dd2a98811f0fe46cfda4a6f01a3d2f599e8be0b2f9597dff0b10bb86fca7cafa",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T16:04:29.306Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-clean/reach-probe-cycle1.log",
+                         "bytes":  210,
+                         "sha256":  "ab15ebca1bf17e166b3b420528e875fda64fe66db918f6067ed85bef5f61a3fc",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15-clean/reach-probe-cycle2.json",
+                         "bytes":  15283,
+                         "sha256":  "9f85eeadb88fb6083671c549e336fb8fabaa068c2c1541251b4635b25c0985fd",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T16:15:23.979Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-clean/reach-probe-cycle2.log",
+                         "bytes":  210,
+                         "sha256":  "5f97029ccb04c9d59583348e2fb69bce2d6239f24d7a2aee9e31033d2d802285",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15-clean/reach-probe-cycle3.json",
+                         "bytes":  15283,
+                         "sha256":  "ee5618996938be85b1fa01274904d7b40d132b7bf93bf0a0b09e3195023ed52c",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T16:30:13.911Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-clean/reach-probe-cycle3.log",
+                         "bytes":  210,
+                         "sha256":  "7454056a63ef44420a2dd7d78d5f792d24d8df0c437362c69a2cca9f16d029e4",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15-clean/session.log",
+                         "bytes":  3949,
+                         "sha256":  "849597719f09b874ffe531d13a8831a19e3cf4a4849bfc0466eafd0c9875c5fa",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15-clean/summary.json",
+                         "bytes":  49166,
+                         "sha256":  "963bd3687e1d3155e909c5cafb63e110e5939719f0c01b307d0efa4ed40adae5",
+                         "kind":  "json",
+                         "schema":  "ese.v92.h93-15-clean-cycles/v1",
+                         "verdict":  "FAIL"
+                     },
+                     {
+                         "path":  "h93-15-clean2/classic-log-cycle1.html",
+                         "bytes":  51337,
+                         "sha256":  "c67087c395d30b7395b08fe86f0f132e483a784d802b53d769f788ef901e9610",
+                         "kind":  "html"
+                     },
+                     {
+                         "path":  "h93-15-clean2/classic-log-cycle2.html",
+                         "bytes":  51312,
+                         "sha256":  "7addfcfe3be60967c9e54570011c6cf5d48253973b01d215783e7c17efca622b",
+                         "kind":  "html"
+                     },
+                     {
+                         "path":  "h93-15-clean2/classic-log-cycle3.html",
+                         "bytes":  51311,
+                         "sha256":  "573402f40693ca9d5f52364dfc5d29d025d30fdf9cbdd309cd7a1bf6cfceb353",
+                         "kind":  "html"
+                     },
+                     {
+                         "path":  "h93-15-clean2/console.log",
+                         "bytes":  3891,
+                         "sha256":  "e31de39ea3532d730c2b7a7a4a45cae4a1093bc52e08565e319d5c8e958bf52e",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15-clean2/cycle-1.json",
+                         "bytes":  3769,
+                         "sha256":  "f7c02c919c1374c62f5c3502631c69a1e4f565e2fd2fba47b2ec6392c5ce45dd",
+                         "kind":  "json",
+                         "verdict":  "PASS"
+                     },
+                     {
+                         "path":  "h93-15-clean2/cycle-2.json",
+                         "bytes":  3775,
+                         "sha256":  "f00ce7fbcb5744eecd9021ff3df92aef90cc5e4b0d99fede68c55fe86bda8e6e",
+                         "kind":  "json",
+                         "verdict":  "PASS"
+                     },
+                     {
+                         "path":  "h93-15-clean2/cycle-3.json",
+                         "bytes":  3775,
+                         "sha256":  "1525b7b0bad0bdeaef98cac55e2059a6f086082ca3515f8d1c116bf126ac3d37",
+                         "kind":  "json",
+                         "verdict":  "PASS"
+                     },
+                     {
+                         "path":  "h93-15-clean2/rc2-config-pristine/eMule.tmpl",
+                         "bytes":  118949,
+                         "sha256":  "1391a6a1ed70878e6fb99d1226912e2007ca45b1e3bff1f9fd5fbe154b121cb5",
+                         "kind":  "tmpl"
+                     },
+                     {
+                         "path":  "h93-15-clean2/rc2-config-pristine/nodes.dat",
+                         "bytes":  6778,
+                         "sha256":  "c2c2055a8f09678654dbecac6184ac275efd90e194673055b044f6bb06d1cda0",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "h93-15-clean2/rc2-config-pristine/preferences.ini",
+                         "bytes":  658,
+                         "sha256":  "af02db760adefcb69e4ee5b46767de8abe1fb7dcb9bcd55edb2f1f393a166d36",
+                         "kind":  "ini"
+                     },
+                     {
+                         "path":  "h93-15-clean2/reach-probe-cycle1.json",
+                         "bytes":  15283,
+                         "sha256":  "0efc4402140a335f0852ce38cc503a914d351413098f4795d5638d9363cf366c",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T16:42:37.412Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-clean2/reach-probe-cycle1.log",
+                         "bytes":  212,
+                         "sha256":  "09c5133b66ae859e2dbacdf98930ca96b2434be6d07f8fb7bafbd057624705d7",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15-clean2/reach-probe-cycle2.json",
+                         "bytes":  15283,
+                         "sha256":  "ea4a3aefd564c419d7497d7472cf6285251b319c71a1cf866764dd4910b26847",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T16:53:33.320Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-clean2/reach-probe-cycle2.log",
+                         "bytes":  212,
+                         "sha256":  "f0a6b2890e2b576cddce386e03c8badda7ad56da8b4f606245af1e9077438646",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15-clean2/reach-probe-cycle3.json",
+                         "bytes":  15283,
+                         "sha256":  "4ce43acf9f5df4e74c8c256a6d9c23daae07f359f3d0406595fd076796e363ed",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T17:04:27.706Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-clean2/reach-probe-cycle3.log",
+                         "bytes":  212,
+                         "sha256":  "fc79d7cf1032ff04b9beb2978a96d2fb182b3a6112934b7ab1fc7eb8fce226c3",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15-clean2/session.log",
+                         "bytes":  3936,
+                         "sha256":  "cdc3113c1f064161a6e9c02250f4cb61bfe77da572e309c85ff52c93f1e20965",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15-clean2/summary.json",
+                         "bytes":  16202,
+                         "sha256":  "4713e359e8d25c1780e4b83c3a152332af072d9ada60d16b7974e28bf3e3f129",
+                         "kind":  "json",
+                         "schema":  "ese.v92.h93-15-clean-cycles/v1",
+                         "verdict":  "PASS"
+                     },
+                     {
+                         "path":  "h93-15-clean-wrapper.log",
+                         "bytes":  3904,
+                         "sha256":  "b1f69f697d4303797ce36c4b3dca021aa0fd68acd564dcf4b87830849beebd5c",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15/cycle-1.json",
+                         "bytes":  41662,
+                         "sha256":  "06b450065ab780fa620d86c8fc5e19d5c3d00638091a7b3abb584c7e38609b65",
+                         "kind":  "json",
+                         "verdict":  "FAIL"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15/cycle-2.json",
+                         "bytes":  40352,
+                         "sha256":  "c499087987916252057e3027205f4880d2e5748f66404b90700ff66853918971",
+                         "kind":  "json",
+                         "verdict":  "FAIL"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15/cycle-3.json",
+                         "bytes":  40349,
+                         "sha256":  "47b4fd93dc42da829578814003feb8126b7eff8818545c21495ab8603e6c21f0",
+                         "kind":  "json",
+                         "verdict":  "FAIL"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15/reach-probe-cycle1.json",
+                         "bytes":  15283,
+                         "sha256":  "fc9a9cccc4e8cb4fa7dd58b448c2e76ebd1b9fb6b6dbe68e62bef4b8ed6746cd",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T13:03:30.944Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15/reach-probe-cycle1.log.txt",
+                         "bytes":  202,
+                         "sha256":  "e277fda501548dd12fc92463d8d3b50915813ca12bcf8c9c11fc7d9b52009dfc",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15/reach-probe-cycle2.json",
+                         "bytes":  15283,
+                         "sha256":  "a26092d98d656bc686cf1fdfd4df6800d5f70cbd470b36052a96b6d177135743",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T13:13:58.351Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15/reach-probe-cycle2.log.txt",
+                         "bytes":  202,
+                         "sha256":  "afed786244c419871155a0c218a18872637785c3dec43e65342104a6a44a8854",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15/reach-probe-cycle3.json",
+                         "bytes":  15283,
+                         "sha256":  "6126f259bd0f871d1c1f9a618a1f179f804ad856d41d72fb4cf3a5b65d8451b5",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T13:19:24.677Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15/reach-probe-cycle3.log.txt",
+                         "bytes":  202,
+                         "sha256":  "9a8a3b386f17d03cde9cf5fa35ef0f1e32022fe95a1cca3a2deb13eeded78681",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15/session.log.txt",
+                         "bytes":  3994,
+                         "sha256":  "1ddec8a0587b9351f0e6820b68e0a302563909e35b5b17024fca62979209825d",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15/summary.json",
+                         "bytes":  163044,
+                         "sha256":  "460f8a7f10de396bdc946db683231acd80ba6270bc8ee85d24cc81b42a8dc9cc",
+                         "kind":  "json",
+                         "schema":  "ese.v92.h93-15-router-cycles/v1",
+                         "verdict":  "FAIL"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean/classic-log-cycle1.txt",
+                         "bytes":  3662,
+                         "sha256":  "af616559081b94a94df44972b52412beacb0e1ce67560f610e3df56bec1e8136",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean/classic-log-cycle2.txt",
+                         "bytes":  3393,
+                         "sha256":  "7c9bb1d1844d46b0f5628aa74d3bf6d6a2e6444a15af68a43d8def9ae3c93afa",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean/classic-log-cycle3.txt",
+                         "bytes":  3563,
+                         "sha256":  "9f7971880535b454f6cbf0b9b95066eba040e64ff0c76c8a24edf5e8e0693135",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean/cycle-1.json",
+                         "bytes":  3729,
+                         "sha256":  "5bde298dd6b511f5aca89de9df366a6ba4a7beb5132995c9c3af554815ceedd6",
+                         "kind":  "json",
+                         "verdict":  "PASS"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean/cycle-2.json",
+                         "bytes":  3729,
+                         "sha256":  "b176e90468c9e303da27dc61345b545d11431ddfc21ce05bc3163daabd1ea4ec",
+                         "kind":  "json",
+                         "verdict":  "PASS"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean/cycle-3.json",
+                         "bytes":  29081,
+                         "sha256":  "8ab4138d0423f29ebdce592966f1c17a2a8f354b2abf890c149283af785fd6af",
+                         "kind":  "json",
+                         "verdict":  "FAIL"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean/reach-probe-cycle1.json",
+                         "bytes":  15283,
+                         "sha256":  "dd2a98811f0fe46cfda4a6f01a3d2f599e8be0b2f9597dff0b10bb86fca7cafa",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T16:04:29.306Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean/reach-probe-cycle1.log.txt",
+                         "bytes":  214,
+                         "sha256":  "0f0620bcbdf99ce9d0be23da8c39296753419ea82e9c6ea47d48c455cc9c3893",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean/reach-probe-cycle2.json",
+                         "bytes":  15283,
+                         "sha256":  "9f85eeadb88fb6083671c549e336fb8fabaa068c2c1541251b4635b25c0985fd",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T16:15:23.979Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean/reach-probe-cycle2.log.txt",
+                         "bytes":  214,
+                         "sha256":  "4d1de7b48a5676ea11898f11512864182a6a38c031e5d45a099329f90cba05a2",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean/reach-probe-cycle3.json",
+                         "bytes":  15283,
+                         "sha256":  "ee5618996938be85b1fa01274904d7b40d132b7bf93bf0a0b09e3195023ed52c",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T16:30:13.911Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean/reach-probe-cycle3.log.txt",
+                         "bytes":  214,
+                         "sha256":  "a1d3f0db1c3e9f117425216ec58564c0451ca7c0385f89a50e365a018107020e",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean/session.log.txt",
+                         "bytes":  3946,
+                         "sha256":  "fe91a9b13c6a9ff420b286f769d0e298191cf1471db0b4a801be95e86645b427",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean/summary.json",
+                         "bytes":  49166,
+                         "sha256":  "963bd3687e1d3155e909c5cafb63e110e5939719f0c01b307d0efa4ed40adae5",
+                         "kind":  "json",
+                         "schema":  "ese.v92.h93-15-clean-cycles/v1",
+                         "verdict":  "FAIL"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean2/classic-log-cycle1.txt",
+                         "bytes":  3352,
+                         "sha256":  "f5caa074eb1618e5c88e7806be82493e118c590f0b3b7fdff11114836ee59fcf",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean2/classic-log-cycle2.txt",
+                         "bytes":  3352,
+                         "sha256":  "d09a56229d4b4c19e0ef8d870dce2e4e87e205eae908d7be50c53a5da3adf3e4",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean2/classic-log-cycle3.txt",
+                         "bytes":  3352,
+                         "sha256":  "2a74c74cf59f7c1ed936acfa88ae70733193a68621166372dc018e810d102b91",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean2/console.log.txt",
+                         "bytes":  3891,
+                         "sha256":  "e31de39ea3532d730c2b7a7a4a45cae4a1093bc52e08565e319d5c8e958bf52e",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean2/cycle-1.json",
+                         "bytes":  3769,
+                         "sha256":  "f7c02c919c1374c62f5c3502631c69a1e4f565e2fd2fba47b2ec6392c5ce45dd",
+                         "kind":  "json",
+                         "verdict":  "PASS"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean2/cycle-2.json",
+                         "bytes":  3775,
+                         "sha256":  "f00ce7fbcb5744eecd9021ff3df92aef90cc5e4b0d99fede68c55fe86bda8e6e",
+                         "kind":  "json",
+                         "verdict":  "PASS"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean2/cycle-3.json",
+                         "bytes":  3775,
+                         "sha256":  "1525b7b0bad0bdeaef98cac55e2059a6f086082ca3515f8d1c116bf126ac3d37",
+                         "kind":  "json",
+                         "verdict":  "PASS"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean2/reach-probe-cycle1.json",
+                         "bytes":  15283,
+                         "sha256":  "0efc4402140a335f0852ce38cc503a914d351413098f4795d5638d9363cf366c",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T16:42:37.412Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean2/reach-probe-cycle1.log.txt",
+                         "bytes":  216,
+                         "sha256":  "3f8c18575f5ba8776861a252d563c1d726aa879a6e5d97cbb16da73d3d7526f0",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean2/reach-probe-cycle2.json",
+                         "bytes":  15283,
+                         "sha256":  "ea4a3aefd564c419d7497d7472cf6285251b319c71a1cf866764dd4910b26847",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T16:53:33.320Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean2/reach-probe-cycle2.log.txt",
+                         "bytes":  216,
+                         "sha256":  "3ac40cf6a431ed6cf08df69d389a2ffeef278b8a4e484275c3f0a4932f13ad73",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean2/reach-probe-cycle3.json",
+                         "bytes":  15283,
+                         "sha256":  "4ce43acf9f5df4e74c8c256a6d9c23daae07f359f3d0406595fd076796e363ed",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T17:04:27.706Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean2/reach-probe-cycle3.log.txt",
+                         "bytes":  216,
+                         "sha256":  "a9348a300a56f6558e0820313cdf1c8546f8d8ddde73a0fd9e06fcfdfd42b52f",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean2/session.log.txt",
+                         "bytes":  3933,
+                         "sha256":  "9fc416adce2c8ac0c3b923a87aa82c7bb68b837888ed350c8d1ccdb976897c02",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-clean2/summary.json",
+                         "bytes":  16202,
+                         "sha256":  "4713e359e8d25c1780e4b83c3a152332af072d9ada60d16b7974e28bf3e3f129",
+                         "kind":  "json",
+                         "schema":  "ese.v92.h93-15-clean-cycles/v1",
+                         "verdict":  "PASS"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-long/classic-log-after-verify.txt",
+                         "bytes":  3749,
+                         "sha256":  "287f477a0c090fda68c0c04a147125640cc24741f693319288f8d1c14277d0e0",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-long/classic-log-end.txt",
+                         "bytes":  1,
+                         "sha256":  "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-long/classic-log-peek.txt",
+                         "bytes":  3469,
+                         "sha256":  "caf6a5d5e1a0466330048c068bda58e2055718d909122021cc01d0bef15405a1",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-long/reach-probe-verified.json",
+                         "bytes":  15283,
+                         "sha256":  "4bff029d3f0a92bd88b4f728d77862494303577825f5cbfe0c9dd5127bd614d0",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T13:38:53.306Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-long/reach-probe-verified.log.txt",
+                         "bytes":  216,
+                         "sha256":  "35c655b070e1eee0ca2098057105828713ccb3192a1000134bbef29b02974420",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-evidence/h93-15-long/session.log.txt",
+                         "bytes":  1772,
+                         "sha256":  "29149e561d01da2aaa6d81216693f5ab1f1c777e297a634b20312f5e2e1c12e2",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "h93-15-long/classic-log-after-verify.html",
+                         "bytes":  51629,
+                         "sha256":  "ee4a79310f1acaad81f1ee520e400121a8f78455778b899a938ea89f853a4c2d",
+                         "kind":  "html"
+                     },
+                     {
+                         "path":  "h93-15-long/classic-log-end.html",
+                         "bytes":  12870,
+                         "sha256":  "96eb171be0726f8cbdc80acb02072e78c026ecd5c1e4bbbf73b5c5d879599071",
+                         "kind":  "html"
+                     },
+                     {
+                         "path":  "h93-15-long/classic-log-peek.html",
+                         "bytes":  51436,
+                         "sha256":  "58ebe0ef0380dd03a74f66dea7c5d3578e6860485520f24d46b71895e6d1058d",
+                         "kind":  "html"
+                     },
+                     {
+                         "path":  "h93-15-long/rc2-config-pristine/eMule.tmpl",
+                         "bytes":  118949,
+                         "sha256":  "1391a6a1ed70878e6fb99d1226912e2007ca45b1e3bff1f9fd5fbe154b121cb5",
+                         "kind":  "tmpl"
+                     },
+                     {
+                         "path":  "h93-15-long/rc2-config-pristine/nodes.dat",
+                         "bytes":  6778,
+                         "sha256":  "c2c2055a8f09678654dbecac6184ac275efd90e194673055b044f6bb06d1cda0",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "h93-15-long/rc2-config-pristine/preferences.ini",
+                         "bytes":  658,
+                         "sha256":  "af02db760adefcb69e4ee5b46767de8abe1fb7dcb9bcd55edb2f1f393a166d36",
+                         "kind":  "ini"
+                     },
+                     {
+                         "path":  "h93-15-long/reach-probe-verified.json",
+                         "bytes":  15283,
+                         "sha256":  "4bff029d3f0a92bd88b4f728d77862494303577825f5cbfe0c9dd5127bd614d0",
+                         "kind":  "json",
+                         "schema":  "ese.lab.reach-probe/v1",
+                         "captured_at_utc":  "2026-09-06T13:38:53.306Z",
+                         "node_role":  "A"
+                     },
+                     {
+                         "path":  "h93-15-long/reach-probe-verified.log",
+                         "bytes":  212,
+                         "sha256":  "4ae2985b99fa82582095caf881d086c998dc92fa775587f2667b90717a4ce870",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15-long/session.log",
+                         "bytes":  1775,
+                         "sha256":  "e781e56926ae5718433fe325c060bf747274d2e9dadef04f48b5530e0e2c6501",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15-long-wrapper.log",
+                         "bytes":  2395,
+                         "sha256":  "612c8934956f82aa30af6793c7d24c9af0baacf9991758f60c7731d68b013fe1",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "h93-15-wrapper.log",
+                         "bytes":  3956,
+                         "sha256":  "5d9a9c78e9b0a03d8487e5507fb405fb00ac3a5a69797c807e73aa1c1ffe7ce3",
+                         "kind":  "log"
+                     },
+                     {
                          "path":  "handoff-9.3/gate-matrix.json",
-                         "bytes":  19889,
-                         "sha256":  "c649f23110400aeddbc648d304cf67f026c65dc89a44e39f73c0846d4d59dd9d",
+                         "bytes":  22473,
+                         "sha256":  "948ade0d8437d7c2a8f58ae90efd6a0ec45d53d811d78be5fa8a1861d276d138",
                          "kind":  "json",
                          "schema":  "ese.lab.handoff-gate-matrix/v1",
                          "verdict":  "BLOCKED"
+                     },
+                     {
+                         "path":  "interop-9.1.0/910-apilivedebug.txt",
+                         "bytes":  1074,
+                         "sha256":  "542d6117ec7f442b0b43041ca5d284637d98bb5a877b460e6f9d83d006cecac3",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "interop-9.1.0/910-apilivelog.txt",
+                         "bytes":  4363,
+                         "sha256":  "c06018abd32e98c63ec8257922a05335788a6704f5dd355d842f3a19c4ee8b2f",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "interop-9.1.0/downloader-api-status.json",
+                         "bytes":  1316,
+                         "sha256":  "61df629739f88196cb3678831cec2ae9a58a4c9555fb25c5b6a0391a035bb259",
+                         "kind":  "json"
+                     },
+                     {
+                         "path":  "interop-9.1.0/netstat-4663.txt",
+                         "bytes":  3748,
+                         "sha256":  "7e5c2751a316d2d00d35a8850dd814126206f512b95871d6e8d80842b73b96f9",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-apilivedebug.txt",
+                         "bytes":  1078,
+                         "sha256":  "c38404ae31bb25015c6e7a1fdc9af0dabb7b2106af7ae23b3600a5832c3e941c",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-apilivelog.txt",
+                         "bytes":  3997,
+                         "sha256":  "8e3f3ade966709790cdfcbc633bef96e3e2543612e5cdde3e6c8943408787bd9",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-classic-debuglog.html",
+                         "bytes":  47844,
+                         "sha256":  "602f226789bff2f9236eb03c3ec4eb62748673a60ca18c236dc7c58b814c0356",
+                         "kind":  "html"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-classic-log.html",
+                         "bytes":  53019,
+                         "sha256":  "3653f4f3a9741c135985d71cad8460ae00cf384fe509426d11d291d771983943",
+                         "kind":  "html"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-classic-transfer.html",
+                         "bytes":  60496,
+                         "sha256":  "a30b6df75e4a749171e597fc1475ae30cdca90df2b955f85ee6603ad0ddede9f",
+                         "kind":  "html"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/AC_BootstrapIPs.dat",
+                         "bytes":  2,
+                         "sha256":  "b3d510ef04275ca8e698e5b3cbb0ece3949ef9252f0cdc839e9ee347409a2209",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/AC_SearchStrings.dat",
+                         "bytes":  2,
+                         "sha256":  "b3d510ef04275ca8e698e5b3cbb0ece3949ef9252f0cdc839e9ee347409a2209",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/AC_ServerMetURLs.dat",
+                         "bytes":  2,
+                         "sha256":  "b3d510ef04275ca8e698e5b3cbb0ece3949ef9252f0cdc839e9ee347409a2209",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/cancelled.met",
+                         "bytes":  10,
+                         "sha256":  "7717f0509b0eea720547585969d2d7c266b53d0616649dc3168e57ebf999fa24",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/clients.met",
+                         "bytes":  5,
+                         "sha256":  "5b6913fb226d74222e31ba1e9be64274eb3dba34a83c4d252608711a18ee6fcf",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/clients.met.bak",
+                         "bytes":  5,
+                         "sha256":  "5b6913fb226d74222e31ba1e9be64274eb3dba34a83c4d252608711a18ee6fcf",
+                         "kind":  "bak"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/cryptkey.dat",
+                         "bytes":  365,
+                         "sha256":  "8f2b058b0b90fb545c1fda0548550d0d8222e85c920d0dd2ff3d87ddbb585807",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/downloads.bak",
+                         "bytes":  344,
+                         "sha256":  "3bbe69c950940ce53702a54029cdb3082196d18f2549533925c208db5f2029f5",
+                         "kind":  "bak"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/downloads.txt",
+                         "bytes":  518,
+                         "sha256":  "e711d05743ef703586c0045abdd2281ce294af8935eeb3b353faad62972da468",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/emfriends.met",
+                         "bytes":  5,
+                         "sha256":  "83eafc118ee2ef9073ef3ce2a22a49fe47a950df022806a23ab07bb889db1d6f",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/eMule.tmpl",
+                         "bytes":  118949,
+                         "sha256":  "1391a6a1ed70878e6fb99d1226912e2007ca45b1e3bff1f9fd5fbe154b121cb5",
+                         "kind":  "tmpl"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/eSE_pass.bin",
+                         "bytes":  32,
+                         "sha256":  "4e9b9ee5a0ef0f2833f2e3641fc868bc17782471ee9e92b56c3a928199dc1d66",
+                         "kind":  "bin"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/known.met",
+                         "bytes":  5,
+                         "sha256":  "b7be624dcb1dfdacd784f4a79698ee22c0422a166367f2c5c927f01b37a2d93e",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/known2_64.met",
+                         "bytes":  1,
+                         "sha256":  "dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/node_identity.dat",
+                         "bytes":  328,
+                         "sha256":  "c8c74384493f9a51d0bcaf9078e02aac47d22cc4cb6302ce70127e520fdd52af",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/nodes.dat",
+                         "bytes":  6778,
+                         "sha256":  "c2c2055a8f09678654dbecac6184ac275efd90e194673055b044f6bb06d1cda0",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/preferences.dat",
+                         "bytes":  61,
+                         "sha256":  "4c93fe0eda88b07295a7dee419047bdd9b1ce49685ba8c3985292262b6ac41b0",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/preferences.ini",
+                         "bytes":  11142,
+                         "sha256":  "35f622926aa1bb70769a79a25293cce4ace4f4d75dbdba48354e9caf7067c05c",
+                         "kind":  "ini"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/server.met",
+                         "bytes":  5,
+                         "sha256":  "f2a60a2ad320884dd6d93675c9cd39918a6b2f1300b41188c75e1f0c2e77ab27",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/server_met.old",
+                         "bytes":  5,
+                         "sha256":  "f2a60a2ad320884dd6d93675c9cd39918a6b2f1300b41188c75e1f0c2e77ab27",
+                         "kind":  "old"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/shareddir.dat",
+                         "bytes":  2,
+                         "sha256":  "b3d510ef04275ca8e698e5b3cbb0ece3949ef9252f0cdc839e9ee347409a2209",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/sharedfiles.dat",
+                         "bytes":  2,
+                         "sha256":  "b3d510ef04275ca8e698e5b3cbb0ece3949ef9252f0cdc839e9ee347409a2209",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/statistics.ini",
+                         "bytes":  1589,
+                         "sha256":  "b57accae7392ba1a81269afaad5df6747d397e7444a30f9977756a11bdacd87d",
+                         "kind":  "ini"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-config-pristine/StoredSearches.met",
+                         "bytes":  4,
+                         "sha256":  "a26b67b1db9740f5039a173b79286088d12d65542acbca924654728a3ad13277",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "interop-9.1.0/rc2-part.met",
+                         "bytes":  117,
+                         "sha256":  "fe1cf5c6ad55f9640d40bae8309e3402aac1e99d582e0a38d5a0ded320a13754",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "interop-9.1.0/summary.json",
+                         "bytes":  2696,
+                         "sha256":  "c53687558bf0c2191db02bc24c61843b3529144781ce4b88d84f2caca2240b76",
+                         "kind":  "json",
+                         "schema":  "ese.v92.close-interop-9.1.0/v1",
+                         "verdict":  "FAIL"
+                     },
+                     {
+                         "path":  "interop-9.1.0/transfer-response.html",
+                         "bytes":  20225,
+                         "sha256":  "5f66e25c4ed3a9df9ed9196587ede6e5100d0f83bcefcfb02c681e2b16fe826e",
+                         "kind":  "html"
+                     },
+                     {
+                         "path":  "interop-9.1.0/uploader-api-status.json",
+                         "bytes":  1316,
+                         "sha256":  "191c7a15877d1e2e352aad51dd78ae402d930b76d683dbd2594f3eef220b1b97",
+                         "kind":  "json"
                      },
                      {
                          "path":  "logs/build_all_rc2.log",
@@ -54,6 +1016,14 @@
                          "sha256":  "75e237356357be04f7a85d6cba10274d22b17aab72921782cf5e7fd72a071eb6",
                          "kind":  "json",
                          "schema":  "ese.v92.close-handoff-manifest/v2"
+                     },
+                     {
+                         "path":  "normal-launch/summary.json",
+                         "bytes":  1654,
+                         "sha256":  "993f6f1d7f25f8b688f0322300af6dbee07469a6468e1954431470ad1453cbbe",
+                         "kind":  "json",
+                         "schema":  "ese.v92.close-normal-launch/v1",
+                         "verdict":  "PASS"
                      },
                      {
                          "path":  "runtime/api-reach-status.json",
@@ -122,6 +1092,340 @@
                          "kind":  "json"
                      },
                      {
+                         "path":  "upgrade-8.1.0/after-soak.log",
+                         "bytes":  203,
+                         "sha256":  "2638008164016cb4a441eb5b1dfe35e3fa0b915add3ed4af70d21eda65d5333d",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/AC_BootstrapIPs.dat",
+                         "bytes":  2,
+                         "sha256":  "b3d510ef04275ca8e698e5b3cbb0ece3949ef9252f0cdc839e9ee347409a2209",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/AC_SearchStrings.dat",
+                         "bytes":  2,
+                         "sha256":  "b3d510ef04275ca8e698e5b3cbb0ece3949ef9252f0cdc839e9ee347409a2209",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/AC_ServerMetURLs.dat",
+                         "bytes":  2,
+                         "sha256":  "b3d510ef04275ca8e698e5b3cbb0ece3949ef9252f0cdc839e9ee347409a2209",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/cancelled.met",
+                         "bytes":  10,
+                         "sha256":  "7717f0509b0eea720547585969d2d7c266b53d0616649dc3168e57ebf999fa24",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/clients.met",
+                         "bytes":  5,
+                         "sha256":  "5b6913fb226d74222e31ba1e9be64274eb3dba34a83c4d252608711a18ee6fcf",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/clients.met.bak",
+                         "bytes":  5,
+                         "sha256":  "5b6913fb226d74222e31ba1e9be64274eb3dba34a83c4d252608711a18ee6fcf",
+                         "kind":  "bak"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/cryptkey.dat",
+                         "bytes":  365,
+                         "sha256":  "8f2b058b0b90fb545c1fda0548550d0d8222e85c920d0dd2ff3d87ddbb585807",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/downloads.bak",
+                         "bytes":  344,
+                         "sha256":  "3bbe69c950940ce53702a54029cdb3082196d18f2549533925c208db5f2029f5",
+                         "kind":  "bak"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/downloads.txt",
+                         "bytes":  518,
+                         "sha256":  "e711d05743ef703586c0045abdd2281ce294af8935eeb3b353faad62972da468",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/emfriends.met",
+                         "bytes":  5,
+                         "sha256":  "83eafc118ee2ef9073ef3ce2a22a49fe47a950df022806a23ab07bb889db1d6f",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/eMule.tmpl",
+                         "bytes":  118949,
+                         "sha256":  "1391a6a1ed70878e6fb99d1226912e2007ca45b1e3bff1f9fd5fbe154b121cb5",
+                         "kind":  "tmpl"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/eSE_pass.bin",
+                         "bytes":  32,
+                         "sha256":  "4e9b9ee5a0ef0f2833f2e3641fc868bc17782471ee9e92b56c3a928199dc1d66",
+                         "kind":  "bin"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/known.met",
+                         "bytes":  5,
+                         "sha256":  "b7be624dcb1dfdacd784f4a79698ee22c0422a166367f2c5c927f01b37a2d93e",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/known2_64.met",
+                         "bytes":  1,
+                         "sha256":  "dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/node_identity.dat",
+                         "bytes":  328,
+                         "sha256":  "c8c74384493f9a51d0bcaf9078e02aac47d22cc4cb6302ce70127e520fdd52af",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/nodes.dat",
+                         "bytes":  6778,
+                         "sha256":  "c2c2055a8f09678654dbecac6184ac275efd90e194673055b044f6bb06d1cda0",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/preferences.dat",
+                         "bytes":  61,
+                         "sha256":  "4c93fe0eda88b07295a7dee419047bdd9b1ce49685ba8c3985292262b6ac41b0",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/preferences.ini",
+                         "bytes":  11142,
+                         "sha256":  "35f622926aa1bb70769a79a25293cce4ace4f4d75dbdba48354e9caf7067c05c",
+                         "kind":  "ini"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/server.met",
+                         "bytes":  5,
+                         "sha256":  "f2a60a2ad320884dd6d93675c9cd39918a6b2f1300b41188c75e1f0c2e77ab27",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/server_met.old",
+                         "bytes":  5,
+                         "sha256":  "f2a60a2ad320884dd6d93675c9cd39918a6b2f1300b41188c75e1f0c2e77ab27",
+                         "kind":  "old"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/shareddir.dat",
+                         "bytes":  2,
+                         "sha256":  "b3d510ef04275ca8e698e5b3cbb0ece3949ef9252f0cdc839e9ee347409a2209",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/sharedfiles.dat",
+                         "bytes":  2,
+                         "sha256":  "b3d510ef04275ca8e698e5b3cbb0ece3949ef9252f0cdc839e9ee347409a2209",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/statistics.ini",
+                         "bytes":  1589,
+                         "sha256":  "b57accae7392ba1a81269afaad5df6747d397e7444a30f9977756a11bdacd87d",
+                         "kind":  "ini"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/rc2-config-pristine/StoredSearches.met",
+                         "bytes":  4,
+                         "sha256":  "a26b67b1db9740f5039a173b79286088d12d65542acbca924654728a3ad13277",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/retest.log",
+                         "bytes":  1246,
+                         "sha256":  "8de13eb0330d2a71418f18e921cf8bdd96603e08c53063ae9a8c82a6073046ab",
+                         "kind":  "log"
+                     },
+                     {
+                         "path":  "upgrade-8.1.0/summary.json",
+                         "bytes":  530,
+                         "sha256":  "2478a919d6ad21ed1eb8d4657002a8c58b044e8a1e10bce684995d955ffe12bf",
+                         "kind":  "json",
+                         "schema":  "ese.v92.close-upgrade-hotfix-retest/v1",
+                         "verdict":  "PASS"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/api-status-1-rc2-first-start-on-real-profile.json",
+                         "bytes":  1318,
+                         "sha256":  "d8b6323247ee62f3e81ee4b4256e7cbee84a79f05d8770fb11c0a5b32e207907",
+                         "kind":  "json"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/api-status-2-rc2-restart.json",
+                         "bytes":  1318,
+                         "sha256":  "dd1536f0e6a54962157220932bdbd1182a9a3716666ffd9b68842730ae8fb160",
+                         "kind":  "json"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/api-status-3-rollback-9-1-0-on-upgraded-profile.json",
+                         "bytes":  1318,
+                         "sha256":  "1aa3700962abe3c32546fd11bd8392d48034a9d8b2e5ae7af1b7e4ee1d0b4cd2",
+                         "kind":  "json"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/AC_BootstrapIPs.dat",
+                         "bytes":  2,
+                         "sha256":  "b3d510ef04275ca8e698e5b3cbb0ece3949ef9252f0cdc839e9ee347409a2209",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/AC_SearchStrings.dat",
+                         "bytes":  2,
+                         "sha256":  "b3d510ef04275ca8e698e5b3cbb0ece3949ef9252f0cdc839e9ee347409a2209",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/AC_ServerMetURLs.dat",
+                         "bytes":  2,
+                         "sha256":  "b3d510ef04275ca8e698e5b3cbb0ece3949ef9252f0cdc839e9ee347409a2209",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/cancelled.met",
+                         "bytes":  10,
+                         "sha256":  "7717f0509b0eea720547585969d2d7c266b53d0616649dc3168e57ebf999fa24",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/clients.met",
+                         "bytes":  5,
+                         "sha256":  "5b6913fb226d74222e31ba1e9be64274eb3dba34a83c4d252608711a18ee6fcf",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/clients.met.bak",
+                         "bytes":  5,
+                         "sha256":  "5b6913fb226d74222e31ba1e9be64274eb3dba34a83c4d252608711a18ee6fcf",
+                         "kind":  "bak"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/cryptkey.dat",
+                         "bytes":  365,
+                         "sha256":  "8f2b058b0b90fb545c1fda0548550d0d8222e85c920d0dd2ff3d87ddbb585807",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/downloads.bak",
+                         "bytes":  344,
+                         "sha256":  "be879189bda48e33788cb94f485bcad33b82c50f5f4e42a0c857873b62f9a730",
+                         "kind":  "bak"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/downloads.txt",
+                         "bytes":  344,
+                         "sha256":  "d8b5bd55f5e5e87dbc89a055d9590a16aa62116ad04fdc1902379478d48cefb5",
+                         "kind":  "txt"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/emfriends.met",
+                         "bytes":  5,
+                         "sha256":  "83eafc118ee2ef9073ef3ce2a22a49fe47a950df022806a23ab07bb889db1d6f",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/eMule.tmpl",
+                         "bytes":  118949,
+                         "sha256":  "1391a6a1ed70878e6fb99d1226912e2007ca45b1e3bff1f9fd5fbe154b121cb5",
+                         "kind":  "tmpl"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/eSE_pass.bin",
+                         "bytes":  32,
+                         "sha256":  "4e9b9ee5a0ef0f2833f2e3641fc868bc17782471ee9e92b56c3a928199dc1d66",
+                         "kind":  "bin"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/known.met",
+                         "bytes":  5,
+                         "sha256":  "b7be624dcb1dfdacd784f4a79698ee22c0422a166367f2c5c927f01b37a2d93e",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/known2_64.met",
+                         "bytes":  1,
+                         "sha256":  "dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/node_identity.dat",
+                         "bytes":  328,
+                         "sha256":  "c8c74384493f9a51d0bcaf9078e02aac47d22cc4cb6302ce70127e520fdd52af",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/nodes.dat",
+                         "bytes":  6778,
+                         "sha256":  "c2c2055a8f09678654dbecac6184ac275efd90e194673055b044f6bb06d1cda0",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/preferences.dat",
+                         "bytes":  61,
+                         "sha256":  "e614141f6d57f14fbf4e50f9d7e507ae2431cfb7672e9a5b87eccf171ae000c0",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/preferences.ini",
+                         "bytes":  11137,
+                         "sha256":  "6461729e84369eebe335ec2c4029d11ef493ce8fde62e9f31dcac5891543d299",
+                         "kind":  "ini"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/server.met",
+                         "bytes":  5,
+                         "sha256":  "f2a60a2ad320884dd6d93675c9cd39918a6b2f1300b41188c75e1f0c2e77ab27",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/server_met.old",
+                         "bytes":  5,
+                         "sha256":  "f2a60a2ad320884dd6d93675c9cd39918a6b2f1300b41188c75e1f0c2e77ab27",
+                         "kind":  "old"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/shareddir.dat",
+                         "bytes":  2,
+                         "sha256":  "b3d510ef04275ca8e698e5b3cbb0ece3949ef9252f0cdc839e9ee347409a2209",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/sharedfiles.dat",
+                         "bytes":  2,
+                         "sha256":  "b3d510ef04275ca8e698e5b3cbb0ece3949ef9252f0cdc839e9ee347409a2209",
+                         "kind":  "dat"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/statistics.ini",
+                         "bytes":  1588,
+                         "sha256":  "d89761e951039dc73d90fcf6434950fc2671e9885a578f76dcf47fff240b4a2e",
+                         "kind":  "ini"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/rc2-config-pristine/StoredSearches.met",
+                         "bytes":  4,
+                         "sha256":  "a26b67b1db9740f5039a173b79286088d12d65542acbca924654728a3ad13277",
+                         "kind":  "met"
+                     },
+                     {
+                         "path":  "upgrade-real-profile/summary.json",
+                         "bytes":  2310,
+                         "sha256":  "a6bb84e8b5cae8a953ec70e6c03a9dd7878933d60bc502263d9b625812020854",
+                         "kind":  "json",
+                         "schema":  "ese.v92.close-upgrade-real-profile/v1",
+                         "verdict":  "PASS"
+                     },
+                     {
                          "path":  "upgrade-rollback/summary.json",
                          "bytes":  0,
                          "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -129,9 +1433,21 @@
                      },
                      {
                          "path":  "verdicts.json",
-                         "bytes":  4022,
-                         "sha256":  "ad237dcead2a0eaa041eb3527d947bebf57a84a5a0ef46e4c2df85dfde182151",
+                         "bytes":  4639,
+                         "sha256":  "1de77d0d6bc99ff6595d01ddceb27bd031b1dc39165b59d4027bf49cc14c9e58",
                          "kind":  "json"
+                     },
+                     {
+                         "path":  "worktree_cleanup_proposal.ps1",
+                         "bytes":  21135,
+                         "sha256":  "b8730ec3311c890fe28d39b9da08b7a7417de20ebbf4e1059969b2eab1180ef4",
+                         "kind":  "ps1"
+                     },
+                     {
+                         "path":  "worktree_inventory.tsv",
+                         "bytes":  17137,
+                         "sha256":  "d9332b9903f7e568c5cff1b730396ea9172ab61d3f9fdbdb3e6954ce451402c7",
+                         "kind":  "tsv"
                      }
                  ],
     "warnings":  [

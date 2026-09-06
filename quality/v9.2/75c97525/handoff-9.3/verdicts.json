@@ -123,18 +123,22 @@
     },
     {
       "id": "H93-15",
-      "verdict": "PENDING",
-      "note": "físico: sin router con mapper utilizable en el puesto (doble NAT Deco→Movistar); sesión pendiente",
+      "verdict": "PASS",
+      "note": "físico, 6 sep 2026, router Movistar HGU (IGD WANPPPConnection:1, NAT único): 3 ciclos limpios consecutivos CANDIDATE→VERIFIED (ServerHighId + InboundTcpAccept, servidor fijado Astra-5)→retirada al cierre; censo antes/durante/después; series previas con VERIFIED y fallos atribuibles al servidor eD2K elegido al azar",
       "artifacts": [
-        "logs/router_probe.log",
-        "logs/router_census.log"
+        "h93-15-evidence/h93-15-clean2/summary.json",
+        "h93-15-evidence/h93-15-clean2/reach-probe-cycle1.json",
+        "h93-15-evidence/h93-15-clean2/session.log.txt",
+        "h93-15-evidence/h93-15-clean/summary.json",
+        "h93-15-evidence/h93-15-long/session.log.txt",
+        "h93-15-evidence/h93-15/summary.json"
       ],
       "simulated": false
     },
     {
       "id": "H93-16",
       "verdict": "PENDING",
-      "note": "físico: segundo nodo no disponible en esta sesión",
+      "note": "físico: pendiente; exige cambio de ruta con cables (LAN→hotspot→LAN) y un segundo nodo fuera del overlay; la sesión del 6 sep 2026 fue solo por RDP y sin permiso para tocar cables",
       "artifacts": [],
       "simulated": false
     }

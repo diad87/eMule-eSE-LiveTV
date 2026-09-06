@@ -1,23 +1,20 @@
 {
     "schema":  "ese.lab.handoff-gate-matrix/v1",
     "gate":  "G92-93-DEV",
-    "generated_at_utc":  "2026-09-06T00:23:34.251Z",
+    "generated_at_utc":  "2026-09-06T17:05:56.817Z",
     "commit":  "75c97525",
-    "toolchain":  "MSVC 14.44.35207 / MSBuild 17.14 / Release x64 / Node 22.23.2",
+    "toolchain":  "MSVC 19.44 / Release x64",
     "run_directory":  "C:\\tmp\\g9293-75c97525",
     "verdict":  "BLOCKED",
     "verdict_counts":  {
-                           "PASS":  14,
+                           "PASS":  15,
                            "FAIL":  0,
                            "BLOCKED":  0,
                            "SKIP":  0,
-                           "PENDING":  2,
+                           "PENDING":  1,
                            "MISSING":  0
                        },
-    "blockers":  [
-                     "H93-15 is PENDING; the gate requires PASS",
-                     "H93-16 is PENDING; the gate requires PASS"
-                 ],
+    "blockers":  "H93-16 is PENDING; the gate requires PASS",
     "rows":  [
                  {
                      "id":  "H93-01",
@@ -325,24 +322,56 @@
                      "id":  "H93-15",
                      "group":  "Fisico corto",
                      "physical":  true,
-                     "verdict":  "PENDING",
-                     "note":  "físico: sin router con mapper utilizable en el puesto (doble NAT Deco→Movistar); sesión pendiente",
+                     "verdict":  "PASS",
+                     "note":  "físico, 6 sep 2026, router Movistar HGU (IGD WANPPPConnection:1, NAT único): 3 ciclos limpios consecutivos CANDIDATE→VERIFIED (ServerHighId + InboundTcpAccept, servidor fijado Astra-5)→retirada al cierre; censo antes/durante/después; series previas con VERIFIED y fallos atribuibles al servidor eD2K elegido al azar",
                      "artifacts":  [
                                        {
-                                           "path":  "logs/router_probe.log",
+                                           "path":  "h93-15-evidence/h93-15-clean2/summary.json",
                                            "exists":  true,
-                                           "sha256":  "844f3669306c578241f4fa990bd7d00cc4bc3431f9b19c5d801bcc1c6668fe70",
-                                           "bytes":  116,
+                                           "sha256":  "4713e359e8d25c1780e4b83c3a152332af072d9ada60d16b7974e28bf3e3f129",
+                                           "bytes":  16202,
+                                           "schema":  "ese.v92.h93-15-clean-cycles/v1",
+                                           "commit":  "75c97525"
+                                       },
+                                       {
+                                           "path":  "h93-15-evidence/h93-15-clean2/reach-probe-cycle1.json",
+                                           "exists":  true,
+                                           "sha256":  "0efc4402140a335f0852ce38cc503a914d351413098f4795d5638d9363cf366c",
+                                           "bytes":  15283,
+                                           "schema":  "ese.lab.reach-probe/v1",
+                                           "commit":  "75c97525"
+                                       },
+                                       {
+                                           "path":  "h93-15-evidence/h93-15-clean2/session.log.txt",
+                                           "exists":  true,
+                                           "sha256":  "9fc416adce2c8ac0c3b923a87aa82c7bb68b837888ed350c8d1ccdb976897c02",
+                                           "bytes":  3933,
                                            "schema":  "",
                                            "commit":  ""
                                        },
                                        {
-                                           "path":  "logs/router_census.log",
+                                           "path":  "h93-15-evidence/h93-15-clean/summary.json",
                                            "exists":  true,
-                                           "sha256":  "0bb546a79cc44bc1c93cd40a6c4e71d845eb6a2dc7b64079d35a23d51128be2b",
-                                           "bytes":  993,
+                                           "sha256":  "963bd3687e1d3155e909c5cafb63e110e5939719f0c01b307d0efa4ed40adae5",
+                                           "bytes":  49166,
+                                           "schema":  "ese.v92.h93-15-clean-cycles/v1",
+                                           "commit":  "75c97525"
+                                       },
+                                       {
+                                           "path":  "h93-15-evidence/h93-15-long/session.log.txt",
+                                           "exists":  true,
+                                           "sha256":  "29149e561d01da2aaa6d81216693f5ab1f1c777e297a634b20312f5e2e1c12e2",
+                                           "bytes":  1772,
                                            "schema":  "",
                                            "commit":  ""
+                                       },
+                                       {
+                                           "path":  "h93-15-evidence/h93-15/summary.json",
+                                           "exists":  true,
+                                           "sha256":  "460f8a7f10de396bdc946db683231acd80ba6270bc8ee85d24cc81b42a8dc9cc",
+                                           "bytes":  163044,
+                                           "schema":  "ese.v92.h93-15-router-cycles/v1",
+                                           "commit":  "75c97525"
                                        }
                                    ],
                      "artifact_ok":  true,
@@ -353,7 +382,7 @@
                      "group":  "Ruta fisica",
                      "physical":  true,
                      "verdict":  "PENDING",
-                     "note":  "físico: segundo nodo no disponible en esta sesión",
+                     "note":  "físico: pendiente; exige cambio de ruta con cables (LAN→hotspot→LAN) y un segundo nodo fuera del overlay; la sesión del 6 sep 2026 fue solo por RDP y sin permiso para tocar cables",
                      "artifacts":  {
 
                                    },

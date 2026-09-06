@@ -1,0 +1,142 @@
+{
+  "gate": "G92-93-DEV",
+  "commit": "75c97525",
+  "rows": [
+    {
+      "id": "H93-01",
+      "verdict": "PASS",
+      "note": "commit, árbol limpio y toolchain registrados; paquete rc.2 del pipeline oficial",
+      "artifacts": [
+        "manifest.json"
+      ]
+    },
+    {
+      "id": "H93-02",
+      "verdict": "PASS",
+      "note": "pipeline oficial completo sobre este commit (Core, libutp, Release x64, Integration, paquete y smoke); pasada anterior equivalente en 1546ab57",
+      "artifacts": [
+        "logs/build_all_rc2.log"
+      ]
+    },
+    {
+      "id": "H93-03",
+      "verdict": "PASS",
+      "note": "cinco goldens, mock de envelope y validación -Live contra el exe del paquete",
+      "artifacts": [
+        "logs/goldens_rc2.log",
+        "logs/reach_envelope_mock_rc2.log",
+        "runtime/validate-live.log"
+      ]
+    },
+    {
+      "id": "H93-04",
+      "verdict": "PASS",
+      "note": "test_mapped_candidate_adapter y test_legacy_mapper_projection dentro de libnatmap (tests-core)",
+      "artifacts": [
+        "logs/build_all_rc2.log"
+      ]
+    },
+    {
+      "id": "H93-05",
+      "verdict": "PASS",
+      "note": "consumer fake 9.3 (tests/fixtures) validado en 1546ab57; fixtures y snapshot sin cambios en este commit",
+      "artifacts": [
+        "manifest.json"
+      ]
+    },
+    {
+      "id": "H93-06",
+      "verdict": "PASS",
+      "note": "T8 WP0 autotest dentro de tests-core",
+      "artifacts": [
+        "logs/build_all_rc2.log"
+      ]
+    },
+    {
+      "id": "H93-07",
+      "verdict": "PASS",
+      "note": "test_false_highid, test_mapping_request, test_mapping_result_mailbox (libnatmap)",
+      "artifacts": [
+        "logs/build_all_rc2.log"
+      ]
+    },
+    {
+      "id": "H93-08",
+      "verdict": "PASS",
+      "note": "test_pcp_pair_transaction, test_natpmp_pair_transaction (libnatmap)",
+      "artifacts": [
+        "logs/build_all_rc2.log"
+      ]
+    },
+    {
+      "id": "H93-09",
+      "verdict": "PASS",
+      "note": "lease, ownership cleanup, recovery, network change, state machine (libnatmap)",
+      "artifacts": [
+        "logs/build_all_rc2.log"
+      ]
+    },
+    {
+      "id": "H93-10",
+      "verdict": "PASS",
+      "note": "address policy, nat chain, direct route selection (libnatmap)",
+      "artifacts": [
+        "logs/build_all_rc2.log"
+      ]
+    },
+    {
+      "id": "H93-11",
+      "verdict": "PASS",
+      "note": "network signature, network change, state machine (libnatmap); generación estable en runtime",
+      "artifacts": [
+        "logs/build_all_rc2.log",
+        "runtime-mappers-on/summary.json"
+      ]
+    },
+    {
+      "id": "H93-12",
+      "verdict": "PASS",
+      "note": "test_ipv6_scope_policy; deuda: IPv6 física antes de Core Alpha 9.3",
+      "artifacts": [
+        "logs/build_all_rc2.log"
+      ]
+    },
+    {
+      "id": "H93-13",
+      "verdict": "PASS",
+      "note": "standalone tests (Integration) + runtime del exe del paquete: mappings OFF (DISABLED, READY), mappers ON sobre doble NAT (BLOCKED, nunca VERIFIED), upgrade 9.1.0→rc.2→9.1.0",
+      "artifacts": [
+        "logs/build_all_rc2.log",
+        "runtime/summary.json",
+        "runtime-mappers-on/summary.json",
+        "upgrade-rollback/summary.json"
+      ]
+    },
+    {
+      "id": "H93-14",
+      "verdict": "PASS",
+      "note": "corpus hostil L07, redacción WP0, goldens sin nonce/IP; evidencia copiada con direcciones y rutas redactadas",
+      "artifacts": [
+        "logs/build_all_rc2.log",
+        "logs/goldens_rc2.log"
+      ]
+    },
+    {
+      "id": "H93-15",
+      "verdict": "PENDING",
+      "note": "físico: sin router con mapper utilizable en el puesto (doble NAT Deco→Movistar); sesión pendiente",
+      "artifacts": [
+        "logs/router_probe.log",
+        "logs/router_census.log"
+      ],
+      "simulated": false
+    },
+    {
+      "id": "H93-16",
+      "verdict": "PENDING",
+      "note": "físico: segundo nodo no disponible en esta sesión",
+      "artifacts": [],
+      "simulated": false
+    }
+  ]
+}

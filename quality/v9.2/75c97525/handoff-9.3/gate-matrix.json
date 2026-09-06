@@ -1,0 +1,364 @@
+{
+    "schema":  "ese.lab.handoff-gate-matrix/v1",
+    "gate":  "G92-93-DEV",
+    "generated_at_utc":  "2026-09-06T00:23:34.251Z",
+    "commit":  "75c97525",
+    "toolchain":  "MSVC 14.44.35207 / MSBuild 17.14 / Release x64 / Node 22.23.2",
+    "run_directory":  "C:\\tmp\\g9293-75c97525",
+    "verdict":  "BLOCKED",
+    "verdict_counts":  {
+                           "PASS":  14,
+                           "FAIL":  0,
+                           "BLOCKED":  0,
+                           "SKIP":  0,
+                           "PENDING":  2,
+                           "MISSING":  0
+                       },
+    "blockers":  [
+                     "H93-15 is PENDING; the gate requires PASS",
+                     "H93-16 is PENDING; the gate requires PASS"
+                 ],
+    "rows":  [
+                 {
+                     "id":  "H93-01",
+                     "group":  "Procedencia",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "commit, árbol limpio y toolchain registrados; paquete rc.2 del pipeline oficial",
+                     "artifacts":  {
+                                       "path":  "manifest.json",
+                                       "exists":  true,
+                                       "sha256":  "75e237356357be04f7a85d6cba10274d22b17aab72921782cf5e7fd72a071eb6",
+                                       "bytes":  5322,
+                                       "schema":  "ese.v92.close-handoff-manifest/v2",
+                                       "commit":  "75c97525"
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-02",
+                     "group":  "Build/regresion",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "pipeline oficial completo sobre este commit (Core, libutp, Release x64, Integration, paquete y smoke); pasada anterior equivalente en 1546ab57",
+                     "artifacts":  {
+                                       "path":  "logs/build_all_rc2.log",
+                                       "exists":  true,
+                                       "sha256":  "545c70afb5639c521c537b15e1dd61fe5780248761d922bd2c8e85780da415b3",
+                                       "bytes":  1111310,
+                                       "schema":  "",
+                                       "commit":  ""
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-03",
+                     "group":  "Schema",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "cinco goldens, mock de envelope y validación -Live contra el exe del paquete",
+                     "artifacts":  [
+                                       {
+                                           "path":  "logs/goldens_rc2.log",
+                                           "exists":  true,
+                                           "sha256":  "c2043cf7e384aec40c312dfd045de24fec79ca3619525f2b4e912350eed07e91",
+                                           "bytes":  148,
+                                           "schema":  "",
+                                           "commit":  ""
+                                       },
+                                       {
+                                           "path":  "logs/reach_envelope_mock_rc2.log",
+                                           "exists":  true,
+                                           "sha256":  "52f84aafafa445a1cafc6c518d0faa6623f827be2cfb78f275cc8186e8f93064",
+                                           "bytes":  182,
+                                           "schema":  "",
+                                           "commit":  ""
+                                       },
+                                       {
+                                           "path":  "runtime/validate-live.log",
+                                           "exists":  true,
+                                           "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                                           "bytes":  0,
+                                           "schema":  "",
+                                           "commit":  ""
+                                       }
+                                   ],
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-04",
+                     "group":  "Compatibilidad",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "test_mapped_candidate_adapter y test_legacy_mapper_projection dentro de libnatmap (tests-core)",
+                     "artifacts":  {
+                                       "path":  "logs/build_all_rc2.log",
+                                       "exists":  true,
+                                       "sha256":  "545c70afb5639c521c537b15e1dd61fe5780248761d922bd2c8e85780da415b3",
+                                       "bytes":  1111310,
+                                       "schema":  "",
+                                       "commit":  ""
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-05",
+                     "group":  "Desacoplamiento",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "consumer fake 9.3 (tests/fixtures) validado en 1546ab57; fixtures y snapshot sin cambios en este commit",
+                     "artifacts":  {
+                                       "path":  "manifest.json",
+                                       "exists":  true,
+                                       "sha256":  "75e237356357be04f7a85d6cba10274d22b17aab72921782cf5e7fd72a071eb6",
+                                       "bytes":  5322,
+                                       "schema":  "ese.v92.close-handoff-manifest/v2",
+                                       "commit":  "75c97525"
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-06",
+                     "group":  "Mappers simulados",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "T8 WP0 autotest dentro de tests-core",
+                     "artifacts":  {
+                                       "path":  "logs/build_all_rc2.log",
+                                       "exists":  true,
+                                       "sha256":  "545c70afb5639c521c537b15e1dd61fe5780248761d922bd2c8e85780da415b3",
+                                       "bytes":  1111310,
+                                       "schema":  "",
+                                       "commit":  ""
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-07",
+                     "group":  "Verificacion",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "test_false_highid, test_mapping_request, test_mapping_result_mailbox (libnatmap)",
+                     "artifacts":  {
+                                       "path":  "logs/build_all_rc2.log",
+                                       "exists":  true,
+                                       "sha256":  "545c70afb5639c521c537b15e1dd61fe5780248761d922bd2c8e85780da415b3",
+                                       "bytes":  1111310,
+                                       "schema":  "",
+                                       "commit":  ""
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-08",
+                     "group":  "Atomicidad",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "test_pcp_pair_transaction, test_natpmp_pair_transaction (libnatmap)",
+                     "artifacts":  {
+                                       "path":  "logs/build_all_rc2.log",
+                                       "exists":  true,
+                                       "sha256":  "545c70afb5639c521c537b15e1dd61fe5780248761d922bd2c8e85780da415b3",
+                                       "bytes":  1111310,
+                                       "schema":  "",
+                                       "commit":  ""
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-09",
+                     "group":  "Ciclo de vida",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "lease, ownership cleanup, recovery, network change, state machine (libnatmap)",
+                     "artifacts":  {
+                                       "path":  "logs/build_all_rc2.log",
+                                       "exists":  true,
+                                       "sha256":  "545c70afb5639c521c537b15e1dd61fe5780248761d922bd2c8e85780da415b3",
+                                       "bytes":  1111310,
+                                       "schema":  "",
+                                       "commit":  ""
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-10",
+                     "group":  "Topologia",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "address policy, nat chain, direct route selection (libnatmap)",
+                     "artifacts":  {
+                                       "path":  "logs/build_all_rc2.log",
+                                       "exists":  true,
+                                       "sha256":  "545c70afb5639c521c537b15e1dd61fe5780248761d922bd2c8e85780da415b3",
+                                       "bytes":  1111310,
+                                       "schema":  "",
+                                       "commit":  ""
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-11",
+                     "group":  "Generacion",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "network signature, network change, state machine (libnatmap); generación estable en runtime",
+                     "artifacts":  [
+                                       {
+                                           "path":  "logs/build_all_rc2.log",
+                                           "exists":  true,
+                                           "sha256":  "545c70afb5639c521c537b15e1dd61fe5780248761d922bd2c8e85780da415b3",
+                                           "bytes":  1111310,
+                                           "schema":  "",
+                                           "commit":  ""
+                                       },
+                                       {
+                                           "path":  "runtime-mappers-on/summary.json",
+                                           "exists":  true,
+                                           "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                                           "bytes":  0,
+                                           "schema":  "",
+                                           "commit":  ""
+                                       }
+                                   ],
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-12",
+                     "group":  "IPv6",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "test_ipv6_scope_policy; deuda: IPv6 física antes de Core Alpha 9.3",
+                     "artifacts":  {
+                                       "path":  "logs/build_all_rc2.log",
+                                       "exists":  true,
+                                       "sha256":  "545c70afb5639c521c537b15e1dd61fe5780248761d922bd2c8e85780da415b3",
+                                       "bytes":  1111310,
+                                       "schema":  "",
+                                       "commit":  ""
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-13",
+                     "group":  "Integracion eMule",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "standalone tests (Integration) + runtime del exe del paquete: mappings OFF (DISABLED, READY), mappers ON sobre doble NAT (BLOCKED, nunca VERIFIED), upgrade 9.1.0→rc.2→9.1.0",
+                     "artifacts":  [
+                                       {
+                                           "path":  "logs/build_all_rc2.log",
+                                           "exists":  true,
+                                           "sha256":  "545c70afb5639c521c537b15e1dd61fe5780248761d922bd2c8e85780da415b3",
+                                           "bytes":  1111310,
+                                           "schema":  "",
+                                           "commit":  ""
+                                       },
+                                       {
+                                           "path":  "runtime/summary.json",
+                                           "exists":  true,
+                                           "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                                           "bytes":  0,
+                                           "schema":  "",
+                                           "commit":  ""
+                                       },
+                                       {
+                                           "path":  "runtime-mappers-on/summary.json",
+                                           "exists":  true,
+                                           "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                                           "bytes":  0,
+                                           "schema":  "",
+                                           "commit":  ""
+                                       },
+                                       {
+                                           "path":  "upgrade-rollback/summary.json",
+                                           "exists":  true,
+                                           "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                                           "bytes":  0,
+                                           "schema":  "",
+                                           "commit":  ""
+                                       }
+                                   ],
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-14",
+                     "group":  "Seguridad/evidencia",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "corpus hostil L07, redacción WP0, goldens sin nonce/IP; evidencia copiada con direcciones y rutas redactadas",
+                     "artifacts":  [
+                                       {
+                                           "path":  "logs/build_all_rc2.log",
+                                           "exists":  true,
+                                           "sha256":  "545c70afb5639c521c537b15e1dd61fe5780248761d922bd2c8e85780da415b3",
+                                           "bytes":  1111310,
+                                           "schema":  "",
+                                           "commit":  ""
+                                       },
+                                       {
+                                           "path":  "logs/goldens_rc2.log",
+                                           "exists":  true,
+                                           "sha256":  "c2043cf7e384aec40c312dfd045de24fec79ca3619525f2b4e912350eed07e91",
+                                           "bytes":  148,
+                                           "schema":  "",
+                                           "commit":  ""
+                                       }
+                                   ],
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-15",
+                     "group":  "Fisico corto",
+                     "physical":  true,
+                     "verdict":  "PENDING",
+                     "note":  "físico: sin router con mapper utilizable en el puesto (doble NAT Deco→Movistar); sesión pendiente",
+                     "artifacts":  [
+                                       {
+                                           "path":  "logs/router_probe.log",
+                                           "exists":  true,
+                                           "sha256":  "844f3669306c578241f4fa990bd7d00cc4bc3431f9b19c5d801bcc1c6668fe70",
+                                           "bytes":  116,
+                                           "schema":  "",
+                                           "commit":  ""
+                                       },
+                                       {
+                                           "path":  "logs/router_census.log",
+                                           "exists":  true,
+                                           "sha256":  "0bb546a79cc44bc1c93cd40a6c4e71d845eb6a2dc7b64079d35a23d51128be2b",
+                                           "bytes":  993,
+                                           "schema":  "",
+                                           "commit":  ""
+                                       }
+                                   ],
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-16",
+                     "group":  "Ruta fisica",
+                     "physical":  true,
+                     "verdict":  "PENDING",
+                     "note":  "físico: segundo nodo no disponible en esta sesión",
+                     "artifacts":  {
+
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 }
+             ]
+}

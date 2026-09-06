@@ -1,0 +1,144 @@
+{
+  "schema": "ese.v92.close-handoff-manifest/v2",
+  "gate": "G92-93-DEV",
+  "generated_utc": "2026-09-06T00:23:33Z",
+  "commit": "75c97525",
+  "commit_full": "75c975251d9887aabbc48ed03642c1b286cfd777",
+  "head_at_generation": "75c975251d9887aabbc48ed03642c1b286cfd777",
+  "branch": "claude/v92-close",
+  "worktree": "C:\\tmp\\eSE-v9.2-close",
+  "dirty": false,
+  "tag": "v0.70b-eSE9.2.0-rc.2",
+  "previous_evidence_commit": "1546ab57",
+  "delta_vs_previous_paths": [
+    "CHANGES_FROM_EMULE_0.70b.md",
+    "GUIA-RAPIDA.md",
+    "README.md",
+    "THIRD_PARTY_LICENSES.md",
+    "docs/INDEX.md",
+    "docs/RELEASE_NOTES_v9.2.0-rc.2.md",
+    "docs/RELEASE_NOTES_v9.2.0.md",
+    "docs/V9.2_O01_SIMPLE_SOAK.md",
+    "docs/V9.2_PHYSICAL_SESSION_RUNBOOK.md",
+    "docs/V9.2_STATE.md",
+    "docs/V92_RC2_EXECUTION.md",
+    "quality/v9.2/1546ab57/REPORT-G92-93-DEV.json",
+    "quality/v9.2/1546ab57/REPORT-G92-93-DEV.md",
+    "quality/v9.2/1546ab57/handoff-9.3/gate-matrix.json",
+    "quality/v9.2/1546ab57/handoff-9.3/manifest.json",
+    "quality/v9.2/1546ab57/handoff-9.3/runtime-api-reach-status.json",
+    "quality/v9.2/1546ab57/handoff-9.3/runtime-summary.json",
+    "quality/v9.2/1546ab57/handoff-9.3/verdicts.json",
+    "srchybrid/Version.h",
+    "srchybrid/WebTemplateRenderer.cpp",
+    "srchybrid/eSE/package-lock.json",
+    "srchybrid/eSE/package.json",
+    "srchybrid/eSE/test/live_tv_regression.test.js",
+    "tests/test_v92_k06_interleavings.py",
+    "tools/lab/v92_simple_soak.ps1"
+  ],
+  "delta_vs_previous_product_paths": [
+    "srchybrid/Version.h",
+    "srchybrid/WebTemplateRenderer.cpp",
+    "srchybrid/eSE/package-lock.json",
+    "srchybrid/eSE/package.json",
+    "srchybrid/eSE/test/live_tv_regression.test.js"
+  ],
+  "repeat_policy": "product changed (WebTemplateRenderer.cpp, Version.h, eSE package metadata): the full official pipeline and every runtime probe were repeated on this commit",
+  "package": {
+    "zip": "eSE-LiveTV-v0.70b-eSE9.2.0-rc.2-x64.zip",
+    "zip_sha256": "4d565926f40c152b9941b0f40d2e995edb0baea55f8e4b6d660c039dbf21fc32",
+    "emule_exe_sha256": "403a3719a3c902404ccdd3887f52bc79e0917edf97526c25c31e4c0770fc0f3d",
+    "ese_server_exe_sha256": "02063d031e8bd3e8f0aa4e791891af27080460e53a6be2bc7cb80969e6ad4888",
+    "build_info": [
+      "release: v0.70b-eSE9.2.0-rc.2",
+      "commit: 75c975251d9887aabbc48ed03642c1b286cfd777",
+      "dirty: false",
+      "built_utc: 2026-09-06T00:14:53Z",
+      "node: v22.23.2",
+      "npm: 10.9.8"
+    ]
+  },
+  "toolchain": {
+    "msvc": "14.44.35207 (cl 19.44)",
+    "msbuild": "17.14 (VS 2022 Build Tools, v143)",
+    "node": "22.23.2 (C:\\tmp\\node-v22.23.2-win-x64)",
+    "python": "3.12.10",
+    "git": "2.51.0.windows.1",
+    "powershell": "5.1",
+    "sandbox_note": "NoDefaultCurrentDirectoryInExePath cleared for the pipeline (libkad6/test_all.bat)"
+  },
+  "suites": {
+    "build_all_rc2": {
+      "log": "logs/build_all_rc2.log",
+      "sha256": "545c70afb5639c521c537b15e1dd61fe5780248761d922bd2c8e85780da415b3",
+      "verdict": "PASS",
+      "note": "official pipeline: preflight, Core (WP0, T8 autotest, wire tests, libreach, libnatmap, Crypto++, libkad6, npm), libutp, Release x64 rebuild, Integration, ese, langs, package, package smoke"
+    },
+    "reach_goldens_rc2": {
+      "log": "logs/goldens_rc2.log",
+      "sha256": "c2043cf7e384aec40c312dfd045de24fec79ca3619525f2b4e912350eed07e91",
+      "verdict": "PASS",
+      "note": ""
+    },
+    "reach_envelope_mock_rc2": {
+      "log": "logs/reach_envelope_mock_rc2.log",
+      "sha256": "52f84aafafa445a1cafc6c518d0faa6623f827be2cfb78f275cc8186e8f93064",
+      "verdict": "PASS",
+      "note": ""
+    },
+    "router_probe": {
+      "log": "logs/router_probe.log",
+      "sha256": "844f3669306c578241f4fa990bd7d00cc4bc3431f9b19c5d801bcc1c6668fe70",
+      "verdict": "PASS",
+      "note": "diagnostic only: Deco gateway answers no SSDP/NAT-PMP/PCP"
+    },
+    "router_census_upnp": {
+      "log": "logs/router_census.log",
+      "sha256": "0bb546a79cc44bc1c93cd40a6c4e71d845eb6a2dc7b64079d35a23d51128be2b",
+      "verdict": "PASS",
+      "note": "diagnostic only"
+    }
+  },
+  "runtime_probe": {
+    "summary": "runtime/summary.json",
+    "verdict": "PASS",
+    "executable_sha256": "403a3719a3c902404ccdd3887f52bc79e0917edf97526c25c31e4c0770fc0f3d",
+    "reach_schema": "ESE_REACH_STATUS_V1",
+    "planes_gate_state": {
+      "ed2k_tcp_v4": "DISABLED",
+      "kad_udp_v4": "DISABLED",
+      "direct_v6": "DISABLED"
+    },
+    "gate_readiness": "READY"
+  },
+  "honest_failure_mappers_on": {
+    "summary": "runtime-mappers-on/summary.json",
+    "verdict": "PASS",
+    "any_verified": false,
+    "gate_states_seen": {
+      "ed2k_tcp_v4": [
+        "DISCOVERING",
+        "BLOCKED"
+      ],
+      "kad_udp_v4": [
+        "DISCOVERING",
+        "BLOCKED"
+      ],
+      "direct_v6": [
+        "DISABLED"
+      ]
+    },
+    "note": null
+  },
+  "upgrade_rollback_92_8_2": {
+    "summary": "upgrade-rollback/summary.json",
+    "verdict": "PASS",
+    "profile_template_version": "7",
+    "rollback_9_1_0_api_up": true
+  },
+  "physical": {
+    "H93-15": "PENDING: gateway (TP-Link Deco, double NAT behind a Movistar router) answers no SSDP IGD, NAT-PMP or PCP; see docs/V9.2_PHYSICAL_SESSION_RUNBOOK.md",
+    "H93-16": "PENDING: second physical node not available in this session"
+  }
+}

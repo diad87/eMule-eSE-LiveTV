@@ -66,6 +66,15 @@ The following physical results are required before this note is final:
 - When no gateway answers any mapping protocol, the reported reason is
   `MappingDenied`; a more specific `NoRoute` reason may follow in a later
   release. The state itself is correct (blocked, never verified).
+- Portable installs: the dashboard's download list and library views still
+  read `%USERPROFILE%\Downloads\eMule` unless `eSE\emule_paths.json` points
+  them at the package's own `Incoming` and `Temp`; the native client itself
+  uses the package directories. Fix planned for 9.2.x.
+- The classic web pages of the native WebServer become available a few
+  seconds after `/api/status`; the dashboard retries and is not affected.
+- Sources with private or loopback addresses embedded in an eD2K link are
+  discarded as non-routable; LAN-only transfers must go through the normal
+  discovery path.
 - The WebServer is never mapped automatically.
 - No universal HighID is promised. Routers that reject or limit UPnP (the
   maintainer's ISP router returned SOAP fault 501 with 64 table entries

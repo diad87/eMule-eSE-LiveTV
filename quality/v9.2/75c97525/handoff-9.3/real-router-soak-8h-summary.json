@@ -1,0 +1,136 @@
+{
+  "schema": "ese.v92.o01-simple-soak/v1",
+  "verdict": "FAIL",
+  "reasons": [
+    "working set grew 66.61% (limit 50%)"
+  ],
+  "pid": 50084,
+  "duration_seconds_requested": 28800,
+  "duration_seconds_measured": 28800,
+  "interval_seconds": 300,
+  "samples": 97,
+  "working_set_first_bytes": 38985728,
+  "working_set_last_bytes": 64954368,
+  "working_set_max_bytes": 64954368,
+  "working_set_growth_percent": 66.61,
+  "handles_first": 424,
+  "handles_last": 438,
+  "threads_first": 18,
+  "threads_last": 13,
+  "reach_availability_percent": 100,
+  "topology_generations_seen": [
+    1,
+    2
+  ],
+  "topology_generation_changes": 1,
+  "process_exited_early": false,
+  "operator_checks": [
+    "UPnP census after natural shutdown: zero owned mappings, foreign entries intact",
+    "No emule.exe or ese-server.exe left running after shutdown",
+    "Operator interventions (mapping deleted, router restarted) logged with UTC time in operator.txt"
+  ],
+  "samples_file": "samples.jsonl",
+  "commit": "75c97525",
+  "router": "Movistar HGU, IGD WANPPPConnection:1, single NAT, public external address",
+  "conditions": "rc.2 portable, dashboard on (ESE_PORT=8090), autoconnect on (eD2K server + Kad connected), mappings on, 7200 s leases",
+  "operator_log": [
+    "2026-09-06 19:15:16Z census before: 1 entries",
+    "2026-09-06 19:15:17Z emule started pid 50084 (portable, dashboard on, autoconnect on, mappings on)",
+    "2026-09-06 19:15:20Z census: 1 entries, owned=0; reach gen=1 tcp=DISCOVERING/None",
+    "2026-09-06 19:45:21Z census: 3 entries, owned=2; reach gen=2 tcp=VERIFIED/None",
+    "2026-09-06 20:15:22Z census: 3 entries, owned=2; reach gen=2 tcp=VERIFIED/None",
+    "2026-09-06 20:45:22Z census: 3 entries, owned=2; reach gen=2 tcp=VERIFIED/None",
+    "2026-09-06 21:15:23Z census: 3 entries, owned=2; reach gen=2 tcp=VERIFIED/None",
+    "2026-09-06 21:45:25Z census: 3 entries, owned=2; reach gen=2 tcp=VERIFIED/None",
+    "2026-09-06 22:15:25Z census: 3 entries, owned=2; reach gen=2 tcp=VERIFIED/None",
+    "2026-09-06 22:45:26Z census: 3 entries, owned=2; reach gen=2 tcp=VERIFIED/None",
+    "2026-09-06 23:15:28Z LOSS INJECTED at 4,00 h: {\"action\": \"delete\", \"protocol\": \"TCP\", \"external_port\": 4662, \"http\": 200, \"error\": null} | {\"action\": \"delete\", \"protocol\": \"UDP\", \"external_port\": 4672, \"http\": 200, \"error\": null}",
+    "2026-09-06 23:15:28Z census: 1 entries, owned=0; reach gen=2 tcp=VERIFIED/None",
+    "2026-09-06 23:45:29Z census: 1 entries, owned=0; reach gen=2 tcp=VERIFIED/None",
+    "2026-09-07 00:15:30Z census: 3 entries, owned=2; reach gen=2 tcp=VERIFIED/None",
+    "2026-09-07 00:45:33Z census: 3 entries, owned=2; reach gen=2 tcp=VERIFIED/None",
+    "2026-09-07 01:15:34Z census: 3 entries, owned=2; reach gen=2 tcp=VERIFIED/None",
+    "2026-09-07 01:45:35Z census: 3 entries, owned=2; reach gen=2 tcp=VERIFIED/None",
+    "2026-09-07 02:15:35Z census: 3 entries, owned=2; reach gen=2 tcp=VERIFIED/None",
+    "2026-09-07 02:45:36Z census: 3 entries, owned=2; reach gen=2 tcp=VERIFIED/None",
+    "2026-09-07 03:15:37Z sampler exit code",
+    "2026-09-07 03:15:40Z emule stopped; forced=False",
+    "2026-09-07 03:15:48Z leftover processes: 0",
+    "2026-09-07 03:15:49Z census after natural shutdown: 1 entries, owned=0 (operator check: zero owned mappings = True)",
+    "2026-09-07 03:15:49Z package config restored; done"
+  ],
+  "hourly": [
+    {
+      "hour": 0,
+      "working_set_mib": 37.2,
+      "private_mib": 10.6,
+      "handles": 424,
+      "threads": 18,
+      "generation": 1
+    },
+    {
+      "hour": 1,
+      "working_set_mib": 46.9,
+      "private_mib": 17.1,
+      "handles": 435,
+      "threads": 13,
+      "generation": 2
+    },
+    {
+      "hour": 2,
+      "working_set_mib": 50.1,
+      "private_mib": 20.5,
+      "handles": 435,
+      "threads": 13,
+      "generation": 2
+    },
+    {
+      "hour": 3,
+      "working_set_mib": 53.0,
+      "private_mib": 23.4,
+      "handles": 435,
+      "threads": 13,
+      "generation": 2
+    },
+    {
+      "hour": 4,
+      "working_set_mib": 55.7,
+      "private_mib": 26.0,
+      "handles": 435,
+      "threads": 13,
+      "generation": 2
+    },
+    {
+      "hour": 5,
+      "working_set_mib": 56.7,
+      "private_mib": 26.6,
+      "handles": 437,
+      "threads": 13,
+      "generation": 2
+    },
+    {
+      "hour": 6,
+      "working_set_mib": 58.7,
+      "private_mib": 28.7,
+      "handles": 436,
+      "threads": 13,
+      "generation": 2
+    },
+    {
+      "hour": 7,
+      "working_set_mib": 60.0,
+      "private_mib": 30.0,
+      "handles": 436,
+      "threads": 13,
+      "generation": 2
+    },
+    {
+      "hour": 8,
+      "working_set_mib": 61.9,
+      "private_mib": 31.8,
+      "handles": 438,
+      "threads": 13,
+      "generation": 2
+    }
+  ]
+}

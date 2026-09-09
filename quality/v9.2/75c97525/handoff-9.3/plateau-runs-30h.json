@@ -1,0 +1,66 @@
+{
+  "schema": "ese.v92.plateau-runs/v1",
+  "commit": "75c97525",
+  "question": "whether the memory growth of a reachable node levels off once Kad entries start expiring",
+  "conditions": "rc.2, no dashboard, no polling of any kind, UPnP mappings on, eD2K server and Kad connected, sampled every 5 min",
+  "runs": {
+    "L": {
+      "hours": 30.0,
+      "ws_first": 38,
+      "ws_last": 78,
+      "growth_percent": 105.09,
+      "handles": [
+        428,
+        436
+      ],
+      "threads": [
+        17,
+        13
+      ],
+      "reach": 100,
+      "generations": [
+        1,
+        2,
+        3
+      ],
+      "slope_after_12h": 1.72,
+      "slope_last_6h": 1.27,
+      "key_index": 3788373,
+      "src_index": 258153,
+      "verdict": "FAIL",
+      "reasons": [
+        "working set grew 105.09% (limit 50%)"
+      ]
+    },
+    "L2": {
+      "hours": 30.0,
+      "ws_first": 36,
+      "ws_last": 102,
+      "growth_percent": 182.82,
+      "handles": [
+        404,
+        438
+      ],
+      "threads": [
+        17,
+        13
+      ],
+      "reach": 100,
+      "generations": [
+        1,
+        2,
+        3
+      ],
+      "slope_after_12h": 1.18,
+      "slope_last_6h": 0.66,
+      "key_index": 5915940,
+      "src_index": 402146,
+      "verdict": "FAIL",
+      "reasons": [
+        "working set grew 182.82% (limit 50%)"
+      ]
+    }
+  },
+  "finding": "it does not level off within 30 h. Both runs keep climbing at roughly 1.5 MiB/h from hour 12 to the end, with handles and threads flat, the reachability API available in every sample and a clean shutdown that withdrew every mapping. The Kad indexes written at exit grow in step but account for about a tenth of the growth",
+  "not_measured": "whether upstream eMule 0.70b behaves the same; that comparison needs a vanilla build and has not been run"
+}

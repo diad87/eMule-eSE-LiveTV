@@ -52,7 +52,7 @@ The following physical results are required before this note is final:
 |---|---|
 | `H93-15` three mapping cycles on a real router (candidate → verified → withdrawn) | passed on 2026-09-06: 3 consecutive cycles on the maintainer's ISP router (Movistar HGU, UPnP IGD, single NAT); mapping granted within 5 s, verified through an eD2K server HighID plus an accepted inbound TCP connection within 5 s, mappings withdrawn on a clean exit |
 | `H93-16` data path outside the overlay and LAN → hotspot → LAN change | pending |
-| `V92-O01` eight-hour lease soak on a real router | run on 2026-09-06/07: lease renewals, provoked mapping loss, reachability API and clean shutdown all passed; **failed the memory criterion** (working set +66.6 % in 8 h with an eD2K server and Kad connected, plan limit 50 %; handles and threads flat; growth slowing from 10 to 1.5 MiB/h). Attribution over eight isolated instances traced the growth to Kad holder duty on a reachable node, not to a leak: instances without a router mapping stay flat under the same load, and the Kad index a mapped instance writes to disk grows in step. A 30 h run is measuring where it levels off, and the soak threshold will be recalibrated against that |
+| `V92-O01` eight-hour lease soak on a real router | run on 2026-09-06/07: lease renewals, provoked mapping loss, reachability API and clean shutdown all passed; **failed the memory criterion** (working set +66.6 % in 8 h with an eD2K server and Kad connected, plan limit 50 %; handles and threads flat; growth slowing from 10 to 1.5 MiB/h). Attribution over eight isolated instances, one variable each, ruled out the dashboard, every API endpoint, the classic pages, keep-alive connections and Kad searches: the growth appears only on a node that is genuinely reachable. Two 30 h runs then showed it levels off inside the first day, the hourly rate falling from 5.7 to 0.7 MiB/h with private bytes flat for the last three hours, handles and threads steady and a clean shutdown that withdrew every mapping. The threshold, calibrated on an unreachable node, is what the run failed; recalibrating it to a steady-state rate is a decision for the maintainer |
 | T7 (UPnP on a second router brand) and a remote topology | not planned for 9.2.0; disclosed limitation |
 
 ## Known limitations
@@ -76,6 +76,12 @@ The following physical results are required before this note is final:
   discarded as non-routable; LAN-only transfers must go through the normal
   discovery path.
 - The WebServer is never mapped automatically.
+- A reachable node accumulates peer and Kad state during its first day of
+  uptime, levelling off near 100 MB of working set on the maintainer's line.
+  Handles and threads stay flat throughout. Whether upstream eMule 0.70b
+  behaves the same has not been measured.
+- Shutting down after a long session can take over a minute and a half while
+  a large Kad index is written to disk.
 - A mapping deleted by the router administrator is not noticed between lease
   renewals. With the 7200 s leases the product requests, the renewal at 45 %
   (about 54 minutes) re-creates the entry, so the plane can report `VERIFIED`

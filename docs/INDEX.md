@@ -182,13 +182,15 @@ opcodes, tags, capabilities and tunnel services.
 
 ## 9.3+ planning (decided 2026-09-30)
 
-- [eSE 9.3+ revised release train](V9.3_PLUS_RELEASE_TRAIN.md) — **start
-  here**. Review of every 9.3-9.8 and track plan against the real 9.2 state,
-  and the owner decisions D6-D13: 9.3 Direct Core (started from rc.2), 9.4
-  DirectOnlyV1 advanced cascade with relay code removed from the build, 9.5
-  engine and stability, 9.6 product, 9.7 private LiveTV. The documents below
-  are reference material; where they disagree with the train, the train and
-  the owner decisions win until the specification amendment is written.
+- [eSE 9.3 single release](V9.3_PLUS_RELEASE_TRAIN.md) — **start here**. The
+  owner decisions of 2026-09-30 merge the former 9.3-9.8 train into one 9.3,
+  published only at the end, with six blocks on two parallel lanes: Direct
+  Core; DirectOnlyV1 without relay; QUIC and receive-first interop; server
+  callback and RendezvousV2; engine, shares, persistence and Download
+  Validator; search, UI, accessibility and platforms. Private LiveTV follows
+  as 9.4. The documents below are design references for those blocks; where
+  they disagree, the plan and the owner decisions win until the specification
+  amendment is written.
 - 9.3: [development and test plan](V9.3_DEVELOPMENT_AND_TEST_PLAN.md),
   [execution state](V9.3_EXECUTION_STATE.md),
   [runbook](V9.3_EXECUTION_RUNBOOK.md),

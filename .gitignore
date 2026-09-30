@@ -38,17 +38,10 @@ labs/
 lab-runs/
 artifacts/
 docs/archive/
-docs/*.docx
-docs/*_PLAN*.md
-!docs/KAD6_IMPLEMENTATION_PLAN.md
+# Planning, roadmap and thesis documents are versioned (2026-09-30).
+# Audits stay local: they may describe unpatched findings and the repo is public.
 docs/*_AUDIT*.md
-docs/*_CLOSURE*.md
-docs/*_CHECKLIST*.md
-docs/*_ROADMAP*.md
-docs/*_TICKET*.md
-docs/*_VALIDATION*.md
-docs/*_PAPER*.md
-docs/*_THESIS*.md
+!docs/PERF_AUDIT.md
 docs/.~lock.*#
 
 # Local eSE runtime/config/secrets

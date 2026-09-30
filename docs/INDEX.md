@@ -179,3 +179,68 @@ maintain eMule eSE.
 The CSV files in [`protocol/`](protocol/) are checked by
 `tools/check_protocol_registry.py` and are the source of truth for eSE-owned
 opcodes, tags, capabilities and tunnel services.
+
+## 9.3+ planning (decided 2026-09-30)
+
+- [eSE 9.3+ revised release train](V9.3_PLUS_RELEASE_TRAIN.md) — **start
+  here**. Review of every 9.3-9.8 and track plan against the real 9.2 state,
+  and the owner decisions D6-D13: 9.3 Direct Core (started from rc.2), 9.4
+  DirectOnlyV1 advanced cascade with relay code removed from the build, 9.5
+  engine and stability, 9.6 product, 9.7 private LiveTV. The documents below
+  are reference material; where they disagree with the train, the train and
+  the owner decisions win until the specification amendment is written.
+- 9.3: [development and test plan](V9.3_DEVELOPMENT_AND_TEST_PLAN.md),
+  [execution state](V9.3_EXECUTION_STATE.md),
+  [runbook](V9.3_EXECUTION_RUNBOOK.md),
+  [preparation handoff](V9.3_PREPARATION_HANDOFF_2026-09-04.md); archived by
+  D8: [assurance stack](V9.3_ASSURANCE_STACK.md),
+  [model orchestration](V9.3_MODEL_ORCHESTRATION.md) and
+  [ADR-0001](adr/ADR-0001-tesis-vs-especificacion-9.3.md) (its section 4.2 is
+  obsolete: the hole-punch identity defect was fixed in `58458afe`).
+- 9.4 DirectOnlyV1: [development and test plan](V9.4_DEVELOPMENT_AND_TEST_PLAN.md),
+  [execution state](V9.4_EXECUTION_STATE.md),
+  [runbook](V9.4_EXECUTION_RUNBOOK.md); archived by D8:
+  [assurance stack](V9.4_ASSURANCE_STACK.md),
+  [model orchestration](V9.4_MODEL_ORCHESTRATION.md).
+- eMule AI parity programme: [integrated roadmap](EMULEAI_INTEGRATED_RELEASE_ROADMAP.md),
+  [parity and superiority programme](EMULEAI_PARITY_AND_SUPERIORITY_PROGRAM.md),
+  [v1.6 delta baseline](EMULEAI_V1.6_DELTA_BASELINE.md),
+  [9.8 interop envelope (parked)](V9.8_ECOSYSTEM_INTEROP_ENVELOPE.md),
+  [server conformance lab](SERVER_CONFORMANCE_LAB.md) and
+  [external interop catalog](protocol/EXTERNAL_INTEROP_CATALOG.csv).
+- Design sources: [LowID-to-LowID minimal direct core](LOWID_LOWID_MINIMAL_DIRECT_CORE_DESIGN.md),
+  [consolidated thesis](TESIS_CONSOLIDADA_LOWID_A_LOWID_DIRECTO_V9.1_2026.md)
+  ([.docx](TESIS_CONSOLIDADA_LOWID_A_LOWID_DIRECTO_V9.1_2026.docx)),
+  [technical thesis RC1 (.docx)](TESIS_TECNICA_LOWID_A_LOWID_DIRECTO_V9.1_RC1.docx),
+  [functional LowID abolition v3](TESIS_ABOLICION_FUNCIONAL_LOWID_EMULE_V3_2026.md),
+  [Kad without LowID](THESIS_KAD_SIN_LOWID.md),
+  [LowID NAT traversal plan](LOWID_NAT_TRAVERSAL_PLAN.md),
+  [Kad6 architecture](KAD6_ARCHITECTURE.md),
+  [Kad2 traffic cost/benefit](KAD2_TRAFFIC_COST_BENEFIT_PLAN.md).
+- 9.2 programme history: [development and test plan](V9.2_DEVELOPMENT_AND_TEST_PLAN.md),
+  [modularization plan](V9.2_MODULARIZATION_AND_ARCHITECTURE_PLAN.md),
+  [historical execution ledger](V9.2_EXECUTION_STATE.md),
+  [runbook](V9.2_EXECUTION_RUNBOOK.md),
+  [assurance stack](V9.2_ASSURANCE_STACK.md),
+  [model orchestration](V9.2_MODEL_ORCHESTRATION.md),
+  [reach-status adapter card](V9.2_REACH_STATUS_ADAPTER_CARD.md),
+  [handoff lab readiness](V9.2_HANDOFF_GATE_LAB_READINESS.md),
+  [entry evidence](V9.2_ENTRY_EVIDENCE_2026-07-24.md),
+  [9.1 gate gap evidence](V9.1_GATE_GAP_EVIDENCE_2026-07-24.md),
+  [9.1 to 9.2 handoff](V9.1_TO_V9.2_PROVISIONAL_HANDOFF_2026-07-27.md),
+  [9.1 beta.2 plan](V9.1_BETA2_DEVELOPMENT_AND_TEST_PLAN.md).
+- Track plans mapped to 9.5-9.7 by the train: [Swarm DVR](SWARM_DVR_PLAN.md),
+  [channel manifest](CHANNEL_MANIFEST_PLAN.md),
+  [mobile viewer](MOBILE_VIEWER_PLAN.md),
+  [part-hash thread](PART_HASH_THREAD_PLAN.md),
+  [performance audit](PERF_AUDIT.md),
+  [modernization roadmap](MODERNIZATION_ROADMAP.md),
+  [Sprint E breakdown](V8.1.1_SPRINT_E_BREAKDOWN.md) and
+  [its validation recipe](V8.1.2_VALIDATION_RECIPE.md),
+  [authenticated tunnel handshake](AUTHENTICATED_TUNNEL_HANDSHAKE_PLAN.md) and
+  [its 3-PC validation](protocol/AUTH_TUNNEL_3PC_VALIDATION.md),
+  [reach host adapter](REACH_HOST_ADAPTER_PLAN.md),
+  [Linux/Docker/ARM daemon spec (parked)](SPEC_ESE_DAEMON_LINUX_DOCKER_ARM.md).
+- [KRP relay archive](relay/README.md) — P0-P4 design, closures and threat
+  model of the relay that 9.4 DirectOnlyV1 removes from the build (D7). Kept
+  for traceability; not a current plan.

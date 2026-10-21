@@ -1,6 +1,5 @@
 'use strict';
-const fs   = require('fs');
-const path = require('path');
+const appPage = require('./app_page');
 const http = require('http');
 
 let _ctx = null;
@@ -23,30 +22,30 @@ function handle(url, req, res) {
     });
     res.end(JSON.stringify({
       status: 'ok',
-      version: '7.5.2',
+      version: require('../package.json').version,
       uptime: Math.round(process.uptime()),
       encoder: HW_ENCODER,
       hasPublicUrl: !!(tunnel.publicUrl),
       hasTunnel: !!(tunnel.tunnelUrl)
     }));
-    return;
+    return true;
   }
 
   // UX-007: Connection seed for mobile pairing — REQUIRES authentication
   // This endpoint exposes secrets (encKey, accessToken, LOOKUP_TOPIC),
   // so it MUST be gated behind a valid token.
   if (url.pathname === '/api/connect-seed') {
-    if (_security && !_security.isValidToken(url, req)) {
+    if (!_security || !_security.isValidToken(url, req)) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized', message: 'Authentication required to access connection seed.' }));
-      return;
+      return true;
     }
     const localIPs = Object.values(require('os').networkInterfaces()).flat()
       .filter(i => i.family === 'IPv4' && !i.internal).map(i => i.address);
     const seed = {
       name: 'eSE',
       n: 'eSE',
-      version: '7.5.2',
+      version: require('../package.json').version,
       port: PORT,
       p: PORT,
       localIPs: localIPs,
@@ -64,7 +63,7 @@ function handle(url, req, res) {
     // Remove wildcard CORS — only allow same-origin for security-sensitive data
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(seed));
-    return;
+    return true;
   }
 
   // PWA manifest
@@ -78,74 +77,23 @@ function handle(url, req, res) {
       display: 'standalone',
       background_color: '#0d0d12',
       theme_color: '#0d0d12',
-      icons: [{ src: 'https://img.icons8.com/color/192/cinema.png', sizes: '192x192', type: 'image/png' }, { src: 'https://img.icons8.com/color/512/cinema.png', sizes: '512x512', type: 'image/png' }]
+      icons: [{ src: '/emule_mascot.svg', sizes: 'any', type: 'image/svg+xml' }]
     }));
-    return;
-  }
-
-  if (url.pathname === '/go' || url.pathname === '/go/' + tunnel.CONFIG.secretId) {
-    const goPage = '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">' +
-      '<title>eSE - Conectando...</title><link rel="icon" href="/emule_mascot.svg" />' +
-      '<style>*{margin:0;padding:0}body{background:#0d0d12;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center}' +
-      '.box{max-width:400px}.logo{font-size:28px;font-weight:800;color:#ff6b35;margin-bottom:16px}.spin{display:inline-block;width:40px;height:40px;border:3px solid #333;border-top-color:#ff6b35;border-radius:50%;animation:s 1s linear infinite;margin-bottom:16px}@keyframes s{to{transform:rotate(360deg)}}' +
-      '.msg{color:#888;font-size:14px;margin-top:12px}a{color:#ff6b35}</style></head><body><div class="box">' +
-      '<div class="logo">eSE</div><div class="spin"></div>' +
-      '<div id="status">Buscando tu servidor...</div>' +
-      '<div class="msg" id="msg"></div></div>' +
-      '<script>' +
-      'var topic="' + tunnel.LOOKUP_TOPIC + '";' +
-      'fetch("https://ntfy.sh/"+topic+"/json?poll=1&since=1h").then(function(r){return r.text()}).then(function(t){' +
-      '  var lines=t.trim().split("\\n");if(!lines[0]){document.getElementById("status").textContent="Servidor offline";document.getElementById("msg").textContent="No se encontro ninguna sesion activa. Asegurate de que eSE esta corriendo.";return}' +
-      '  var last=JSON.parse(lines[lines.length-1]);' +
-      '  var target=last.message||"";' +
-      '  /* UX-006: Validate redirect URL — only allow http/https to prevent open redirect */' +
-      '  if(!/^https?:\\/\\//i.test(target)){document.getElementById("status").textContent="URL invalida";document.getElementById("msg").textContent="El servidor devolvio una URL no segura.";return}' +
-      '  document.getElementById("status").textContent="Encontrado! Redirigiendo...";' +
-      '  setTimeout(function(){window.location.href=target},500);' +
-      '}).catch(function(){document.getElementById("status").textContent="Error de conexion";});' +
-      '</script></body></html>';
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(goPage);
     return true;
   }
 
-  if (url.pathname === '/remote') {
-    // Serve the redirect HTML for download
-    const rPath = path.join(__dirname, '..', 'eSE_Remote.html');
-    if (fs.existsSync(rPath)) {
-      res.writeHead(200, {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Content-Disposition': 'attachment; filename="eSE_Remote.html"'
-      });
-      res.end(fs.readFileSync(rPath));
-    } else {
-      res.writeHead(404); res.end('Not generated yet');
+  // Retain old bookmarks through the single connection flow. Only a validated
+  // seed is forwarded; arbitrary destinations and query credentials are dropped.
+  if (url.pathname === '/qr' || url.pathname === '/remote' || url.pathname === '/go' || url.pathname === '/go/' + tunnel.CONFIG.secretId) {
+    if (req.method && req.method !== 'GET' && req.method !== 'HEAD') {
+      res.writeHead(405, { Allow: 'GET, HEAD' }); res.end(); return true;
     }
-    return true;
-  }
-
-  if (url.pathname === '/qr') {
-    // v7.4.0 — QR target prefers the UPnP-derived public URL; falls back to
-    // the ntfy.sh lookup so a phone can still find this server even without
-    // a public IP (no Cloudflare tunnel anymore).
-    const qrTarget = tunnel.publicUrl || ('https://ntfy.sh/' + tunnel.LOOKUP_TOPIC);
-    const qrImg = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent(qrTarget);
-    const remoteQr = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent((tunnel.publicUrl || 'http://localhost:' + PORT) + '/remote');
-    const qrPage = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>eSE QR</title><link rel="icon" href="/emule_mascot.svg" />' +
-      '<style>*{margin:0;padding:0}body{background:#0d0d12;color:#fff;font-family:system-ui;padding:40px;text-align:center}' +
-      '.logo{font-size:28px;font-weight:800;color:#ff6b35;margin-bottom:30px}' +
-      '.card{display:inline-block;background:#16161e;border:1px solid #222;border-radius:16px;padding:24px;margin:16px;vertical-align:top;max-width:350px}' +
-      '.card h3{color:#ff6b35;margin-bottom:12px;font-size:16px}.card p{color:#888;font-size:12px;margin-top:12px;line-height:1.5}' +
-      'img{border-radius:8px;background:#fff;padding:8px}' +
-      '.url{color:#2ecc71;font-size:13px;word-break:break-all;margin-top:8px;font-family:monospace}</style></head><body>' +
-      '<div class="logo">eSE - Compartir</div>' +
-      '<div class="card"><h3> Acceso directo</h3><p>Escanea para abrir eSE ahora</p>' +
-      '<img src="' + qrImg + '" width="250" height="250"><div class="url">' + qrTarget + '</div></div>' +
-      '<div class="card"><h3> Descargar acceso remoto</h3><p>Escanea para guardar eSE_Remote.html<br>Funciona siempre, sin importar la URL del tunnel</p>' +
-      '<img src="' + remoteQr + '" width="250" height="250"><div class="url">Archivo auto-redirect permanente</div></div>' +
-      '</body></html>';
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(qrPage);
+    res.writeHead(302, {
+      Location: url.pathname === '/qr' ? '/connect' : appPage.appDestination(url),
+      'Cache-Control': 'no-store',
+      'Referrer-Policy': 'no-referrer'
+    });
+    res.end();
     return true;
   }
 

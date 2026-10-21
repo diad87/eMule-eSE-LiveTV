@@ -8,6 +8,39 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
+// Package-level smoke test. Keep it before subsystem initialization so it
+// proves the executable can load its embedded modules and exits deterministically.
+if (process.argv.includes('--selftest')) {
+  // Self-test exceptions must fail the process instead of using the dashboard's
+  // long-running error logger, which intentionally keeps normal sessions alive.
+  process.removeAllListeners('uncaughtException');
+  const bindPolicy = require('./dashboard_bind');
+  const loopback = bindPolicy.normalizeBindHost(undefined);
+  const local = bindPolicy.validateBindConfiguration(loopback, false);
+  const unsafeRemote = bindPolicy.validateBindConfiguration('0.0.0.0', false);
+  if (require('./emule_web_port').resolveWebPort({ ESE_EMULE_WEB_PORT: '49383' }) !== 49383 ||
+      typeof require('./dashboard_endpoint').publishEndpoint !== 'function' ||
+      typeof require('./runtime_dir').get !== 'function') throw new Error('Packaged startup modules unavailable');
+  if (loopback !== '127.0.0.1' || !local.ok || unsafeRemote.ok) {
+    console.error('eSE dashboard self-test: FAIL');
+    process.exit(1);
+  }
+  // Verify the packaged UI assets and new backend dependencies without opening
+  // sockets, starting eMule or reading/changing the user's runtime state.
+  const metadata = require('./movie_metadata');
+  const partMetadata = require('./part_metadata');
+  if (typeof metadata.createMetadataService !== 'function' || typeof partMetadata.parsePartMetadata !== 'function') {
+    throw new Error('Packaged metadata modules are unavailable');
+  }
+  const bundle = fs.readFileSync(path.join(__dirname, '_player_bundle.js'), 'utf8');
+  new (require('vm').Script)(bundle, { filename: '_player_bundle.js' });
+  if (!bundle.includes('function stopCinemaPlayback()') || !bundle.includes('function stopSmartPlay()')) {
+    throw new Error('Packaged player bundle is incomplete');
+  }
+  console.log('eSE dashboard self-test: PASS');
+  process.exit(0);
+}
+
 // ━━━ REFACTORED MODULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 const mediaResolver = require('./media_resolver');
 const emuleApi = require('./emule_api');
@@ -18,12 +51,16 @@ const thumbExtractor = require('./eSE-live/thumbnail_extractor');
 const lanDiscovery = require('./eSE-live/lan_discovery');  // Capa 2 mDNS LAN
 const updateNotifier = require('./eSE-live/update_notifier');  // D6 auto-update check
 const security = require('./security');
+const dashboardBind = require('./dashboard_bind');
 
+const TEST_MODE = process.env.ESE_TEST_MODE === '1';
 const requestedPort = Number.parseInt(process.env.ESE_PORT || '8080', 10);
-const PORT = Number.isInteger(requestedPort) && requestedPort > 0 && requestedPort <= 65535
+const PORT = Number.isInteger(requestedPort)
+  && (requestedPort > 0 || (TEST_MODE && requestedPort === 0))
+  && requestedPort <= 65535
   ? requestedPort
   : 8080;
-const TEST_MODE = process.env.ESE_TEST_MODE === '1';
+const BIND_HOST = dashboardBind.normalizeBindHost(process.env.ESE_BIND_HOST);
 
 // ━━━ AUTO-DETECT EMULE PATHS (portable across users/PCs) ━━━━━━━━━━━━━━━━━━━
 function resolveEmulePaths() {
@@ -54,6 +91,7 @@ console.log('[config] EMULE_INCOMING:', EMULE_INCOMING);
 const FFMPEG_PATH = utils.findFfmpeg();
 const TEMP_DIR = process.env.TEMP || process.env.TMP || require('os').tmpdir();
 if (!TEST_MODE) {
+  void require('./eSE-live/source_selector').refreshLoopbackDevice(FFMPEG_PATH);
   thumbExtractor.start(FFMPEG_PATH);
   lanDiscovery.start();  // Capa 2 mDNS LAN announce + listener
   updateNotifier.start();  // D6: poll GitHub releases every 6 h, surface to dashboard
@@ -78,7 +116,6 @@ function getDownloads() { return mediaResolver.listDownloads(EMULE_TEMP); }
 
 function loadSettings() { return utils.loadSettings(SETTINGS_FILE); }
 function saveSettings(s) { return utils.saveSettings(s, SETTINGS_FILE); }
-function getDuration(file) { return utils.getDuration(file, FFMPEG_PATH); }
 function escapeHtml(s) { return utils.escapeHtml(s); }
 function cleanTitle(f) { return utils.cleanTitle(f); }
 
@@ -125,6 +162,7 @@ const appPage      = require('./pages/app_page');
 const mainPage     = require('./pages/main_page');
 const explorePage  = require('./pages/explore_page');
 const mylistPage   = require('./pages/mylist_page');
+const notFoundPage = require('./pages/not_found_page');
 
 //     Routes (API handlers)                                                  
 const moviesRoutes   = require('./routes/movies_routes');
@@ -170,6 +208,7 @@ security.init({ tunnel });
 
 // Wire page modules with shared context
 const _pagesCtx = {
+  bindHost: BIND_HOST,
   PORT, tunnel, escapeHtml, cleanTitle, getDownloads, getCompletedFiles,
   HW_ENCODER,
   __dirname
@@ -183,16 +222,17 @@ explorePage.init(_pagesCtx);
 mylistPage.init(_pagesCtx);
 
 const _routesCtx = {
-  PORT, FFMPEG_PATH, EMULE_INCOMING, TEMP_DIR, HW_ENCODER, HW_ENCODER_OPTS,
+  PORT, FFMPEG_PATH, EMULE_INCOMING, EMULE_TEMP, TEMP_DIR, HW_ENCODER, HW_ENCODER_OPTS,
   CACHE_DIR,
   activeStreams,
   tunnel, cleanup,
   loadSettings, saveSettings,
-  getDownloads, getCompletedFiles, resolveMediaFile, getDuration,
+  getDownloads, getCompletedFiles, resolveMediaFile,
   emuleLogin: (p, cb) => emuleApi.emuleLogin(p, cb),
   emuleSearch, emuleDownload, emuleTransferAction, emuleAddEd2kLink,
   emuleRequest,
   getSession: () => emuleApi.getSession(),
+  getAuthStatus: () => emuleApi.getAuthStatus(),
   proxyOMDB, fetchAndCacheMovie,
   security,
   __dirname,
@@ -286,11 +326,11 @@ async function fetchOne(url, label){
 async function load(){
   const st=document.getElementById('status'); st.textContent='loading...';
   let items=[];
-  if(src==='emu')  items = await fetchOne('http://localhost:4711/api/live/log?n=200');
+  if(src==='emu')  items = await fetchOne('http://localhost:${emuleApi.EMULE_WS_PORT}/api/live/log?n=200');
   else if(src==='ese') items = await fetchOne('/api/ese/log?n=200');
   else {
     const [e,s] = await Promise.all([
-      fetchOne('http://localhost:4711/api/live/log?n=200', '[emu]'),
+      fetchOne('http://localhost:${emuleApi.EMULE_WS_PORT}/api/live/log?n=200', '[emu]'),
       fetchOne('/api/ese/log?n=200', '[ese]')]);
     items = e.concat(s).sort();
   }
@@ -360,12 +400,29 @@ load(); startTimer();
   }
 
   // 404 fallback
-  res.writeHead(404); res.end('Not found');
+  if (url.pathname.startsWith('/api/')) {
+    res.writeHead(404); res.end('Not found');
+  } else {
+    res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(notFoundPage.render());
+  }
 });
 
-server.listen(PORT, () => {
+const bindConfiguration = dashboardBind.validateBindConfiguration(
+  BIND_HOST, security.isReady());
+if (!bindConfiguration.ok) {
+  console.error('[security] Refusing dashboard startup: ' + bindConfiguration.error);
+  process.exit(78);
+}
+
+dashboardBind.listenDashboard(server, PORT, BIND_HOST, () => {
+  const listening = server.address();
+  const listeningPort = listening && listening.port ? listening.port : PORT;
+  if (process.env.ESE_DASHBOARD_ENDPOINT_FILE) {
+    require('./dashboard_endpoint').publishEndpoint(process.env.ESE_DASHBOARD_ENDPOINT_FILE, listeningPort);
+  }
   console.log('');
-  console.log('  eSE v6.2 - http://localhost:' + PORT);
+  console.log('  eSE v9.1.0-beta.2 - http://' + BIND_HOST + ':' + listeningPort);
   console.log('  ffmpeg: ' + FFMPEG_PATH);
   console.log('');
 
@@ -373,9 +430,11 @@ server.listen(PORT, () => {
   // the P2P port mappings; remote dashboard access requires an explicit,
   // authenticated LAN/overlay/manual-forwarding setup.
   if (!TEST_MODE && security.isReady()) {
-    console.log('[security] Dashboard remote exposure requires explicit setup');
+    console.log(bindConfiguration.remote
+      ? '[security] Explicit authenticated remote dashboard binding enabled'
+      : '[security] Dashboard restricted to loopback');
   } else {
-    console.log('[security] Remote exposure disabled: missing access token');
+    console.log('[security] Dashboard restricted to loopback');
   }
 });
 

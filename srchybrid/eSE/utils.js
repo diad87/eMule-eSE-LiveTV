@@ -4,7 +4,6 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 
@@ -100,6 +99,11 @@ function findFileRecursive(dir, filename) {
 }
 
 function findFfmpeg() {
+  // pkg's __dirname is a read-only snapshot; portable binaries live beside the executable.
+  if (process.pkg) {
+    const portable = path.join(path.dirname(process.execPath), 'ffmpeg.exe');
+    if (fs.existsSync(portable)) return portable;
+  }
   // 1. Look in the current user's WinGet packages (dynamic, cross-user)
   try {
     const userProfile = process.env.USERPROFILE || process.env.HOME || '';
@@ -126,41 +130,6 @@ function findFfmpeg() {
 
   // 4. Fallback: rely on system PATH
   return 'ffmpeg';
-}
-
-function detectHwEncoder(ffmpegPath) {
-  let encoder = 'libx264';
-  let opts = ['-preset', 'ultrafast', '-crf', '23', '-threads', '4'];
-  
-  try {
-    const out = execSync('"' + ffmpegPath + '" -hide_banner -encoders 2>&1', { timeout: 5000 }).toString();
-    if (out.includes('h264_nvenc')) {
-      encoder = 'h264_nvenc';
-      opts = ['-preset', 'p1', '-rc', 'vbr', '-cq', '28', '-b:v', '0'];
-      console.log('   GPU Encoder: NVIDIA NVENC (h264_nvenc)');
-    } else if (out.includes('h264_qsv')) {
-      encoder = 'h264_qsv';
-      opts = ['-preset', 'veryfast', '-global_quality', '25'];
-      console.log('   GPU Encoder: Intel QSV (h264_qsv)');
-    } else if (out.includes('h264_amf')) {
-      encoder = 'h264_amf';
-      opts = ['-quality', 'speed', '-rc', 'vbr_latency', '-qp_i', '25', '-qp_p', '28'];
-      console.log('   GPU Encoder: AMD AMF (h264_amf)');
-    } else {
-      console.log('   GPU Encoder: Software (libx264)');
-    }
-  } catch(e) {
-    console.log('   GPU Encoder: Software (libx264, detection failed)');
-  }
-  
-  return { encoder, opts };
-}
-
-function getDuration(file, ffmpegPath) {
-  try {
-    const p = ffmpegPath.replace('ffmpeg.exe', 'ffprobe.exe');
-    return parseFloat(execSync('"' + p + '" -v error -show_entries format=duration -of csv=p=0 "' + file + '"', { timeout: 5000 }).toString().trim()) || 0;
-  } catch(e) { return 0; }
 }
 
 // ─── FORMATTING ────────────────────────────────────────────────
@@ -265,8 +234,6 @@ function saveSettings(s, settingsFile) {
 module.exports = {
   findFfmpeg,
   findFileRecursive,
-  detectHwEncoder,
-  getDuration,
   fmtTime,
   escapeHtml,
   cleanTitle,

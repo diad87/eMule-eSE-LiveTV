@@ -16,6 +16,10 @@ function normalizedKey(value) {
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
+function canonicalStreamKey(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
 function canonicalCategory(value) {
   const key = normalizedKey(value);
   const aliases = {
@@ -48,6 +52,8 @@ function canonicalLanguage(value) {
  */
 function registerChannel(info) {
   if (!info || !info.streamKey) return;
+  const streamKey = canonicalStreamKey(info.streamKey);
+  if (!streamKey) return;
 
   // v7.1.9 — only one local broadcast at a time on this machine. Sweep any
   // stale isLocal entries (local_<ts>, obs_<ts>, external_<ts>, prior
@@ -56,13 +62,13 @@ function registerChannel(info) {
   // search() pipeline-active flag is global, not per-streamKey, so it kept
   // every stale local entry visible.
   for (const k of Object.keys(channels)) {
-    if (channels[k] && channels[k].isLocal && k !== info.streamKey) {
+    if (channels[k] && channels[k].isLocal && k !== streamKey) {
       delete channels[k];
     }
   }
 
-  channels[info.streamKey] = {
-    streamKey: info.streamKey,
+  channels[streamKey] = {
+    streamKey,
     title: info.title || 'Sin titulo',
     category: canonicalCategory(info.category),
     language: canonicalLanguage(info.language),
@@ -74,8 +80,22 @@ function registerChannel(info) {
     reports: 0,
     broadcasterReputation: 100,
     isLocal: true,
+    source: info.source || 'local',
     lastUpdate: Date.now()
   };
+}
+
+function syncEmuleChannels(items) {
+  const list = Array.isArray(items) ? items : [];
+  const liveKeys = new Set(list
+    .map(item => canonicalStreamKey(item && item.streamKey))
+    .filter(Boolean));
+  for (const key of Object.keys(channels)) {
+    if (channels[key] && channels[key].source === 'emule' && !liveKeys.has(key))
+      delete channels[key];
+  }
+  for (const item of list)
+    registerChannel({ ...item, source: 'emule' });
 }
 
 /**
@@ -83,7 +103,7 @@ function registerChannel(info) {
  * @param {string} streamKey
  */
 function unregisterChannel(streamKey) {
-  delete channels[streamKey];
+  delete channels[canonicalStreamKey(streamKey)];
 }
 
 /**
@@ -92,21 +112,24 @@ function unregisterChannel(streamKey) {
  */
 function addRemoteChannel(info) {
   if (!info || !info.streamKey) return;
+  const streamKey = canonicalStreamKey(info.streamKey);
+  if (!streamKey) return;
   const normalizedInfo = {
     ...info,
+    streamKey,
     category: canonicalCategory(info.category),
     language: canonicalLanguage(info.language)
   };
-  if (channels[info.streamKey]) {
+  if (channels[streamKey]) {
     // v7.1.9 — preserve the original `started` across updates. The C++ Kad
     // side doesn't emit a stable start timestamp; each poll passed
     // new Date().toISOString() through, resetting uptime to "0min" on
     // every refresh. Honor the existing one if we already have it.
     const preserved = { lastUpdate: Date.now() };
-    if (channels[info.streamKey].started) preserved.started = channels[info.streamKey].started;
-    Object.assign(channels[info.streamKey], normalizedInfo, preserved);
+    if (channels[streamKey].started) preserved.started = channels[streamKey].started;
+    Object.assign(channels[streamKey], normalizedInfo, preserved);
   } else {
-    channels[info.streamKey] = { ...normalizedInfo, isLocal: false, lastUpdate: Date.now() };
+    channels[streamKey] = { ...normalizedInfo, isLocal: false, lastUpdate: Date.now() };
   }
 }
 
@@ -122,7 +145,6 @@ function addRemoteChannel(info) {
  * @returns {Array} Matching channels with rating info
  */
 function search(filters) {
-  const f = filters || {};
   let results = Object.values(channels);
 
   // Prune stale channels (no update in 5 min for remote, check pipeline/external for local)
@@ -160,12 +182,21 @@ function search(filters) {
     return (now - ch.lastUpdate) < 300000;
   });
 
+  return filterChannels(results, filters, now);
+}
+
+// Apply the same filters and ordering to a merged local/Kad directory without
+// registering channels, pruning discovery state, or starting a media pipeline.
+function filterChannels(items, filters, now = Date.now()) {
+  const f = filters || {};
+  let results = (Array.isArray(items) ? items : []).filter(ch => ch && typeof ch === 'object');
+
   // Text search
   if (f.query) {
-    const q = f.query.toLowerCase();
+    const q = normalizedKey(f.query);
     results = results.filter(ch =>
-      (ch.title || '').toLowerCase().includes(q) ||
-      (ch.category || '').toLowerCase().includes(q)
+      normalizedKey(ch.title).includes(q) ||
+      normalizedKey(ch.category).includes(q)
     );
   }
 
@@ -189,10 +220,12 @@ function search(filters) {
 
   // Calculate ratings
   results = results.map(ch => {
+    const started = channelStartTime(ch);
+    const uptimeMinutes = started ? Math.max(0, Math.floor((now - started) / 60000)) : 0;
     const r = rating.calculateRating({
       viewers: ch.viewers || 0,
       bitrate: ch.bitrate || 0,
-      uptimeMinutes: Math.floor((now - new Date(ch.started).getTime()) / 60000),
+      uptimeMinutes,
       meshHealth: ch.meshHealth || 50,
       reports: ch.reports || 0,
       broadcasterReputation: ch.broadcasterReputation || 50
@@ -200,13 +233,15 @@ function search(filters) {
 
     return {
       ...ch,
+      category: canonicalCategory(ch.category),
+      language: canonicalLanguage(ch.language),
       rating: r.score,
       ratingBreakdown: r.breakdown,
       experience: r.experience,
       experienceEmoji: r.emoji,
       experienceBars: r.bars,
       qualityLabel: rating.qualityLabel(ch.bitrate || 0),
-      uptimeMinutes: Math.floor((now - new Date(ch.started).getTime()) / 60000)
+      uptimeMinutes
     };
   });
 
@@ -222,10 +257,15 @@ function search(filters) {
   } else if (sortBy === 'viewers') {
     results.sort((a, b) => (b.viewers || 0) - (a.viewers || 0));
   } else if (sortBy === 'newest') {
-    results.sort((a, b) => new Date(b.started) - new Date(a.started));
+    results.sort((a, b) => channelStartTime(b) - channelStartTime(a));
   }
 
   return results;
+}
+
+function channelStartTime(channel) {
+  const time = new Date(channel.started || (Number(channel.startedAt) * 1000) || 0).getTime();
+  return Number.isFinite(time) && time > 0 ? time : 0;
 }
 
 /**
@@ -244,8 +284,11 @@ module.exports = {
   registerChannel,
   unregisterChannel,
   addRemoteChannel,
+  syncEmuleChannels,
   search,
+  filterChannels,
   getCount,
+  canonicalStreamKey,
   canonicalCategory,
   canonicalLanguage
 };

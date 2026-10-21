@@ -3,6 +3,7 @@ const fs           = require('fs');
 const path         = require('path');
 const aiAssistant  = require('../ai_assistant');
 const utils         = require('../utils');
+const mediaResolver = require('../media_resolver');
 
 let _ctx = {};
 
@@ -36,6 +37,15 @@ function sendBodyError(res, err) {
   return sendJson(res, 400, { success: false, error: 'Invalid JSON' });
 }
 
+function loginFromServerSettings(password, res) {
+  // A redacted settings field is a display marker, never a credential.
+  const explicit = typeof password === 'string' && password !== '' && password !== '********' ? password : undefined;
+  _ctx.emuleLogin(explicit, (err, session) => {
+    sendJson(res, 200, { success: !err, session: session || null,
+      error: err ? err.message : null, reason: err ? err.reason || 'invalid_login_response' : null });
+  });
+}
+
 function handle(url, req, res) {
   // Settings
   if (url.pathname === '/api/settings' && req.method === 'GET') {
@@ -61,34 +71,29 @@ function handle(url, req, res) {
   if (!url.pathname.startsWith('/api/emule/')) return false;
 
   if (url.pathname === '/api/emule/login') {
-    const password = url.searchParams.get('p') || _ctx.loadSettings().emulePassword || '';
-    _ctx.emuleLogin(password, (err, session) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: !err, session: session || null, error: err ? err.message : null }));
-    });
+    if (req.method === 'POST') {
+      readJsonBody(req, (err, body) => {
+        if (err) return sendBodyError(res, err);
+        if (body.password !== undefined && typeof body.password !== 'string') return sendJson(res, 400, { success: false, error: 'Invalid password type' });
+        loginFromServerSettings(body.password, res);
+      });
+    } else if (req.method === 'GET') loginFromServerSettings(url.searchParams.get('p'), res);
+    else { res.setHeader('Allow', 'GET, POST'); sendJson(res, 405, { success: false, error: 'method_not_allowed' }); }
     return true;
   }
 
   if (url.pathname === '/api/emule/status') {
     const session = _ctx.getSession();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ loggedIn: !!session, session }));
+    const auth = _ctx.getAuthStatus ? _ctx.getAuthStatus() : {};
+    sendJson(res, 200, { loggedIn: !!session, session, reason: auth.reason || null,
+      message: auth.message || '', retrying: !!auth.retrying, retryAfterMs: auth.retryAfterMs || 0 });
     return true;
   }
 
   if (url.pathname === '/api/emule/resync' && req.method === 'POST') {
     // Fuerza un re-login con la password fresca de settings.json (o env var).
     // Útil cuando el usuario cierra eMule, lo reabre, y la sesión vieja murió.
-    const pw = _ctx.loadSettings().emulePassword || '';
-    _ctx.emuleLogin(pw, (err, session) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        success: !err,
-        session: session || null,
-        error:   err ? err.message  : null,
-        reason:  err ? (err.reason || null) : null
-      }));
-    });
+    loginFromServerSettings(undefined, res);
     return true;
   }
 
@@ -102,18 +107,12 @@ function handle(url, req, res) {
       });
     };
     if (!_ctx.getSession()) {
-      const pw = _ctx.loadSettings().emulePassword;
-      if (pw) {
-        _ctx.emuleLogin(pw, (err) => {
-          if (err) {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ success: false, results: [], error: err.message, reason: err.reason || null }));
-          } else doSearch();
-        });
-      } else {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: false, results: [], error: 'No eMule password configured. Go to Settings.' }));
-      }
+      _ctx.emuleLogin(undefined, (err) => {
+        if (err) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, results: [], error: err.message, reason: err.reason || null }));
+        } else doSearch();
+      });
     } else doSearch();
     return true;
   }
@@ -174,27 +173,12 @@ function handle(url, req, res) {
   }
 
   if (url.pathname === '/api/emule/downloads') {
-    const EMULE_TEMP = path.join(path.dirname(_ctx.EMULE_INCOMING), 'Temp');
+    const EMULE_TEMP = _ctx.EMULE_TEMP || path.join(path.dirname(_ctx.EMULE_INCOMING), 'Temp');
     try {
-      const partFiles = fs.readdirSync(EMULE_TEMP).filter(f => /^\d+\.part$/.test(f));
-      const downloads = [];
-      for (const pf of partFiles) {
-        const metFile = path.join(EMULE_TEMP, pf + '.met');
-        const partPath = path.join(EMULE_TEMP, pf);
-        if (fs.existsSync(metFile)) {
-          const metText = fs.readFileSync(metFile).toString('latin1');
-          const fnMatch = metText.match(/[^\x00-\x1F\x7F-\x9F]{5,}\.(avi|mkv|mp4|wmv|mov|webm|flv)/i);
-          const fileName = fnMatch ? fnMatch[0] : pf;
-          const stat = fs.statSync(partPath);
-          const isActive = (Date.now() - stat.mtimeMs) < 30000;
-          downloads.push({ partFile: pf, fileName, sizeMB: Math.round(stat.size / (1024 * 1024)), sizeBytes: stat.size, partPath, lastModified: stat.mtimeMs, active: isActive });
-        }
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(downloads));
+      const downloads = mediaResolver.listDownloads(EMULE_TEMP, { strict: true });
+      sendJson(res, 200, downloads);
     } catch(e) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end('[]');
+      sendJson(res, 503, { error: 'downloads_unavailable', message: 'No se puede leer la carpeta de descargas de eMule.' });
     }
     return true;
   }
@@ -308,8 +292,7 @@ function handle(url, req, res) {
     };
 
     if (!_ctx.getSession()) {
-      const pw = _ctx.loadSettings().emulePassword || '';
-      _ctx.emuleLogin(pw, (err) => {
+      _ctx.emuleLogin(undefined, (err) => {
         if (err) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: false, results: [], error: err.message, reason: err.reason || null }));

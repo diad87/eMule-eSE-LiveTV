@@ -131,7 +131,7 @@
     var poster = (m.Poster && m.Poster !== 'N/A') ? sanitizeURL(m.Poster) : '';
     var title = escapeHTML(m.Title || 'Sin titulo');
     var year = escapeHTML(m.Year || '');
-    var imdbId = escapeAttr(m.imdbID || '');
+    var imdbId = escapeAttr(m.catalogId || m.imdbID || '');
     var safeTitle = escapeAttr(m.Title || 'Sin titulo');
 
     return '<div class="card" onclick="showMovieDetail(\'' + imdbId + '\',null,\'' + safeTitle + '\')">' +
@@ -152,7 +152,7 @@
     var title = escapeHTML(m.Title || '');
     var year = escapeHTML(m.Year || '');
     var type = escapeHTML(m.Type || '');
-    var imdb = escapeAttr(m.imdbID || '');
+    var imdb = escapeAttr(m.catalogId || m.imdbID || '');
     var safe = escapeAttr(m.Title || '');
 
     return '<div class="search-suggestion" onclick="toggleSearchOverlay();showMovieDetail(\'' + imdb + '\',null,\'' + safe + '\')">' +

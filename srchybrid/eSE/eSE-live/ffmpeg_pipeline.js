@@ -6,9 +6,8 @@
  */
 'use strict';
 
-const { spawn, execSync } = require('child_process');
-
-// spawn & execSync imported above
+const { spawn } = require('child_process');
+const { runFile } = require('../bounded_process');
 const path = require('path');
 const fs = require('fs');
 const sourceSelector = require('./source_selector');
@@ -167,13 +166,13 @@ function stop() {
   // On Windows SIGTERM is unreliable — use taskkill /F
   try {
     if (process.platform === 'win32' && pid) {
-      try {
-        execSync('taskkill /F /T /PID ' + pid, { stdio: 'ignore' });
-        console.log('[eSE Live] taskkill sent to PID', pid);
-      } catch (e) {
-        // Process may already be dead
-        console.log('[eSE Live] taskkill failed (process may be gone):', e.message);
-      }
+      void runFile(
+        'taskkill',
+        ['/F', '/T', '/PID', String(pid)],
+        { timeoutMs: 3000, maxOutputBytes: 256 * 1024 })
+        .then(() => console.log('[eSE Live] taskkill sent to PID', pid))
+        .catch(e => console.log(
+          '[eSE Live] taskkill failed (process may be gone):', e.message));
     } else {
       ffmpegProcess.kill('SIGTERM');
     }
@@ -188,7 +187,11 @@ function stop() {
     try {
       if (proc && !proc.killed && pid) {
         if (process.platform === 'win32') {
-          execSync('taskkill /F /T /PID ' + pid, { stdio: 'ignore' });
+          void runFile(
+            'taskkill',
+            ['/F', '/T', '/PID', String(pid)],
+            { timeoutMs: 3000, maxOutputBytes: 256 * 1024 })
+            .catch(() => {});
         } else {
           proc.kill('SIGKILL');
         }

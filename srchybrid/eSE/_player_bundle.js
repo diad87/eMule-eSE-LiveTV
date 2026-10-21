@@ -134,7 +134,7 @@
     var poster = (m.Poster && m.Poster !== 'N/A') ? sanitizeURL(m.Poster) : '';
     var title = escapeHTML(m.Title || 'Sin titulo');
     var year = escapeHTML(m.Year || '');
-    var imdbId = escapeAttr(m.imdbID || '');
+    var imdbId = escapeAttr(m.catalogId || m.imdbID || '');
     var safeTitle = escapeAttr(m.Title || 'Sin titulo');
 
     return '<div class="card" onclick="showMovieDetail(\'' + imdbId + '\',null,\'' + safeTitle + '\')">' +
@@ -155,7 +155,7 @@
     var title = escapeHTML(m.Title || '');
     var year = escapeHTML(m.Year || '');
     var type = escapeHTML(m.Type || '');
-    var imdb = escapeAttr(m.imdbID || '');
+    var imdb = escapeAttr(m.catalogId || m.imdbID || '');
     var safe = escapeAttr(m.Title || '');
 
     return '<div class="search-suggestion" onclick="toggleSearchOverlay();showMovieDetail(\'' + imdb + '\',null,\'' + safe + '\')">' +
@@ -227,6 +227,16 @@ let lastBitrateCheck = 0;
 let currentBitrate = 0;
 
 var video = document.getElementById('video-player');
+var mainVideo = video;
+var mainSeekRequest = 0;
+var mainSeek = document.getElementById('seek-container');
+mainSeek.setAttribute('role', 'slider');
+mainSeek.setAttribute('tabindex', '0');
+mainSeek.setAttribute('aria-label', 'Posición de reproducción');
+mainSeek.setAttribute('aria-valuemin', '0');
+mainSeek.setAttribute('aria-valuemax', '0');
+mainSeek.setAttribute('aria-valuenow', '0');
+mainSeek.setAttribute('aria-disabled', 'true');
 
 // ── Utilidades ─────────────────────────────────────────────────────────────────
 function fmtT(s) {
@@ -261,12 +271,18 @@ function toggleFS() {
 }
 
 // ── Listeners del elemento <video> principal ───────────────────────────────────
-video.addEventListener('timeupdate', function () {
-  var total = estTotalSec || video.duration || 0;
+mainVideo.addEventListener('timeupdate', function () {
+  if (video !== mainVideo) return;
+  var total = estTotalSec || (Number.isFinite(mainVideo.duration) ? mainVideo.duration : 0);
   if (total > 0) {
     document.getElementById('progress-bar-inner').style.width = (video.currentTime / total * 100) + '%';
     document.getElementById('time-display').textContent = fmtT(video.currentTime) + ' / ' + fmtT(total);
   }
+  if (!total) document.getElementById('time-display').textContent = fmtT(mainVideo.currentTime) + ' / Duración desconocida';
+  mainSeek.setAttribute('aria-disabled', String(!total));
+  mainSeek.setAttribute('aria-valuemax', String(total || 0));
+  mainSeek.setAttribute('aria-valuenow', String(total ? Math.min(total, mainVideo.currentTime) : 0));
+  mainSeek.setAttribute('aria-valuetext', total ? fmtT(mainVideo.currentTime) + ' de ' + fmtT(total) : 'Duración desconocida');
   if (video.buffered.length > 0 && estTotalSec > 0) {
     var buffEnd = video.buffered.end(video.buffered.length - 1);
     document.getElementById('buffer-bar').style.width = (buffEnd / estTotalSec * 100) + '%';
@@ -274,18 +290,31 @@ video.addEventListener('timeupdate', function () {
   }
 });
 
-video.addEventListener('play', function () { document.getElementById('play-btn').textContent = '⏸'; });
-video.addEventListener('pause', function () { document.getElementById('play-btn').textContent = '▶'; });
+mainVideo.addEventListener('play', function () { if (video === mainVideo) { var b = document.getElementById('play-btn'); b.textContent = '⏸'; b.setAttribute('aria-label', 'Pausar'); } });
+mainVideo.addEventListener('pause', function () { if (video === mainVideo) { var b = document.getElementById('play-btn'); b.textContent = '▶'; b.setAttribute('aria-label', 'Reproducir'); } });
+mainVideo.addEventListener('playing', function() { if (video === mainVideo) document.getElementById('player-status').textContent = 'Reproduciendo'; });
+mainVideo.addEventListener('ended', function() { if (video === mainVideo) document.getElementById('player-status').textContent = 'Reproducción finalizada'; });
 
 // ── Seek bar ───────────────────────────────────────────────────────────────────
-document.getElementById('seek-container').addEventListener('click', function (e) {
+mainSeek.addEventListener('click', function (e) {
   var rect = e.currentTarget.getBoundingClientRect();
-  var pct = (e.clientX - rect.left) / rect.width;
-  // BUG-047 FIX: clamp pct and validate target
-  pct = Math.max(0, Math.min(1, pct));
-  var totalSec = estTotalSec || video.duration || 0;
-  var target = pct * totalSec;
-  if (!isFinite(target) || target < 0) return;
+  var total = estTotalSec || (Number.isFinite(mainVideo.duration) ? mainVideo.duration : 0);
+  if (rect.width > 0) seekMainTo((e.clientX - rect.left) / rect.width * total);
+});
+mainSeek.addEventListener('keydown', function(e) {
+  var pos = mainVideo.currentTime || 0;
+  var total = estTotalSec || (Number.isFinite(mainVideo.duration) ? mainVideo.duration : 0);
+  var targets = { ArrowLeft: pos - 10, ArrowDown: pos - 10, ArrowRight: pos + 10, ArrowUp: pos + 10,
+    PageDown: pos - 60, PageUp: pos + 60, Home: 0, End: total };
+  if (Object.prototype.hasOwnProperty.call(targets, e.key)) { e.preventDefault(); seekMainTo(targets[e.key]); }
+});
+function seekMainTo(target) {
+  if (video !== mainVideo) return;
+  var generation = typeof legacyPlaybackGeneration === 'number' ? legacyPlaybackGeneration : 0;
+  var request = ++mainSeekRequest;
+  var totalSec = estTotalSec || (Number.isFinite(video.duration) ? video.duration : 0);
+  if (!totalSec || !Number.isFinite(target)) return;
+  target = Math.max(0, Math.min(Math.max(0, totalSec - 1), target));
 
   // Check if target is within buffered range
   var isBuffered = false;
@@ -301,7 +330,7 @@ document.getElementById('seek-container').addEventListener('click', function (e)
   if (isBuffered) {
     video.currentTime = target;
   } else {
-    var fileName = window._cinemaFileName || window._currentFileName;
+    var fileName = window._currentFileName;
     if (!fileName) return;
 
     var bufLabel = document.getElementById('buffer-label');
@@ -313,6 +342,7 @@ document.getElementById('seek-container').addEventListener('click', function (e)
       if (bufLabel) bufLabel.textContent = 'Solicitando seek a ' + fmtT(target) + '...';
 
       fetch(seekUrl).then(function(r) { return r.json(); }).then(function(data) {
+        if (video !== mainVideo || generation !== legacyPlaybackGeneration || request !== mainSeekRequest) return;
         console.log('[Seek] Response:', data);
         if (bufLabel) bufLabel.textContent = 'eMule descargando part ' + data.targetPart + '/' + data.totalParts + ' — reiniciando stream...';
         window._cinemaSeekOffset = target;
@@ -321,6 +351,7 @@ document.getElementById('seek-container').addEventListener('click', function (e)
           switchStreamSeamless(q, Math.floor(target));
         }
       }).catch(function(err) {
+        if (video !== mainVideo || generation !== legacyPlaybackGeneration || request !== mainSeekRequest) return;
         console.log('[Seek] Error:', err);
         if (bufLabel) bufLabel.textContent = 'Error al solicitar seek';
       });
@@ -333,7 +364,7 @@ document.getElementById('seek-container').addEventListener('click', function (e)
       startCompletedMSE(fileName, q, Math.floor(target));
     }
   }
-});
+}
 
 // ── Cola MSE (Media Source Extensions) ────────────────────────────────────────
 var appendQueue = [];
@@ -345,6 +376,10 @@ function processAppendQueue() {
 
   isAppending = true;
   var chunk = appendQueue.shift();
+  var buffer = sourceBuffer;
+  var player = video;
+  var generation = typeof legacyPlaybackGeneration === 'number' ? legacyPlaybackGeneration : 0;
+  var request = typeof legacySwitchGeneration === 'number' ? legacySwitchGeneration : 0;
 
   // Remove old data to prevent QuotaExceeded
   try {
@@ -354,6 +389,7 @@ function processAppendQueue() {
         sourceBuffer.remove(video.buffered.start(0), removeEnd);
         // BUG-046 FIX: use {once:true} to prevent listener leak
         sourceBuffer.addEventListener('updateend', function () {
+          if (sourceBuffer !== buffer || video !== player || generation !== legacyPlaybackGeneration || request !== legacySwitchGeneration) return;
           doAppend(chunk);
         }, { once: true });
         return;
@@ -365,19 +401,27 @@ function processAppendQueue() {
 }
 
 function doAppend(chunk) {
+  var buffer = sourceBuffer;
+  var player = video;
+  var generation = typeof legacyPlaybackGeneration === 'number' ? legacyPlaybackGeneration : 0;
+  var request = typeof legacySwitchGeneration === 'number' ? legacySwitchGeneration : 0;
+  function current() { return sourceBuffer === buffer && video === player && generation === legacyPlaybackGeneration && request === legacySwitchGeneration; }
+  if (!buffer) return;
   try {
-    sourceBuffer.appendBuffer(chunk);
+    buffer.appendBuffer(chunk);
     // BUG-046 FIX: use {once:true} to prevent listener leak
-    sourceBuffer.addEventListener('updateend', function () {
+    buffer.addEventListener('updateend', function () {
+      if (!current()) return;
       isAppending = false;
 
       if (!userWantsPause && video.paused && video.buffered.length > 0 && video.buffered.end(0) > 0.5) {
-        video.muted = true;
-        video.play().then(function () { video.muted = false; }).catch(function () { });
+        player.play().catch(function () {
+          if (current()) document.getElementById('player-status').textContent = 'Pulsa Reproducir para iniciar el vídeo';
+        });
       }
 
       processAppendQueue();
-    });
+    }, { once: true });
   } catch (e) {
     isAppending = false;
     if (e.name === 'QuotaExceededError') {
@@ -386,13 +430,14 @@ function doAppend(chunk) {
         if (video.buffered.length > 0 && !sourceBuffer.updating) {
           sourceBuffer.remove(video.buffered.start(0), video.currentTime - 5);
           sourceBuffer.addEventListener('updateend', function onCleared() {
-            sourceBuffer.removeEventListener('updateend', onCleared);
+            buffer.removeEventListener('updateend', onCleared);
+            if (!current()) return;
             processAppendQueue();
-          });
+          }, { once: true });
         }
-      } catch (e2) { setTimeout(processAppendQueue, 500); }
+      } catch (e2) { setTimeout(function() { if (current()) processAppendQueue(); }, 500); }
     } else {
-      setTimeout(processAppendQueue, 100);
+      setTimeout(function() { if (current()) processAppendQueue(); }, 100);
     }
   }
 }
@@ -410,216 +455,212 @@ setInterval(function () {
 // ==== mse_engine.js ====
 // mse_engine.js — ABR automático, cambio de calidad, streaming MSE, playVideo
 
-// ── Estado ABR ─────────────────────────────────────────────────────────────────
+// ── Estado ABR y ciclo de vida del reproductor integrado ───────────────────────
 var autoABRInterval = null;
 var autoLevel = 0;
 var qualityLevels = ['480p', '720p', 'original'];
-var activeQualityStream = null; // Track what quality is currently streaming
+var activeQualityStream = null;
+var legacyPlaybackGeneration = 0;
+var legacySwitchGeneration = 0;
+var legacyTimers = [];
+var legacyListeners = [];
+var legacyVideo = null;
+var legacyObjectURL = null;
+function stopLegacyPlayback() {
+  ++legacyPlaybackGeneration;
+  ++legacySwitchGeneration;
+  if (autoABRInterval) clearInterval(autoABRInterval);
+  autoABRInterval = null;
+  legacyTimers.forEach(function(id) { clearTimeout(id); clearInterval(id); });
+  legacyTimers = [];
+  legacyListeners.forEach(function(remove) { remove(); });
+  legacyListeners = [];
+  if (abortController) { try { abortController.abort(); } catch (_) {} }
+  abortController = null;
+  pumpRunning = false;
+  appendQueue = [];
+  isAppending = false;
+  sourceBuffer = null;
+  mediaSource = null;
+  if (legacyVideo) {
+    try { legacyVideo.pause(); legacyVideo.removeAttribute('src'); legacyVideo.load(); } catch (_) {}
+    legacyVideo = null;
+  }
+  if (legacyObjectURL) { URL.revokeObjectURL(legacyObjectURL); legacyObjectURL = null; }
+  var loading = document.getElementById('loading');
+  if (loading) loading.classList.remove('active');
+}
+function legacyIsCurrent(generation, player) {
+  return generation === legacyPlaybackGeneration && video === player && legacyVideo === player;
+}
+function legacyLater(generation, player, callback, delay) {
+  var timer = setTimeout(function() {
+    legacyTimers = legacyTimers.filter(function(id) { return id !== timer; });
+    if (legacyIsCurrent(generation, player)) callback();
+  }, delay);
+  legacyTimers.push(timer);
+  return timer;
+}
+function legacyStatus(text) {
+  var status = document.getElementById('player-status');
+  if (status) status.textContent = text;
+}
+function legacyWait(signal, delay) {
+  return new Promise(function(resolve) {
+    function finish() { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve(); }
+    var timer = setTimeout(finish, delay);
+    if (signal.aborted) finish();
+    else signal.addEventListener('abort', finish, { once: true });
+  });
+}
 
-// ── ABR automático ─────────────────────────────────────────────────────────────
 function startAutoABR() {
   if (autoABRInterval) clearInterval(autoABRInterval);
   autoLevel = 0;
-
-  autoABRInterval = setInterval(function () {
-    if (video.buffered.length === 0) return;
-    var buffEnd = video.buffered.end(video.buffered.length - 1);
-    var bufferAhead = buffEnd - video.currentTime;
-
-    // BUG-044 FIX: Downgrade when buffer < 5s ahead
-    if (bufferAhead < 5 && autoLevel > 0) {
-      autoLevel--;
-      var newQ = qualityLevels[autoLevel];
-      console.log('[ABR] Buffer: ' + bufferAhead.toFixed(0) + 's ahead. Downgrading to ' + newQ);
-      activeQualityStream = newQ;
-      switchStreamSeamless(newQ, buffEnd);
-    }
-    // Upgrade when buffer > 30s ahead
-    else if (bufferAhead > 30 && autoLevel < qualityLevels.length - 1) {
-      autoLevel++;
-      var newQ = qualityLevels[autoLevel];
-      console.log('[ABR] Buffer: ' + bufferAhead.toFixed(0) + 's ahead. Upgrading to ' + newQ);
-      activeQualityStream = newQ;
-      switchStreamSeamless(newQ, buffEnd);
+  var generation = legacyPlaybackGeneration;
+  var player = video;
+  autoABRInterval = setInterval(function() {
+    if (!legacyIsCurrent(generation, player) || !player.buffered.length) return;
+    var end = player.buffered.end(player.buffered.length - 1);
+    var ahead = end - player.currentTime;
+    if (ahead < 5 && autoLevel > 0) {
+      --autoLevel; activeQualityStream = qualityLevels[autoLevel];
+      switchStreamSeamless(activeQualityStream, end);
+    } else if (ahead > 30 && autoLevel < qualityLevels.length - 1) {
+      ++autoLevel; activeQualityStream = qualityLevels[autoLevel];
+      switchStreamSeamless(activeQualityStream, end);
     }
   }, 5000);
 }
-
-// ── Cambio manual de calidad ───────────────────────────────────────────────────
-function changeQuality(q) {
-  if (autoABRInterval) { clearInterval(autoABRInterval); autoABRInterval = null; }
-
-  if (q === 'auto') {
-    currentQuality = 'auto';
-    // If already streaming, start auto logic from current buffer
-    if (currentPartNum && sourceBuffer) {
-      autoLevel = 0;
-      activeQualityStream = '480p';
-      switchStreamSeamless('480p', 0);
-      startAutoABR();
-    }
+function changeQuality(quality) {
+  if (autoABRInterval) clearInterval(autoABRInterval);
+  autoABRInterval = null;
+  currentQuality = quality;
+  if (!currentPartNum || !sourceBuffer) return;
+  if (quality === 'auto') {
+    autoLevel = 0; activeQualityStream = '480p';
+    switchStreamSeamless('480p', video.currentTime || 0);
+    startAutoABR();
   } else {
-    currentQuality = q;
-    activeQualityStream = q;
-    if (currentPartNum && sourceBuffer) {
-      // Switch in place: start from current buffer end
-      var bufEnd = 0;
-      if (video.buffered.length > 0) bufEnd = video.buffered.end(video.buffered.length - 1);
-      switchStreamSeamless(q, bufEnd);
-    }
+    activeQualityStream = quality;
+    var end = video.buffered.length ? video.buffered.end(video.buffered.length - 1) : video.currentTime || 0;
+    switchStreamSeamless(quality, end);
   }
 }
 
-// ── Cambio de calidad seamless ─────────────────────────────────────────────────
-// Keeps same MediaSource & SourceBuffer — no interruption!
+// Keep the same MediaSource when changing quality, but never let an old fetch
+// append into the next player or overwrite its status after any await boundary.
 async function switchStreamSeamless(quality, startFromSec) {
-  // Abort current stream
+  var generation = legacyPlaybackGeneration;
+  var request = ++legacySwitchGeneration;
+  var player = video;
+  var part = currentPartNum;
+  var buffer = sourceBuffer;
+  function current() { return legacyIsCurrent(generation, player) && request === legacySwitchGeneration && sourceBuffer === buffer; }
+  if (!buffer || !current()) return;
   if (abortController) abortController.abort();
+  var controller = abortController = new AbortController();
   pumpRunning = false;
-
-  // Kill server-side ffmpeg
-  await fetch('/api/stream/kill/' + currentPartNum).catch(function(){});
-
-  // Small delay to ensure ffmpeg is killed
-  await new Promise(function(r) { setTimeout(r, 300); });
-
-  // Clear pending queue
-  appendQueue = [];
-  isAppending = false;
-
-  document.getElementById('player-status').textContent = 'Cambiando a ' + quality + '...';
-
-  // Start new fetch from the right time position
-  abortController = new AbortController();
-  bytesReceived = 0;
-  lastBitrateCheck = Date.now();
-
   try {
-    var url = '/api/stream/data/' + currentPartNum + '?q=' + quality + '&ss=' + startFromSec.toFixed(1);
-    var response = await fetch(url, { signal: abortController.signal });
+    await fetch('/api/stream/kill/' + part, { signal: controller.signal }).catch(function() {});
+    if (!current()) return;
+    // An aborted wait resolves too, so closing does not retain an async task.
+    await legacyWait(controller.signal, 300);
+    if (!current()) return;
+    appendQueue = []; isAppending = false;
+    legacyStatus('Cambiando a ' + quality + '…');
+    bytesReceived = 0; lastBitrateCheck = Date.now();
+    var response = await fetch('/api/stream/data/' + part + '?q=' + encodeURIComponent(quality) + '&ss=' + Number(startFromSec).toFixed(1), { signal: controller.signal });
+    if (!current()) return;
+    if (!response.ok) throw new Error('No se han recibido datos del vídeo');
     var reader = response.body.getReader();
-    pumpRunning = true;
-
-    // fMP4 with empty_moov generates a new moov for each stream
-    // MSE handles this via the abort() method
-    if (sourceBuffer.updating) {
-      await new Promise(function(r) { sourceBuffer.addEventListener('updateend', r, {once:true}); });
+    if (buffer.updating) {
+      await new Promise(function(resolve) {
+        function finish() { buffer.removeEventListener('updateend', finish); controller.signal.removeEventListener('abort', finish); resolve(); }
+        buffer.addEventListener('updateend', finish, { once: true });
+        controller.signal.addEventListener('abort', finish, { once: true });
+      });
     }
-    sourceBuffer.abort();
-    sourceBuffer.timestampOffset = startFromSec;
-
-    async function pump() {
-      while (pumpRunning) {
-        var result;
-        try {
-          result = await reader.read();
-        } catch(e) {
-          if (e.name === 'AbortError') return;
-          throw e;
-        }
-        if (result.done) {
-          var checkDrain = setInterval(function () {
-            if (appendQueue.length === 0 && !isAppending) {
-              clearInterval(checkDrain);
-              document.getElementById('player-status').textContent = 'Streaming completo (' + quality + ')';
-            }
-          }, 200);
-          break;
-        }
-
-        // Track bitrate
-        bytesReceived += result.value.byteLength;
-        var now = Date.now();
-        var elapsed = (now - lastBitrateCheck) / 1000;
-        if (elapsed >= 1) {
-          currentBitrate = (bytesReceived * 8) / elapsed;
-          bytesReceived = 0;
-          lastBitrateCheck = now;
-        }
-
-        appendQueue.push(result.value);
-        processAppendQueue();
-
-        if (appendQueue.length > 5) {
-          await new Promise(function (r) { setTimeout(r, 100); });
-        }
+    if (!current()) { reader.cancel().catch(function() {}); return; }
+    buffer.abort(); buffer.timestampOffset = startFromSec;
+    pumpRunning = true;
+    while (current()) {
+      var result = await reader.read();
+      if (!current()) { reader.cancel().catch(function() {}); return; }
+      if (result.done) {
+        // Receiving all data is not evidence that the video has finished playing.
+        legacyStatus('Datos del vídeo recibidos');
+        break;
+      }
+      bytesReceived += result.value.byteLength;
+      var now = Date.now(); var elapsed = (now - lastBitrateCheck) / 1000;
+      if (elapsed >= 1) { currentBitrate = bytesReceived * 8 / elapsed; bytesReceived = 0; lastBitrateCheck = now; }
+      appendQueue.push(result.value); processAppendQueue();
+      if (appendQueue.length > 5) {
+        await legacyWait(controller.signal, 100);
       }
     }
-
-    pump().then(function() {
-      document.getElementById('player-status').textContent = 'Streaming (' + quality + ')';
-    }).catch(function (e) {
-      if (e.name !== 'AbortError') console.error('Stream error:', e);
-    });
-
-  } catch (e) {
-    if (e.name !== 'AbortError') console.error('Fetch error:', e);
+  } catch (error) {
+    if (current() && error.name !== 'AbortError') legacyStatus('No se ha podido cargar el vídeo. Vuelve a abrirlo para reintentar.');
   }
 }
 
-// ── Inicio de streaming desde archivo .part ────────────────────────────────────
 async function playVideo(partNum) {
+  if (typeof stopCinemaPlayback === 'function') stopCinemaPlayback();
+  else stopLegacyPlayback();
+  var player = document.getElementById('video-player');
+  if (!player) return;
+  video = player; legacyVideo = player;
+  var generation = legacyPlaybackGeneration;
+  var controller = abortController = new AbortController();
   currentPartNum = partNum;
+  userWantsPause = false;
+  estTotalSec = 0;
   var loading = document.getElementById('loading');
   loading.classList.add('active');
-  document.getElementById('loading-text').textContent = 'Preparando streaming...';
-  document.getElementById('loading-sub').textContent = 'Copiando datos y transcodificando';
-
+  document.getElementById('loading-text').textContent = 'Preparando vídeo…';
+  document.getElementById('loading-sub').textContent = 'Leyendo los datos disponibles';
   try {
-    var initRes = await fetch('/api/stream/start/' + partNum);
-    var initData = await initRes.json();
-    if (initData.error) throw new Error(initData.error);
-
-    estTotalSec = initData.estimatedTotalSec || 0;
-    document.getElementById('player-title').textContent = initData.fileName;
-    window._currentFileName = initData.fileName;
-    window._isPartFile = true; // streaming from .part file
-
+    var response = await fetch('/api/stream/start/' + partNum, { signal: controller.signal });
+    if (!legacyIsCurrent(generation, player)) return;
+    if (!response.ok) throw new Error('No se ha podido iniciar el vídeo');
+    var data = await response.json();
+    if (!legacyIsCurrent(generation, player)) return;
+    if (data.error) throw new Error(data.error);
+    var duration = Number(data.estimatedTotalSec);
+    estTotalSec = Number.isFinite(duration) && duration > 0 ? duration : 0;
+    document.getElementById('player-title').textContent = data.fileName;
+    window._currentFileName = data.fileName;
+    window._isPartFile = true;
     loading.classList.remove('active');
     document.getElementById('hero').style.display = 'none';
     document.getElementById('player-container').style.display = 'block';
-
-    // Setup MSE once
-    mediaSource = new MediaSource();
-    video.src = URL.createObjectURL(mediaSource);
-
-    mediaSource.addEventListener('sourceopen', function () {
-      sourceBuffer = mediaSource.addSourceBuffer('video/mp4; codecs="avc1.640029, mp4a.40.2"');
+    var source = mediaSource = new MediaSource();
+    legacyObjectURL = URL.createObjectURL(source);
+    player.src = legacyObjectURL;
+    source.addEventListener('sourceopen', function() {
+      if (!legacyIsCurrent(generation, player) || mediaSource !== source) return;
+      sourceBuffer = source.addSourceBuffer('video/mp4; codecs="avc1.640029, mp4a.40.2"');
       sourceBuffer.mode = 'segments';
-
-      // Check quality selector
-      var qSelect = document.getElementById('quality-select');
-      var selectedQ = qSelect ? qSelect.value : 'auto';
-      currentQuality = selectedQ;
-
-      if (selectedQ === 'auto') {
-        activeQualityStream = '480p';
-        switchStreamSeamless('480p', 0);
-        startAutoABR();
-      } else {
-        activeQualityStream = selectedQ;
-        switchStreamSeamless(selectedQ, 0);
+      var selector = document.getElementById('quality-select');
+      currentQuality = selector ? selector.value : 'auto';
+      activeQualityStream = currentQuality === 'auto' ? '480p' : currentQuality;
+      switchStreamSeamless(activeQualityStream, 0);
+      if (currentQuality === 'auto') startAutoABR();
+    }, { once: true });
+    var waiting = function() {
+      if (!legacyIsCurrent(generation, player)) return;
+      legacyStatus('Esperando datos…');
+      if (player.buffered.length && player.buffered.end(player.buffered.length - 1) > player.currentTime + 1) {
+        legacyLater(generation, player, function() { if (player.readyState < 3) player.currentTime += 0.1; }, 500);
       }
-    });
-
-    // Stall recovery
-    video.addEventListener('waiting', function () {
-      if (video.buffered.length > 0) {
-        var buffEnd = video.buffered.end(video.buffered.length - 1);
-        if (buffEnd > video.currentTime + 1) {
-          setTimeout(function () {
-            if (video.readyState < 3) {
-              video.currentTime = video.currentTime + 0.1;
-            }
-          }, 500);
-        }
-      }
-    });
-
-  } catch (e) {
+    };
+    player.addEventListener('waiting', waiting);
+    legacyListeners.push(function() { player.removeEventListener('waiting', waiting); });
+  } catch (error) {
+    if (!legacyIsCurrent(generation, player)) return;
     loading.classList.remove('active');
-    // BUG-045 FIX: non-blocking error toast instead of alert()
-    showErrorToast('Error: ' + e.message);
+    if (error.name !== 'AbortError') showErrorToast('Error: ' + error.message);
   }
 }
 
@@ -729,41 +770,91 @@ function copyTunnelUrl() {
 setTimeout(checkTunnelStatus, 1000);
 
 // ── Panel de ajustes ───────────────────────────────────────────────────────────
-function toggleSettings() {
-  var panel = document.getElementById('settings-panel');
-  if (panel) {
-    panel.remove();
-    return;
-  }
-
-  fetch('/api/settings').then(function(r) { return r.json(); }).then(function(s) {
-    renderSettingsPanel(s);
-  }).catch(function() {
-    renderSettingsPanel({});
-  });
+function settingsHeader() {
+  return '<div class="settings-header"><h2 id="settings-title">Ajustes</h2><button type="button" class="settings-close" aria-label="Cerrar ajustes" onclick="closeSettingsPanel()">&times;</button></div>';
 }
 
-function renderSettingsPanel(settings) {
-  var s = settings || {};
+function closeSettingsPanel() {
+  var panel = document.getElementById('settings-panel');
+  if (!panel) return;
+  if (panel._settingsAbort) panel._settingsAbort.abort();
+  document.removeEventListener('keydown', panel._settingsKeyHandler, true);
+  (panel._settingsBackground || []).forEach(function(item) { item.node.inert = item.inert; });
+  document.body.style.overflow = panel._previousOverflow;
+  panel.remove();
+  var invoker = panel._returnFocus;
+  if (!invoker || !invoker.isConnected || invoker === document.body) invoker = document.querySelector('[aria-label="Ajustes"]');
+  if (invoker && typeof invoker.focus === 'function') invoker.focus({ preventScroll: true });
+}
+
+function createSettingsPanel() {
   var panel = document.createElement('div');
   panel.id = 'settings-panel';
   panel.className = 'settings-panel active';
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'true');
+  panel.setAttribute('aria-labelledby', 'settings-title');
+  panel.setAttribute('tabindex', '-1');
+  panel._returnFocus = document.activeElement;
+  panel._previousOverflow = document.body.style.overflow || '';
+  panel._settingsBackground = Array.from(document.body.children).map(function(node) { return { node: node, inert: node.inert }; });
+  panel._settingsBackground.forEach(function(item) { item.node.inert = true; });
+  panel.innerHTML = settingsHeader() + '<div class="settings-section" role="status">Cargando ajustes…</div>';
+  document.body.appendChild(panel);
+  document.body.style.overflow = 'hidden';
+  panel._settingsKeyHandler = function(event) {
+    if (document.getElementById('settings-panel') !== panel) return;
+    if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); closeSettingsPanel(); return; }
+    if (event.key !== 'Tab') return;
+    event.stopImmediatePropagation();
+    var items = Array.from(panel.querySelectorAll('a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]')).filter(function(node) { return node.tabIndex >= 0 && !node.hidden && node.getClientRects().length; });
+    var first = items[0], last = items[items.length - 1];
+    if (!first) { event.preventDefault(); panel.focus(); }
+    else if (!panel.contains(document.activeElement) || document.activeElement === panel) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
+    else if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  };
+  document.addEventListener('keydown', panel._settingsKeyHandler, true);
+  panel.querySelector('.settings-close').focus({ preventScroll: true });
+  return panel;
+}
 
-  panel.innerHTML = '<div class="settings-header"><h2>Ajustes</h2><button class="settings-close" onclick="document.getElementById(\'settings-panel\').remove()">&times;</button></div>' +
-    '<div class="settings-section"><h3>Acceso Remoto</h3>' +
-    '<div class="setting-row"><span class="setting-label">IP Pública (P2P)</span><span id="set-public-ip" class="setting-value" style="color:#2ecc71;font-family:monospace;cursor:pointer;font-size:12px" onclick="navigator.clipboard.writeText(this.textContent);showNotification(\'IP copiada\')">Cargando...</span></div>' +
-    '<div class="setting-row"><span class="setting-label">Acceso público</span><span id="set-tunnel-url" class="setting-value" style="color:#888;font-family:monospace;font-size:12px;word-break:break-all">UPnP / LAN solamente</span></div>' +
-    '<div class="setting-row"><span class="setting-label">Canal ntfy</span><span id="set-ntfy-url" class="setting-value" style="color:#888;font-family:monospace;cursor:pointer;font-size:11px;word-break:break-all" onclick="navigator.clipboard.writeText(this.textContent);showNotification(\'URL copiada\')">—</span></div>' +
+function toggleSettings() {
+  var panel = document.getElementById('settings-panel');
+  if (panel) {
+    closeSettingsPanel();
+    return;
+  }
+  panel = createSettingsPanel();
+  panel._settingsAbort = new AbortController();
+  fetch('/api/settings', { signal: panel._settingsAbort.signal }).then(function(r) { if (!r.ok) throw new Error('Settings unavailable'); return r.json(); }).then(function(s) {
+    if (document.getElementById('settings-panel') === panel) renderSettingsPanel(s, panel);
+  }).catch(function(error) {
+    if (document.getElementById('settings-panel') !== panel || error.name === 'AbortError') return;
+    panel.innerHTML = settingsHeader() + '<div class="settings-section"><p role="status">No se han podido cargar tus ajustes. Tus preferencias no se han modificado.</p><button type="button" class="settings-save" style="margin-top:16px" onclick="closeSettingsPanel();toggleSettings()">Reintentar</button></div>';
+    panel.querySelector('.settings-close').focus({ preventScroll: true });
+  });
+}
+
+function renderSettingsPanel(settings, owner) {
+  if (owner && document.getElementById('settings-panel') !== owner) return;
+  var s = settings || {};
+  var panel = owner || document.getElementById('settings-panel') || createSettingsPanel();
+  window._selectedAiProvider = s.aiProvider || 'none';
+
+  panel.innerHTML = settingsHeader() +
+    '<div class="settings-section"><h3>Tus dispositivos</h3>' +
+    '<p style="font-size:13px;line-height:1.6;color:#b9bac6;margin-bottom:12px">Abre tu biblioteca en otra pantalla desde Conectar dispositivo.</p><a href="/connect" class="modal-btn btn-trailer" style="text-decoration:none">Conectar dispositivo →</a>' +
     '</div>' +
     '<div class="settings-section"><h3>Preferencias de Reproducción</h3>' +
-    '<div class="setting-row"><span class="setting-label">Calidad</span>' +
+    '<div class="setting-row"><label class="setting-label" for="set-quality">Calidad</label>' +
     '<select class="setting-select" id="set-quality">' +
     '<option value="auto"' + (s.quality === 'auto' ? ' selected' : '') + '>Auto (mejor disponible)</option>' +
     '<option value="720p"' + (s.quality === '720p' ? ' selected' : '') + '>720p HD</option>' +
     '<option value="1080p"' + (s.quality === '1080p' ? ' selected' : '') + '>1080p Full HD</option>' +
     '<option value="4k"' + (s.quality === '4k' ? ' selected' : '') + '>4K Ultra HD</option>' +
     '</select></div>' +
-    '<div class="setting-row"><span class="setting-label">Idioma</span>' +
+    '<div class="setting-row"><label class="setting-label" for="set-language">Idioma</label>' +
     '<select class="setting-select" id="set-language">' +
     '<option value="spanish"' + (s.language === 'spanish' ? ' selected' : '') + '>ES Español</option>' +
     '<option value="latino"' + (s.language === 'latino' ? ' selected' : '') + '> Latino</option>' +
@@ -773,13 +864,13 @@ function renderSettingsPanel(settings) {
     '</select></div></div>' +
 
     '<div class="settings-section"><h3> Búsqueda eMule</h3>' +
-    '<div class="setting-row"><span class="setting-label">Método</span>' +
+    '<div class="setting-row"><label class="setting-label" for="set-method">Método</label>' +
     '<select class="setting-select" id="set-method">' +
     '<option value="kad"' + (s.searchMethod === 'kad' ? ' selected' : '') + '>Kademlia (más fuentes)</option>' +
     '<option value="global"' + (s.searchMethod === 'global' ? ' selected' : '') + '>Global (más rápido)</option>' +
     '<option value="server"' + (s.searchMethod === 'server' ? ' selected' : '') + '>Servidor actual</option>' +
     '</select></div>' +
-    '<div class="setting-row"><span class="setting-label">Tamaño mínimo</span>' +
+    '<div class="setting-row"><label class="setting-label" for="set-minsize">Tamaño mínimo</label>' +
     '<select class="setting-select" id="set-minsize">' +
     '<option value="100"' + (s.minSizeMB <= 100 ? ' selected' : '') + '>100 MB</option>' +
     '<option value="300"' + (s.minSizeMB === 300 ? ' selected' : '') + '>300 MB (recomendado)</option>' +
@@ -788,10 +879,10 @@ function renderSettingsPanel(settings) {
     '</select></div></div>' +
 
     '<div class="settings-section"><h3> Conexión eMule WebServer</h3>' +
-    '<div style="margin-bottom:12px"><span class="setting-label">Contraseña</span>' +
+    '<div style="margin-bottom:12px"><label class="setting-label" for="set-password">Contraseña</label>' +
     '<input type="password" class="setting-input" id="set-password" value="' + escapeAttr(s.emulePassword || '') + '" placeholder="Contraseña del WebServer (puerto 4711)" style="margin-top:6px"></div>' +
     '<button class="modal-btn btn-trailer" style="width:100%;justify-content:center" onclick="testEmuleConnection()"> Probar conexión</button>' +
-    '<div id="emule-test-status"></div></div>' +
+    '<div id="emule-test-status" role="status" aria-live="polite"></div></div>' +
 
     // ── IA Section ────────────────────────────────────────────────────────────
     '<div class="settings-section" id="ai-section">' +
@@ -805,7 +896,7 @@ function renderSettingsPanel(settings) {
     '<div class="ai-card" id="ai-card-gemini" style="border:1.5px solid ' + (s.aiProvider === 'gemini' ? 'rgba(66,133,244,.7)' : 'rgba(255,255,255,.08)') + ';border-radius:12px;padding:14px 16px;cursor:pointer;transition:border-color .2s" onclick="selectAiProvider(\'gemini\')">' +
       '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">' +
         '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" fill="#4285F4"/><path d="M12 7l-5 10h3l1-2h6l1 2h3L12 7zm0 3.5l1.5 3h-3L12 10.5z" fill="white"/></svg>' +
-        '<span style="font-size:14px;font-weight:700;color:#fff">Google Gemini</span>' +
+        '<button type="button" class="ai-provider-choice" id="choose-ai-gemini" aria-pressed="' + (s.aiProvider === 'gemini') + '">Google Gemini</button>' +
         (s.aiProvider === 'gemini' && s.googleAccessToken
           ? '<span style="margin-left:auto;font-size:11px;font-weight:600;background:rgba(46,204,113,.15);color:#2ecc71;border:1px solid rgba(46,204,113,.3);padding:2px 7px;border-radius:5px">&#10004; Conectado</span>'
           : '<span style="margin-left:auto;font-size:11px;font-weight:600;background:rgba(66,133,244,.15);color:#4285F4;border:1px solid rgba(66,133,244,.3);padding:2px 7px;border-radius:5px">&#x1F511; Sin API key</span>') +
@@ -827,8 +918,8 @@ function renderSettingsPanel(settings) {
                 '<span style="color:#555">3. Pega Client ID y Secret aquí:</span>' +
               '</div>' +
               '<div style="display:flex;flex-direction:column;gap:6px">' +
-                '<input class="setting-input" id="google-client-id" placeholder="Client ID ( termina en .apps.googleusercontent.com)" value="' + escapeAttr(s.googleClientId || '') + '" oninput="updateGeminiSignInBtn()" style="font-size:11px;padding:8px 10px">' +
-                '<input class="setting-input" id="google-client-secret" placeholder="Client Secret (GO...xxxx)" value="' + escapeAttr(s.googleClientSecret || '') + '" oninput="updateGeminiSignInBtn()" style="font-size:11px;padding:8px 10px">' +
+                '<input class="setting-input" id="google-client-id" aria-label="Client ID de Google" placeholder="Client ID ( termina en .apps.googleusercontent.com)" value="' + escapeAttr(s.googleClientId || '') + '" oninput="updateGeminiSignInBtn()" style="font-size:11px;padding:8px 10px">' +
+                '<input type="password" class="setting-input" id="google-client-secret" aria-label="Client Secret de Google" placeholder="Client Secret" value="' + escapeAttr(s.googleClientSecret || '') + '" oninput="updateGeminiSignInBtn()" style="font-size:11px;padding:8px 10px">' +
               '</div>' +
             '</div>' +
             '<div style="font-size:11px;font-weight:700;color:#4285F4;text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px">&#x1F464; Paso 2 — Inicia sesión con Google</div>' +
@@ -847,12 +938,12 @@ function renderSettingsPanel(settings) {
     '<div class="ai-card" id="ai-card-openai" style="border:1.5px solid ' + (s.aiProvider === 'openai' ? 'rgba(16,163,127,.7)' : 'rgba(255,255,255,.08)') + ';border-radius:12px;padding:14px 16px;cursor:pointer;transition:border-color .2s" onclick="selectAiProvider(\'openai\')">' +
       '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">' +
         '<svg width="20" height="20" viewBox="0 0 24 24" fill="#10A37F"><circle cx="12" cy="12" r="10"/></svg>' +
-        '<span style="font-size:14px;font-weight:700;color:#fff">OpenAI (ChatGPT)</span>' +
+        '<button type="button" class="ai-provider-choice" id="choose-ai-openai" aria-pressed="' + (s.aiProvider === 'openai') + '">OpenAI (ChatGPT)</button>' +
         '<span style="margin-left:auto;font-size:11px;font-weight:600;background:rgba(255,255,255,.05);color:#888;border:1px solid rgba(255,255,255,.1);padding:2px 7px;border-radius:5px">API Key</span>' +
       '</div>' +
       '<div id="openai-key-area" style="display:' + (s.aiProvider === 'openai' ? 'block' : 'none') + '">' +
         '<div style="display:flex;gap:8px;margin-bottom:8px">' +
-          '<input class="setting-input" id="set-openai-key" type="password" placeholder="sk-..." value="' + escapeAttr(s.aiProvider === 'openai' ? (s.aiApiKey || '') : '') + '" style="flex:1;font-size:12px">' +
+          '<input class="setting-input" id="set-openai-key" type="password" aria-label="API key de OpenAI" placeholder="sk-..." value="' + escapeAttr(s.aiProvider === 'openai' ? (s.aiApiKey || '') : '') + '" style="flex:1;font-size:12px">' +
           '<button onclick="window.open(\'https://platform.openai.com/api-keys\')" style="background:rgba(16,163,127,.15);border:1px solid rgba(16,163,127,.3);color:#10A37F;padding:6px 10px;border-radius:7px;cursor:pointer;font-size:11px;white-space:nowrap">&#x1F511; Obtener key</button>' +
         '</div>' +
         '<button onclick="testAiKey(\'openai\')" style="background:rgba(16,163,127,.1);border:1px solid rgba(16,163,127,.3);color:#10A37F;padding:7px 14px;border-radius:7px;cursor:pointer;font-size:12px;width:100%">Probar conexión</button>' +
@@ -864,12 +955,12 @@ function renderSettingsPanel(settings) {
     '<div class="ai-card" id="ai-card-claude" style="border:1.5px solid ' + (s.aiProvider === 'claude' ? 'rgba(208,134,56,.7)' : 'rgba(255,255,255,.08)') + ';border-radius:12px;padding:14px 16px;cursor:pointer;transition:border-color .2s" onclick="selectAiProvider(\'claude\')">' +
       '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">' +
         '<svg width="20" height="20" viewBox="0 0 24 24" fill="#D08638"><circle cx="12" cy="12" r="10"/><text x="7" y="16" font-size="10" fill="white" font-weight="bold">Cl</text></svg>' +
-        '<span style="font-size:14px;font-weight:700;color:#fff">Anthropic Claude</span>' +
+        '<button type="button" class="ai-provider-choice" id="choose-ai-claude" aria-pressed="' + (s.aiProvider === 'claude') + '">Anthropic Claude</button>' +
         '<span style="margin-left:auto;font-size:11px;font-weight:600;background:rgba(255,255,255,.05);color:#888;border:1px solid rgba(255,255,255,.1);padding:2px 7px;border-radius:5px">API Key</span>' +
       '</div>' +
       '<div id="claude-key-area" style="display:' + (s.aiProvider === 'claude' ? 'block' : 'none') + '">' +
         '<div style="display:flex;gap:8px;margin-bottom:8px">' +
-          '<input class="setting-input" id="set-claude-key" type="password" placeholder="sk-ant-..." value="' + escapeAttr(s.aiProvider === 'claude' ? (s.aiApiKey || '') : '') + '" style="flex:1;font-size:12px">' +
+          '<input class="setting-input" id="set-claude-key" type="password" aria-label="API key de Anthropic" placeholder="sk-ant-..." value="' + escapeAttr(s.aiProvider === 'claude' ? (s.aiApiKey || '') : '') + '" style="flex:1;font-size:12px">' +
           '<button onclick="window.open(\'https://console.anthropic.com/settings/keys\')" style="background:rgba(208,134,56,.15);border:1px solid rgba(208,134,56,.3);color:#D08638;padding:6px 10px;border-radius:7px;cursor:pointer;font-size:11px;white-space:nowrap">&#x1F511; Obtener key</button>' +
         '</div>' +
         '<button onclick="testAiKey(\'claude\')" style="background:rgba(208,134,56,.1);border:1px solid rgba(208,134,56,.3);color:#D08638;padding:7px 14px;border-radius:7px;cursor:pointer;font-size:12px;width:100%">Probar conexión</button>' +
@@ -881,7 +972,7 @@ function renderSettingsPanel(settings) {
     '<div class="ai-card" id="ai-card-none" style="border:1.5px solid ' + (!s.aiProvider || s.aiProvider === 'none' ? 'rgba(255,255,255,.25)' : 'rgba(255,255,255,.08)') + ';border-radius:12px;padding:10px 16px;cursor:pointer;transition:border-color .2s" onclick="selectAiProvider(\'none\')">' +
       '<div style="display:flex;align-items:center;gap:10px">' +
         '<span style="font-size:16px">&#x26D4;</span>' +
-        '<span style="font-size:13px;color:#666">Sin IA — búsqueda básica (variantes de episodio incluidas sin IA)</span>' +
+        '<button type="button" class="ai-provider-choice" id="choose-ai-none" aria-pressed="' + (!s.aiProvider || s.aiProvider === 'none') + '">Sin IA — búsqueda básica</button>' +
       '</div>' +
     '</div>' +
     '</div>' + // end #ai-provider-cards
@@ -908,56 +999,81 @@ function renderSettingsPanel(settings) {
     '<div class="settings-section">' +
     '<button class="settings-save" onclick="saveSettingsPanel()"> Guardar Ajustes</button></div>';
 
-  document.body.appendChild(panel);
-
-  // Load remote access info
-  fetch('/api/connect-seed').then(function(r){return r.json();}).then(function(seed) {
-    var ipEl = document.getElementById('set-public-ip');
-    var tunnelEl = document.getElementById('set-tunnel-url');
-    var ntfyEl = document.getElementById('set-ntfy-url');
-    if (ipEl && seed.publicIP) ipEl.textContent = 'http://' + seed.publicIP + ':8080';
-    else if (ipEl) ipEl.textContent = 'No disponible';
-    if (tunnelEl && seed.tunnel) tunnelEl.textContent = seed.tunnel;
-    else if (tunnelEl) tunnelEl.textContent = 'No disponible';
-    if (ntfyEl && seed.ntfyTopic) ntfyEl.textContent = 'https://ntfy.sh/' + seed.ntfyTopic;
-  }).catch(function() {});
+  panel.querySelector('.settings-close').focus({ preventScroll: true });
 
   // Check eMule status on open
   fetch('/api/emule/status').then(function(r) { return r.json(); }).then(function(data) {
+    if (document.getElementById('settings-panel') !== panel || panel._emuleRequest) return;
     var el = document.getElementById('emule-test-status');
     if (el && data.loggedIn) {
       el.innerHTML = '<div class="emule-status ok">Conectado a eMule WebServer</div>';
+    } else if (el) {
+      el.innerHTML = '<div class="emule-status err">' + escapeHTML(emuleConnectionMessage(data)) + '</div>';
     }
   }).catch(function() {});
 }
 
+function emuleConnectionMessage(data) {
+  var messages = {
+    password_missing: 'Falta la contraseña de eMule WebServer. Introdúcela y prueba la conexión.',
+    password_mismatch: 'eMule ha rechazado la contraseña. Comprueba que coincide con la de su WebServer.',
+    access_denied: 'eMule ha denegado el acceso. Revisa los permisos de su WebServer.',
+    invalid_login_response: 'El WebServer no ha confirmado la conexión. Comprueba que eMule está abierto.',
+    webserver_down: 'eMule WebServer no responde. Abre eMule y comprueba que su WebServer está activado.',
+    webserver_http_error: 'eMule WebServer ha devuelto un error. Comprueba su estado y vuelve a probar.',
+    login_timeout: 'eMule ha tardado demasiado en responder. Vuelve a probar la conexión.'
+  };
+  var message = messages[data && data.reason] || 'No se ha podido conectar con eMule WebServer. Comprueba eMule y vuelve a probar.';
+  if (data && data.retrying) message += ' Se está intentando conectar de nuevo.';
+  return message;
+}
+
+function explicitEmulePassword() {
+  var input = document.getElementById('set-password');
+  var password = input ? input.value : '';
+  return password && password !== '********' ? password : null;
+}
+
 function testEmuleConnection() {
-  var pw = document.getElementById('set-password').value;
+  var panel = document.getElementById('settings-panel');
+  if (!panel || panel._settingsSaving) return;
+  var request = panel._emuleRequest = (panel._emuleRequest || 0) + 1;
+  var pw = explicitEmulePassword();
   var status = document.getElementById('emule-test-status');
   if (status) status.innerHTML = '<div class="emule-status" style="color:#888;background:rgba(255,255,255,.05);border:1px solid #333"><div class="spinner" style="width:16px;height:16px;border-width:2px"></div> Conectando...</div>';
 
-  fetch('/api/emule/login?p=' + encodeURIComponent(pw)).then(function(r) { return r.json(); }).then(function(data) {
+  fetch('/api/emule/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(pw === null ? {} : { password: pw })
+  }).then(function(r) { if (!r.ok) throw new Error('Connection failed'); return r.json(); }).then(function(data) {
+    if (document.getElementById('settings-panel') !== panel || panel._emuleRequest !== request) return;
     if (data.success) {
-      if (status) status.innerHTML = '<div class="emule-status ok"> Conectado correctamente (sesión: ' + escapeHTML(String(data.session)) + ')</div>';
+      if (status) status.innerHTML = '<div class="emule-status ok">Conectado correctamente</div>';
     } else {
-      if (status) status.innerHTML = '<div class="emule-status err"> ' + escapeHTML(data.error || 'Fallo de conexión') + '</div>';
+      if (status) status.innerHTML = '<div class="emule-status err">' + escapeHTML(emuleConnectionMessage(data)) + '</div>';
     }
   }).catch(function() {
-    if (status) status.innerHTML = '<div class="emule-status err"> No se puede conectar al puerto 4711</div>';
+    if (document.getElementById('settings-panel') !== panel || panel._emuleRequest !== request) return;
+    if (status) status.innerHTML = '<div class="emule-status err">No se ha podido comprobar la conexión. Vuelve a intentarlo.</div>';
   });
 }
 
 function saveSettingsPanel() {
+  var panel = document.getElementById('settings-panel');
+  if (!panel || panel._settingsSaving) return;
+  panel._settingsSaving = true;
+  panel._emuleRequest = (panel._emuleRequest || 0) + 1;
   var aiProvider = window._selectedAiProvider || document.querySelector('.ai-card[data-selected]') && window._selectedAiProvider || '';
   var newSettings = {
     quality:         document.getElementById('set-quality').value,
     language:        document.getElementById('set-language').value,
     searchMethod:    document.getElementById('set-method').value,
     minSizeMB:       parseInt(document.getElementById('set-minsize').value),
-    emulePassword:   document.getElementById('set-password').value,
     aiEnhanceQuery:  document.getElementById('ai-enhance') ? document.getElementById('ai-enhance').checked : true,
     aiRankResults:   document.getElementById('ai-rank')    ? document.getElementById('ai-rank').checked    : true
   };
+  var emulePassword = explicitEmulePassword();
+  if (emulePassword !== null) newSettings.emulePassword = emulePassword;
 
   // Gather AI provider + credentials
   if (window._selectedAiProvider === 'openai') {
@@ -982,13 +1098,33 @@ function saveSettingsPanel() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(newSettings)
-  }).then(function(r) { return r.json(); }).then(function(saved) {
-    showNotification(' Ajustes guardados');
-    document.getElementById('settings-panel').remove();
-    if (saved.emulePassword) {
-      fetch('/api/emule/login?p=' + encodeURIComponent(saved.emulePassword));
-    }
+  }).then(function(r) { if (!r.ok) throw new Error('Save failed'); return r.json(); }).then(function() {
+    if (document.getElementById('settings-panel') !== panel) return;
+    var status = document.getElementById('emule-test-status');
+    if (status) status.innerHTML = '<div class="emule-status">Ajustes guardados. Comprobando conexión con eMule…</div>';
+    // The server owns the saved credential; the settings response is redacted.
+    return fetch('/api/emule/resync', { method: 'POST' }).then(function(r) {
+      if (!r.ok) throw new Error('Connection failed');
+      return r.json();
+    }).then(function(data) {
+      if (document.getElementById('settings-panel') !== panel) return;
+      panel._settingsSaving = false;
+      if (data.success) {
+        showNotification('Ajustes guardados. Conectado a eMule.');
+        closeSettingsPanel();
+      } else {
+        if (status) status.innerHTML = '<div class="emule-status err">Ajustes guardados. ' + escapeHTML(emuleConnectionMessage(data)) + '</div>';
+        showNotification('Ajustes guardados. Revisa la conexión con eMule.');
+      }
+    }).catch(function() {
+      if (document.getElementById('settings-panel') !== panel) return;
+      panel._settingsSaving = false;
+      if (status) status.innerHTML = '<div class="emule-status err">Ajustes guardados. No se ha podido comprobar la conexión con eMule. Vuelve a probar.</div>';
+      showNotification('Ajustes guardados. No se ha podido comprobar la conexión con eMule.');
+    });
   }).catch(function() {
+    if (document.getElementById('settings-panel') !== panel) return;
+    panel._settingsSaving = false;
     showNotification(' Error al guardar');
   });
 }
@@ -1004,6 +1140,8 @@ function selectAiProvider(provider) {
   ['gemini','openai','claude','none'].forEach(function(p) {
     var card = document.getElementById('ai-card-' + p);
     if (card) card.style.borderColor = p === provider ? _PROVIDER_COLORS[p] : 'rgba(255,255,255,.08)';
+    var button = document.getElementById('choose-ai-' + p);
+    if (button) button.setAttribute('aria-pressed', String(p === provider));
   });
   // Show/hide detail areas
   var areas = { gemini: 'gemini-oauth-area', openai: 'openai-key-area', claude: 'claude-key-area' };
@@ -1039,6 +1177,7 @@ function updateGeminiSignInBtn() {
 
 function startGoogleOAuth(event) {
   if (event) event.stopPropagation();
+  var settingsOwner = document.getElementById('settings-panel');
 
   // Save client_id and client_secret first so server can use them
   var clientId     = (document.getElementById('google-client-id')     || {}).value || '';
@@ -1070,7 +1209,7 @@ function startGoogleOAuth(event) {
             if (status.ok) {
               if (statusEl) { statusEl.innerHTML = '<span style="color:#2ecc71">✔ Conectado con Google</span>'; }
               // Refresh the panel
-              setTimeout(function() { document.getElementById('settings-panel').remove(); toggleSettings(); }, 1200);
+              setTimeout(function() { if (settingsOwner && document.getElementById('settings-panel') === settingsOwner) { closeSettingsPanel(); toggleSettings(); } }, 1200);
             } else {
               if (statusEl) { statusEl.textContent = '✗ ' + (status.error || 'Error desconocido'); statusEl.style.color = '#e74c3c'; }
             }
@@ -1096,10 +1235,10 @@ function startGoogleOAuth(event) {
 function disconnectGemini(event) {
   if (event) event.stopPropagation();
   if (!confirm('¿Desconectar Google? Deberás volver a autorizar para usar Gemini.')) return;
+  var panel = document.getElementById('settings-panel');
   fetch('/api/ai/oauth/disconnect', { method: 'POST' }).then(function() {
     showNotification('Google desconectado');
-    document.getElementById('settings-panel').remove();
-    toggleSettings();
+    if (panel && document.getElementById('settings-panel') === panel) { closeSettingsPanel(); toggleSettings(); }
   });
 }
 
@@ -1375,12 +1514,128 @@ function showEd2kPanel() {
 // ==== cinema_player.js ====
 // cinema_player.js — reproductor modal cinema, controles, subtítulos, sesión
 
+// Each dialog and each stream owns its asynchronous work. Closing, seeking or
+// opening another title invalidates callbacks before they can touch a new video.
+var cinemaSession = null;
+function cinemaIsCurrent(session) {
+  return !!session && session.active && cinemaSession === session && video === session.video &&
+    (!session.modal || document.getElementById('movie-modal') === session.modal);
+}
+function cinemaListen(session, target, event, callback, stream) {
+  var handler = function(e) {
+    if (cinemaIsCurrent(session) && (!stream || session.stream === stream)) callback(e);
+  };
+  target.addEventListener(event, handler);
+  (stream || session).listeners.push(function() { target.removeEventListener(event, handler); });
+}
+function cinemaLater(session, callback, delay, stream) {
+  var owner = stream || session;
+  var timer = setTimeout(function() {
+    owner.timers = owner.timers.filter(function(id) { return id !== timer; });
+    if (cinemaIsCurrent(session) && (!stream || session.stream === stream)) callback();
+  }, delay);
+  owner.timers.push(timer);
+  return timer;
+}
+function cancelCinemaWork(owner) {
+  if (!owner) return;
+  owner.timers.forEach(clearTimeout);
+  owner.timers = [];
+  owner.listeners.forEach(function(remove) { remove(); });
+  owner.listeners = [];
+}
+function saveCinemaPosition(session) {
+  if (!session || !session.hasPlayed) return;
+  if (session.duration > 0) session.position = Math.min(session.duration, session.position);
+  saveWatchSession(session.fileName, session.position);
+  if (session.position <= 10) return;
+  try {
+    var saved = JSON.parse(localStorage.getItem('ese_resume') || '{}');
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) saved = {};
+    saved[session.fileName] = { time: Math.floor(session.position), ts: Date.now() };
+    localStorage.setItem('ese_resume', JSON.stringify(saved));
+  } catch (_) { /* Storage must never prevent stopping or leaving playback. */ }
+}
+function stopCinemaPlayback() {
+  if (typeof stopSmartPlay === 'function') stopSmartPlay();
+  var session = cinemaSession;
+  if (session) {
+    saveCinemaPosition(session);
+    session.active = false;
+    cinemaSession = null;
+    cancelCinemaWork(session.stream);
+    cancelCinemaWork(session);
+    if (session.controller) session.controller.abort();
+    try {
+      session.video.pause();
+      session.video.removeAttribute('src');
+      clearCinemaSubtitles(session);
+      session.video.load();
+    } catch (_) {}
+  }
+  if (typeof stopLegacyPlayback === 'function') stopLegacyPlayback();
+  else if (abortController) { try { abortController.abort(); } catch (_) {} }
+}
+function cinemaStatus(session, text) {
+  if (!cinemaIsCurrent(session)) return;
+  var status = document.getElementById('modal-player-status');
+  if (status) { status.textContent = text; status.style.opacity = text === 'Reproduciendo' ? '' : '1'; }
+}
+function cinemaDuration(session) {
+  if (session.duration > 0) return session.duration;
+  var duration = Number(session.video.duration);
+  return Number.isFinite(duration) && duration > 0 ? duration + session.offset : 0;
+}
+function cinemaPosition(session) {
+  var position = Math.max(0, session.offset + (Number(session.video.currentTime) || 0));
+  return session.duration > 0 ? Math.min(session.duration, position) : position;
+}
+function updateCinemaProgress(session) {
+  if (!cinemaIsCurrent(session)) return;
+  var total = cinemaDuration(session);
+  var position = cinemaPosition(session);
+  var progress = document.getElementById('cinema-progress');
+  var time = document.getElementById('cinema-time');
+  var seek = document.getElementById('cinema-seek');
+  if (progress) progress.style.width = (total ? Math.min(100, position / total * 100) : 0) + '%';
+  if (time) time.textContent = fmtT(position) + ' / ' + (total ? fmtT(total) : 'Duración desconocida');
+  if (seek) {
+    seek.setAttribute('aria-disabled', String(!total));
+    seek.setAttribute('aria-valuemax', String(total || 0));
+    seek.setAttribute('aria-valuenow', String(total ? Math.min(total, Math.floor(position)) : 0));
+    seek.setAttribute('aria-valuetext', total ? fmtT(position) + ' de ' + fmtT(total) : 'Duración desconocida');
+  }
+  var buffered = session.video.buffered;
+  var buffer = document.getElementById('cinema-buffer');
+  if (buffer && buffered && buffered.length && total) {
+    buffer.style.width = Math.min(100, (session.offset + buffered.end(buffered.length - 1)) / total * 100) + '%';
+  }
+}
+function seekCinemaTo(target) {
+  var session = cinemaSession;
+  if (!cinemaIsCurrent(session)) return;
+  var duration = cinemaDuration(session);
+  if (!duration || !Number.isFinite(target)) return;
+  target = Math.max(0, Math.min(Math.max(0, duration - 1), Math.floor(target)));
+  var quality = (document.getElementById('cinema-quality') || {}).value || currentQuality || 'auto';
+  var request = ++session.seekRequest;
+  cinemaStatus(session, 'Buscando ' + fmtT(target) + '…');
+  var restart = function() {
+    if (cinemaIsCurrent(session) && request === session.seekRequest) startCompletedMSE(session.fileName, quality, target);
+  };
+  if (session.isPartFile) {
+    fetch('/api/stream/seek?name=' + encodeURIComponent(session.fileName) + '&time=' + target,
+      session.controller ? { signal: session.controller.signal } : {}).then(restart, restart);
+  } else restart();
+}
+
 // ── Reproductor modal cinema ───────────────────────────────────────────────────
-function playInModal(encodedName) {
+function playInModal(encodedName, resumePosition) {
   var fileName = decodeURIComponent(encodedName);
   var playerZone = document.getElementById('modal-player-zone');
   var infoZone = document.getElementById('modal-info-zone');
   if (!playerZone) return;
+  stopCinemaPlayback();
 
   // Hide movie info, show player
   if (infoZone) infoZone.style.display = 'none';
@@ -1396,22 +1651,22 @@ function playInModal(encodedName) {
     '<span class="modal-player-title">' + escapeHTML(movieTitle) + '</span>' +
     '<video id="modal-video"></video>' +
     '<div class="cinema-controls" id="cinema-controls">' +
-      '<div class="cinema-seek" id="cinema-seek">' +
+      '<div class="cinema-seek" id="cinema-seek" role="slider" tabindex="0" aria-label="Posición de reproducción" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-disabled="true">' +
         '<div class="cinema-buffer" id="cinema-buffer"></div>' +
         '<div class="cinema-progress" id="cinema-progress"></div>' +
       '</div>' +
       '<div class="cinema-controls-row">' +
-        '<button class="cinema-ctrl-btn" id="cinema-play-btn" onclick="toggleCinemaPlay()">⏸</button>' +
-        '<span class="cinema-time" id="cinema-time">0:00 / 0:00</span>' +
+        '<button type="button" class="cinema-ctrl-btn" id="cinema-play-btn" aria-label="Reproducir" onclick="toggleCinemaPlay()">▶</button>' +
+        '<span class="cinema-time" id="cinema-time">0:00 / Duración desconocida</span>' +
         '<div style="flex:1"></div>' +
-        '<button class="cinema-ctrl-btn" id="cinema-vol-btn" onclick="toggleCinemaVol()"></button>' +
-        '<input type="range" id="cinema-vol-slider" min="0" max="100" value="100" class="cinema-vol-range" oninput="setCinemaVol(this.value)">' +
-        '<button class="cinema-ctrl-btn" id="cinema-settings-btn" onclick="toggleCinemaSettings()" style="font-size:18px" title="Ajustes">&#9881;</button>' +
-        '<button class="cinema-ctrl-btn" onclick="toggleCinemaFS()">&#x26F6;</button>' +
+        '<button type="button" class="cinema-ctrl-btn" id="cinema-vol-btn" aria-label="Silenciar" aria-pressed="false" onclick="toggleCinemaVol()">🔊</button>' +
+        '<input type="range" id="cinema-vol-slider" aria-label="Volumen" min="0" max="100" value="100" class="cinema-vol-range" oninput="setCinemaVol(this.value)">' +
+        '<button type="button" class="cinema-ctrl-btn" id="cinema-settings-btn" aria-label="Ajustes del reproductor" aria-controls="cinema-settings-popup" aria-expanded="false" onclick="toggleCinemaSettings()" style="font-size:18px" title="Ajustes">&#9881;</button>' +
+        '<button type="button" class="cinema-ctrl-btn" id="cinema-fs-btn" aria-label="Pantalla completa" onclick="toggleCinemaFS()">&#x26F6;</button>' +
       '</div>' +
       '<div id="cinema-settings-popup" style="display:none;position:absolute;bottom:56px;right:12px;background:rgba(15,15,20,.96);border:1px solid #333;border-radius:12px;padding:16px;min-width:240px;z-index:50;backdrop-filter:blur(12px)">' +
         '<div style="font-size:13px;font-weight:600;color:#fff;margin-bottom:12px">Ajustes del reproductor</div>' +
-        '<div style="margin-bottom:10px"><label style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px">Calidad</label>' +
+        '<div style="margin-bottom:10px"><label for="cinema-quality" style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px">Calidad</label>' +
         '<select id="cinema-quality" class="cinema-quality" onchange="changeCinemaQuality(this.value)" style="width:100%;margin-top:4px">' +
           '<option value="auto" selected>Auto</option>' +
           '<option value="480p">480p</option>' +
@@ -1419,305 +1674,287 @@ function playInModal(encodedName) {
           '<option value="1080p">1080p</option>' +
           '<option value="original">Original</option>' +
         '</select></div>' +
-        '<div id="cinema-audio-row" style="margin-bottom:10px;display:none"><label style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px">Audio</label>' +
+        '<div id="cinema-audio-row" style="margin-bottom:10px;display:none"><label for="cinema-audio" style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px">Audio</label>' +
         '<select id="cinema-audio" class="cinema-quality" onchange="changeCinemaAudio(this.value)" style="width:100%;margin-top:4px"></select></div>' +
-        '<div id="cinema-subs-row" style="display:none"><label style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px">Subtítulos</label>' +
+        '<div id="cinema-subs-row" style="display:none"><label for="cinema-subs" style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px">Subtítulos</label>' +
         '<select id="cinema-subs" class="cinema-quality" onchange="changeCinemaSubs(this.value)" style="width:100%;margin-top:4px"></select></div>' +
       '</div>' +
       '</div>' +
-    '</div>' +
-    '<div class="cinema-status" id="modal-player-status">Preparando streaming...</div>' +
+    '<div class="cinema-status" id="modal-player-status" role="status" aria-live="polite">Preparando vídeo…</div>' +
   '</div>';
 
-  // Assign video
   video = document.getElementById('modal-video');
+  var initialPosition = Number(resumePosition);
+  initialPosition = Number.isFinite(initialPosition) && initialPosition > 0 ? Math.floor(initialPosition) : 0;
+  var session = cinemaSession = {
+    active: true, video: video, modal: document.getElementById('movie-modal'), fileName: fileName,
+    offset: initialPosition, position: initialPosition, duration: 0, hasPlayed: false,
+    listeners: [], timers: [], stream: null, seekRequest: 0, isPartFile: false,
+    controller: typeof AbortController === 'function' ? new AbortController() : null
+  };
   window._cinemaFileName = fileName;
-  window._cinemaSeekOffset = 0;
-
-  // Save watch session
-  saveWatchSession(fileName, 0);
-
-  // Save position every 5 seconds
-  video.addEventListener('timeupdate', function() {
-    if (video.currentTime > 0) {
-      var realPos = (window._cinemaSeekOffset || 0) + video.currentTime;
-      saveWatchSession(fileName, Math.floor(realPos));
-    }
-  });
-
-  // Video click = play/pause
-  video.addEventListener('click', toggleCinemaPlay);
-  // Double-click = fullscreen
-  video.addEventListener('dblclick', function(e) {
-    e.preventDefault();
-    toggleCinemaFS();
-  });
-
-  // Time update → custom progress bar
-  video.addEventListener('timeupdate', function() {
-    var currentReal = (window._cinemaSeekOffset || 0) + video.currentTime;
-    var total = estTotalSec || video.duration || 0;
-    if (total > 0) {
-      var pEl = document.getElementById('cinema-progress');
-      var tEl = document.getElementById('cinema-time');
-      if (pEl) pEl.style.width = (currentReal / total * 100) + '%';
-      if (tEl) tEl.textContent = fmtT(currentReal) + ' / ' + fmtT(total);
-    }
-    if (video.buffered.length > 0 && estTotalSec > 0) {
-      var buffEnd = (window._cinemaSeekOffset || 0) + video.buffered.end(video.buffered.length - 1);
-      var bEl = document.getElementById('cinema-buffer');
-      if (bEl) bEl.style.width = (buffEnd / estTotalSec * 100) + '%';
-    }
-  });
-
-  video.addEventListener('play', function() { var b = document.getElementById('cinema-play-btn'); if (b) b.textContent = '⏸'; });
-  video.addEventListener('pause', function() { var b = document.getElementById('cinema-play-btn'); if (b) b.textContent = '▶'; });
-
-  // Seek bar click
-  document.getElementById('cinema-seek').addEventListener('click', function(e) {
-    var rect = e.currentTarget.getBoundingClientRect();
-    var pct = (e.clientX - rect.left) / rect.width;
-    var targetSec = Math.floor(pct * (estTotalSec || video.duration || 0));
-    if (targetSec >= 0 && window._cinemaFileName) {
-      window._cinemaSeekOffset = targetSec;
-      var status = document.getElementById('modal-player-status');
-      var q = (document.getElementById('cinema-quality') || {}).value || currentQuality || 'auto';
-
-      if (window._isPartFile && currentPartNum) {
-        // .part file — tell eMule to download from this position + restart stream
-        if (status) status.textContent = 'Seeking a ' + fmtT(targetSec) + '...';
-        var seekUrl = '/api/stream/seek?name=' + encodeURIComponent(window._cinemaFileName) + '&time=' + targetSec;
-        fetch(seekUrl).then(function(r) { return r.json(); }).then(function(data) {
-          console.log('[Seek] eMule notified: part ' + data.targetPart + '/' + data.totalParts);
-          if (status) status.textContent = 'eMule → part ' + data.targetPart + '/' + data.totalParts;
-          switchStreamSeamless(q, targetSec);
-        }).catch(function() {
-          switchStreamSeamless(q, targetSec);
-        });
-      } else {
-        // Completed file — restart ffmpeg from new position
-        if (status) status.textContent = 'Seeking a ' + fmtT(targetSec) + '...';
-        startCompletedMSE(window._cinemaFileName, q, targetSec);
-      }
-    }
-  });
-
-  // Fade title after 3s
-  setTimeout(function() {
-    var player = document.getElementById('cinema-player');
-    if (player) player.classList.add('title-fade');
-  }, 3000);
-
-  // Hide modal close button
-  var closeBtn = document.querySelector('.modal-close');
-  if (closeBtn) closeBtn.style.display = 'none';
-  var modal = document.getElementById('movie-modal');
-  if (modal) { modal.style.overflow = 'hidden'; modal.scrollTop = 0; }
-
-  // Start streaming — probe tracks first, then play
+  window._cinemaSeekOffset = initialPosition;
   window._cinemaAudioTrack = null;
-  window._cinemaSubTrack = '-1'; // no subs by default
-
-  // v7.4.0 - start streaming IMMEDIATELY with defaults instead of waiting for
-  // /info + /tracks in series. ffprobe on partial HEVC can take 15-20s and
-  // blocking the spinner there is what people perceive as "no arranca".
-  // Both calls now run in parallel and patch the UI in place.
-  estTotalSec = 7200;
+  window._cinemaSubTrack = '-1';
   window._isPartFile = false;
   currentPartNum = null;
   currentQuality = 'auto';
-  var status0 = document.getElementById('modal-player-status');
-  if (status0) status0.textContent = 'Iniciando streaming...';
-  startCompletedMSE(fileName, 'auto', 0);
+  estTotalSec = 0;
+  userWantsPause = false;
 
-  // Show transcoding hint as soon as response headers arrive.
-  // Endpoint is /api/stream/completed/<encodedName>?quality=… (positional path,
-  // not ?name=… — see stream_completed.js:129).
-  fetch('/api/stream/completed/' + encodeURIComponent(fileName) + '?quality=auto', { method: 'HEAD' })
-    .then(function(r) {
-      var mode = r.headers.get('X-ESE-Transcoding');
-      var s = document.getElementById('modal-player-status');
-      if (s && mode === 'hevc-to-h264') s.textContent = 'Transcodificando HEVC en vivo — puede tardar hasta 60s en empezar';
-      else if (s && mode === 'transcode') s.textContent = 'Transcodificando — puede tardar';
-    }).catch(function(){});
+  // Preserve saved progress until this stream has actually started playing.
+  cinemaListen(session, video, 'timeupdate', function() {
+    if (session.stream && session.stream.hasPlayed) {
+      session.position = cinemaPosition(session);
+      saveWatchSession(fileName, Math.floor(session.position));
+    }
+    updateCinemaProgress(session);
+  });
+  cinemaListen(session, video, 'loadedmetadata', function() { updateCinemaProgress(session); });
+  cinemaListen(session, video, 'durationchange', function() { updateCinemaProgress(session); });
+  cinemaListen(session, video, 'playing', function() {
+    if (!session.stream) return;
+    session.stream.hasPlayed = true;
+    session.hasPlayed = true;
+    session.position = cinemaPosition(session);
+    saveWatchSession(fileName, Math.floor(session.position));
+    cinemaStatus(session, 'Reproduciendo');
+  });
+  cinemaListen(session, video, 'waiting', function() { cinemaStatus(session, 'Cargando vídeo…'); });
+  cinemaListen(session, video, 'stalled', function() { cinemaStatus(session, 'Esperando datos…'); });
+  cinemaListen(session, video, 'ended', function() { cinemaStatus(session, 'Reproducción finalizada'); });
+  function playButton(paused) {
+    var button = document.getElementById('cinema-play-btn');
+    if (button) { button.textContent = paused ? '▶' : '⏸'; button.setAttribute('aria-label', paused ? 'Reproducir' : 'Pausar'); }
+  }
+  cinemaListen(session, video, 'play', function() { playButton(false); });
+  cinemaListen(session, video, 'pause', function() {
+    playButton(true);
+    if (session.hasPlayed && session.stream && session.stream.hasPlayed && !session.video.ended) cinemaStatus(session, 'En pausa');
+  });
+  cinemaListen(session, video, 'volumechange', syncCinemaVolume);
+  cinemaListen(session, video, 'click', toggleCinemaPlay);
+  cinemaListen(session, video, 'dblclick', function(e) { e.preventDefault(); toggleCinemaFS(); });
+  cinemaListen(session, document, 'fullscreenchange', function() {
+    var button = document.getElementById('cinema-fs-btn');
+    if (button) button.setAttribute('aria-label', document.fullscreenElement ? 'Salir de pantalla completa' : 'Pantalla completa');
+  });
+  var seek = document.getElementById('cinema-seek');
+  cinemaListen(session, seek, 'click', function(e) {
+    var rect = seek.getBoundingClientRect();
+    if (rect.width > 0) seekCinemaTo((e.clientX - rect.left) / rect.width * cinemaDuration(session));
+  });
+  cinemaListen(session, seek, 'keydown', function(e) {
+    var position = session.offset + (Number(session.video.currentTime) || 0);
+    var target = { ArrowLeft: position - 10, ArrowDown: position - 10, ArrowRight: position + 10,
+      ArrowUp: position + 10, PageDown: position - 60, PageUp: position + 60, Home: 0, End: cinemaDuration(session) };
+    if (Object.prototype.hasOwnProperty.call(target, e.key)) { e.preventDefault(); seekCinemaTo(target[e.key]); }
+  });
+  cinemaLater(session, function() {
+    var player = document.getElementById('cinema-player');
+    if (player) player.classList.add('title-fade');
+  }, 3000);
+  var closeBtn = document.querySelector('.modal-close');
+  if (closeBtn) closeBtn.style.display = 'none';
+  if (session.modal) { session.modal.style.overflow = 'hidden'; session.modal.scrollTop = 0; }
+  updateCinemaProgress(session);
+  syncCinemaVolume();
+  startCompletedMSE(fileName, 'auto', initialPosition);
 
-  // /info enriches the UI when it is ready (true duration, part flag).
-  fetch('/api/stream/completed/info?name=' + encodeURIComponent(fileName))
-    .then(function(r){return r.json();}).catch(function(){return {};})
+  var options = session.controller ? { signal: session.controller.signal } : {};
+  fetch('/api/stream/completed/' + encodeURIComponent(fileName) + '?quality=auto',
+    Object.assign({ method: 'HEAD' }, options)).then(function(r) {
+    if (!cinemaIsCurrent(session) || session.hasPlayed || (session.stream && session.stream.failed) || r.ok === false) return;
+    var mode = r.headers.get('X-ESE-Transcoding');
+    if (mode === 'hevc-to-h264') cinemaStatus(session, 'Preparando vídeo HEVC — puede tardar hasta 60 s');
+    else if (mode === 'transcode') cinemaStatus(session, 'Preparando vídeo — puede tardar');
+  }).catch(function() {});
+
+  fetch('/api/stream/completed/info?name=' + encodeURIComponent(fileName), options)
+    .then(function(r) { if (r.ok === false) throw new Error('Info unavailable'); return r.json(); })
     .then(function(data) {
-      estTotalSec = data.estimatedTotalSec || 7200;
-      window._isPartFile = !!data.isPartFile;
-      if (data.isPartFile && data.partNum) currentPartNum = data.partNum;
-      var s = document.getElementById('modal-player-status');
-      if (s && s.textContent.indexOf('Transcod') !== 0)
-        s.textContent = 'Streaming iniciado — ' + fmtT(estTotalSec);
-    });
+      if (!cinemaIsCurrent(session) || !data) return;
+      var duration = Number(data.estimatedTotalSec);
+      session.duration = data.durationKnown !== false && Number.isFinite(duration) && duration > 0 ? duration : 0;
+      estTotalSec = session.duration;
+      session.isPartFile = !!data.isPartFile;
+      window._isPartFile = session.isPartFile;
+      currentPartNum = data.isPartFile && data.partNum ? data.partNum : null;
+      updateCinemaProgress(session);
+    }).catch(function() { /* Unknown duration stays unknown; playback state comes from video events. */ });
 
-  // /tracks patches the audio/subtitle selectors when ready.
-  fetch('/api/stream/tracks?name=' + encodeURIComponent(fileName))
-    .then(function(r){return r.json();}).catch(function(){return {audio:[],subtitles:[]};})
+  fetch('/api/stream/tracks?name=' + encodeURIComponent(fileName), options)
+    .then(function(r) { if (r.ok === false) throw new Error('Tracks unavailable'); return r.json(); })
     .then(function(tracks) {
+      if (!cinemaIsCurrent(session) || !tracks) return;
       var audioSel = document.getElementById('cinema-audio');
-      if (audioSel && tracks.audio && tracks.audio.length > 1) {
+      if (audioSel && Array.isArray(tracks.audio) && tracks.audio.length > 1) {
         audioSel.innerHTML = '';
         tracks.audio.forEach(function(a, i) {
           var label = (a.lang || 'und').toUpperCase();
-          if (a.title) label += ' \u2014 ' + a.title;
+          if (a.title) label += ' — ' + a.title;
           if (a.channels) label += ' (' + a.channels + 'ch)';
-          var opt = document.createElement('option');
-          opt.value = a.index;
-          opt.textContent = label;
-          if (i === 0) opt.selected = true;
-          audioSel.appendChild(opt);
+          var option = document.createElement('option');
+          option.value = a.index; option.textContent = label; option.selected = i === 0;
+          audioSel.appendChild(option);
         });
-        var audioRow = document.getElementById('cinema-audio-row');
-        if (audioRow) audioRow.style.display = '';
+        document.getElementById('cinema-audio-row').style.display = '';
       }
       var subSel = document.getElementById('cinema-subs');
-      if (subSel && tracks.subtitles && tracks.subtitles.length > 0) {
+      if (subSel && Array.isArray(tracks.subtitles) && tracks.subtitles.length) {
         subSel.innerHTML = '<option value="-1" selected>Desactivados</option>';
-        tracks.subtitles.forEach(function(s, i) {
-          var label = (s.lang || 'und').toUpperCase();
-          if (s.title) label += ' \u2014 ' + s.title;
-          if (s.forced) label += ' [Forzados]';
-          var opt = document.createElement('option');
-          opt.value = i;
-          opt.textContent = label;
-          subSel.appendChild(opt);
+        tracks.subtitles.forEach(function(sub, i) {
+          var label = (sub.lang || 'und').toUpperCase();
+          if (sub.title) label += ' — ' + sub.title;
+          if (sub.forced) label += ' [Forzados]';
+          var option = document.createElement('option');
+          option.value = i; option.textContent = label;
+          subSel.appendChild(option);
         });
-        var subsRow = document.getElementById('cinema-subs-row');
-        if (subsRow) subsRow.style.display = '';
+        document.getElementById('cinema-subs-row').style.display = '';
       }
-    });
+    }).catch(function() {});
 }
 
 // ── Controles del cinema player ────────────────────────────────────────────────
 function toggleCinemaSettings() {
   var popup = document.getElementById('cinema-settings-popup');
-  if (popup) popup.style.display = popup.style.display === 'none' ? 'block' : 'none';
+  var button = document.getElementById('cinema-settings-btn');
+  if (!popup) return;
+  var open = popup.style.display === 'none';
+  popup.style.display = open ? 'block' : 'none';
+  if (button) button.setAttribute('aria-expanded', String(open));
 }
-
+function syncCinemaVolume() {
+  var session = cinemaSession;
+  if (!cinemaIsCurrent(session)) return;
+  var muted = session.video.muted || session.video.volume === 0;
+  var button = document.getElementById('cinema-vol-btn');
+  if (button) {
+    button.textContent = muted ? '🔇' : '🔊';
+    button.setAttribute('aria-label', muted ? 'Activar sonido' : 'Silenciar');
+    button.setAttribute('aria-pressed', String(muted));
+  }
+  var slider = document.getElementById('cinema-vol-slider');
+  if (slider) slider.value = Math.round((muted ? 0 : session.video.volume) * 100);
+}
+function playCinemaVideo(session, stream) {
+  if (!cinemaIsCurrent(session) || session.stream !== stream || userWantsPause) return;
+  var result = session.video.play();
+  if (result && result.catch) result.catch(function() {
+    if (cinemaIsCurrent(session) && session.stream === stream) cinemaStatus(session, 'Pulsa Reproducir para iniciar el vídeo');
+  });
+}
 function toggleCinemaPlay() {
-  if (video.paused) { userWantsPause = false; video.play().catch(function(){}); }
-  else { userWantsPause = true; video.pause(); }
+  var session = cinemaSession;
+  if (!cinemaIsCurrent(session)) return;
+  if (session.video.paused) { userWantsPause = false; playCinemaVideo(session, session.stream); }
+  else { userWantsPause = true; session.video.pause(); }
 }
-
 function toggleCinemaVol() {
+  if (!cinemaIsCurrent(cinemaSession)) return;
   video.muted = !video.muted;
-  var btn = document.getElementById('cinema-vol-btn');
-  if (btn) btn.textContent = video.muted ? '' : '';
+  if (!video.muted && video.volume === 0) video.volume = 1;
+  syncCinemaVolume();
 }
-
-function setCinemaVol(val) {
-  video.volume = val / 100;
-  video.muted = val == 0;
+function setCinemaVol(value) {
+  if (!cinemaIsCurrent(cinemaSession)) return;
+  var volume = Number(value);
+  if (!Number.isFinite(volume)) return;
+  video.volume = Math.max(0, Math.min(100, volume)) / 100;
+  video.muted = video.volume === 0;
+  syncCinemaVolume();
 }
-
 function toggleCinemaFS() {
-  var el = document.getElementById('cinema-player');
-  if (document.fullscreenElement) document.exitFullscreen();
-  else if (el) el.requestFullscreen().catch(function(){});
+  var element = document.getElementById('cinema-player');
+  var result;
+  if (document.fullscreenElement && document.exitFullscreen) result = document.exitFullscreen();
+  else if (element && element.requestFullscreen) result = element.requestFullscreen();
+  if (result && result.catch) result.catch(function() { cinemaStatus(cinemaSession, 'Pantalla completa no disponible en este navegador'); });
 }
-
-function changeCinemaQuality(q) {
-  if (!window._cinemaFileName) return;
-  var currentReal = (window._cinemaSeekOffset || 0) + (video.currentTime || 0);
-  window._cinemaSeekOffset = Math.floor(currentReal);
-  var status = document.getElementById('modal-player-status');
-  if (status) status.textContent = 'Cambiando calidad a ' + q + '...';
-  startCompletedMSE(window._cinemaFileName, q, window._cinemaSeekOffset);
+function changeCinemaQuality(quality) {
+  var session = cinemaSession;
+  if (!cinemaIsCurrent(session)) return;
+  ++session.seekRequest;
+  startCompletedMSE(session.fileName, quality, session.offset + (session.video.currentTime || 0));
 }
-
 function changeCinemaAudio(trackIndex) {
-  if (!window._cinemaFileName) return;
+  var session = cinemaSession;
+  if (!cinemaIsCurrent(session)) return;
   window._cinemaAudioTrack = trackIndex;
-  var currentReal = (window._cinemaSeekOffset || 0) + (video.currentTime || 0);
-  window._cinemaSeekOffset = Math.floor(currentReal);
-  var status = document.getElementById('modal-player-status');
-  if (status) status.textContent = 'Cambiando audio...';
-  var q = document.getElementById('cinema-quality');
-  startCompletedMSE(window._cinemaFileName, q ? q.value : 'auto', window._cinemaSeekOffset);
+  ++session.seekRequest;
+  var quality = document.getElementById('cinema-quality');
+  startCompletedMSE(session.fileName, quality ? quality.value : 'auto', session.offset + (session.video.currentTime || 0));
 }
-
-function changeCinemaSubs(subIndex) {
-  if (!window._cinemaFileName) return;
-  window._cinemaSubTrack = subIndex;
-
-  // Remove existing subtitle tracks
-  var existingTracks = video.querySelectorAll('track');
-  existingTracks.forEach(function(t) { t.remove(); });
-
-  // Disable all text tracks
-  if (video.textTracks) {
-    for (var i = 0; i < video.textTracks.length; i++) {
-      video.textTracks[i].mode = 'disabled';
-    }
-  }
-
-  if (subIndex === '-1' || subIndex === -1) {
-    var status = document.getElementById('modal-player-status');
-    if (status) status.textContent = 'Subtítulos desactivados';
-    setTimeout(function() { if (status) status.textContent = ''; }, 1500);
-    return;
-  }
-
-  // Add new WebVTT track — NO stream restart needed!
-  var subUrl = '/api/stream/subtitle?name=' + encodeURIComponent(window._cinemaFileName) + '&track=' + subIndex;
+function clearCinemaSubtitles(session) {
+  var player = session.video;
+  var previous = session.subtitleTrack;
+  session.subtitleTrack = null;
+  var tracks = [];
+  if (player.textTracks) for (var i = 0; i < player.textTracks.length; i++) tracks.push(player.textTracks[i]);
+  if (previous && previous.track && tracks.indexOf(previous.track) < 0) tracks.push(previous.track);
+  // Disable and empty the TextTrack while it is still attached. Removing the
+  // HTMLTrackElement first can leave its last active cue painted by Chromium.
+  tracks.forEach(function(textTrack) {
+    var cues = textTrack.cues ? Array.prototype.slice.call(textTrack.cues) : [];
+    textTrack.mode = 'disabled';
+    cues.forEach(function(cue) { try { textTrack.removeCue(cue); } catch (_) {} });
+  });
+  player.querySelectorAll('track').forEach(function(track) {
+    track.default = false;
+    track.removeAttribute('default');
+    track.removeAttribute('src');
+    track.remove();
+  });
+}
+function applyCinemaSubtitles(session) {
+  var player = session.video;
+  clearCinemaSubtitles(session);
+  if (window._cinemaSubTrack === '-1' || window._cinemaSubTrack == null) return;
   var track = document.createElement('track');
+  session.subtitleTrack = track;
   track.kind = 'subtitles';
-  track.src = subUrl;
-  track.srclang = 'es';
-  track.label = 'Subtítulos';
-  track.default = true;
-  video.appendChild(track);
-
-  // Activate track
-  setTimeout(function() {
-    if (video.textTracks && video.textTracks.length > 0) {
-      video.textTracks[video.textTracks.length - 1].mode = 'showing';
-    }
-    var status = document.getElementById('modal-player-status');
-    if (status) status.textContent = 'Subtítulos activados';
-    setTimeout(function() { if (status) status.textContent = ''; }, 1500);
-  }, 500);
+  track.src = '/api/stream/subtitle?name=' + encodeURIComponent(session.fileName) + '&track=' + encodeURIComponent(window._cinemaSubTrack) + '&ss=' + session.offset;
+  track.srclang = 'es'; track.label = 'Subtítulos'; track.default = true;
+  cinemaListen(session, track, 'load', function() {
+    if (session.subtitleTrack !== track) return;
+    if (track.track) track.track.mode = 'showing';
+    cinemaStatus(session, 'Subtítulos activados');
+  }, session.stream);
+  cinemaListen(session, track, 'error', function() {
+    if (session.subtitleTrack === track) cinemaStatus(session, 'No se han podido cargar los subtítulos. Selecciona otra pista o inténtalo de nuevo.');
+  }, session.stream);
+  player.appendChild(track);
+}
+function changeCinemaSubs(subIndex) {
+  var session = cinemaSession;
+  if (!cinemaIsCurrent(session)) return;
+  window._cinemaSubTrack = String(subIndex);
+  applyCinemaSubtitles(session);
+  cinemaStatus(session, String(subIndex) === '-1' ? 'Subtítulos desactivados' : 'Cargando subtítulos…');
 }
 
 // ── Volver a la ficha del film ─────────────────────────────────────────────────
 function backToDetail() {
-  // Save playback position for resume
-  if (video && window._cinemaFileName) {
-    var currentReal = (window._cinemaSeekOffset || 0) + (video.currentTime || 0);
-    if (currentReal > 10) {
-      var resumeData = JSON.parse(localStorage.getItem('ese_resume') || '{}');
-      resumeData[window._cinemaFileName] = {
-        time: Math.floor(currentReal),
-        ts: Date.now()
-      };
-      localStorage.setItem('ese_resume', JSON.stringify(resumeData));
-    }
-  }
-
-  // ALWAYS stop video — regardless of MSE or direct src
-  try {
-    video.pause();
-    video.removeAttribute('src');
-    video.load();
-  } catch(e) {}
-  if (abortController) { try { abortController.abort(); } catch(e) {} }
-
-  // Remove subtitle tracks
-  var tracks = video.querySelectorAll('track');
-  tracks.forEach(function(t) { t.remove(); });
-
-  var playerZone = document.getElementById('modal-player-zone');
+  stopCinemaPlayback();
   var infoZone = document.getElementById('modal-info-zone');
-  if (playerZone) playerZone.style.display = 'none';
-  if (infoZone) infoZone.style.display = 'block';
+  if (!infoZone || !infoZone.innerHTML.trim()) {
+    if (typeof closeMovieModal === 'function') closeMovieModal();
+    return;
+  }
+  var playerZone = document.getElementById('modal-player-zone');
+  if (playerZone) { playerZone.style.display = 'none'; playerZone.innerHTML = ''; }
+  infoZone.style.display = 'block';
   var closeBtn = document.querySelector('.modal-close');
   if (closeBtn) closeBtn.style.display = 'flex';
   var modal = document.getElementById('movie-modal');
   if (modal) modal.style.overflow = 'auto';
-  if (document.fullscreenElement) document.exitFullscreen();
+  if (document.fullscreenElement && document.exitFullscreen) {
+    var exit = document.exitFullscreen();
+    if (exit && exit.catch) exit.catch(function() {});
+  }
+  var control = infoZone.querySelector('button, a[href]') || closeBtn;
+  if (control) control.focus({ preventScroll: true });
 }
 
 // ── Tráiler ────────────────────────────────────────────────────────────────────
@@ -1725,17 +1962,20 @@ function loadTrailer(query) {
   var container = document.getElementById('trailer-container');
   var btn = document.getElementById('trailer-btn');
   if (!container) return;
+  var request = container._trailerRequest = (container._trailerRequest || 0) + 1;
 
-  if (container.innerHTML) {
+  if (container.innerHTML && !container._trailerFailed) {
     container.innerHTML = '';
     if (btn) btn.innerHTML = '&#127916; Ver Tráiler';
     return;
   }
 
+  container._trailerFailed = false;
   container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;padding:40px"><div class="spinner"></div></div>';
   if (btn) btn.innerHTML = '&#127916; Cargando...';
 
   fetch('/api/movies/trailer?q=' + encodeURIComponent(query)).then(function(r) { return r.json(); }).then(function(data) {
+    if (container._trailerRequest !== request || document.getElementById('trailer-container') !== container) return;
     if (data.videoId && /^[a-zA-Z0-9_-]{6,15}$/.test(data.videoId)) {
       container.innerHTML = '<div class="trailer-container"><iframe src="https://www.youtube.com/embed/' + escapeAttr(data.videoId) + '?autoplay=1&rel=0" allow="autoplay;encrypted-media" allowfullscreen></iframe></div>';
       if (btn) btn.innerHTML = '&#127916; Ocultar Tráiler';
@@ -1744,7 +1984,9 @@ function loadTrailer(query) {
       if (btn) btn.innerHTML = '&#127916; Ver Tráiler';
     }
   }).catch(function() {
-    container.innerHTML = '';
+    if (container._trailerRequest !== request || document.getElementById('trailer-container') !== container) return;
+    container._trailerFailed = true;
+    container.innerHTML = '<p role="status">No se ha podido cargar el tráiler. Pulsa Tráiler para reintentar.</p>';
     if (btn) btn.innerHTML = '&#127916; Ver Tráiler';
   });
 }
@@ -1774,9 +2016,8 @@ function getWatchSession() {
 }
 
 // ── Helper: iniciar desde .part ────────────────────────────────────────────────
-function playPartFile(partFile, displayName) {
-  saveWatchSession(displayName, 0);
-  playInModal(encodeURIComponent(displayName));
+function playPartFile(partFile, displayName, resumePosition) {
+  playInModal(encodeURIComponent(displayName), resumePosition);
 }
 
 // ── requestMovie (delegación a showMovieDetail) ────────────────────────────────
@@ -1799,7 +2040,8 @@ function playCompleted(encodedName) {
   var quickModal = document.createElement('div');
   quickModal.id = 'movie-modal';
   quickModal.className = 'movie-modal active';
-  quickModal.innerHTML = '<button class="modal-close" onclick="closeMovieModal()">&times;</button>' +
+  quickModal._previousOverflow = document.body.style.overflow || '';
+  quickModal.innerHTML = '<button type="button" class="modal-close" aria-label="Cerrar reproducción" onclick="closeMovieModal()">&times;</button>' +
     '<div id="modal-player-zone"></div>' +
     '<div id="modal-info-zone" style="display:none"></div>';
   document.body.appendChild(quickModal);
@@ -1811,91 +2053,78 @@ function playCompleted(encodedName) {
 
 // ── Streaming de archivo completado (src directo, sin MSE) ─────────────────────
 function startCompletedMSE(fileName, quality, seekSec) {
-  if (abortController) abortController.abort();
-
-  var streamUrl = '/api/stream/completed/' + encodeURIComponent(fileName) + '?q=' + encodeURIComponent(quality) + '&ss=' + encodeURIComponent(seekSec);
-  if (window._cinemaAudioTrack) streamUrl += '&audio=' + encodeURIComponent(window._cinemaAudioTrack);
-  // NO sub= parameter — subtitles are loaded as WebVTT tracks (0% CPU)
-  window._currentFileName = fileName;
-  window._isPartFile = false;
-
-  video.src = streamUrl;
-  video.load();
-
-  // Remove any existing subtitle tracks
-  var existingTracks = video.querySelectorAll('track');
-  existingTracks.forEach(function(t) { t.remove(); });
-
-  // Add WebVTT subtitle track if requested
-  if (window._cinemaSubTrack && window._cinemaSubTrack !== '-1') {
-    var subUrl = '/api/stream/subtitle?name=' + encodeURIComponent(fileName) + '&track=' + encodeURIComponent(window._cinemaSubTrack);
-    var track = document.createElement('track');
-    track.kind = 'subtitles';
-    track.src = subUrl;
-    track.srclang = 'es';
-    track.label = 'Subtítulos';
-    track.default = true;
-    video.appendChild(track);
-    video.addEventListener('loadedmetadata', function onMeta() {
-      video.removeEventListener('loadedmetadata', onMeta);
-      if (video.textTracks && video.textTracks.length > 0) {
-        video.textTracks[0].mode = 'showing';
-      }
-    });
+  if (typeof stopLegacyPlayback === 'function') stopLegacyPlayback();
+  else if (abortController) abortController.abort();
+  var session = cinemaSession;
+  if (!session) {
+    session = cinemaSession = { active: true, video: video, modal: document.getElementById('movie-modal'),
+      fileName: fileName, offset: 0, position: 0, duration: 0, hasPlayed: false,
+      listeners: [], timers: [], stream: null, seekRequest: 0 };
   }
-
-  video.addEventListener('canplay', function onCanPlay() {
-    video.removeEventListener('canplay', onCanPlay);
-    if (!userWantsPause) {
-      video.muted = true;
-      video.play().then(function() { video.muted = false; }).catch(function() {});
-    }
-  });
-
-  // v7.4.0 — retry up to MAX_RETRIES on video errors, then surface a real
-  // error state instead of looping forever. Previous code kept reissuing
-  // `?retry=1` indefinitely if the underlying issue was a codec mismatch
-  // or the stream genuinely had no data.
-  var _retryCount = 0;
-  var MAX_RETRIES = 3;
-  video.addEventListener('error', function onErr() {
-    _retryCount++;
-    console.log('[Player] Video error, retry ' + _retryCount + '/' + MAX_RETRIES);
-    if (_retryCount > MAX_RETRIES) {
-      video.removeEventListener('error', onErr);
-      var status = document.getElementById('modal-player-status');
-      if (status) status.textContent = 'No se puede reproducir — codec incompatible o sin datos suficientes';
-      showPlayerErrorActions();
+  if (!cinemaIsCurrent(session) || session.fileName !== fileName) return;
+  cancelCinemaWork(session.stream);
+  var stream = session.stream = { listeners: [], timers: [], retries: 0, hasPlayed: false, retryTimer: null };
+  var player = session.video;
+  clearCinemaSubtitles(session);
+  var offset = Number(seekSec);
+  session.offset = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
+  window._cinemaSeekOffset = session.offset;
+  window._currentFileName = fileName;
+  currentQuality = quality;
+  var streamUrl = '/api/stream/completed/' + encodeURIComponent(fileName) + '?q=' + encodeURIComponent(quality) + '&ss=' + session.offset;
+  if (window._cinemaAudioTrack != null) streamUrl += '&audio=' + encodeURIComponent(window._cinemaAudioTrack);
+  var oldActions = document.getElementById('modal-player-error-actions');
+  if (oldActions) oldActions.remove();
+  cinemaStatus(session, session.offset ? 'Preparando vídeo desde ' + fmtT(session.offset) + '…' : 'Preparando vídeo…');
+  cinemaListen(session, player, 'canplay', function() { playCinemaVideo(session, stream); }, stream);
+  cinemaListen(session, player, 'error', function() {
+    if (stream.retryTimer !== null) return;
+    stream.retries++;
+    if (stream.retries > 3) {
+      stream.failed = true;
+      cinemaStatus(session, 'No se puede reproducir: formato incompatible o datos insuficientes');
+      showPlayerErrorActions(session);
       return;
     }
-    setTimeout(function() {
-      video.src = streamUrl + '&retry=' + _retryCount;
-      video.load();
-      video.play().catch(function(){});
-    }, 2000);
-  });
+    cinemaStatus(session, 'No se ha podido cargar el vídeo. Reintentando (' + stream.retries + '/3)…');
+    stream.retryTimer = cinemaLater(session, function() {
+      stream.retryTimer = null;
+      player.src = streamUrl + '&retry=' + stream.retries;
+      player.load();
+    }, 2000, stream);
+  }, stream);
+  player.src = streamUrl;
+  player.load();
+  applyCinemaSubtitles(session);
+  updateCinemaProgress(session);
 }
 
-// v7.4.0 — show a clear error UI inside the player modal with two actions:
-// retry from scratch (resets retry count + reloads) or close.
-function showPlayerErrorActions() {
-  var modal = document.getElementById('cinema-player');
-  if (!modal) return;
+function showPlayerErrorActions(session) {
+  session = session || cinemaSession;
+  if (!cinemaIsCurrent(session)) return;
+  var player = document.getElementById('cinema-player');
+  if (!player) return;
   var existing = document.getElementById('modal-player-error-actions');
   if (existing) existing.remove();
   var bar = document.createElement('div');
   bar.id = 'modal-player-error-actions';
   bar.style.cssText = 'position:absolute;bottom:80px;left:50%;transform:translateX(-50%);display:flex;gap:12px;z-index:1000';
   var retry = document.createElement('button');
-  retry.textContent = 'Reintentar';
-  retry.style.cssText = 'background:linear-gradient(135deg,#ff6b35,#ff2d78);border:none;color:#fff;padding:10px 22px;border-radius:8px;cursor:pointer;font-weight:600';
-  retry.onclick = function() { bar.remove(); location.reload(); };
+  retry.type = 'button'; retry.textContent = 'Reintentar';
+  retry.style.cssText = 'background:#ff806b;border:none;color:#191013;padding:12px 22px;border-radius:8px;cursor:pointer;font-weight:600;min-height:44px';
+  retry.onclick = function() {
+    if (!cinemaIsCurrent(session)) return;
+    bar.remove();
+    startCompletedMSE(session.fileName, currentQuality || 'auto', session.hasPlayed ? session.position : session.offset);
+    var control = document.getElementById('cinema-play-btn');
+    if (control) control.focus();
+  };
   var close = document.createElement('button');
-  close.textContent = 'Volver';
-  close.style.cssText = 'background:transparent;border:1px solid #444;color:#888;padding:10px 22px;border-radius:8px;cursor:pointer';
-  close.onclick = function() { bar.remove(); var c = document.getElementById('cinema-player'); if (c) c.style.display = 'none'; };
+  close.type = 'button'; close.textContent = 'Volver';
+  close.style.cssText = 'background:#161620;border:1px solid #888;color:#fff;padding:12px 22px;border-radius:8px;cursor:pointer;min-height:44px';
+  close.onclick = function() { if (cinemaIsCurrent(session)) backToDetail(); };
   bar.appendChild(retry); bar.appendChild(close);
-  modal.appendChild(bar);
+  player.appendChild(bar);
 }
 
 
@@ -1909,7 +2138,10 @@ var GENRE_ES = {
   'Family':'Familia','Fantasy':'Fantasía','Film-Noir':'Cine negro','History':'Historia',
   'Horror':'Terror','Music':'Música','Musical':'Musical','Mystery':'Misterio',
   'Romance':'Romance','Sci-Fi':'Ciencia ficción','Short':'Corto','Sport':'Deporte',
-  'Superhero':'Superhéroes','Thriller':'Thriller','War':'Guerra','Western':'Western'
+  'Superhero':'Superhéroes','Thriller':'Thriller','War':'Guerra','Western':'Western',
+  // TMDB TV genres are often returned in English even with language=es-ES.
+  'Sci-Fi & Fantasy':'Ciencia ficción y fantasía','Action & Adventure':'Acción y aventura',
+  'War & Politics':'Bélica y política','Kids':'Infantil','Soap':'Telenovela','Talk':'Entrevistas','News':'Noticias'
 };
 function translateGenres(genreStr) {
   if (!genreStr || genreStr === 'N/A') return genreStr;
@@ -1921,13 +2153,14 @@ function translateGenres(genreStr) {
 
 // ── Obtiene sinopsis en español de TMDB y la parchea en el DOM ────────────────
 // TMDB calls go through /api/tmdb/* proxy — key stays server-side.
-function patchSpanishPlot(imdbId) {
+function patchSpanishPlot(imdbId, owner) {
   fetch('/api/tmdb/find/' + encodeURIComponent(imdbId) + '?language=es-ES&external_source=imdb_id')
     .then(function(r) { return r.json(); })
     .then(function(data) {
       var results = (data.movie_results || []).concat(data.tv_results || []);
       if (!results.length || !results[0].overview) return;
       var overview = results[0].overview;
+      if (owner && document.getElementById('movie-modal') !== owner) return;
       var plotEl = document.querySelector('#modal-info-zone .modal-plot');
       if (plotEl && overview) plotEl.textContent = overview;
     }).catch(function() {});
@@ -1939,9 +2172,9 @@ function renderMovieCard(m) {
   var poster = sanitizeURL((m.Poster && m.Poster !== 'N/A') ? m.Poster : '');
   var title = escapeHTML(m.Title || 'Sin titulo');
   var year = escapeHTML(m.Year || '');
-  var imdbId = escapeAttr(m.imdbID || '');
+  var imdbId = escapeAttr(m.catalogId || m.imdbID || '');
   var safeTitle = escapeAttr(m.Title || 'Sin titulo');
-  return '<div class="card" onclick="showMovieDetail(\'' + imdbId + '\',null,\'' + safeTitle + '\')">' +
+  return '<div class="card" role="button" tabindex="0" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();this.click()}" onclick="showMovieDetail(\'' + imdbId + '\',null,\'' + safeTitle + '\')">' +
     '<div class="card-poster"' + (poster ? ' style="background-image:url(' + escapeHTML(poster) + ');"' : '') + '>' +
     (poster ? '' : '<div class="play-icon">&#9654;</div>') +
     '</div>' +
@@ -1952,24 +2185,16 @@ function renderMovieCard(m) {
 function loadTrendingMovies() {
   var popular = ['Inception', 'Interstellar', 'Gladiator', 'Avatar', 'Titanic', 'Joker', 'Oppenheimer', 'Dune'];
   var container = document.getElementById('trending-grid');
-  if (!container) {
-    var section = document.createElement('div');
-    section.innerHTML = '<h2 class="section-title" style="color:#ff6b35"> Populares</h2>' +
-      '<div id="trending-grid" class="grid"></div>';
-    var hero = document.getElementById('hero');
-    if (hero) hero.after(section);
-    container = document.getElementById('trending-grid');
-  }
   if (!container) return;
-
-  var cards = [];
-  var loaded = 0;
-  popular.forEach(function(title) {
-    fetch('/api/movies/search?q=' + encodeURIComponent(title)).then(function(r) { return r.json(); }).then(function(data) {
-      loaded++;
-      if (data.Search && data.Search.length > 0) cards.push(renderMovieCard(data.Search[0]));
-      if (loaded >= popular.length) container.innerHTML = cards.join('');
-    }).catch(function() { loaded++; });
+  container.innerHTML = '<div class="catalog-state" role="status">Cargando películas…</div>';
+  Promise.all(popular.map(function(title) {
+    return fetch('/api/movies/search?q=' + encodeURIComponent(title))
+      .then(function(r) { if (!r.ok) throw new Error('catalog unavailable'); return r.json(); })
+      .then(function(data) { return data.Search && data.Search.length ? renderMovieCard(data.Search[0]) : ''; })
+      .catch(function() { return ''; });
+  })).then(function(cards) {
+    var found = cards.filter(Boolean);
+    container.innerHTML = found.length ? found.join('') : '<div class="catalog-state" role="status">No se pudo cargar la selección. Puedes seguir usando tu biblioteca.<br><button type="button" onclick="loadTrendingMovies()">Reintentar</button></div>';
   });
 }
 
@@ -1983,6 +2208,9 @@ function searchEd2k() {
   if (!resultDiv || !grid) return;
 
   resultDiv.style.display = 'block';
+  var resultsTitle = document.getElementById('search-results-title');
+  if (resultsTitle) resultsTitle.focus({ preventScroll: true });
+  resultDiv.scrollIntoView({ block: 'start' });
   grid.innerHTML = '<div style="color:#888;padding:40px;text-align:center"><div class="play-icon" style="animation:pulse 1s infinite;margin:0 auto 12px"></div>Buscando...</div>';
 
   doSmartSearch(query, grid, true);
@@ -2104,66 +2332,369 @@ function tryAlternativesSequentially(alts, idx, originalQuery, grid) {
 }
 
 // ── Modal de detalle de película ───────────────────────────────────────────────
+function movieModalCloseButton() {
+  return '<button type="button" class="modal-close" aria-label="Cerrar ficha" onclick="closeMovieModal()">&times;</button>';
+}
+
+function showMovieDetailError(modal, imdbId, localFileName, localizedTitle, unavailable) {
+  if (document.getElementById('movie-modal') !== modal) return;
+  modal.innerHTML = movieModalCloseButton() +
+    '<div class="modal-message" style="max-width:640px;margin:0 auto;padding:140px 28px 60px">' +
+    '<h1 class="modal-title">' + (unavailable ? 'Ficha no disponible' : 'No se ha podido cargar la ficha') + '</h1>' +
+    '<p class="modal-plot" role="status">' + (unavailable
+      ? 'No encontramos los datos de este título. Puedes volver al catálogo y probar con otro resultado.'
+      : 'Comprueba la conexión e inténtalo de nuevo. Puedes cerrar esta ficha cuando quieras.') + '</p>' +
+    '<div class="modal-buttons">' +
+    (localFileName ? '<button type="button" class="modal-btn btn-play" id="modal-play-btn" onclick="playInModal(\'' + escapeAttr(encodeURIComponent(localFileName)) + '\')">Reproducir archivo local</button>' : '') +
+    '<button type="button" class="modal-btn btn-trailer" id="modal-retry-btn">Reintentar</button>' +
+    '<button type="button" class="modal-btn btn-list" onclick="closeMovieModal()">Volver al catálogo</button></div></div>' +
+    '<div id="modal-player-zone" style="display:none"></div><div id="modal-info-zone" style="display:none"></div>';
+  var retry = document.getElementById('modal-retry-btn');
+  if (retry) retry.onclick = function() { showMovieDetail(imdbId, localFileName, localizedTitle); };
+}
+
+// ── Series: navegador de episodios ─────────────────────────────────────────────
+// Temporadas como pestañas y episodios como filas con imagen, sinopsis y acciones
+// propias. El último episodio abierto de cada serie se recuerda en este navegador.
+var SERIES_PROGRESS_KEY = 'ese.seriesProgress.v1';
+
+function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+function episodeCode(season, episode) { return season === 0 ? 'Especial ' + episode : 'T' + season + ' · E' + episode; }
+function episodeQuery(base, season, episode) { return base + ' ' + pad2(season) + 'x' + pad2(episode); } // 01x01, estándar español en ed2k
+
+function readSeriesProgress(catalogId) {
+  try {
+    var all = JSON.parse(window.localStorage.getItem(SERIES_PROGRESS_KEY) || '{}');
+    var entry = all && all[catalogId];
+    if (entry && Number.isInteger(entry.season) && entry.season >= 0 && Number.isInteger(entry.episode) && entry.episode >= 1) return entry;
+  } catch (e) {}
+  return null;
+}
+
+function saveSeriesProgress(catalogId, season, episode) {
+  try {
+    var all = JSON.parse(window.localStorage.getItem(SERIES_PROGRESS_KEY) || '{}');
+    if (!all || typeof all !== 'object' || Array.isArray(all)) all = {};
+    all[catalogId] = { season: season, episode: episode, at: Date.now() };
+    Object.keys(all).sort(function(a, b) { return (all[b].at || 0) - (all[a].at || 0); })
+      .slice(200).forEach(function(key) { delete all[key]; });
+    window.localStorage.setItem(SERIES_PROGRESS_KEY, JSON.stringify(all));
+  } catch (e) {}
+}
+
+function todayISO() {
+  var d = new Date();
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+}
+function isUpcoming(ep) { return !!(ep && ep.airDate && ep.airDate > todayISO()); }
+function formatAirDate(iso) {
+  var parts = String(iso || '').split('-');
+  if (parts.length !== 3) return '';
+  try {
+    return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
+      .toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' });
+  } catch (e) { return iso; }
+}
+
+// Regular seasons in order; specials (season 0) go last, as in most TV apps.
+function orderedSeasons(seasons) {
+  var list = (Array.isArray(seasons) ? seasons : []).filter(function(s) {
+    return s && Number.isInteger(Number(s.number)) && Number(s.number) >= 0;
+  });
+  return list.filter(function(s) { return Number(s.number) > 0; })
+    .concat(list.filter(function(s) { return Number(s.number) === 0; }));
+}
+
+function seriesState() {
+  var modal = document.getElementById('movie-modal');
+  return modal && modal._series ? modal._series : null;
+}
+function findEpisode(state, number) {
+  if (!state || !Array.isArray(state.episodes) || number === null) return null;
+  for (var i = 0; i < state.episodes.length; i++) if (Number(state.episodes[i].number) === number) return state.episodes[i];
+  return null;
+}
+function defaultEpisode(state) {
+  var progress = state.progress;
+  if (progress && progress.season === state.season && findEpisode(state, progress.episode)) return progress.episode;
+  for (var i = 0; i < state.episodes.length; i++) if (!isUpcoming(state.episodes[i])) return Number(state.episodes[i].number);
+  return state.episodes.length ? Number(state.episodes[0].number) : null;
+}
+
+function renderSeasonTabs(state) {
+  return state.seasons.map(function(s) {
+    var n = Number(s.number);
+    var selected = n === state.season;
+    var name = s.name || (n === 0 ? 'Especiales' : 'Temporada ' + n);
+    return '<button type="button" role="tab" class="ep-season" id="ep-season-' + n + '" aria-selected="' + selected + '" aria-controls="ep-list" tabindex="' + (selected ? '0' : '-1') + '" onclick="selectSeason(' + n + ')" onkeydown="seasonTabKey(event,' + n + ')">' +
+      '<span class="ep-season-name">' + escapeHTML(name) + '</span>' +
+      (Number(s.episodeCount) > 0 ? '<span class="ep-season-count" aria-label="' + Number(s.episodeCount) + ' episodios">' + Number(s.episodeCount) + '</span>' : '') + '</button>';
+  }).join('');
+}
+
+function renderEpisodeRow(state, ep) {
+  var n = Number(ep.number);
+  var selected = n === state.episode;
+  var expanded = selected && !state.collapsed;
+  var upcoming = isUpcoming(ep);
+  var resume = state.progress && state.progress.season === state.season && state.progress.episode === n;
+  var title = ep.name && !/^(episodio|episode|cap[ií]tulo)\s+\d+$/i.test(ep.name.trim()) ? ep.name : 'Episodio ' + n;
+  var still = sanitizeURL(ep.still || '');
+  var meta = [];
+  if (Number(ep.runtime) > 0) meta.push(Number(ep.runtime) + ' min');
+  if (ep.airDate) meta.push((upcoming ? 'Se estrena el ' : '') + formatAirDate(ep.airDate));
+  if (ep.rating) meta.push('★ ' + ep.rating);
+  var play = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 4 20 12 6 20 6 4"/></svg>';
+  var down = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 4v11"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/></svg>';
+  var find = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>';
+  var off = upcoming ? ' disabled' : '';
+  return '<li class="ep-row' + (selected ? ' is-selected' : '') + (expanded ? ' is-expanded' : '') + (upcoming ? ' is-upcoming' : '') + '" id="ep-row-' + n + '">' +
+    '<button type="button" class="ep-main" id="ep-btn-' + n + '" aria-expanded="' + expanded + '"' + (expanded ? ' aria-controls="ep-detail-' + n + '"' : '') + ' onclick="selectEpisode(' + n + ')">' +
+      '<span class="ep-thumb">' + (still ? '<img src="' + escapeAttr(still) + '" alt="" loading="lazy" onerror="this.remove()">' : '') +
+        '<span class="ep-thumb-num" aria-hidden="true">' + n + '</span>' +
+        (upcoming ? '<span class="ep-flag ep-flag-soon">Próximamente</span>' : resume ? '<span class="ep-flag">Continuar</span>' : '') +
+        '<span class="ep-thumb-play" aria-hidden="true">' + play + '</span></span>' +
+      '<span class="ep-text"><span class="ep-title"><span class="ep-index">' + n + '.</span> ' + escapeHTML(title) + '</span>' +
+        (meta.length ? '<span class="ep-meta">' + escapeHTML(meta.join(' · ')) + '</span>' : '') +
+        (ep.overview ? '<span class="ep-overview">' + escapeHTML(ep.overview) + '</span>' : '') + '</span>' +
+    '</button>' +
+    (expanded ? '<div class="ep-detail" id="ep-detail-' + n + '"><div class="ep-actions">' +
+      '<button type="button" class="ep-act ep-act-play" id="ep-play-' + n + '" onclick="episodeAction(\'play\',' + n + ')"' + off + '>' + play + (resume ? 'Continuar' : 'Reproducir') + '</button>' +
+      '<button type="button" class="ep-act" id="ep-download-' + n + '" onclick="episodeAction(\'download\',' + n + ')"' + off + '>' + down + 'Descargar</button>' +
+      '<button type="button" class="ep-act ep-act-ghost" id="ep-sources-btn-' + n + '" onclick="episodeAction(\'sources\',' + n + ')"' + off + '>' + find + 'Ver fuentes</button></div>' +
+      '<p class="ep-note">' + (upcoming ? 'Este episodio aún no se ha emitido.' : 'Se buscará «' + escapeHTML(episodeQuery(state.base, state.season, n)) + '» en la red eMule.') + '</p>' +
+      '<div class="ep-sources" id="ep-sources-' + n + '"></div></div>' : '') +
+  '</li>';
+}
+
+function renderEpisodePanel(state) {
+  var body;
+  if (state.loading) {
+    body = [0, 1, 2, 3].map(function() {
+      return '<li class="ep-row ep-skeleton" aria-hidden="true"><span class="ep-main"><span class="ep-thumb"></span><span class="ep-text"><span class="ep-line"></span><span class="ep-line ep-line-short"></span></span></span></li>';
+    }).join('');
+  } else if (state.failed) {
+    body = '<li class="ep-empty">No se han podido cargar los episodios de esta temporada.</li>';
+  } else if (!state.episodes.length) {
+    body = '<li class="ep-empty">Esta temporada todavía no tiene episodios publicados.</li>';
+  } else {
+    body = state.episodes.map(function(ep) { return renderEpisodeRow(state, ep); }).join('');
+  }
+  return '<ol class="ep-list" id="ep-list" role="tabpanel" aria-labelledby="ep-season-' + state.season + '" aria-busy="' + !!state.loading + '">' + body + '</ol>';
+}
+
+function syncSeriesActions(state) {
+  var ep = findEpisode(state, state.episode);
+  var ready = !!ep && !isUpcoming(ep) && !state.loading;
+  ['modal-play-btn', 'modal-download-btn', 'modal-emule-btn'].forEach(function(id) {
+    var button = document.getElementById(id);
+    if (button) button.disabled = !ready;
+  });
+  var code = ep ? episodeCode(state.season, Number(ep.number)) : '';
+  var resume = ep && state.progress && state.progress.season === state.season && state.progress.episode === Number(ep.number);
+  var play = document.getElementById('modal-play-label');
+  var download = document.getElementById('modal-download-label');
+  if (play) play.textContent = state.loading ? 'Cargando episodios…' : !ep ? 'Elige un episodio' : isUpcoming(ep) ? 'Aún no disponible' : (resume ? 'Continuar ' : 'Reproducir ') + code;
+  if (download) download.textContent = ready ? 'Descargar ' + code : 'Descargar';
+}
+
+function paintSeries(state, focusEpisode) {
+  var tabs = document.getElementById('ep-seasons');
+  var panel = document.getElementById('ep-panel');
+  var status = document.getElementById('tv-picker-status');
+  var retry = document.getElementById('tv-season-retry');
+  if (tabs) tabs.innerHTML = renderSeasonTabs(state);
+  if (panel) panel.innerHTML = renderEpisodePanel(state);
+  if (retry) retry.hidden = !state.failed;
+  if (status) {
+    var season = state.season === 0 ? 'Especiales' : 'Temporada ' + state.season;
+    var aired = state.episodes.filter(function(ep) { return !isUpcoming(ep); }).length;
+    status.textContent = state.loading ? 'Cargando episodios de ' + season.toLowerCase() + '…'
+      : state.failed ? 'No se han podido cargar los episodios. Reintenta o busca la serie completa.'
+      : !state.episodes.length ? season + ' · sin episodios publicados'
+      : season + ' · ' + state.episodes.length + (state.episodes.length === 1 ? ' episodio' : ' episodios') +
+        (aired < state.episodes.length ? ' (' + (state.episodes.length - aired) + ' por estrenar)' : '');
+  }
+  syncSeriesActions(state);
+  if (focusEpisode !== undefined && focusEpisode !== null) {
+    var button = document.getElementById('ep-btn-' + focusEpisode);
+    if (button && typeof button.focus === 'function') button.focus({ preventScroll: true });
+  }
+}
+
+function loadSeriesSeason(modal) {
+  var state = modal._series;
+  var number = state.season;
+  var current = ++state.request;
+  if (modal._seasonAbort) modal._seasonAbort.abort();
+  modal._seasonAbort = null;
+  state.failed = false;
+  state.collapsed = false;
+  if (state.cache[number]) {
+    state.loading = false;
+    state.episodes = state.cache[number];
+    state.episode = defaultEpisode(state);
+    paintSeries(state);
+    return;
+  }
+  state.loading = true;
+  state.episodes = [];
+  state.episode = null;
+  paintSeries(state);
+  modal._seasonAbort = typeof AbortController === 'function' ? new AbortController() : null;
+  fetch('/api/movies/season?id=' + encodeURIComponent(state.catalogId) + '&season=' + encodeURIComponent(number), modal._seasonAbort ? { signal: modal._seasonAbort.signal } : undefined)
+    .then(function(r) { if (!r.ok) throw new Error('season unavailable'); return r.json(); })
+    .then(function(data) {
+      if (current !== state.request || document.getElementById('movie-modal') !== modal) return;
+      if (!data || !Array.isArray(data.episodes)) throw new Error('invalid season');
+      var episodes = data.episodes.filter(function(ep) { return ep && Number.isInteger(Number(ep.number)) && Number(ep.number) > 0; });
+      state.cache[number] = episodes;
+      state.loading = false;
+      state.episodes = episodes;
+      state.episode = defaultEpisode(state);
+      paintSeries(state);
+    }).catch(function(error) {
+      if (current !== state.request || document.getElementById('movie-modal') !== modal || (error && error.name === 'AbortError')) return;
+      state.loading = false;
+      state.failed = true;
+      paintSeries(state);
+    });
+}
+
+function configureSeriesPicker(modal, movie, searchBase) {
+  var seasons = orderedSeasons(movie.seasons);
+  if (!seasons.length || !movie.catalogId) return;
+  var progress = readSeriesProgress(movie.catalogId);
+  var hasProgressSeason = progress && seasons.some(function(s) { return Number(s.number) === progress.season; });
+  modal._series = {
+    catalogId: movie.catalogId, base: searchBase, seasons: seasons, progress: progress, cache: {}, request: 0,
+    season: hasProgressSeason ? progress.season : Number(seasons[0].number), episodes: [], episode: null,
+    loading: false, failed: false, collapsed: false
+  };
+  var retry = document.getElementById('tv-season-retry');
+  if (retry) retry.onclick = function() { loadSeriesSeason(modal); };
+  loadSeriesSeason(modal);
+}
+
+window.selectSeason = function(number) {
+  var modal = document.getElementById('movie-modal');
+  var state = modal && modal._series;
+  if (!state || state.season === number || !state.seasons.some(function(s) { return Number(s.number) === number; })) return;
+  state.season = number;
+  loadSeriesSeason(modal);
+};
+
+window.seasonTabKey = function(event, number) {
+  var state = seriesState();
+  if (!state) return;
+  var index = state.seasons.map(function(s) { return Number(s.number); }).indexOf(number);
+  var next = event.key === 'ArrowRight' ? index + 1 : event.key === 'ArrowLeft' ? index - 1
+    : event.key === 'Home' ? 0 : event.key === 'End' ? state.seasons.length - 1 : -2;
+  if (next === -2) return;
+  event.preventDefault();
+  next = Math.max(0, Math.min(state.seasons.length - 1, next));
+  window.selectSeason(Number(state.seasons[next].number));
+  var tab = document.getElementById('ep-season-' + Number(state.seasons[next].number));
+  if (tab && typeof tab.focus === 'function') tab.focus();
+};
+
+window.selectEpisode = function(number) {
+  var state = seriesState();
+  if (!state || state.loading || !findEpisode(state, number)) return;
+  if (state.episode === number) state.collapsed = !state.collapsed;
+  else { state.episode = number; state.collapsed = false; }
+  paintSeries(state, number);
+};
+
+window.episodeAction = function(action, number) {
+  var state = seriesState();
+  var ep = findEpisode(state, number);
+  if (!ep || isUpcoming(ep) || state.loading) return;
+  var query = episodeQuery(state.base, state.season, number);
+  if (action === 'sources') { startEmuleSearch(query, '', 'ep-sources-' + number); return; }
+  state.episode = number;
+  state.progress = { season: state.season, episode: number };
+  saveSeriesProgress(state.catalogId, state.season, number);
+  syncSeriesActions(state);
+  if (action === 'play') smartPlay(query, '');
+  else if (action === 'download') smartDownload(query, '');
+};
+
+// Main hero buttons act on the selected episode.
+window.seriesHeroAction = function(action) {
+  var state = seriesState();
+  if (state && state.episode !== null) window.episodeAction(action, state.episode);
+};
+
+window.searchWholeSeries = function() {
+  var state = seriesState();
+  if (state) startEmuleSearch(state.base, '', 'ep-whole-sources');
+};
+
 function showMovieDetail(imdbId, localFileName, localizedTitle) {
   var old = document.getElementById('movie-modal');
-  if (old) old.remove();
+  var previousOverflow = old && old._previousOverflow !== undefined ? old._previousOverflow : document.body.style.overflow;
+  if (old) {
+    if (old._detailAbort) old._detailAbort.abort();
+    if (old._seasonAbort) old._seasonAbort.abort();
+    if (old._detailTimer) clearTimeout(old._detailTimer);
+    if (old._keyHandler) document.removeEventListener('keydown', old._keyHandler);
+    old.remove();
+  }
 
   var modal = document.createElement('div');
   modal.id = 'movie-modal';
   modal.className = 'movie-modal active';
-  modal.innerHTML = '<button class="modal-close" onclick="closeMovieModal()">&times;</button>' +
-    '<div style="display:flex;align-items:center;justify-content:center;height:100vh">' +
-    '<div class="spinner"></div></div>';
+  modal._previousOverflow = previousOverflow || '';
+  modal.innerHTML = movieModalCloseButton() +
+    '<div class="modal-loading" role="status" style="display:flex;flex-direction:column;gap:20px;align-items:center;justify-content:center;min-height:60vh;padding:32px;text-align:center">' +
+    '<div class="spinner" aria-hidden="true"></div><p>Cargando ficha del título…</p></div>';
   document.body.appendChild(modal);
   document.body.style.overflow = 'hidden';
 
   modal._keyHandler = function(e) { if (e.key === 'Escape') closeMovieModal(); };
   document.addEventListener('keydown', modal._keyHandler);
 
-  fetch('/api/movies/detail?id=' + encodeURIComponent(imdbId)).then(function(r) { return r.json(); }).then(function(m) {
-    if (!m || m.Response === 'False') {
-      modal.innerHTML = '<button class="modal-close" onclick="closeMovieModal()">&times;</button>' +
-        '<div style="color:#888;text-align:center;padding:100px">No se encontró información</div>';
+  modal._detailAbort = typeof AbortController === 'function' ? new AbortController() : null;
+  modal._detailTimer = setTimeout(function() {
+    modal._detailExpired = true;
+    if (modal._detailAbort) modal._detailAbort.abort();
+    if (modal._seasonAbort) modal._seasonAbort.abort();
+    showMovieDetailError(modal, imdbId, localFileName, localizedTitle, false);
+  }, 15000);
+  fetch('/api/movies/detail?id=' + encodeURIComponent(imdbId), modal._detailAbort ? { signal: modal._detailAbort.signal } : undefined)
+    .then(function(r) { if (r.ok === false) throw new Error('detail unavailable'); return r.json(); }).then(function(m) {
+    if (document.getElementById('movie-modal') !== modal || modal._detailExpired) return;
+    if (modal._detailTimer) clearTimeout(modal._detailTimer);
+    if (!m || m.Response === 'False' || !m.Title) {
+      showMovieDetailError(modal, imdbId, localFileName, localizedTitle, true);
       return;
     }
 
     var poster = sanitizeURL((m.Poster && m.Poster !== 'N/A') ? m.Poster : '');
-    var safeTitle = escapeAttr(m.Title || '');
     // Use localized title (from TMDB Spanish) for eMule searches
     var searchTitle = escapeAttr(localizedTitle || m.Title || '');
 
-    // Fetch HD backdrop from TMDB (OMDB poster is only 300px)
-    var backdropUrl = poster;
-    fetch('/api/tmdb/find/' + encodeURIComponent(imdbId) + '?external_source=imdb_id')
-      .then(function(r){return r.json();})
-      .then(function(find) {
-        var results = (find.movie_results || []).concat(find.tv_results || []);
-        if (results.length > 0 && results[0].backdrop_path) {
-          backdropUrl = 'https://image.tmdb.org/t/p/w1280' + results[0].backdrop_path;
-        } else if (results.length > 0 && results[0].poster_path) {
-          backdropUrl = 'https://image.tmdb.org/t/p/w780' + results[0].poster_path;
-        }
-        var el = document.querySelector('.modal-backdrop');
-        if (el) el.style.backgroundImage = 'url(' + sanitizeURL(backdropUrl) + ')';
-      }).catch(function(){});
+    var backdropUrl = sanitizeURL(m.Backdrop || '') || poster;
 
     // Build buttons — Play ALWAYS visible
     var buttons = '';
     var seriesUI = '';
     var movieYear = m.Year || '';
 
-    if (m.Type === 'series' && !localFileName) {
-      var tSeasons = parseInt(m.totalSeasons, 10) || 15;
-      var seasonOpts = '';
-      for(var s=1; s<=tSeasons; s++) seasonOpts += '<option value="'+s+'">Temporada '+s+'</option>';
-      var epOpts = '';
-      for(var ep=1; ep<=30; ep++) epOpts += '<option value="'+ep+'">Capítulo '+ep+'</option>';
-      seriesUI = '<div style="display:flex;gap:12px;margin-bottom:20px;max-width:360px;background:rgba(255,255,255,.03);padding:16px;border-radius:12px;border:1px solid rgba(255,255,255,.08)">' +
-        '<div style="flex:1"><label style="display:block;font-size:11px;text-transform:uppercase;color:#aaa;margin-bottom:6px;font-weight:600">Temporada</label>' +
-        '<select id="tv-season" style="width:100%;background:#111;color:#fff;border:1px solid #333;padding:8px 12px;border-radius:6px;outline:none;cursor:pointer">' + seasonOpts + '</select></div>' +
-        '<div style="flex:1"><label style="display:block;font-size:11px;text-transform:uppercase;color:#aaa;margin-bottom:6px;font-weight:600">Capítulo</label>' +
-        '<select id="tv-ep" style="width:100%;background:#111;color:#fff;border:1px solid #333;padding:8px 12px;border-radius:6px;outline:none;cursor:pointer">' + epOpts + '</select></div>' +
-        '</div>';
+    var isSeries = m.Type === 'series';
+    var seasons = isSeries ? orderedSeasons(m.seasons) : [];
+    var episodeBrowser = isSeries && !localFileName && seasons.length > 0;
+    if (isSeries && !localFileName) {
+      seriesUI = episodeBrowser ? '<section class="ep-browser" aria-labelledby="ep-heading">' +
+        '<div class="ep-head"><div><h2 class="ep-heading" id="ep-heading">Episodios</h2>' +
+        '<p class="ep-sub" id="tv-picker-status" role="status">Cargando episodios…</p></div>' +
+        '<button type="button" class="ep-whole" id="ep-whole-btn" onclick="searchWholeSeries()">Buscar serie completa</button></div>' +
+        '<div class="ep-seasons" id="ep-seasons" role="tablist" aria-label="Temporadas"></div>' +
+        '<div class="ep-sources ep-whole-sources" id="ep-whole-sources"></div>' +
+        '<button type="button" id="tv-season-retry" class="ep-retry" hidden>Reintentar episodios</button>' +
+        '<div id="ep-panel"></div></section>' :
+        '<p class="modal-availability">No hay temporadas verificadas en esta ficha. La búsqueda usará el título de la serie.</p>';
     }
 
     var playIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="margin-right:6px;vertical-align:-2px"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>';
@@ -2173,24 +2704,29 @@ function showMovieDetail(imdbId, localFileName, localizedTitle) {
     var listIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-2px"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg>';
 
     var tEsc = searchTitle;
-    var yArg = m.Type === 'series' ? '' : movieYear;
+    var yArg = m.Type === 'series' ? '' : escapeAttr(movieYear);
 
     // Store movie data globally so Mi Lista button avoids escaping issues
-    window._modalMovie = { imdbId: imdbId, title: m.Title || searchTitle, poster: (m.Poster && m.Poster !== 'N/A') ? m.Poster : '', year: movieYear };
+    var savedId = m.imdbID || m.catalogId || imdbId;
+    window._modalMovie = { imdbId: savedId, catalogId: m.catalogId || imdbId, type: m.Type === 'series' ? 'tv' : 'movie', title: m.Title || localizedTitle || '', poster: (m.Poster && m.Poster !== 'N/A') ? m.Poster : '', year: movieYear };
 
     if (localFileName) {
-      buttons += '<button class="modal-btn btn-play" id="modal-play-btn" onclick="playInModal(\'' + encodeURIComponent(localFileName) + '\')">' + playIcon + ' Reproducir local</button>';
+      buttons += '<button class="modal-btn btn-play" id="modal-play-btn" onclick="playInModal(\'' + escapeAttr(encodeURIComponent(localFileName)) + '\')">' + playIcon + ' Reproducir local</button>';
+    } else if (episodeBrowser) {
+      // Episode actions resolve the selected episode when clicked.
+      buttons += '<button class="modal-btn btn-play" id="modal-play-btn" disabled onclick="seriesHeroAction(\'play\')">' + playIcon + '<span class="btn-label" id="modal-play-label">Cargando episodios…</span></button>';
+      buttons += '<button class="modal-btn btn-download" id="modal-download-btn" disabled onclick="seriesHeroAction(\'download\')">' + dlIcon + '<span class="btn-label" id="modal-download-label">Descargar</span></button>';
     } else {
-      buttons += '<button class="modal-btn btn-play" id="modal-play-btn" onclick="smartPlay(window.getTvQuery(\'' + tEsc + '\'), \'' + yArg + '\')">' + playIcon + ' Reproducir</button>';
+      buttons += '<button class="modal-btn btn-play" id="modal-play-btn" onclick="smartPlay(window.getTvQuery(\'' + tEsc + '\'), \'' + yArg + '\')">' + playIcon + ' Buscar y reproducir</button>';
       buttons += '<button class="modal-btn btn-download" id="modal-download-btn" onclick="smartDownload(window.getTvQuery(\'' + tEsc + '\'), \'' + yArg + '\')">' + dlIcon + ' Descargar</button>';
     }
-    buttons += '<button class="modal-btn btn-trailer" id="trailer-btn" onclick="loadTrailer(\'' + safeTitle + ' ' + movieYear + '\')">' + trIcon + ' Tráiler</button>';
+    buttons += '<button class="modal-btn btn-trailer" id="trailer-btn" onclick="loadTrailer(\'' + escapeAttr((m.Title || '') + ' ' + movieYear) + '\')">' + trIcon + ' Tráiler</button>';
     if (!localFileName) {
-      buttons += '<button class="modal-btn btn-emule" onclick="startEmuleSearch(window.getTvQuery(\'' + tEsc + '\'), \'' + yArg + '\')">' + searchIcon + ' Búsqueda avanzada</button>';
+      buttons += '<button class="modal-btn btn-emule" id="modal-emule-btn"' + (episodeBrowser ? ' disabled' : '') + ' onclick="startEmuleSearch(window.getTvQuery(\'' + tEsc + '\'), \'' + yArg + '\')">' + searchIcon + ' Fuentes</button>';
     }
     // Mi Lista — usa global _modalMovie, sin infierno de escaping
-    var inList = typeof isInMyList === 'function' && isInMyList(imdbId);
-    buttons += '<button class="modal-btn btn-list' + (inList ? ' btn-list-active' : '') + '" id="modal-list-btn" onclick="toggleMyListBtn(this)">' + listIcon + (inList ? ' Quitar de Mi Lista' : ' Mi Lista') + '</button>';
+    var inList = typeof isInMyList === 'function' && isInMyList(savedId);
+    buttons += '<button class="modal-btn btn-list' + (inList ? ' btn-list-active' : '') + '" id="modal-list-btn" aria-pressed="' + Boolean(inList) + '" aria-label="' + (inList ? 'Guardado. Quitar de Guardados' : 'Guardar en Biblioteca') + '" title="' + (inList ? 'Quitar de Guardados' : 'Guardar en Biblioteca') + '" onclick="toggleMyListBtn(this)">' + listIcon + (inList ? ' Guardado' : ' Guardar') + '</button>';
 
     // Build detail cards
     var details = '';
@@ -2203,7 +2739,8 @@ function showMovieDetail(imdbId, localFileName, localizedTitle) {
 
     // Meta badges
     var meta = '';
-    if (m.imdbRating && m.imdbRating !== 'N/A') meta += '<span class="modal-rating"><svg width="12" height="12" viewBox="0 0 24 24" fill="#f5c518" stroke="none" style="vertical-align:-1px;margin-right:3px"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>' + escapeHTML(m.imdbRating) + '</span>';
+    var rating = m.Rating || m.imdbRating;
+    if (rating && rating !== 'N/A') meta += '<span class="modal-rating"><svg width="12" height="12" viewBox="0 0 24 24" fill="#f5c518" stroke="none" style="vertical-align:-1px;margin-right:3px"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>' + escapeHTML(rating) + ' · ' + escapeHTML(m.RatingSource || 'IMDb') + '</span>';
     if (m.Year) meta += '<span class="modal-badge">' + escapeHTML(m.Year) + '</span>';
     if (m.Runtime && m.Runtime !== 'N/A') meta += '<span class="modal-badge">' + escapeHTML(m.Runtime) + '</span>';
     if (m.Rated && m.Rated !== 'N/A') meta += '<span class="modal-badge">' + escapeHTML(m.Rated) + '</span>';
@@ -2213,90 +2750,101 @@ function showMovieDetail(imdbId, localFileName, localizedTitle) {
       });
     }
 
-    modal.innerHTML = '<button class="modal-close" onclick="closeMovieModal()">&times;</button>' +
+    var seasonCount = seasons.filter(function(s) { return Number(s.number) > 0; }).length;
+    var longPlot = String(m.Plot || '').length > 320;
+    var kicker = isSeries ? 'Serie' + (seasonCount ? ' · ' + seasonCount + (seasonCount === 1 ? ' temporada' : ' temporadas') : '') : 'Película';
+    var availability = localFileName ? 'Archivo disponible en tu biblioteca.'
+      : episodeBrowser ? 'Elige un episodio abajo. La reproducción depende de las fuentes de la red y puede iniciar una descarga.'
+      : 'La reproducción depende de las fuentes disponibles y puede iniciar una descarga.';
+
+    modal.className = 'movie-modal active ' + (backdropUrl ? 'has-artwork' : 'no-artwork') + (isSeries ? ' is-series' : '');
+    modal.innerHTML = movieModalCloseButton() +
       '<div id="modal-player-zone" style="display:none"></div>' +
       '<div id="modal-info-zone">' +
-        '<div class="modal-backdrop" style="background-image:url(' + escapeHTML(poster) + ')"></div>' +
+        (backdropUrl ? '<div class="modal-backdrop" style="background-image:url(' + escapeHTML(backdropUrl) + ')"></div>' : '') +
         '<div class="modal-content">' +
-          '<h1 class="modal-title">' + escapeHTML(m.Title || '') + '</h1>' +
-          '<div class="modal-meta">' + meta + '</div>' +
-          seriesUI +
-          '<div class="modal-buttons">' + buttons + '</div>' +
+          '<div class="title-hero">' +
+            '<p class="title-kicker">' + escapeHTML(kicker) + '</p>' +
+            '<h1 class="modal-title">' + escapeHTML(m.Title || '') + '</h1>' +
+            '<div class="modal-meta">' + meta + '</div>' +
+            '<p class="modal-plot' + (longPlot ? ' is-clamped' : '') + '">' + escapeHTML(m.Plot || 'Sin sinopsis disponible') + '</p>' +
+            (longPlot ? '<button type="button" class="plot-more" onclick="this.previousElementSibling.classList.remove(\'is-clamped\');this.remove()">Leer más</button>' : '') +
+            '<div class="modal-buttons">' + buttons + '</div>' +
+            '<p class="modal-availability">' + availability + '</p>' +
+          '</div>' +
           '<div id="trailer-container"></div>' +
-          '<p class="modal-plot">' + escapeHTML(m.Plot || 'Sin sinopsis disponible') + '</p>' +
-          '<div class="modal-details">' + details + '</div>' +
+          seriesUI +
+          (details ? '<section class="title-details" aria-labelledby="title-details-heading"><h2 class="title-section-heading" id="title-details-heading">Detalles</h2>' +
+            '<div class="modal-details">' + details + '</div></section>' : '') +
         '</div>' +
       '</div>';
-    // Parchar sinopsis con versión en español de TMDB
-    patchSpanishPlot(imdbId);
+    if (episodeBrowser) configureSeriesPicker(modal, m, localizedTitle || m.Title || '');
 
   }).catch(function() {
-    modal.innerHTML = '<button class="modal-close" onclick="closeMovieModal()">&times;</button>' +
-      '<div style="color:#e74c3c;text-align:center;padding:100px">Error de conexión</div>';
+    if (modal._detailTimer) clearTimeout(modal._detailTimer);
+    showMovieDetailError(modal, imdbId, localFileName, localizedTitle, false);
   });
 }
 
 window.getTvQuery = function(baseTitle) {
-  var s = document.getElementById('tv-season');
-  var e = document.getElementById('tv-ep');
-  if (s && e) {
-    var sv = parseInt(s.value, 10) || 1;
-    var ev = parseInt(e.value, 10) || 1;
-    var sf = sv < 10 ? '0' + sv : '' + sv;
-    var ef = ev < 10 ? '0' + ev : '' + ev;
-    return baseTitle + ' ' + sf + 'x' + ef;  // formato: 01x01 (estándar español en ed2k)
-  }
-  return baseTitle;
+  var state = seriesState();
+  var ep = state && !state.loading ? findEpisode(state, state.episode) : null;
+  return ep && !isUpcoming(ep) ? episodeQuery(baseTitle, state.season, Number(ep.number)) : baseTitle;
 };
 
 function closeMovieModal() {
-  // Save playback position for resume
-  if (video && window._cinemaFileName) {
-    var currentReal = (window._cinemaSeekOffset || 0) + (video.currentTime || 0);
-    if (currentReal > 10) {
-      var resumeData = JSON.parse(localStorage.getItem('ese_resume') || '{}');
-      resumeData[window._cinemaFileName] = { time: Math.floor(currentReal), ts: Date.now() };
-      localStorage.setItem('ese_resume', JSON.stringify(resumeData));
-    }
-  }
-  // ALWAYS stop video
+  if (typeof stopCinemaPlayback === 'function') stopCinemaPlayback();
+  if (typeof stopSmartPlay === 'function') stopSmartPlay();
+  // Fallback also covers a partially initialized player.
   try { video.pause(); video.removeAttribute('src'); video.load(); } catch(e) {}
-  if (abortController) { try { abortController.abort(); } catch(e) {} }
+  if (typeof abortController !== 'undefined' && abortController) { try { abortController.abort(); } catch(e) {} }
   try { video.querySelectorAll('track').forEach(function(t) { t.remove(); }); } catch(e) {}
 
   var modal = document.getElementById('movie-modal');
   if (modal) {
+    if (modal._detailAbort) modal._detailAbort.abort();
+    if (modal._seasonAbort) modal._seasonAbort.abort();
+    if (modal._detailTimer) clearTimeout(modal._detailTimer);
     if (modal._keyHandler) document.removeEventListener('keydown', modal._keyHandler);
     modal.remove();
   }
-  document.body.style.overflow = '';
+  document.body.style.overflow = modal && modal._previousOverflow !== undefined ? modal._previousOverflow : '';
+  if (modal && window._detailReturnTo) {
+    var returnTo = window._detailReturnTo;
+    window._detailReturnTo = null;
+    if (/^\/(explore|search|mylist)(\?[^#\r\n]*)?$/.test(returnTo)) window.location.replace(returnTo);
+  }
 }
 
 // ── Búsqueda avanzada en eMule ─────────────────────────────────────────────────
-function startEmuleSearch(title, year) {
-  var searchDiv = document.getElementById('trailer-container');
+// targetId lets an episode row show its own results; the hero uses trailer-container.
+function startEmuleSearch(title, year, targetId) {
+  var searchDiv = document.getElementById(targetId || 'trailer-container');
   if (!searchDiv) { smartSearchOverlay(title); return; }
 
   var searchQuery = title + (year ? ' ' + year : '');
-  searchDiv.innerHTML = '<div style="padding:20px">' +
-    '<h3 style="color:#ff6b35;margin-bottom:12px"> Buscando en eMule: "' + escapeHTML(searchQuery) + '"</h3>' +
-    '<div style="display:flex;align-items:center;gap:12px"><div class="spinner"></div>' +
-    '<span style="color:#888">Buscando fuentes... (esto puede tardar unos segundos)</span></div></div>';
+  var request = (searchDiv._searchRequest || 0) + 1;
+  searchDiv._searchRequest = request;
+  function current() { return searchDiv._searchRequest === request && document.getElementById(targetId || 'trailer-container') === searchDiv; }
+  function panel(body) {
+    return '<div class="src-panel"><div class="src-head"><p class="src-query">Búsqueda en eMule: <strong>' + escapeHTML(searchQuery) + '</strong></p>' +
+      '<button type="button" class="src-close" aria-label="Cerrar resultados" onclick="this.closest(\'.src-panel\').remove()">&times;</button></div>' + body + '</div>';
+  }
+  searchDiv.innerHTML = panel('<div class="src-state" role="status"><div class="spinner" aria-hidden="true"></div><span>Buscando fuentes… puede tardar unos segundos.</span></div>');
 
   fetch('/api/emule/search?q=' + encodeURIComponent(searchQuery)).then(function(r) { return r.json(); }).then(function(data) {
+    if (!current()) return;
     if (!data.success) {
-      searchDiv.innerHTML = '<div style="padding:20px">' +
-        '<p style="color:#e74c3c"> ' + escapeHTML(data.error || 'Error de conexión') + '</p></div>';
+      searchDiv.innerHTML = panel('<p class="src-state src-error" role="status">' + escapeHTML(data.error || 'Error de conexión') + '</p>');
       return;
     }
 
     if (!data.results || data.results.length === 0) {
-      searchDiv.innerHTML = '<div style="padding:20px">' +
-        '<p style="color:#888">No se encontraron resultados para "' + escapeHTML(title) + '"</p></div>';
+      searchDiv.innerHTML = panel('<p class="src-state" role="status">No se encontraron fuentes para «' + escapeHTML(title) + '». Prueba más tarde o con otra temporada.</p>');
       return;
     }
 
-    var html = '<div style="padding:20px"><h3 style="color:#ff6b35;margin-bottom:16px"> Fuentes encontradas (' + data.results.length + ')</h3>' +
+    var html = '<div class="src-count" role="status">' + data.results.length + (data.results.length === 1 ? ' fuente encontrada' : ' fuentes encontradas') + '</div>' +
       '<div class="source-results">';
 
     data.results.forEach(function(r, i) {
@@ -2313,25 +2861,26 @@ function startEmuleSearch(title, year) {
 
       var qualityBadge = r.quality !== 'unknown' ? '<span class="source-badge badge-quality">' + safeQuality.toUpperCase() + '</span>' : '';
       var langBadge = r.language !== 'unknown' ? '<span class="source-badge badge-lang">' + safeLang + '</span>' : '';
-      var scoreBadge = '<span class="source-badge badge-score">⭐ ' + safeScore + '</span>';
-      var sourcesBadge = '<span class="source-badge badge-sources">' + safeSources + '/' + safeComplete + ' fuentes</span>';
-      var fakeBadge = r.isFake ? '<span class="source-badge" style="background:#e74c3c">FAKE</span>' : '';
+      var scoreBadge = '<span class="source-badge badge-score">Puntuación ' + safeScore + '</span>';
+      var sourcesBadge = '<span class="source-badge badge-sources">' + safeSources + ' fuentes · ' + safeComplete + ' completas</span>';
+      var fakeBadge = r.isFake ? '<span class="source-badge badge-fake">Posible falso</span>' : '';
 
-      html += '<div class="source-item">' +
-        '<div class="source-name">' + (i === 0 ? ' ' : '') + safeFileName + '<br><span style="color:#666;font-size:11px">' + safeSizeMB + ' MB</span></div>' +
+      html += '<div class="source-item' + (i === 0 ? ' is-best' : '') + '">' +
+        '<div class="source-name">' + (i === 0 ? '<span class="source-best">Mejor opción</span>' : '') + '<span class="source-file">' + safeFileName + '</span><span class="source-size">' + safeSizeMB + ' MB</span></div>' +
         '<div class="source-meta">' + qualityBadge + langBadge + sourcesBadge + scoreBadge + fakeBadge + '</div>' +
         '<div class="source-actions">' +
-          '<button class="source-btn source-btn-play" onclick="streamSource(\'' + safeHash + '\', \'' + safeTitleAttr + '\')" title="Reproducir ahora">▶ Reproducir</button>' +
-          '<button class="source-btn source-btn-dl" onclick="downloadSource(\'' + safeHash + '\')" title="Descargar para ver luego"> Descargar</button>' +
+          '<button type="button" class="source-btn source-btn-play" onclick="streamSource(\'' + safeHash + '\', \'' + safeTitleAttr + '\')" title="Reproducir ahora">Reproducir</button>' +
+          '<button type="button" class="source-btn source-btn-dl" onclick="downloadSource(\'' + safeHash + '\')" title="Descargar para ver luego">Descargar</button>' +
         '</div>' +
       '</div>';
     });
 
-    html += '</div></div>';
-    searchDiv.innerHTML = html;
+    html += '</div>';
+    searchDiv.innerHTML = panel(html);
 
   }).catch(function(err) {
-    searchDiv.innerHTML = '<div style="padding:20px"><p style="color:#e74c3c">Error: ' + escapeHTML(err.message) + '</p></div>';
+    if (!current()) return;
+    searchDiv.innerHTML = panel('<p class="src-state src-error" role="status">Error: ' + escapeHTML(err.message) + '</p>');
   });
 }
 
@@ -2363,8 +2912,13 @@ function downloadSource(hash) {
 }
 
 function streamSource(hash, movieTitle) {
-  if (!hash) return;
+  var modal = document.getElementById('movie-modal');
+  if (!hash || !modal) return;
+  var operation = (modal._streamRequest || 0) + 1;
+  modal._streamRequest = operation;
+  function isCurrent() { return document.getElementById('movie-modal') === modal && modal._streamRequest === operation; }
   fetch('/api/emule/download?hash=' + encodeURIComponent(hash), { headers: { 'X-Requested-With': 'eSE' } }).then(function(r) { return r.json(); }).then(function(data) {
+    if (!isCurrent()) return;
     if (data.success) {
       showNotification(' Descarga iniciada — preparando streaming...');
 
@@ -2380,10 +2934,8 @@ function streamSource(hash, movieTitle) {
           '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:20px">' +
             '<div class="spinner" style="width:60px;height:60px;border-width:4px"></div>' +
             '<h2 style="color:#fff;font-size:24px;font-weight:600" id="smart-play-title">Monitorizando velocidad...</h2>' +
-            '<p style="color:#888;font-size:14px;text-align:center;max-width:400px" id="smart-play-status">Esperando que eMule reciba datos... (15s)</p>' +
-            '<div style="width:300px;height:4px;background:#222;border-radius:2px;overflow:hidden;margin-top:8px">' +
-              '<div id="smart-play-progress" style="width:40%;height:100%;background:linear-gradient(90deg,#ff6b35,#ff2d78);transition:width .5s;border-radius:2px"></div>' +
-            '</div>' +
+            '<p role="status" style="color:#b9bac6;font-size:14px;text-align:center;max-width:400px" id="smart-play-status">Esperando a que eMule reciba datos…</p>' +
+            '<div id="smart-play-progress" hidden></div>' +
           '</div>' +
         '</div>';
       }
@@ -2394,6 +2946,7 @@ function streamSource(hash, movieTitle) {
       showNotification(' Error: ' + (data.error || 'No se pudo iniciar'));
     }
   }).catch(function() {
+    if (!isCurrent()) return;
     showNotification(' Error de conexión');
   });
 }
@@ -2420,9 +2973,34 @@ setTimeout(loadTrendingMovies, 500);
 
 // ==== smart_play.js ====
 // smart_play.js — smartPlay, trySmartSource, monitorForFile
+var _smartEpoch = 0;
+var _smartTimers = [];
+var _smartPolls = [];
+function stopSmartPlay() {
+  _smartEpoch++;
+  _smartTimers.forEach(clearTimeout); _smartTimers = [];
+  _smartPolls.forEach(clearInterval); _smartPolls = [];
+}
+function smartPlayGuard() {
+  var epoch = _smartEpoch;
+  var modal = document.getElementById('movie-modal');
+  var screen = document.getElementById('smart-play-title');
+  return function() {
+    return !!modal && !!screen && epoch === _smartEpoch &&
+      document.getElementById('movie-modal') === modal && document.getElementById('smart-play-title') === screen;
+  };
+}
+function smartLater(callback, delay, alive) {
+  var timer = setTimeout(function() {
+    _smartTimers = _smartTimers.filter(function(id) { return id !== timer; });
+    if (alive()) callback();
+  }, delay);
+  _smartTimers.push(timer);
+}
 
 // ── Smart Play: evalúa → decide → actúa ───────────────────────────────────────
 function smartPlay(movieTitle, movieYear) {
+  stopSmartPlay();
   var playerZone = document.getElementById('modal-player-zone');
   var infoZone = document.getElementById('modal-info-zone');
   if (!playerZone) return;
@@ -2454,6 +3032,7 @@ function smartPlay(movieTitle, movieYear) {
   var progressEl = document.getElementById('smart-play-progress');
   var titleEl = document.getElementById('smart-play-title');
   var actionsEl = document.getElementById('smart-play-actions');
+  var alive = smartPlayGuard();
 
   function updateStatus(msg, pct) {
     if (statusEl) statusEl.textContent = msg;
@@ -2505,6 +3084,7 @@ function smartPlay(movieTitle, movieYear) {
   // pointless new Phase 2 search when the bytes are already on disk.
   fetch('/api/v1/lifecycle').then(function(r){return r.json();}).catch(function(){return { epoch: 0, restartedAt: 0 };})
     .then(function(lc) {
+      if (!alive()) return;
       var epochChanged = (window._emuleEpoch !== undefined && window._emuleEpoch !== lc.epoch);
       window._emuleEpoch = lc.epoch;
       var justRestarted = epochChanged && (Date.now() - lc.restartedAt < 60000);
@@ -2513,6 +3093,7 @@ function smartPlay(movieTitle, movieYear) {
         fetch('/api/stream/completed/list').then(function(r){return r.json();}).catch(function(){return [];}),
         fetch('/api/emule/downloads').then(function(r){return r.json();}).catch(function(){return [];})
       ]).then(function(results) {
+        if (!alive()) return;
         var completed = results[0] || [];
         var downloads = results[1] || [];
 
@@ -2521,7 +3102,7 @@ function smartPlay(movieTitle, movieYear) {
           if (matchTitle(completed[i].fileName)) {
             updateStatus('Archivo encontrado: ' + completed[i].fileName, 100);
             if (titleEl) titleEl.textContent = 'Listo para reproducir';
-            (function(fn){ setTimeout(function() { playInModal(encodeURIComponent(fn)); }, 1000); })(completed[i].fileName);
+            (function(fn){ smartLater(function() { playInModal(encodeURIComponent(fn)); }, 1000, alive); })(completed[i].fileName);
             return;
           }
         }
@@ -2533,16 +3114,17 @@ function smartPlay(movieTitle, movieYear) {
         for (var j = 0; j < downloads.length; j++) {
           var dl = downloads[j];
           if (!matchTitle(dl.fileName)) continue;
-          var isPlayable = (dl.active && dl.sizeMB > 50) ||
-                           (justRestarted && dl.sizeMB > 50) ||
-                           (dl.sizeMB > 300);
+          var receivedMB = Number.isFinite(dl.completedBytes) ? dl.completedBytes / 1048576 : 0;
+          var isPlayable = (dl.active && receivedMB > 50) ||
+                           (justRestarted && receivedMB > 50) ||
+                           (receivedMB > 300);
           if (isPlayable) {
             var msg = justRestarted
               ? 'eMule acaba de reiniciar — usando descarga existente'
               : (dl.active ? 'Descarga en progreso' : 'Reanudando descarga existente');
             updateStatus(msg + ': ' + dl.fileName + ' (' + dl.sizeMB + ' MB)', 80);
             if (titleEl) titleEl.textContent = justRestarted ? 'Reanudando' : 'Datos disponibles';
-            (function(pf, fn){ setTimeout(function() { playPartFile(pf, fn); }, 2000); })(dl.partFile, dl.fileName);
+            (function(pf, fn){ smartLater(function() { playPartFile(pf, fn); }, 2000, alive); })(dl.partFile, dl.fileName);
             return;
           }
         }
@@ -2554,6 +3136,7 @@ function smartPlay(movieTitle, movieYear) {
     fetch('/api/emule/smartsearch?q=' + encodeURIComponent(movieTitle) + (movieYear ? '&year=' + movieYear : ''))
       .then(function(r) { return r.json(); })
       .then(function(data) {
+        if (!alive()) return;
         if (!data.success) {
           hideSpinner();
           if (titleEl) titleEl.textContent = 'Error de conexion';
@@ -2563,7 +3146,7 @@ function smartPlay(movieTitle, movieYear) {
           if (data.reason === 'webserver_down') {
             actions.push({ text: 'He abierto eMule', primary: true, action: function() {
               updateStatus('Reintentando...', 10);
-              setTimeout(function() { smartPlay(movieTitle, movieYear); }, 500);
+              smartLater(function() { smartPlay(movieTitle, movieYear); }, 500, alive);
             }});
           } else if (data.reason === 'password_mismatch') {
             actions.push({ text: 'Resincronizar', primary: true, action: function() {
@@ -2571,6 +3154,7 @@ function smartPlay(movieTitle, movieYear) {
               fetch('/api/emule/resync', { method: 'POST' })
                 .then(function(r) { return r.json(); })
                 .then(function(d) {
+                  if (!alive()) return;
                   if (d.success) smartPlay(movieTitle, movieYear);
                   else updateStatus('No se pudo resincronizar: ' + (d.error || ''), 0);
                 });
@@ -2608,6 +3192,7 @@ function smartPlay(movieTitle, movieYear) {
         }
       })
       .catch(function(err) {
+        if (!alive()) return;
         hideSpinner();
         if (titleEl) titleEl.textContent = 'Error';
         updateStatus('Error: ' + err.message, 0);
@@ -2684,6 +3269,9 @@ if (typeof escapeHTML !== 'function') {
 
 // ── Prueba una fuente concreta ────────────────────────────────────────────────
 function trySmartSource(index) {
+  stopSmartPlay();
+  var alive = smartPlayGuard();
+  if (!alive()) return;
   var results = window._smartPlayResults || [];
   if (index >= results.length) {
     var titleEl = document.getElementById('smart-play-title');
@@ -2720,7 +3308,7 @@ function trySmartSource(index) {
   if (statusEl) statusEl.textContent = (best.quality || '?').toUpperCase() + ' | ' + (best.language || '?') + ' | ' + best.sources + '/' + best.completeSources + ' fuentes | Score: ' + best.score;
   if (progressEl) progressEl.style.width = '40%';
 
-  setTimeout(function() {
+  smartLater(function() {
     if (statusEl) statusEl.textContent = 'Iniciando descarga: ' + best.fileName.substring(0, 50) + '...';
     // Pass exact name+size so eMule can add by full ed2k link even if this hash
     // is no longer in its live search list (multi-variant search wipes it).
@@ -2729,23 +3317,27 @@ function trySmartSource(index) {
     fetch(dlUrl, { headers: { 'X-Requested-With': 'eSE' } })
       .then(function(r) { return r.json(); })
       .then(function(dlData) {
+        if (!alive()) return;
         if (dlData.success) {
           if (progressEl) progressEl.style.width = '60%';
           if (titleEl) titleEl.textContent = 'Monitorizando velocidad...';
           monitorForFile(window._smartPlayTitle, best.fileName, best.sizeMB || 0, index);
         } else {
           if (statusEl) statusEl.textContent = 'Error al iniciar descarga';
-          setTimeout(function() { trySmartSource(index + 1); }, 2000);
+          smartLater(function() { trySmartSource(index + 1); }, 2000, alive);
         }
       })
       .catch(function() {
-        setTimeout(function() { trySmartSource(index + 1); }, 2000);
+        if (alive()) smartLater(function() { trySmartSource(index + 1); }, 2000, alive);
       });
-  }, 1500);
+  }, 1500, alive);
 }
 
 // ── Monitoriza la descarga hasta que hay buffer suficiente ────────────────────
 function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) {
+  stopSmartPlay();
+  var alive = smartPlayGuard();
+  if (!alive()) return;
   var statusEl = document.getElementById('smart-play-status');
   var progressEl = document.getElementById('smart-play-progress');
   var titleEl = document.getElementById('smart-play-title');
@@ -2778,7 +3370,7 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) 
       buttons.push({ text: 'Probar otra fuente (' + remaining + ' disponibles)', primary: true, action: onNextSource });
     }
     buttons.push({
-      text: remaining === 0 ? 'Descargar y avisar cuando este lista' : 'Dejar descargando',
+      text: 'Dejar descargando',
       primary: remaining === 0,
       action: function() { backToDetail(); showNotification('La descarga continua en segundo plano'); }
     });
@@ -2802,9 +3394,11 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) 
   }
 
   var checker = setInterval(function() {
+    if (!alive()) { clearInterval(checker); return; }
     checkCount++;
 
     fetch('/api/stream/completed/list').then(function(r) { return r.json(); }).then(function(files) {
+      if (!alive()) return;
       if (files && files.length) {
         for (var i = 0; i < files.length; i++) {
           if (matchTitle(files[i].fileName)) {
@@ -2812,13 +3406,14 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) 
             if (progressEl) progressEl.style.width = '100%';
             if (titleEl) titleEl.textContent = 'Listo para reproducir';
             if (statusEl) statusEl.textContent = files[i].fileName;
-            setTimeout(function() { playInModal(encodeURIComponent(files[i].fileName)); }, 1500);
+            smartLater(function() { playInModal(encodeURIComponent(files[i].fileName)); }, 1500, alive);
             return;
           }
         }
       }
 
       fetch('/api/emule/downloads').then(function(r2) { return r2.json(); }).then(function(downloads) {
+        if (!alive()) return;
         if (downloads && downloads.length) {
           for (var j = 0; j < downloads.length; j++) {
             var dl = downloads[j];
@@ -2848,9 +3443,9 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) 
             if (waitingSec >= BUFFER_WAIT_SEC && activeChecks >= 3) {
               clearInterval(checker);
               if (progressEl) progressEl.style.width = '100%';
-              if (titleEl) titleEl.textContent = 'Reproduciendo';
-              if (statusEl) statusEl.textContent = 'Buffer listo';
-              setTimeout(function() { playPartFile(dl.partFile, dl.fileName); }, 1000);
+              if (titleEl) titleEl.textContent = 'Preparando reproducción';
+              if (statusEl) statusEl.textContent = 'Comprobando los datos disponibles';
+              smartLater(function() { playPartFile(dl.partFile, dl.fileName); }, 1000, alive);
               return;
             }
 
@@ -2885,6 +3480,7 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) 
       }).catch(function() {});
     }).catch(function() {});
   }, 5000);
+  _smartPolls.push(checker);
 }
 
 
@@ -2899,14 +3495,23 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) 
 function fetchLocalPosters() {
   var cards = document.querySelectorAll('.card[data-title]');
   cards.forEach(function(card) {
-    var raw = card.getAttribute('data-title');
+    var raw = decodeURIComponent(card.getAttribute('data-filename') || '') || card.getAttribute('data-title');
     if (!raw) return;
 
+    // Keep episodic filenames intact until a series/episode matcher is available.
+    // A movie search must never turn a Breaking Bad episode into El Camino.
+    if (/\bS\d{1,2}E\d{1,3}\b|\b\d{1,2}x\d{2,3}\b/i.test(raw)) return;
+    var fileYear = raw.match(/\b((?:19|20)\d{2})\b/);
+    card._posterYear = fileYear ? fileYear[1] : '';
+
     // Check if filename has embedded TMDB ID (e.g., [tmdbid-1297842])
-    var tmdbId = (window._tmdbFromFilename && window._tmdbFromFilename[raw]) || null;
+    var embeddedId = raw.match(/\[tmdbid[- ]?(\d+)\]/i);
+    var tmdbId = embeddedId ? embeddedId[1] : null;
 
     // Smart filename cleaning for P2P files
     var candidates = extractMovieTitles(raw);
+    var displayTitle = card.getAttribute('data-title');
+    if (displayTitle && candidates.indexOf(displayTitle) === -1) candidates.unshift(displayTitle);
 
     if (tmdbId) {
       // Direct TMDB lookup — guaranteed accurate
@@ -2931,16 +3536,14 @@ function fetchLocalPosters() {
 }
 
 function tryTMDBCandidate(candidates, idx, card) {
-  if (idx >= candidates.length) {
-    tryOMDbFallback(candidates, card);
-    return;
-  }
-  var query = candidates[idx];
-  fetch('/api/tmdb/search/movie?language=es-ES&query=' + encodeURIComponent(query))
+  if (idx >= candidates.length) return;
+  var query = candidates[idx].replace(/\b(?:19|20)\d{2}\b/g, '').trim();
+  fetch('/api/tmdb/search/movie?language=es-ES&query=' + encodeURIComponent(query) +
+    (card._posterYear ? '&primary_release_year=' + card._posterYear : ''))
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      if (data.results && data.results.length > 0) {
-        var m = data.results[0];
+      var m = matchLibraryMovie(data.results, candidates, card._posterYear);
+      if (m) {
         // Get IMDB ID for detailed modal
         fetch('/api/tmdb/movie/' + encodeURIComponent(m.id) + '/external_ids')
           .then(function(r) { return r.json(); })
@@ -2963,18 +3566,45 @@ function tryTMDBCandidate(candidates, idx, card) {
     }).catch(function() { tryTMDBCandidate(candidates, idx + 1, card); });
 }
 
-function tryOMDbFallback(candidates, card) {
-  if (!candidates || candidates.length === 0) return;
-  fetch('/api/movies/fetchinfo?title=' + encodeURIComponent(candidates[0]))
-    .then(function(r) { return r.json(); })
-    .then(function(info) {
-      if (info && info.Poster && info.Poster !== 'N/A') {
-        applyPosterToCard(card, {
-          poster: info.Poster, title: info.Title,
-          year: info.Year, imdbId: info.imdbID
-        });
-      }
-    }).catch(function() {});
+function normalizeLibraryText(value) {
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function matchLibraryMovie(results, candidates, year) {
+  var normalizeTitle = function(value) {
+    return normalizeLibraryText(value).replace(/\b(?:19|20)\d{2}\b/g, '').replace(/[^a-z0-9]/g, '');
+  };
+  var names = candidates.map(normalizeTitle).filter(Boolean);
+  var matches = (Array.isArray(results) ? results : []).filter(function(movie) {
+    if (year && String(movie.release_date || '').slice(0, 4) !== year) return false;
+    return [movie.title, movie.original_title].some(function(title) {
+      return title && names.indexOf(normalizeTitle(title)) !== -1;
+    });
+  });
+  // Ambiguous titles stay attached to the original file, not the first result.
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function filterLibrary(query) {
+  var count = 0;
+  var cards = document.querySelectorAll('#library-grid .card');
+  var term = normalizeLibraryText(query).trim();
+  cards.forEach(function(card) {
+    var text = (card.getAttribute('data-title') || '') + ' ' +
+      (card.getAttribute('data-display-title') || '') + ' ' +
+      decodeURIComponent(card.getAttribute('data-filename') || '');
+    card.hidden = normalizeLibraryText(text).indexOf(term) === -1;
+    if (!card.hidden) count++;
+  });
+  var status = document.getElementById('library-count');
+  if (status) status.textContent = term ? count + ' de ' + cards.length + ' archivos' : cards.length + ' archivos disponibles';
+  var empty = document.getElementById('library-empty');
+  if (empty) empty.hidden = count > 0;
+}
+
+function clearLibraryFilter() {
+  var input = document.getElementById('library-query');
+  if (input) { input.value = ''; filterLibrary(''); input.focus(); }
 }
 
 function applyPosterToCard(card, info) {
@@ -2986,56 +3616,49 @@ function applyPosterToCard(card, info) {
         posterDiv.style.backgroundImage = 'url(' + posterUrl.replace(/[()]/g, '') + ')';
         posterDiv.style.backgroundSize = 'cover';
         posterDiv.style.backgroundPosition = 'center';
+        posterDiv.classList.add('has-poster');
         var playIcon = posterDiv.querySelector('.play-icon');
-        if (playIcon) playIcon.style.display = 'none';
+        if (playIcon) playIcon.style.display = '';
       }
     }
   }
-  if (info.imdbId) {
-    card.setAttribute('data-imdbid', info.imdbId);
-    var origOnclick = card.getAttribute('onclick') || '';
-    var fnMatch = origOnclick.match(/playCompleted\('([^']+)'\)/);
-    var safeTitle = escapeAttr(info.title || '');
-    var safeImdb = escapeAttr(info.imdbId || '');
-    if (fnMatch) {
-      var localFile = escapeAttr(decodeURIComponent(fnMatch[1]));
-      card.setAttribute('onclick', "showMovieDetail('" + safeImdb + "','" + localFile + "','" + safeTitle + "')");
-    } else {
-      card.setAttribute('onclick', "showMovieDetail('" + safeImdb + "',null,'" + safeTitle + "')");
-    }
-  }
+  if (info.imdbId) card.setAttribute('data-imdbid', info.imdbId);
+  if (info.title) card.setAttribute('data-display-title', info.title);
   var titleEl = card.querySelector('.card-title');
   if (titleEl && info.title) titleEl.textContent = info.title + (info.year ? ' (' + info.year + ')' : '');
+  var libraryQuery = document.getElementById('library-query');
+  if (libraryQuery && libraryQuery.value) filterLibrary(libraryQuery.value);
 }
 
-// ── Barra de progreso de visionado (Netflix-style) ────────────────────────────
+// Local file names are data, never executable inline JavaScript.
+function playLibraryCard(card) {
+  var encoded = card.getAttribute('data-filename') || '';
+  var completed = card.getAttribute('data-completed') === 'true';
+  var imdb = card.getAttribute('data-imdbid');
+  if (imdb) {
+    showMovieDetail(imdb, completed ? decodeURIComponent(encoded) : null,
+      card.getAttribute('data-display-title') || card.getAttribute('data-title'));
+  } else if (completed) {
+    playCompleted(encoded);
+  } else {
+    playVideo(card.getAttribute('data-part'));
+  }
+}
+
+// Resume positions are exact times; do not invent a percentage from a 2h film.
 function addWatchProgressBars() {
-  var resumeData = JSON.parse(localStorage.getItem('ese_resume') || '{}');
-  var cards = document.querySelectorAll('.card[data-title]');
-  cards.forEach(function(card) {
-    var onclick = card.getAttribute('onclick') || '';
-    var fnMatch = onclick.match(/playCompleted\('([^']+)'\)/) || onclick.match(/showMovieDetail\('[^']*','([^']+)'\)/);
-    if (!fnMatch) return;
-    var fileName = decodeURIComponent(fnMatch[1]);
-    var data = resumeData[fileName];
-    if (!data || data.time < 30) return;
-
-    var progress = Math.min(95, (data.time / 7200) * 100); // assume 2h movie
-
-    var existing = card.querySelector('.watch-progress');
-    if (!existing) {
-      var bar = document.createElement('div');
-      bar.className = 'watch-progress';
-      bar.style.cssText = 'position:absolute;bottom:0;left:0;right:0;height:4px;background:rgba(255,255,255,0.2);z-index:5';
-      var fill = document.createElement('div');
-      fill.style.cssText = 'height:100%;background:#e50914;border-radius:0 2px 2px 0;width:' + progress + '%';
-      bar.appendChild(fill);
-      card.style.position = 'relative';
-      card.appendChild(bar);
-    }
+  var resumeData;
+  try { resumeData = JSON.parse(localStorage.getItem('ese_resume') || '{}'); } catch (_) { return; }
+  if (!resumeData || typeof resumeData !== 'object') return;
+  document.querySelectorAll('.card[data-filename]').forEach(function(card) {
+    var data = resumeData[decodeURIComponent(card.getAttribute('data-filename'))];
+    if (!data || !Number.isFinite(data.time) || data.time < 30 || card.querySelector('.watch-progress')) return;
+    var note = document.createElement('span');
+    note.className = 'card-meta-item watch-progress';
+    note.textContent = 'Visto hasta ' + Math.floor(data.time / 60) + ' min';
+    card.querySelector('.card-meta-row').appendChild(note);
   });
 }
-
 setTimeout(addWatchProgressBars, 3000);
 
 // ── Limpieza de nombres de archivo P2P ────────────────────────────────────────
@@ -3111,25 +3734,30 @@ function toggleHeaderSearch() {
 
 function loadHero() {
   fetch('/api/tmdb/trending/movie/week?language=es-ES')
-    .then(function(r) { return r.json(); })
+    .then(function(r) { if (!r.ok) throw new Error('catalog unavailable'); return r.json(); })
     .then(function(data) {
-      if (!data.results || !data.results.length) return;
-      heroMovies = data.results.filter(function(m) { return m.backdrop_path; }).slice(0, 8);
-      if (heroMovies.length > 0) {
-        showHeroMovie(0);
-        heroInterval = setInterval(function() {
-          heroIndex = (heroIndex + 1) % heroMovies.length;
-          showHeroMovie(heroIndex);
-        }, 10000);
-      }
+      heroMovies = (Array.isArray(data.results) ? data.results : []).filter(function(m) { return m.backdrop_path; }).slice(0, 8);
+      if (heroMovies.length) showHeroMovie(0);
     })
-    .catch(function() {});
+    .catch(function() {
+      var meta = document.getElementById('hero-meta');
+      if (meta) meta.textContent = 'El catálogo no está disponible ahora. Tu biblioteca sigue aquí.';
+    });
+}
+
+// Manual navigation keeps reading and keyboard focus stable.
+function stepHero(direction) {
+  if (!heroMovies.length) return;
+  heroIndex = (heroIndex + direction + heroMovies.length) % heroMovies.length;
+  showHeroMovie(heroIndex);
 }
 
 function showHeroMovie(idx) {
   var m = heroMovies[idx];
   if (!m) return;
 
+  var hero = document.getElementById('hero');
+  if (hero) hero.classList.add('hero-ready');
   var backdrop = document.getElementById('hero-backdrop');
   var title = document.getElementById('hero-title');
   var desc = document.getElementById('hero-desc');
@@ -3138,11 +3766,21 @@ function showHeroMovie(idx) {
   var infoBtn = document.getElementById('hero-info-btn');
 
   if (backdrop && m.backdrop_path && /^\/[a-zA-Z0-9]+\.\w{3,4}$/.test(m.backdrop_path)) {
-    backdrop.style.backgroundImage = 'url(https://image.tmdb.org/t/p/original' + m.backdrop_path + ')';
+    backdrop.style.backgroundImage = 'url(https://image.tmdb.org/t/p/w1280' + m.backdrop_path + ')';
   }
   if (title) title.textContent = m.title || m.name;
+  var eyebrow = document.getElementById('hero-eyebrow');
+  if (eyebrow) eyebrow.textContent = 'EN TENDENCIA · ESTA SEMANA';
+  var fallback = document.getElementById('hero-explore-btn');
+  if (fallback) fallback.style.display = 'none';
+  var counter = document.getElementById('hero-counter');
+  if (counter) counter.textContent = (idx + 1) + ' / ' + heroMovies.length;
+  ['hero-prev', 'hero-next'].forEach(function(id) {
+    var control = document.getElementById(id);
+    if (control) control.disabled = heroMovies.length < 2;
+  });
   if (desc) desc.textContent = (m.overview || '').substring(0, 200) + (m.overview && m.overview.length > 200 ? '...' : '');
-  if (meta) meta.textContent = '⭐ ' + (m.vote_average || '').toString().substring(0, 3) + ' · ' + (m.release_date || '').substring(0, 4) + ' · Trending #' + (idx + 1);
+  if (meta) meta.textContent = [m.vote_average ? '★ ' + Number(m.vote_average).toFixed(1) : '', (m.release_date || '').substring(0, 4), 'Disponibilidad según fuentes'].filter(Boolean).join(' · ');
   if (playBtn) { playBtn.style.display = 'inline-block'; playBtn.setAttribute('data-title', m.title || m.name); playBtn.setAttribute('data-id', m.id); }
   if (infoBtn) { infoBtn.style.display = 'inline-block'; infoBtn.setAttribute('data-title', m.title || m.name); infoBtn.setAttribute('data-id', m.id); }
 
@@ -3175,16 +3813,9 @@ function heroInfo() {
   var m = window._heroCurrentMovie;
   if (!m) return;
   var title = m.title || m.name;
-  fetch('/api/tmdb/movie/' + encodeURIComponent(m.id) + '/external_ids')
-    .then(function(r) { return r.json(); })
-    .then(function(ids) {
-      if (ids.imdb_id) {
-        showMovieDetail(ids.imdb_id, null, title);
-      } else {
-        showNotification('No se encontró info para "' + title + '"');
-      }
-    })
-    .catch(function() { showNotification('Error buscando info'); });
+  var type = m.media_type || ((m.first_air_date || (!m.title && m.name)) ? 'tv' : 'movie');
+  if (!/^[1-9][0-9]{0,9}$/.test(String(m.id)) || (type !== 'movie' && type !== 'tv')) return;
+  showMovieDetail('tmdb:' + type + ':' + m.id, null, title);
 }
 
 setTimeout(loadHero, 500);
@@ -3198,98 +3829,90 @@ setTimeout(loadHero, 500);
   var params = new URLSearchParams(window.location.search);
   var detailId = params.get('detail');
   var searchQuery = params.get('search');
-  var localizedTitle = params.get('ltitle');
+  var playName = params.get('play');
+  var localizedTitle = params.get('ltitle') || params.get('title');
+  var returnTo = params.get('returnTo');
+  // Only known catalog pages are valid return destinations; never remote URLs.
+  if ((detailId || searchQuery || playName) && returnTo && /^\/(explore|search|mylist)(\?[^#\r\n]*)?$/.test(returnTo)) {
+    window._detailReturnTo = returnTo;
+  }
   if (detailId) {
     setTimeout(function() { showMovieDetail(detailId, null, localizedTitle); }, 800);
     history.replaceState(null, '', '/');
   } else if (searchQuery) {
-    setTimeout(function() {
-      var input = document.getElementById('search-input');
-      if (input) { input.value = searchQuery; searchEd2k(); }
-    }, 800);
+    window.location.replace('/search?q=' + encodeURIComponent(searchQuery));
+  } else if (playName) {
+    setTimeout(function() { playCompleted(encodeURIComponent(playName)); }, 0);
     history.replaceState(null, '', '/');
   }
+  if (params.get('settings') === '1') setTimeout(function() { toggleSettings(); }, 0);
 })();
 
-// ── "Continuar viendo" — banner al cargar la página ───────────────────────────
+// ── "Continuar viendo" — contexto de la biblioteca, sin tapar la página ──────
 (function() {
+  var slot = document.getElementById('home-resume-slot');
   var session = getWatchSession();
-  if (!session || !session.fileName) return;
+  if (!slot || !session || typeof session.fileName !== 'string' || !session.fileName) return;
+
+  function readLibrary(url) {
+    return fetch(url).then(function(r) {
+      if (!r.ok) throw new Error('library unavailable');
+      return r.json();
+    }).then(function(files) {
+      if (!Array.isArray(files)) throw new Error('invalid library');
+      return files;
+    }).catch(function() { return null; });
+  }
 
   Promise.all([
-    fetch('/api/stream/completed/list').then(function(r){return r.json();}).catch(function(){return [];}),
-    fetch('/api/emule/downloads').then(function(r){return r.json();}).catch(function(){return [];})
+    readLibrary('/api/stream/completed/list'),
+    readLibrary('/api/emule/downloads')
   ]).then(function(results) {
     var completed = results[0];
     var downloads = results[1];
-    var found = null;
-    var source = null;
+    var match = function(file) { return file && file.fileName === session.fileName; };
+    var found = completed && completed.find(match);
+    var source = found ? 'completed' : 'downloading';
+    if (!found && downloads) found = downloads.find(match);
+    // A failed request is unknown availability, never evidence to erase history.
+    if (!found) return;
 
-    if (completed) {
-      for (var i = 0; i < completed.length; i++) {
-        if (completed[i].fileName === session.fileName) {
-          found = completed[i]; source = 'completed'; break;
-        }
-      }
-    }
-
-    if (!found && downloads) {
-      for (var j = 0; j < downloads.length; j++) {
-        if (downloads[j].fileName === session.fileName) {
-          found = downloads[j]; source = 'downloading'; break;
-        }
-      }
-    }
-
-    if (!found) { clearWatchSession(); return; }
-
-    var sizeMB = found.sizeMB || Math.round((found.sizeBytes || 0) / (1024 * 1024));
-    var posMin = Math.floor(session.position / 60);
-    var posSec = session.position % 60;
-    var posText = session.position > 0 ? posMin + ':' + String(posSec).padStart(2, '0') : '';
+    var seekPos = Number.isFinite(Number(session.position)) ? Math.max(0, Math.floor(Number(session.position))) : 0;
+    var posText = Math.floor(seekPos / 60) + ':' + String(seekPos % 60).padStart(2, '0');
     var movieName = session.fileName.replace(/\.(avi|mkv|mp4|wmv|mov|flv|webm)$/i, '').replace(/\./g, ' ');
-
-    var banner = document.createElement('div');
+    var banner = document.createElement('section');
     banner.id = 'continue-banner';
-    banner.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:500;background:linear-gradient(135deg,rgba(22,22,30,.97),rgba(30,20,40,.97));border:1px solid rgba(255,107,53,.4);border-radius:16px;padding:16px 24px;display:flex;align-items:center;gap:16px;max-width:600px;width:calc(100% - 40px);backdrop-filter:blur(20px);box-shadow:0 8px 32px rgba(0,0,0,.6);animation:slideUp .4s ease';
+    banner.className = 'resume-card';
+    banner.setAttribute('aria-label', 'Seguir viendo');
+    banner.innerHTML = '<div class="resume-copy"><p>SEGUIR VIENDO</p><h2>' + escapeHTML(movieName) + '</h2>' +
+      '<span>' + (seekPos ? 'Última posición: ' + escapeHTML(posText) + ' · ' : '') +
+      (source === 'completed' ? 'En tu biblioteca' : 'Descarga en curso · Según los datos disponibles') + '</span></div>' +
+      '<button type="button" id="continue-play-btn" class="resume-play">Continuar</button>' +
+      '<button type="button" id="continue-dismiss-btn" class="resume-dismiss" aria-label="Ocultar Seguir viendo">&times;</button>';
+    slot.appendChild(banner);
 
-    var style = document.createElement('style');
-    style.textContent = '@keyframes slideUp{from{transform:translateX(-50%) translateY(100px);opacity:0}to{transform:translateX(-50%) translateY(0);opacity:1}}';
-    document.head.appendChild(style);
-
-    banner.innerHTML = '<div style="flex:1;min-width:0"><div style="font-size:14px;color:#ff6b35;font-weight:700;margin-bottom:4px">▶ Seguir viendo</div>' +
-      '<div style="font-size:13px;color:#fff;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHTML(movieName) + '</div>' +
-      '<div style="font-size:11px;color:#888;margin-top:2px">' + escapeHTML(String(sizeMB)) + ' MB' + (posText ? ' · ' + escapeHTML(posText) : '') + (source === 'downloading' ? ' · Descargando...' : ' · Descargado') + '</div></div>' +
-      '<button id="continue-play-btn" style="background:linear-gradient(135deg,#ff6b35,#ff2d78);border:none;color:#fff;padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:700;font-size:14px;white-space:nowrap">▶ Continuar</button>' +
-      '<button onclick="document.getElementById(\'continue-banner\').remove();clearWatchSession()" style="background:none;border:none;color:#555;font-size:20px;cursor:pointer;padding:4px">×</button>';
-
-    document.body.appendChild(banner);
-
-    document.getElementById('continue-play-btn').onclick = function() {
+    document.getElementById('continue-dismiss-btn').onclick = function() {
+      try { clearWatchSession(); } catch (_) {}
       banner.remove();
-      var seekPos = session.position || 0;
+      var destination = document.getElementById('library-title');
+      if (destination) { destination.setAttribute('tabindex', '-1'); destination.focus({ preventScroll: true }); }
+    };
+    document.getElementById('continue-play-btn').onclick = function() {
       var old = document.getElementById('movie-modal');
-      if (old) old.remove();
+      if (old && typeof closeMovieModal === 'function') closeMovieModal();
       var modal = document.createElement('div');
       modal.id = 'movie-modal';
       modal.className = 'movie-modal active';
-      modal.innerHTML = '<button class="modal-close" onclick="closeMovieModal()">&times;</button>' +
-        '<div id="modal-player-zone"></div>' +
-        '<div id="modal-info-zone" style="display:none"></div>';
+      modal._previousOverflow = document.body.style.overflow || '';
+      modal.innerHTML = '<button type="button" class="modal-close" aria-label="Cerrar reproducción" onclick="closeMovieModal()">&times;</button>' +
+        '<div id="modal-player-zone"></div><div id="modal-info-zone" style="display:none"></div>';
       document.body.appendChild(modal);
       document.body.style.overflow = 'hidden';
       modal._keyHandler = function(e) { if (e.key === 'Escape') closeMovieModal(); };
       document.addEventListener('keydown', modal._keyHandler);
 
-      playInModal(encodeURIComponent(session.fileName));
-      if (seekPos > 10) {
-        setTimeout(function() {
-          window._cinemaSeekOffset = seekPos;
-          var q = document.getElementById('cinema-quality');
-          var quality = q ? q.value : 'auto';
-          startCompletedMSE(session.fileName, quality, seekPos);
-        }, 2000);
-      }
+      if (source === 'completed') playInModal(encodeURIComponent(session.fileName), seekPos);
+      else playPartFile(found.partFile, session.fileName, seekPos);
     };
   });
 })();
@@ -3298,7 +3921,7 @@ setTimeout(loadHero, 500);
 (function() {
   // 1. Logo eMule SVG (official mascot, served as static file)
   var logoLink = document.querySelector('.logo');
-  if (logoLink && logoLink.textContent.trim().indexOf('eSE') !== -1) {
+  if (logoLink && !logoLink.querySelector('img') && logoLink.textContent.trim().indexOf('eSE') !== -1) {
     var img = document.createElement('img');
     img.src = '/emule_mascot.svg';
     img.alt = 'eMule';
@@ -3317,88 +3940,11 @@ setTimeout(loadHero, 500);
   link.href = '/emule_mascot.svg';
   document.head.appendChild(link);
 
-  // 3. Search Overlay — toggle, debounced TMDB suggestions, Enter → eMule search
-  var _soTimer = null;
-
-  window.toggleSearchOverlay = function() {
-    var overlay = document.getElementById('search-overlay');
-    if (!overlay) return;
-    if (overlay.classList.contains('active')) {
-      overlay.classList.remove('active');
-      document.body.style.overflow = '';
-    } else {
-      overlay.classList.add('active');
-      document.body.style.overflow = 'hidden';
-      var input = document.getElementById('search-overlay-input');
-      if (input) { input.value = ''; input.focus(); }
-      var results = document.getElementById('search-overlay-results');
-      if (results) results.innerHTML = '';
-    }
-  };
-
-  window.onSearchOverlayInput = function(e) {
-    var q = e.target.value.trim();
-    var c = document.getElementById('search-overlay-results');
-    if (!c) return;
-    if (q.length < 2) { c.innerHTML = ''; return; }
-    clearTimeout(_soTimer);
-    _soTimer = setTimeout(function() {
-      fetch('/api/movies/search?q=' + encodeURIComponent(q))
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-          if (!data.Search || !data.Search.length) {
-            c.innerHTML = '<div style="color:#555;text-align:center;padding:32px">Sin sugerencias para &quot;' + escapeHTML(q) + '&quot;</div>';
-            return;
-          }
-          c.innerHTML = data.Search.slice(0, 8).map(function(m) {
-            var poster = sanitizeURL((m.Poster && m.Poster !== 'N/A') ? m.Poster : '');
-            var safe = escapeAttr(m.Title || '');
-            var imdb = escapeAttr(m.imdbID || '');
-            return '<div class="search-suggestion" onclick="toggleSearchOverlay();showMovieDetail(\'' + imdb + '\',null,\'' + safe + '\')">' +
-              (poster
-                ? '<img src="' + escapeHTML(poster) + '" alt="" loading="lazy">'
-                : '<div style="width:45px;height:67px;background:#1a1a2e;border-radius:6px;flex-shrink:0"></div>') +
-              '<div class="search-suggestion-info">' +
-                '<div class="search-suggestion-title">' + escapeHTML(m.Title || '') + '</div>' +
-                '<div class="search-suggestion-meta">' + escapeHTML(m.Year || '') + ' \u00b7 ' + escapeHTML(m.Type || '') + '</div>' +
-              '</div></div>';
-          }).join('');
-        })
-        .catch(function() {
-          c.innerHTML = '<div style="color:#e74c3c;text-align:center;padding:20px">Error de conexi\u00f3n</div>';
-        });
-    }, 400);
-  };
-
-  window.onSearchOverlayKeydown = function(e) {
-    if (e.key === 'Escape') { toggleSearchOverlay(); return; }
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      var q = e.target.value.trim();
-      if (q.length < 2) return;
-      toggleSearchOverlay();
-      // Use existing search infrastructure
-      var searchInput = document.getElementById('search-input');
-      if (searchInput) {
-        searchInput.value = q;
-        if (typeof searchEd2k === 'function') searchEd2k();
-        var resultsSection = document.getElementById('search-results');
-        if (resultsSection) resultsSection.scrollIntoView({ behavior: 'smooth' });
-      }
-    }
-  };
-
-  // Close overlay on click outside content
-  document.addEventListener('click', function(e) {
-    var overlay = document.getElementById('search-overlay');
-    if (overlay && overlay.classList.contains('active') && e.target === overlay) {
-      toggleSearchOverlay();
-    }
-  });
-
-  // Keyboard shortcut: Ctrl+K or / to open search
+  // The page route is the single catalog search entry, including shortcuts.
+  window.toggleSearchOverlay = function() { window.location.href = '/search'; };
   document.addEventListener('keydown', function(e) {
-    if ((e.ctrlKey && e.key === 'k') || (e.key === '/' && !e.target.closest('input, textarea, select'))) {
+    if (e.target && e.target.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')) return;
+    if ((e.ctrlKey && e.key.toLowerCase() === 'k') || e.key === '/') {
       e.preventDefault();
       toggleSearchOverlay();
     }
@@ -3409,23 +3955,47 @@ setTimeout(loadHero, 500);
 (function() {
   var STORAGE_KEY = 'ese_mylist';
 
+  function readList() {
+    try {
+      var list = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+      if (!Array.isArray(list) || list.some(function(item) {
+        return !item || typeof item !== 'object' || typeof item.imdbId !== 'string' || !item.imdbId;
+      })) return null;
+      return list;
+    } catch (_) { return null; }
+  }
+
+  function writeList(list) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(list)); return true; }
+    catch (_) {
+      showNotification('No se ha podido guardar el cambio. Comprueba el espacio y los permisos del navegador.');
+      return false;
+    }
+  }
+
+  function editableList() {
+    var list = readList();
+    if (!list) showNotification('No se pueden leer tus títulos guardados. Los datos se han conservado.');
+    return list;
+  }
+
   window.getMyList = function() {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
-    catch(e) { return []; }
+    return readList() || [];
   };
 
   window.addToMyList = function(item) {
-    if (!item || !item.imdbId) return;
-    var list = getMyList();
-    if (list.some(function(x) { return x.imdbId === item.imdbId; })) return;
-    item.addedAt = Date.now();
-    list.unshift(item);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+    if (!item || typeof item.imdbId !== 'string' || !item.imdbId) return false;
+    var list = editableList();
+    if (!list) return false;
+    if (list.some(function(x) { return x.imdbId === item.imdbId; })) return true;
+    list.unshift(Object.assign({}, item, { addedAt: Date.now() }));
+    return writeList(list);
   };
 
   window.removeFromMyList = function(imdbId) {
-    var list = getMyList().filter(function(x) { return x.imdbId !== imdbId; });
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+    var list = editableList();
+    if (!list) return false;
+    return writeList(list.filter(function(x) { return x.imdbId !== imdbId; }));
   };
 
   window.isInMyList = function(imdbId) {
@@ -3434,12 +4004,12 @@ setTimeout(loadHero, 500);
 
   window.toggleMyList = function(imdbId, title, poster, year, type) {
     if (isInMyList(imdbId)) {
-      removeFromMyList(imdbId);
-      showNotification('\u2716 Eliminado de Mi Lista');
+      if (!removeFromMyList(imdbId)) return null;
+      showNotification('Título quitado de Guardados.');
       return false;
     } else {
-      addToMyList({ imdbId: imdbId, title: title, poster: poster, year: year, type: type || 'movie' });
-      showNotification('\u2714 A\u00f1adido a Mi Lista');
+      if (!addToMyList({ imdbId: imdbId, title: title, poster: poster, year: year, type: type || 'movie' })) return null;
+      showNotification('Título guardado en Biblioteca.');
       return true;
     }
   };
@@ -3453,19 +4023,96 @@ setTimeout(loadHero, 500);
     var m = window._modalMovie;
     if (!m) return;
     var added = (typeof toggleMyList === 'function')
-      && toggleMyList(m.imdbId, m.title, m.poster, m.year);
+      && toggleMyList(m.imdbId, m.title, m.poster, m.year, m.type);
+    if (added === null) return;
+    btn.setAttribute('aria-pressed', String(added));
+    btn.setAttribute('aria-label', added ? 'Guardado. Quitar de Guardados' : 'Guardar en Biblioteca');
+    btn.setAttribute('title', added ? 'Quitar de Guardados' : 'Guardar en Biblioteca');
     var listIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" '
       + 'stroke="currentColor" stroke-width="2" style="margin-right:6px;'
       + 'vertical-align:-2px"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 '
       + '0 0 1 2 2z"></path></svg>';
     if (added) {
       btn.classList.add('btn-list-active');
-      btn.innerHTML = listIcon + ' Quitar de Mi Lista';
+      btn.innerHTML = listIcon + ' Guardado';
     } else {
       btn.classList.remove('btn-list-active');
-      btn.innerHTML = listIcon + ' Mi Lista';
+      btn.innerHTML = listIcon + ' Guardar';
     }
   };
+})();
+
+// Movie dialogs are created by several playback/detail entry points.
+// Keep their keyboard behavior consistent without changing media handlers.
+(function() {
+  if (typeof MutationObserver === 'undefined') return;
+  var activeModal = null;
+  var returnFocus = null;
+  var focusableSelector = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
+  function controls() {
+    return Array.prototype.filter.call(activeModal.querySelectorAll(focusableSelector), function(el) {
+      return el.tabIndex >= 0 && !el.hidden && el.getClientRects().length > 0;
+    });
+  }
+
+  function focusFirst() {
+    var items = controls();
+    (items[0] || activeModal).focus({ preventScroll: true });
+  }
+
+  function syncModal() {
+    var modal = document.getElementById('movie-modal');
+    if (modal && modal.inert) return;
+    if (!modal) {
+      if (activeModal) {
+        activeModal = null;
+        if (returnFocus && returnFocus.isConnected) returnFocus.focus({ preventScroll: true });
+        returnFocus = null;
+      }
+      return;
+    }
+    if (modal !== activeModal) {
+      if (!activeModal) returnFocus = document.activeElement;
+      activeModal = modal;
+      modal.setAttribute('role', 'dialog');
+      modal.setAttribute('aria-modal', 'true');
+      modal.setAttribute('tabindex', '-1');
+    }
+    var title = modal.querySelector('.modal-title');
+    if (title) {
+      if (!title.id) title.id = 'movie-modal-title';
+      modal.setAttribute('aria-labelledby', title.id);
+      modal.removeAttribute('aria-label');
+    } else {
+      modal.removeAttribute('aria-labelledby');
+      modal.setAttribute('aria-label', 'Película y reproducción');
+    }
+    // Detail loading replaces innerHTML, including the focused close button.
+    if (!modal.contains(document.activeElement)) focusFirst();
+  }
+
+  document.addEventListener('keydown', function(event) {
+    if (event.key !== 'Tab' || !activeModal || !activeModal.isConnected || activeModal.inert) return;
+    var items = controls();
+    var first = items[0];
+    var last = items[items.length - 1];
+    if (!first) {
+      event.preventDefault();
+      activeModal.focus({ preventScroll: true });
+    } else if (!activeModal.contains(document.activeElement) || document.activeElement === activeModal) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+  new MutationObserver(syncModal).observe(document.body, { childList: true, subtree: true });
+  syncModal();
 })();
 
 // ── NAT Health Reactive Alert ─────────────────────────────────────────────────

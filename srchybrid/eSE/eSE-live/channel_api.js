@@ -47,12 +47,14 @@ let streamMeta = { title: '', category: 'general', language: 'es' };
 // idle auto-leave only fires when the browser really stopped fetching.
 // Fire-and-forget; errors ignored (eMule offline just means nothing to do).
 let lastAliveRelayMs = 0;
-function relayPlayerAlive() {
+function relayPlayerAlive(streamKey) {
   const now = Date.now();
   if (now - lastAliveRelayMs < 10000) return;
   lastAliveRelayMs = now;
   try {
-    http.get('http://127.0.0.1:4711/api/live/player-alive', { timeout: 3000 },
+    const key = channelSearch.canonicalStreamKey(streamKey);
+    const suffix = /^[a-f0-9]{32}$/.test(key) ? '?key=' + encodeURIComponent(key) : '';
+    http.get('http://127.0.0.1:4711/api/live/player-alive' + suffix, { timeout: 3000 },
       (r) => r.resume()).on('error', () => {});
   } catch (e) { /* ignore */ }
 }
@@ -221,7 +223,7 @@ function handleRoute(url, req, res, ctx) {
     const fileName = parts[2];
     const ext = require('path').extname(fileName).toLowerCase();
     if (ext !== '.m3u8' && ext !== '.ts') { res.writeHead(403); res.end('Forbidden'); return true; }
-    relayPlayerAlive();  // ghost-viewer fix: fetches here prove the player lives
+    relayPlayerAlive(parts[1]);  // key-scoped proof that this player lives
     const filePath = require('path').join(HLS_LIVE_DIR, parts[1].toLowerCase(), fileName);
     try {
       const fstat = require('fs').statSync(filePath);
@@ -235,7 +237,6 @@ function handleRoute(url, req, res, ctx) {
     const fileName = require('path').basename(p);
     const ext = require('path').extname(fileName).toLowerCase();
     if (ext !== '.m3u8' && ext !== '.ts') { res.writeHead(403); res.end('Forbidden'); return true; }
-    relayPlayerAlive();  // ghost-viewer fix: fetches here prove the player lives
     const filePath = require('path').join(HLS_LIVE_DIR, fileName);
     try {
       const fstat = require('fs').statSync(filePath);
@@ -301,8 +302,13 @@ function handleRoute(url, req, res, ctx) {
     return true;
   }
 
-  // === GET /api/live/join — Proxy join request to eMule C++ backend ===
+  // === POST /api/live/join — Authenticated, explicit browser join ===
   if (p === '/api/live/join') {
+    if (req.method !== 'POST') {
+      res.setHeader('Allow', 'POST');
+      jsonResponse(res, 405, { error: 'method_not_allowed', expected: 'POST' });
+      return true;
+    }
     const key = url.searchParams.get('key') || '';
     const title = url.searchParams.get('title') || 'Live';
     // Validate key: hex 32 chars only
@@ -337,7 +343,10 @@ function handleRoute(url, req, res, ctx) {
   // Hit by the watch pages' pagehide beacon (sendBeacon POSTs; we accept any
   // method). Forwarded as GET to eMule's marshaled /api/live/leave.
   if (p === '/api/live/leave') {
-    const leaveReq = http.get('http://127.0.0.1:4711/api/live/leave', { timeout: 5000 }, (leaveRes) => {
+    const leaveKey = channelSearch.canonicalStreamKey(url.searchParams.get('key'));
+    const leaveSuffix = /^[a-f0-9]{32}$/.test(leaveKey)
+      ? '?key=' + encodeURIComponent(leaveKey) : '';
+    const leaveReq = http.get('http://127.0.0.1:4711/api/live/leave' + leaveSuffix, { timeout: 5000 }, (leaveRes) => {
       let body = '';
       leaveRes.on('data', d => body += d);
       leaveRes.on('end', () => {
@@ -869,8 +878,12 @@ function handleRoute(url, req, res, ctx) {
 
   // === GET /api/live/sources ===
   if (p === '/api/live/sources') {
-    const sources = deviceScanner.getSourcesForAPI(ctx.ffmpegPath);
-    jsonResponse(res, 200, { sources });
+    deviceScanner.getSourcesForAPI(ctx.ffmpegPath)
+      .then(sources => jsonResponse(res, 200, { sources }))
+      .catch(error => jsonResponse(res, 503, {
+        error: 'device_scan_failed',
+        message: error.message
+      }));
     return true;
   }
 
@@ -941,13 +954,19 @@ function handleRoute(url, req, res, ctx) {
       quality: url.searchParams.get('quality') || '',
       sortBy: url.searchParams.get('sort') || 'rating'
     };
-    const localResults = channelSearch.search(filters);
+    // Filter after merging so a Kad duplicate cannot reintroduce a channel
+    // excluded by local filters, and all discovered channels share one order.
+    const localResults = channelSearch.search({});
     let responded = false;
     const done = (kadStreams) => {
       if (responded) return;
       responded = true;
+      const streams = Array.isArray(kadStreams) ? kadStreams.filter(s => s && typeof s === 'object') : [];
       const byKey = new Map();
-      localResults.forEach(ch => byKey.set(ch.streamKey || ch.hash, ch));
+      localResults.forEach(ch => {
+        const key = channelSearch.canonicalStreamKey(ch.streamKey || ch.hash);
+        if (key) byKey.set(key, Object.assign({}, ch, { streamKey: key }));
+      });
       // BROWSE-S01 helpers — defined here so both kad-merge and the final
       // enrichment pass below can use them.
       const ipUintToStr = (n) => {
@@ -963,13 +982,13 @@ function handleRoute(url, req, res, ctx) {
       // wire-level metadata (broadcasterIP uint32, etc.) regardless of
       // whether the entry first appeared via localResults or kadStreams.
       const kadByKey = new Map();
-      (kadStreams || []).forEach(s => {
-        const k = s.streamKey || s.hash;
+      streams.forEach(s => {
+        const k = channelSearch.canonicalStreamKey(s.streamKey || s.hash);
         if (k) kadByKey.set(k, s);
       });
 
-      (kadStreams || []).forEach(s => {
-        const key = s.streamKey || s.hash;
+      streams.forEach(s => {
+        const key = channelSearch.canonicalStreamKey(s.streamKey || s.hash);
         if (!key || byKey.has(key)) return;
         byKey.set(key, {
           streamKey: key,
@@ -979,6 +998,8 @@ function handleRoute(url, req, res, ctx) {
           language: s.language || 'es',
           bitrate: s.bitrate || 0,
           viewers: s.viewers || 0,
+          started: s.started || null,
+          startedAt: s.startedAt || null,
           quality: s.bitrate >= 5000 ? 'FHD' : (s.bitrate >= 3000 ? 'HD' : 'SD'),
           isLocal: !!s.own,
           source: 'kad',
@@ -990,8 +1011,8 @@ function handleRoute(url, req, res, ctx) {
       // or merged) add broadcasterIP + httpPort + thumbnailUrl. Without
       // this single pass, channels that came from localResults skip the
       // kad-only enrichment and the grid shows empty thumbnailUrl.
-      const results = Array.from(byKey.values()).map(ch => {
-        const key = ch.streamKey || ch.hash;
+      const merged = Array.from(byKey.values()).map(ch => {
+        const key = channelSearch.canonicalStreamKey(ch.streamKey || ch.hash);
         const kad = kadByKey.get(key);
         const isLocal = !!ch.isLocal
           || (kad && !!kad.own)
@@ -1013,6 +1034,7 @@ function handleRoute(url, req, res, ctx) {
           thumbnailUrl
         });
       });
+      const results = channelSearch.filterChannels(merged, filters);
       jsonResponse(res, 200, { channels: results, total: results.length });
     };
     const kadReq = http.get('http://127.0.0.1:4711/api/live/kad/streams', { timeout: 1200 }, (kadRes) => {
@@ -1203,20 +1225,10 @@ function handleRoute(url, req, res, ctx) {
       res.end(html);
       return true;
     }
-    if (/^[a-fA-F0-9]{32}$/.test(hash)) {
-      const joinReq = http.get('http://127.0.0.1:4711/api/live/join?key=' + encodeURIComponent(hash) + '&title=Live', { timeout: 1200 }, (joinRes) => {
-        joinRes.resume();
-      });
-      joinReq.on('error', () => {});
-      joinReq.on('timeout', () => joinReq.destroy());
-    } else {
+    if (!/^[a-fA-F0-9]{32}$/.test(hash)) {
       jsonResponse(res, 400, { error: 'invalid_stream_key', message: 'Stream key must be 32 hex characters.' });
       return true;
     }
-    // Serve HLS straight from local disk (eMule's viewer writer drops .ts +
-    // stream.m3u8 into %TEMP%\eMule_RTMP\<HASH>\ as chunks arrive). This
-    // avoids the broken eMule WebServer hls-proxy on PC2.
-    const hlsBase = '/hls-local/' + hash.toLowerCase();
     // v7.1.7 — no-cache: same justification as /live above.
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
@@ -1224,211 +1236,7 @@ function handleRoute(url, req, res, ctx) {
       'Pragma': 'no-cache',
       'Expires': '0'
     });
-    res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>eSE Live</title>
-<script src="/live/vendor/hls.min.js"></script>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;font-family:"Inter",sans-serif;overflow:hidden}
-.cinema{position:fixed;inset:0;background:#000;display:flex;flex-direction:column}
-video{width:100%;height:100%;object-fit:contain;cursor:pointer}
-.top-bar{position:absolute;top:0;left:0;right:0;z-index:10;display:flex;align-items:center;gap:16px;padding:16px 24px;background:linear-gradient(rgba(0,0,0,.8),transparent);opacity:0;transition:opacity .3s}
-.cinema:hover .top-bar{opacity:1}
-.back-btn{background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:#fff;padding:8px 16px;border-radius:6px;font-size:13px;cursor:pointer;text-decoration:none;transition:all .2s;backdrop-filter:blur(10px)}
-.back-btn:hover{background:rgba(255,107,53,.3);border-color:#ff6b35}
-.title-bar{color:rgba(255,255,255,.7);font-size:16px;font-weight:500}
-.live-dot{background:#e53e3e;color:#fff;font-size:11px;font-weight:700;padding:3px 8px;border-radius:4px;animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
-.controls{position:absolute;bottom:0;left:0;right:0;z-index:12;padding:12px 16px;background:linear-gradient(transparent,rgba(0,0,0,.9));opacity:0;transition:opacity .3s}
-.cinema:hover .controls{opacity:1}
-.ctrl-row{display:flex;align-items:center;gap:12px}
-.ctrl-btn{background:none;border:none;color:#fff;font-size:18px;cursor:pointer;padding:4px 8px;opacity:.85;transition:all .2s}
-.ctrl-btn:hover{opacity:1;transform:scale(1.15)}
-.time{color:rgba(255,255,255,.8);font-size:13px;font-variant-numeric:tabular-nums}
-.vol-range{width:80px;height:4px;cursor:pointer;accent-color:#ff6b35}
-.audio-sel{background:#222;color:#fff;border:1px solid rgba(255,255,255,.3);border-radius:6px;padding:6px 28px 6px 10px;font-size:13px;cursor:pointer;outline:none;font-family:inherit;min-width:130px;-webkit-appearance:menulist;appearance:menulist}
-.audio-sel option{background:#1a1a2e;color:#fff;padding:4px}
-.spacer{flex:1}
-/* Phase 2 JOIN-3: State overlay */
-.join-overlay{position:absolute;inset:0;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,.92);transition:opacity .5s;pointer-events:none}
-.join-overlay.hidden{opacity:0;pointer-events:none}
-.join-spinner{width:48px;height:48px;border:3px solid rgba(255,107,53,.2);border-top-color:#ff6b35;border-radius:50%;animation:spin 1s linear infinite;margin-bottom:20px}
-@keyframes spin{to{transform:rotate(360deg)}}
-.join-state{color:#fff;font-size:18px;font-weight:600;text-align:center;margin-bottom:8px}
-.join-detail{color:rgba(255,255,255,.5);font-size:13px;text-align:center;max-width:400px}
-.join-peers{display:flex;gap:16px;margin-top:16px}
-.join-stat{text-align:center}
-.join-stat-val{color:#ff6b35;font-size:24px;font-weight:800}
-.join-stat-label{color:rgba(255,255,255,.4);font-size:11px;text-transform:uppercase;letter-spacing:1px}
-.join-retry{color:#ff6b35;font-size:12px;margin-top:12px;opacity:0;transition:opacity .3s}
-</style></head><body>
-<div class="cinema" id="cinema">
-<div class="top-bar">
-<a href="/live" class="back-btn">&larr; Canales</a>
-<span class="live-dot">LIVE</span>
-<span class="title-bar" id="ch-title">Cargando...</span>
-</div>
-<!-- Phase 2 JOIN-3: Connection state overlay -->
-<div class="join-overlay" id="join-overlay">
-<div class="join-spinner"></div>
-<div class="join-state" id="join-state">Conectando al stream...</div>
-<div class="join-detail" id="join-detail">Buscando peers en la red Kad</div>
-<div class="join-peers">
-<div class="join-stat"><div class="join-stat-val" id="jo-peers">0</div><div class="join-stat-label">Peers</div></div>
-<div class="join-stat"><div class="join-stat-val" id="jo-chunks">0</div><div class="join-stat-label">Chunks</div></div>
-<div class="join-stat"><div class="join-stat-val" id="jo-kad">—</div><div class="join-stat-label">Kad</div></div>
-</div>
-<div class="join-retry" id="join-retry"></div>
-</div>
-<video id="v" autoplay muted playsinline></video>
-<div class="controls">
-<div class="ctrl-row">
-<button class="ctrl-btn" id="play-btn" onclick="togglePlay()">&#9646;&#9646;</button>
-<button class="ctrl-btn" onclick="toggleMute()">&#128266;</button>
-<input type="range" class="vol-range" id="vol" min="0" max="1" step="0.05" value="1" oninput="v.volume=this.value">
-<span class="time" id="time">0:00</span>
-<span class="spacer"></span>
-<select class="audio-sel" id="audioSel" style="display:none"></select>
-<button class="ctrl-btn" onclick="toggleFS()">&#x26F6;</button>
-</div>
-</div>
-</div>
-<script>
-const v=document.getElementById('v');
-const src='${hlsBase}/stream.m3u8';
-const streamHash='${hash}';
-const langNames={eng:'English',spa:'Spanish',fre:'French',ger:'German',ita:'Italian',por:'Portuguese',jpn:'Japanese',kor:'Korean',chi:'Chinese',rus:'Russian',ara:'Arabic',und:'Track'};
-const langFlags={eng:'[EN]',spa:'[ES]',fre:'[FR]',ger:'[DE]',ita:'[IT]',por:'[PT]',jpn:'[JP]',rus:'[RU]',kor:'[KR]',chi:'[CN]',ara:'[AR]',und:''};
-
-// === Phase 2 JOIN-3: State machine ===
-const JOIN_STATES = {
-  DISCOVERING: { text: 'Buscando stream en Kad...', detail: 'Consultando la red distribuida' },
-  CONNECTING:  { text: 'Conectando a peers...', detail: 'Estableciendo conexión P2P' },
-  BUFFERING:   { text: 'Recibiendo chunks...', detail: 'Rellenando buffer HLS' },
-  PLAYING:     { text: '', detail: '' },
-  FAILED:      { text: 'No se pudo conectar', detail: 'El stream puede no estar disponible' }
-};
-let joinState = 'DISCOVERING';
-let joinRetryCount = 0;
-const JOIN_RETRY_INTERVAL = 15000;
-const JOIN_MAX_RETRIES = 5;
-let joinStartTime = Date.now();
-
-function updateJoinOverlay(state, peers, chunks, kadStatus) {
-  joinState = state;
-  const ov = document.getElementById('join-overlay');
-  if (state === 'PLAYING') { ov.classList.add('hidden'); return; }
-  ov.classList.remove('hidden');
-  const s = JOIN_STATES[state] || JOIN_STATES.DISCOVERING;
-  document.getElementById('join-state').textContent = s.text;
-  document.getElementById('join-detail').textContent = s.detail;
-  document.getElementById('jo-peers').textContent = peers || 0;
-  document.getElementById('jo-chunks').textContent = chunks || 0;
-  document.getElementById('jo-kad').textContent = kadStatus || '—';
-  const retryEl = document.getElementById('join-retry');
-  if (joinRetryCount > 0) {
-    retryEl.textContent = 'Reintento ' + joinRetryCount + '/' + JOIN_MAX_RETRIES;
-    retryEl.style.opacity = '1';
-  }
-}
-
-// Phase 2 JOIN-3: Poll /api/live/debug for real P2P state
-let lastDebugChunks = 0;
-
-function pollJoinState() {
-  if (joinState === 'PLAYING') return;
-  fetch('/api/live/debug').then(r => r.json()).then(d => {
-    if (d.error) return; // C++ offline, skip update
-    const peers = (d.peers ? (d.peers.viewPeers || 0) + (d.peers.broadcastPeers || 0) : 0);
-    const chunks = d.chunks ? (d.chunks.count || 0) : (d.counters ? d.counters.chunksReceived || 0 : 0);
-    const kadOk = d.discovery && d.discovery.kadConnected ? 'OK' : 'OFF';
-    const hasHls = d.hls ? (d.hls.playlistRefreshes || 0) > 0 || (d.hls.segmentsWritten || 0) >= 3 : chunks >= 3;
-    lastDebugChunks = chunks;
-
-    if (chunks > 0 || hasHls) {
-      updateJoinOverlay('BUFFERING', peers, chunks, kadOk);
-    } else if (peers > 0) {
-      updateJoinOverlay('CONNECTING', peers, chunks, kadOk);
-    } else {
-      updateJoinOverlay('DISCOVERING', peers, chunks, kadOk);
-    }
-  }).catch(() => {});
-}
-
-// Phase 2 JOIN-4: Retry join if no chunks after interval
-// Routes through Node proxy /api/live/join -> C++ 4711/api/live/join
-function checkJoinRetry() {
-  if (joinState === 'PLAYING' || joinState === 'FAILED') return;
-  const elapsed = Date.now() - joinStartTime;
-  if (joinRetryCount >= JOIN_MAX_RETRIES) {
-    if (lastDebugChunks === 0 && elapsed > JOIN_RETRY_INTERVAL * (JOIN_MAX_RETRIES + 1)) {
-      updateJoinOverlay('FAILED', 0, 0, 'OFF');
-    }
-    return;
-  }
-  if (elapsed > JOIN_RETRY_INTERVAL * (joinRetryCount + 1)) {
-    joinRetryCount++;
-    fetch('/api/live/join?key=' + encodeURIComponent(streamHash) + '&title=Live', { method: 'GET' })
-      .then(r => r.json())
-      .then(d => { if (d.error) console.warn('[eSE Join] Retry failed:', d.error); })
-      .catch(() => {});
-    updateJoinOverlay(joinState);
-  }
-}
-
-const joinPollId = setInterval(() => { pollJoinState(); checkJoinRetry(); }, 3000);
-pollJoinState();
-
-if(window.Hls&&Hls.isSupported()){
-const h=new Hls({liveSyncDurationCount:3,liveMaxLatencyDurationCount:8,liveDurationInfinity:true,maxBufferLength:30,maxMaxBufferLength:60,maxBufferHole:2,manifestLoadingMaxRetry:50,levelLoadingMaxRetry:50,fragLoadingMaxRetry:50});
-h.loadSource(src);h.attachMedia(v);
-// Phase 3: Transition to PLAYING only on FRAG_BUFFERED (actual data), not MANIFEST_PARSED (existence)
-h.on(Hls.Events.MANIFEST_PARSED,()=>{v.play();updateJoinOverlay('BUFFERING',0,0,'OK')});
-h.on(Hls.Events.FRAG_BUFFERED,()=>{if(joinState!=='PLAYING'){updateJoinOverlay('PLAYING',0,0,'OK');clearInterval(joinPollId)}});
-// Audio-distortion fix (2026-06): two-step recovery per hls.js docs — a second
-// fatal mediaError right after a recoverMediaError() means the audio codec is
-// mis-signalled (AAC vs HE-AAC); call swapAudioCodec() first or the audio is
-// re-appended at the wrong sample rate (the deep/slow audio after stalls).
-let mErrAt=0;
-h.on(Hls.Events.ERROR,(e,d)=>{if(!d.fatal)return;if(d.type==='mediaError'){const n=Date.now();if(n-mErrAt<6000){h.swapAudioCodec()}mErrAt=n;h.recoverMediaError()}else{setTimeout(()=>{h.loadSource(src);h.attachMedia(v)},3000)}});
-h.on(Hls.Events.AUDIO_TRACKS_UPDATED,()=>{
-  const tracks=h.audioTrackController?h.audioTrackController.audioTracks:[];
-  if(tracks.length<2)return;
-  const sel=document.getElementById('audioSel');
-  sel.style.display='';
-  sel.innerHTML='';
-  tracks.forEach((t,i)=>{
-    const lang=t.lang||'und';
-    const name=(langFlags[lang]||'')+' '+(langNames[lang]||lang);
-    const selected=(i===(h.audioTrack>=0?h.audioTrack:0))?' selected':'';
-    sel.innerHTML+='<option value="'+i+'"'+selected+'>'+name+'</option>';
-  });
-  sel.selectedIndex=h.audioTrack>=0?h.audioTrack:0;
-  sel.onchange=()=>{h.audioTrack=parseInt(sel.value)};
-});
-}else if(v.canPlayType('application/vnd.apple.mpegurl')){v.src=src
-}else{updateJoinOverlay('FAILED',0,0,'OFF');document.getElementById('join-detail').textContent='Reproductor HLS no disponible'}
-
-setInterval(()=>{if(v.paused&&v.readyState>=2)v.play()},2000);
-setInterval(()=>{const t=Math.floor(v.currentTime);const m=Math.floor(t/60);const s=t%60;document.getElementById('time').textContent=m+':'+String(s).padStart(2,'0')},500);
-
-function togglePlay(){v.paused?v.play():v.pause();document.getElementById('play-btn').innerHTML=v.paused?'&#9654;':'&#9646;&#9646;'}
-function toggleMute(){v.muted=!v.muted}
-function toggleFS(){document.fullscreenElement?document.exitFullscreen():document.getElementById('cinema').requestFullscreen()}
-v.addEventListener('click',togglePlay);
-v.addEventListener('dblclick',toggleFS);
-
-fetch('/api/live/emule-channels').then(r=>r.json()).then(d=>{
-  const ch=(d.channels||[]).find(c=>c.hash==='${hash}');
-  if(ch)document.getElementById('ch-title').textContent=ch.title;
-}).catch(()=>{});
-
-// Ghost-viewer fix (2026-06): tell eMule we left when the page goes away
-// (navigation, back button, tab close). sendBeacon survives page unload; the
-// Node /api/live/leave route relays it to eMule. The 60 s player-idle
-// watchdog in eMule is the backstop for killed tabs where this never fires.
-addEventListener('pagehide',()=>{try{if(!navigator.sendBeacon||!navigator.sendBeacon('/api/live/leave'))fetch('/api/live/leave',{keepalive:true}).catch(()=>{})}catch(_){}});
-</script></body></html>`);
+    res.end(require('./live_watch_page').render(hash));
     return true;
   }
 
@@ -1554,9 +1362,7 @@ addEventListener('pagehide',()=>{try{if(!navigator.sendBeacon||!navigator.sendBe
         try {
           const data = JSON.parse(body);
           // Merge into channel search
-          if (data.channels && data.channels.length > 0) {
-            data.channels.forEach(ch => {
-              channelSearch.addRemoteChannel({
+          const emuleChannels = (data.channels || []).map(ch => ({
                 streamKey: ch.hash || ch.streamKey,
                 title: ch.title || 'eMule Broadcast',
                 category: ch.category || 'general',
@@ -1564,9 +1370,8 @@ addEventListener('pagehide',()=>{try{if(!navigator.sendBeacon||!navigator.sendBe
                 bitrate: ch.bitrate || 3000,
                 viewers: ch.viewers || 0,
                 started: ch.started || (ch.startedAt ? new Date(ch.startedAt * 1000).toISOString() : new Date().toISOString())
-              });
-            });
-          }
+              }));
+          channelSearch.syncEmuleChannels(emuleChannels);
           jsonResponse(res, 200, data);
         } catch (e) {
           jsonResponse(res, 200, { channels: [], error: 'parse_error' });
@@ -1730,9 +1535,7 @@ function pollEmuleChannels() {
     res.on('end', () => {
       try {
         const data = JSON.parse(body);
-        if (data.channels && data.channels.length > 0) {
-          data.channels.forEach(ch => {
-            channelSearch.addRemoteChannel({
+        const emuleChannels = (data.channels || []).map(ch => ({
               streamKey: ch.hash || ch.streamKey,
               title: ch.title || 'eMule Broadcast',
               category: ch.category || 'general',
@@ -1740,9 +1543,8 @@ function pollEmuleChannels() {
               bitrate: ch.bitrate || 3000,
               viewers: ch.viewers || 0,
               started: ch.started || (ch.startedAt ? new Date(ch.startedAt * 1000).toISOString() : new Date().toISOString())
-            });
-          });
-        }
+            }));
+        channelSearch.syncEmuleChannels(emuleChannels);
       } catch (e) { console.warn('[eSE Live] pollEmuleChannels parse error:', e.message); }
     });
   });

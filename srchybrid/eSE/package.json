@@ -1,19 +1,19 @@
 {
   "name": "eSE",
-  "version": "9.1.0-beta.1",
+  "version": "9.1.0-beta.2",
   "main": "server.js",
   "bin": "server.js",
   "scripts": {
     "test": "npm run test:live",
-    "test:live": "node --test test/live_tv_regression.test.js",
+    "test:live": "node --test test/*.test.js",
     "start": "node server.js",
     "prebuild": "node tools/bundle_client.js",
     "build": "pkg . --targets node22-win-x64 --output ese-server.exe --compress GZip"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
-  "description": "",
+  "license": "GPL-2.0-or-later",
+  "description": "Local eSE dashboard and streaming companion for eMule eSE",
   "dependencies": {
     "hls.js": "^1.6.16"
   },

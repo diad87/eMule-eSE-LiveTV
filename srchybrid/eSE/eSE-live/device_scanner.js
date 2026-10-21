@@ -5,43 +5,38 @@
  */
 'use strict';
 
-const { execSync } = require('child_process');
+const { runFile } = require('../bounded_process');
+
+async function listDevices(ffmpegPath) {
+  try {
+    const result = await runFile(
+      ffmpegPath,
+      ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'],
+      { timeoutMs: 10000, maxOutputBytes: 1024 * 1024 }
+    );
+    return result.stderr + result.stdout;
+  } catch (e) {
+    // FFmpeg intentionally exits non-zero after printing the device list.
+    return String(e.stderr || '');
+  }
+}
 
 /**
  * List all DirectShow video devices (webcams, capture cards).
  * @param {string} ffmpegPath - Path to ffmpeg executable.
- * @returns {Array<{name: string, index: number}>}
+ * @returns {Promise<Array<{name: string, index: number}>>}
  */
-function listVideoDevices(ffmpegPath) {
-  try {
-    const output = execSync(
-      `"${ffmpegPath}" -list_devices true -f dshow -i dummy 2>&1`,
-      { encoding: 'utf8', timeout: 10000 }
-    ).toString();
-    return parseDshowDevices(output, 'video');
-  } catch (e) {
-    // ffmpeg always exits with error when listing devices
-    const stderr = (e.stderr || e.stdout || '').toString();
-    return parseDshowDevices(stderr, 'video');
-  }
+async function listVideoDevices(ffmpegPath) {
+  return parseDshowDevices(await listDevices(ffmpegPath), 'video');
 }
 
 /**
  * List all DirectShow audio devices.
  * @param {string} ffmpegPath - Path to ffmpeg executable.
- * @returns {Array<{name: string, index: number}>}
+ * @returns {Promise<Array<{name: string, index: number}>>}
  */
-function listAudioDevices(ffmpegPath) {
-  try {
-    const output = execSync(
-      `"${ffmpegPath}" -list_devices true -f dshow -i dummy 2>&1`,
-      { encoding: 'utf8', timeout: 10000 }
-    ).toString();
-    return parseDshowDevices(output, 'audio');
-  } catch (e) {
-    const stderr = (e.stderr || e.stdout || '').toString();
-    return parseDshowDevices(stderr, 'audio');
-  }
+async function listAudioDevices(ffmpegPath) {
+  return parseDshowDevices(await listDevices(ffmpegPath), 'audio');
 }
 
 /**
@@ -83,9 +78,10 @@ function parseDshowDevices(output, type) {
  * @param {string} ffmpegPath - Path to ffmpeg executable.
  * @returns {{video: Array, audio: Array, hasScreen: boolean}}
  */
-function getAvailableSources(ffmpegPath) {
-  const video = listVideoDevices(ffmpegPath);
-  const audio = listAudioDevices(ffmpegPath);
+async function getAvailableSources(ffmpegPath) {
+  const output = await listDevices(ffmpegPath);
+  const video = parseDshowDevices(output, 'video');
+  const audio = parseDshowDevices(output, 'audio');
 
   // Screen capture is always available on Windows via gdigrab
   const hasScreen = process.platform === 'win32';
@@ -98,8 +94,8 @@ function getAvailableSources(ffmpegPath) {
  * @param {string} ffmpegPath - Path to ffmpeg executable.
  * @returns {Object} JSON-serializable source list.
  */
-function getSourcesForAPI(ffmpegPath) {
-  const sources = getAvailableSources(ffmpegPath);
+async function getSourcesForAPI(ffmpegPath) {
+  const sources = await getAvailableSources(ffmpegPath);
   const result = [];
 
   // Screen capture

@@ -80,41 +80,91 @@ function copyTunnelUrl() {
 setTimeout(checkTunnelStatus, 1000);
 
 // ── Panel de ajustes ───────────────────────────────────────────────────────────
-function toggleSettings() {
-  var panel = document.getElementById('settings-panel');
-  if (panel) {
-    panel.remove();
-    return;
-  }
-
-  fetch('/api/settings').then(function(r) { return r.json(); }).then(function(s) {
-    renderSettingsPanel(s);
-  }).catch(function() {
-    renderSettingsPanel({});
-  });
+function settingsHeader() {
+  return '<div class="settings-header"><h2 id="settings-title">Ajustes</h2><button type="button" class="settings-close" aria-label="Cerrar ajustes" onclick="closeSettingsPanel()">&times;</button></div>';
 }
 
-function renderSettingsPanel(settings) {
-  var s = settings || {};
+function closeSettingsPanel() {
+  var panel = document.getElementById('settings-panel');
+  if (!panel) return;
+  if (panel._settingsAbort) panel._settingsAbort.abort();
+  document.removeEventListener('keydown', panel._settingsKeyHandler, true);
+  (panel._settingsBackground || []).forEach(function(item) { item.node.inert = item.inert; });
+  document.body.style.overflow = panel._previousOverflow;
+  panel.remove();
+  var invoker = panel._returnFocus;
+  if (!invoker || !invoker.isConnected || invoker === document.body) invoker = document.querySelector('[aria-label="Ajustes"]');
+  if (invoker && typeof invoker.focus === 'function') invoker.focus({ preventScroll: true });
+}
+
+function createSettingsPanel() {
   var panel = document.createElement('div');
   panel.id = 'settings-panel';
   panel.className = 'settings-panel active';
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'true');
+  panel.setAttribute('aria-labelledby', 'settings-title');
+  panel.setAttribute('tabindex', '-1');
+  panel._returnFocus = document.activeElement;
+  panel._previousOverflow = document.body.style.overflow || '';
+  panel._settingsBackground = Array.from(document.body.children).map(function(node) { return { node: node, inert: node.inert }; });
+  panel._settingsBackground.forEach(function(item) { item.node.inert = true; });
+  panel.innerHTML = settingsHeader() + '<div class="settings-section" role="status">Cargando ajustes…</div>';
+  document.body.appendChild(panel);
+  document.body.style.overflow = 'hidden';
+  panel._settingsKeyHandler = function(event) {
+    if (document.getElementById('settings-panel') !== panel) return;
+    if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); closeSettingsPanel(); return; }
+    if (event.key !== 'Tab') return;
+    event.stopImmediatePropagation();
+    var items = Array.from(panel.querySelectorAll('a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]')).filter(function(node) { return node.tabIndex >= 0 && !node.hidden && node.getClientRects().length; });
+    var first = items[0], last = items[items.length - 1];
+    if (!first) { event.preventDefault(); panel.focus(); }
+    else if (!panel.contains(document.activeElement) || document.activeElement === panel) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
+    else if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  };
+  document.addEventListener('keydown', panel._settingsKeyHandler, true);
+  panel.querySelector('.settings-close').focus({ preventScroll: true });
+  return panel;
+}
 
-  panel.innerHTML = '<div class="settings-header"><h2>Ajustes</h2><button class="settings-close" onclick="document.getElementById(\'settings-panel\').remove()">&times;</button></div>' +
-    '<div class="settings-section"><h3>Acceso Remoto</h3>' +
-    '<div class="setting-row"><span class="setting-label">IP Pública (P2P)</span><span id="set-public-ip" class="setting-value" style="color:#2ecc71;font-family:monospace;cursor:pointer;font-size:12px" onclick="navigator.clipboard.writeText(this.textContent);showNotification(\'IP copiada\')">Cargando...</span></div>' +
-    '<div class="setting-row"><span class="setting-label">Acceso público</span><span id="set-tunnel-url" class="setting-value" style="color:#888;font-family:monospace;font-size:12px;word-break:break-all">UPnP / LAN solamente</span></div>' +
-    '<div class="setting-row"><span class="setting-label">Canal ntfy</span><span id="set-ntfy-url" class="setting-value" style="color:#888;font-family:monospace;cursor:pointer;font-size:11px;word-break:break-all" onclick="navigator.clipboard.writeText(this.textContent);showNotification(\'URL copiada\')">—</span></div>' +
+function toggleSettings() {
+  var panel = document.getElementById('settings-panel');
+  if (panel) {
+    closeSettingsPanel();
+    return;
+  }
+  panel = createSettingsPanel();
+  panel._settingsAbort = new AbortController();
+  fetch('/api/settings', { signal: panel._settingsAbort.signal }).then(function(r) { if (!r.ok) throw new Error('Settings unavailable'); return r.json(); }).then(function(s) {
+    if (document.getElementById('settings-panel') === panel) renderSettingsPanel(s, panel);
+  }).catch(function(error) {
+    if (document.getElementById('settings-panel') !== panel || error.name === 'AbortError') return;
+    panel.innerHTML = settingsHeader() + '<div class="settings-section"><p role="status">No se han podido cargar tus ajustes. Tus preferencias no se han modificado.</p><button type="button" class="settings-save" style="margin-top:16px" onclick="closeSettingsPanel();toggleSettings()">Reintentar</button></div>';
+    panel.querySelector('.settings-close').focus({ preventScroll: true });
+  });
+}
+
+function renderSettingsPanel(settings, owner) {
+  if (owner && document.getElementById('settings-panel') !== owner) return;
+  var s = settings || {};
+  var panel = owner || document.getElementById('settings-panel') || createSettingsPanel();
+  window._selectedAiProvider = s.aiProvider || 'none';
+
+  panel.innerHTML = settingsHeader() +
+    '<div class="settings-section"><h3>Tus dispositivos</h3>' +
+    '<p style="font-size:13px;line-height:1.6;color:#b9bac6;margin-bottom:12px">Abre tu biblioteca en otra pantalla desde Conectar dispositivo.</p><a href="/connect" class="modal-btn btn-trailer" style="text-decoration:none">Conectar dispositivo →</a>' +
     '</div>' +
     '<div class="settings-section"><h3>Preferencias de Reproducción</h3>' +
-    '<div class="setting-row"><span class="setting-label">Calidad</span>' +
+    '<div class="setting-row"><label class="setting-label" for="set-quality">Calidad</label>' +
     '<select class="setting-select" id="set-quality">' +
     '<option value="auto"' + (s.quality === 'auto' ? ' selected' : '') + '>Auto (mejor disponible)</option>' +
     '<option value="720p"' + (s.quality === '720p' ? ' selected' : '') + '>720p HD</option>' +
     '<option value="1080p"' + (s.quality === '1080p' ? ' selected' : '') + '>1080p Full HD</option>' +
     '<option value="4k"' + (s.quality === '4k' ? ' selected' : '') + '>4K Ultra HD</option>' +
     '</select></div>' +
-    '<div class="setting-row"><span class="setting-label">Idioma</span>' +
+    '<div class="setting-row"><label class="setting-label" for="set-language">Idioma</label>' +
     '<select class="setting-select" id="set-language">' +
     '<option value="spanish"' + (s.language === 'spanish' ? ' selected' : '') + '>ES Español</option>' +
     '<option value="latino"' + (s.language === 'latino' ? ' selected' : '') + '> Latino</option>' +
@@ -124,13 +174,13 @@ function renderSettingsPanel(settings) {
     '</select></div></div>' +
 
     '<div class="settings-section"><h3> Búsqueda eMule</h3>' +
-    '<div class="setting-row"><span class="setting-label">Método</span>' +
+    '<div class="setting-row"><label class="setting-label" for="set-method">Método</label>' +
     '<select class="setting-select" id="set-method">' +
     '<option value="kad"' + (s.searchMethod === 'kad' ? ' selected' : '') + '>Kademlia (más fuentes)</option>' +
     '<option value="global"' + (s.searchMethod === 'global' ? ' selected' : '') + '>Global (más rápido)</option>' +
     '<option value="server"' + (s.searchMethod === 'server' ? ' selected' : '') + '>Servidor actual</option>' +
     '</select></div>' +
-    '<div class="setting-row"><span class="setting-label">Tamaño mínimo</span>' +
+    '<div class="setting-row"><label class="setting-label" for="set-minsize">Tamaño mínimo</label>' +
     '<select class="setting-select" id="set-minsize">' +
     '<option value="100"' + (s.minSizeMB <= 100 ? ' selected' : '') + '>100 MB</option>' +
     '<option value="300"' + (s.minSizeMB === 300 ? ' selected' : '') + '>300 MB (recomendado)</option>' +
@@ -139,10 +189,10 @@ function renderSettingsPanel(settings) {
     '</select></div></div>' +
 
     '<div class="settings-section"><h3> Conexión eMule WebServer</h3>' +
-    '<div style="margin-bottom:12px"><span class="setting-label">Contraseña</span>' +
+    '<div style="margin-bottom:12px"><label class="setting-label" for="set-password">Contraseña</label>' +
     '<input type="password" class="setting-input" id="set-password" value="' + escapeAttr(s.emulePassword || '') + '" placeholder="Contraseña del WebServer (puerto 4711)" style="margin-top:6px"></div>' +
     '<button class="modal-btn btn-trailer" style="width:100%;justify-content:center" onclick="testEmuleConnection()"> Probar conexión</button>' +
-    '<div id="emule-test-status"></div></div>' +
+    '<div id="emule-test-status" role="status" aria-live="polite"></div></div>' +
 
     // ── IA Section ────────────────────────────────────────────────────────────
     '<div class="settings-section" id="ai-section">' +
@@ -156,7 +206,7 @@ function renderSettingsPanel(settings) {
     '<div class="ai-card" id="ai-card-gemini" style="border:1.5px solid ' + (s.aiProvider === 'gemini' ? 'rgba(66,133,244,.7)' : 'rgba(255,255,255,.08)') + ';border-radius:12px;padding:14px 16px;cursor:pointer;transition:border-color .2s" onclick="selectAiProvider(\'gemini\')">' +
       '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">' +
         '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" fill="#4285F4"/><path d="M12 7l-5 10h3l1-2h6l1 2h3L12 7zm0 3.5l1.5 3h-3L12 10.5z" fill="white"/></svg>' +
-        '<span style="font-size:14px;font-weight:700;color:#fff">Google Gemini</span>' +
+        '<button type="button" class="ai-provider-choice" id="choose-ai-gemini" aria-pressed="' + (s.aiProvider === 'gemini') + '">Google Gemini</button>' +
         (s.aiProvider === 'gemini' && s.googleAccessToken
           ? '<span style="margin-left:auto;font-size:11px;font-weight:600;background:rgba(46,204,113,.15);color:#2ecc71;border:1px solid rgba(46,204,113,.3);padding:2px 7px;border-radius:5px">&#10004; Conectado</span>'
           : '<span style="margin-left:auto;font-size:11px;font-weight:600;background:rgba(66,133,244,.15);color:#4285F4;border:1px solid rgba(66,133,244,.3);padding:2px 7px;border-radius:5px">&#x1F511; Sin API key</span>') +
@@ -178,8 +228,8 @@ function renderSettingsPanel(settings) {
                 '<span style="color:#555">3. Pega Client ID y Secret aquí:</span>' +
               '</div>' +
               '<div style="display:flex;flex-direction:column;gap:6px">' +
-                '<input class="setting-input" id="google-client-id" placeholder="Client ID ( termina en .apps.googleusercontent.com)" value="' + escapeAttr(s.googleClientId || '') + '" oninput="updateGeminiSignInBtn()" style="font-size:11px;padding:8px 10px">' +
-                '<input class="setting-input" id="google-client-secret" placeholder="Client Secret (GO...xxxx)" value="' + escapeAttr(s.googleClientSecret || '') + '" oninput="updateGeminiSignInBtn()" style="font-size:11px;padding:8px 10px">' +
+                '<input class="setting-input" id="google-client-id" aria-label="Client ID de Google" placeholder="Client ID ( termina en .apps.googleusercontent.com)" value="' + escapeAttr(s.googleClientId || '') + '" oninput="updateGeminiSignInBtn()" style="font-size:11px;padding:8px 10px">' +
+                '<input type="password" class="setting-input" id="google-client-secret" aria-label="Client Secret de Google" placeholder="Client Secret" value="' + escapeAttr(s.googleClientSecret || '') + '" oninput="updateGeminiSignInBtn()" style="font-size:11px;padding:8px 10px">' +
               '</div>' +
             '</div>' +
             '<div style="font-size:11px;font-weight:700;color:#4285F4;text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px">&#x1F464; Paso 2 — Inicia sesión con Google</div>' +
@@ -198,12 +248,12 @@ function renderSettingsPanel(settings) {
     '<div class="ai-card" id="ai-card-openai" style="border:1.5px solid ' + (s.aiProvider === 'openai' ? 'rgba(16,163,127,.7)' : 'rgba(255,255,255,.08)') + ';border-radius:12px;padding:14px 16px;cursor:pointer;transition:border-color .2s" onclick="selectAiProvider(\'openai\')">' +
       '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">' +
         '<svg width="20" height="20" viewBox="0 0 24 24" fill="#10A37F"><circle cx="12" cy="12" r="10"/></svg>' +
-        '<span style="font-size:14px;font-weight:700;color:#fff">OpenAI (ChatGPT)</span>' +
+        '<button type="button" class="ai-provider-choice" id="choose-ai-openai" aria-pressed="' + (s.aiProvider === 'openai') + '">OpenAI (ChatGPT)</button>' +
         '<span style="margin-left:auto;font-size:11px;font-weight:600;background:rgba(255,255,255,.05);color:#888;border:1px solid rgba(255,255,255,.1);padding:2px 7px;border-radius:5px">API Key</span>' +
       '</div>' +
       '<div id="openai-key-area" style="display:' + (s.aiProvider === 'openai' ? 'block' : 'none') + '">' +
         '<div style="display:flex;gap:8px;margin-bottom:8px">' +
-          '<input class="setting-input" id="set-openai-key" type="password" placeholder="sk-..." value="' + escapeAttr(s.aiProvider === 'openai' ? (s.aiApiKey || '') : '') + '" style="flex:1;font-size:12px">' +
+          '<input class="setting-input" id="set-openai-key" type="password" aria-label="API key de OpenAI" placeholder="sk-..." value="' + escapeAttr(s.aiProvider === 'openai' ? (s.aiApiKey || '') : '') + '" style="flex:1;font-size:12px">' +
           '<button onclick="window.open(\'https://platform.openai.com/api-keys\')" style="background:rgba(16,163,127,.15);border:1px solid rgba(16,163,127,.3);color:#10A37F;padding:6px 10px;border-radius:7px;cursor:pointer;font-size:11px;white-space:nowrap">&#x1F511; Obtener key</button>' +
         '</div>' +
         '<button onclick="testAiKey(\'openai\')" style="background:rgba(16,163,127,.1);border:1px solid rgba(16,163,127,.3);color:#10A37F;padding:7px 14px;border-radius:7px;cursor:pointer;font-size:12px;width:100%">Probar conexión</button>' +
@@ -215,12 +265,12 @@ function renderSettingsPanel(settings) {
     '<div class="ai-card" id="ai-card-claude" style="border:1.5px solid ' + (s.aiProvider === 'claude' ? 'rgba(208,134,56,.7)' : 'rgba(255,255,255,.08)') + ';border-radius:12px;padding:14px 16px;cursor:pointer;transition:border-color .2s" onclick="selectAiProvider(\'claude\')">' +
       '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">' +
         '<svg width="20" height="20" viewBox="0 0 24 24" fill="#D08638"><circle cx="12" cy="12" r="10"/><text x="7" y="16" font-size="10" fill="white" font-weight="bold">Cl</text></svg>' +
-        '<span style="font-size:14px;font-weight:700;color:#fff">Anthropic Claude</span>' +
+        '<button type="button" class="ai-provider-choice" id="choose-ai-claude" aria-pressed="' + (s.aiProvider === 'claude') + '">Anthropic Claude</button>' +
         '<span style="margin-left:auto;font-size:11px;font-weight:600;background:rgba(255,255,255,.05);color:#888;border:1px solid rgba(255,255,255,.1);padding:2px 7px;border-radius:5px">API Key</span>' +
       '</div>' +
       '<div id="claude-key-area" style="display:' + (s.aiProvider === 'claude' ? 'block' : 'none') + '">' +
         '<div style="display:flex;gap:8px;margin-bottom:8px">' +
-          '<input class="setting-input" id="set-claude-key" type="password" placeholder="sk-ant-..." value="' + escapeAttr(s.aiProvider === 'claude' ? (s.aiApiKey || '') : '') + '" style="flex:1;font-size:12px">' +
+          '<input class="setting-input" id="set-claude-key" type="password" aria-label="API key de Anthropic" placeholder="sk-ant-..." value="' + escapeAttr(s.aiProvider === 'claude' ? (s.aiApiKey || '') : '') + '" style="flex:1;font-size:12px">' +
           '<button onclick="window.open(\'https://console.anthropic.com/settings/keys\')" style="background:rgba(208,134,56,.15);border:1px solid rgba(208,134,56,.3);color:#D08638;padding:6px 10px;border-radius:7px;cursor:pointer;font-size:11px;white-space:nowrap">&#x1F511; Obtener key</button>' +
         '</div>' +
         '<button onclick="testAiKey(\'claude\')" style="background:rgba(208,134,56,.1);border:1px solid rgba(208,134,56,.3);color:#D08638;padding:7px 14px;border-radius:7px;cursor:pointer;font-size:12px;width:100%">Probar conexión</button>' +
@@ -232,7 +282,7 @@ function renderSettingsPanel(settings) {
     '<div class="ai-card" id="ai-card-none" style="border:1.5px solid ' + (!s.aiProvider || s.aiProvider === 'none' ? 'rgba(255,255,255,.25)' : 'rgba(255,255,255,.08)') + ';border-radius:12px;padding:10px 16px;cursor:pointer;transition:border-color .2s" onclick="selectAiProvider(\'none\')">' +
       '<div style="display:flex;align-items:center;gap:10px">' +
         '<span style="font-size:16px">&#x26D4;</span>' +
-        '<span style="font-size:13px;color:#666">Sin IA — búsqueda básica (variantes de episodio incluidas sin IA)</span>' +
+        '<button type="button" class="ai-provider-choice" id="choose-ai-none" aria-pressed="' + (!s.aiProvider || s.aiProvider === 'none') + '">Sin IA — búsqueda básica</button>' +
       '</div>' +
     '</div>' +
     '</div>' + // end #ai-provider-cards
@@ -259,56 +309,81 @@ function renderSettingsPanel(settings) {
     '<div class="settings-section">' +
     '<button class="settings-save" onclick="saveSettingsPanel()"> Guardar Ajustes</button></div>';
 
-  document.body.appendChild(panel);
-
-  // Load remote access info
-  fetch('/api/connect-seed').then(function(r){return r.json();}).then(function(seed) {
-    var ipEl = document.getElementById('set-public-ip');
-    var tunnelEl = document.getElementById('set-tunnel-url');
-    var ntfyEl = document.getElementById('set-ntfy-url');
-    if (ipEl && seed.publicIP) ipEl.textContent = 'http://' + seed.publicIP + ':8080';
-    else if (ipEl) ipEl.textContent = 'No disponible';
-    if (tunnelEl && seed.tunnel) tunnelEl.textContent = seed.tunnel;
-    else if (tunnelEl) tunnelEl.textContent = 'No disponible';
-    if (ntfyEl && seed.ntfyTopic) ntfyEl.textContent = 'https://ntfy.sh/' + seed.ntfyTopic;
-  }).catch(function() {});
+  panel.querySelector('.settings-close').focus({ preventScroll: true });
 
   // Check eMule status on open
   fetch('/api/emule/status').then(function(r) { return r.json(); }).then(function(data) {
+    if (document.getElementById('settings-panel') !== panel || panel._emuleRequest) return;
     var el = document.getElementById('emule-test-status');
     if (el && data.loggedIn) {
       el.innerHTML = '<div class="emule-status ok">Conectado a eMule WebServer</div>';
+    } else if (el) {
+      el.innerHTML = '<div class="emule-status err">' + escapeHTML(emuleConnectionMessage(data)) + '</div>';
     }
   }).catch(function() {});
 }
 
+function emuleConnectionMessage(data) {
+  var messages = {
+    password_missing: 'Falta la contraseña de eMule WebServer. Introdúcela y prueba la conexión.',
+    password_mismatch: 'eMule ha rechazado la contraseña. Comprueba que coincide con la de su WebServer.',
+    access_denied: 'eMule ha denegado el acceso. Revisa los permisos de su WebServer.',
+    invalid_login_response: 'El WebServer no ha confirmado la conexión. Comprueba que eMule está abierto.',
+    webserver_down: 'eMule WebServer no responde. Abre eMule y comprueba que su WebServer está activado.',
+    webserver_http_error: 'eMule WebServer ha devuelto un error. Comprueba su estado y vuelve a probar.',
+    login_timeout: 'eMule ha tardado demasiado en responder. Vuelve a probar la conexión.'
+  };
+  var message = messages[data && data.reason] || 'No se ha podido conectar con eMule WebServer. Comprueba eMule y vuelve a probar.';
+  if (data && data.retrying) message += ' Se está intentando conectar de nuevo.';
+  return message;
+}
+
+function explicitEmulePassword() {
+  var input = document.getElementById('set-password');
+  var password = input ? input.value : '';
+  return password && password !== '********' ? password : null;
+}
+
 function testEmuleConnection() {
-  var pw = document.getElementById('set-password').value;
+  var panel = document.getElementById('settings-panel');
+  if (!panel || panel._settingsSaving) return;
+  var request = panel._emuleRequest = (panel._emuleRequest || 0) + 1;
+  var pw = explicitEmulePassword();
   var status = document.getElementById('emule-test-status');
   if (status) status.innerHTML = '<div class="emule-status" style="color:#888;background:rgba(255,255,255,.05);border:1px solid #333"><div class="spinner" style="width:16px;height:16px;border-width:2px"></div> Conectando...</div>';
 
-  fetch('/api/emule/login?p=' + encodeURIComponent(pw)).then(function(r) { return r.json(); }).then(function(data) {
+  fetch('/api/emule/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(pw === null ? {} : { password: pw })
+  }).then(function(r) { if (!r.ok) throw new Error('Connection failed'); return r.json(); }).then(function(data) {
+    if (document.getElementById('settings-panel') !== panel || panel._emuleRequest !== request) return;
     if (data.success) {
-      if (status) status.innerHTML = '<div class="emule-status ok"> Conectado correctamente (sesión: ' + escapeHTML(String(data.session)) + ')</div>';
+      if (status) status.innerHTML = '<div class="emule-status ok">Conectado correctamente</div>';
     } else {
-      if (status) status.innerHTML = '<div class="emule-status err"> ' + escapeHTML(data.error || 'Fallo de conexión') + '</div>';
+      if (status) status.innerHTML = '<div class="emule-status err">' + escapeHTML(emuleConnectionMessage(data)) + '</div>';
     }
   }).catch(function() {
-    if (status) status.innerHTML = '<div class="emule-status err"> No se puede conectar al puerto 4711</div>';
+    if (document.getElementById('settings-panel') !== panel || panel._emuleRequest !== request) return;
+    if (status) status.innerHTML = '<div class="emule-status err">No se ha podido comprobar la conexión. Vuelve a intentarlo.</div>';
   });
 }
 
 function saveSettingsPanel() {
+  var panel = document.getElementById('settings-panel');
+  if (!panel || panel._settingsSaving) return;
+  panel._settingsSaving = true;
+  panel._emuleRequest = (panel._emuleRequest || 0) + 1;
   var aiProvider = window._selectedAiProvider || document.querySelector('.ai-card[data-selected]') && window._selectedAiProvider || '';
   var newSettings = {
     quality:         document.getElementById('set-quality').value,
     language:        document.getElementById('set-language').value,
     searchMethod:    document.getElementById('set-method').value,
     minSizeMB:       parseInt(document.getElementById('set-minsize').value),
-    emulePassword:   document.getElementById('set-password').value,
     aiEnhanceQuery:  document.getElementById('ai-enhance') ? document.getElementById('ai-enhance').checked : true,
     aiRankResults:   document.getElementById('ai-rank')    ? document.getElementById('ai-rank').checked    : true
   };
+  var emulePassword = explicitEmulePassword();
+  if (emulePassword !== null) newSettings.emulePassword = emulePassword;
 
   // Gather AI provider + credentials
   if (window._selectedAiProvider === 'openai') {
@@ -333,13 +408,33 @@ function saveSettingsPanel() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(newSettings)
-  }).then(function(r) { return r.json(); }).then(function(saved) {
-    showNotification(' Ajustes guardados');
-    document.getElementById('settings-panel').remove();
-    if (saved.emulePassword) {
-      fetch('/api/emule/login?p=' + encodeURIComponent(saved.emulePassword));
-    }
+  }).then(function(r) { if (!r.ok) throw new Error('Save failed'); return r.json(); }).then(function() {
+    if (document.getElementById('settings-panel') !== panel) return;
+    var status = document.getElementById('emule-test-status');
+    if (status) status.innerHTML = '<div class="emule-status">Ajustes guardados. Comprobando conexión con eMule…</div>';
+    // The server owns the saved credential; the settings response is redacted.
+    return fetch('/api/emule/resync', { method: 'POST' }).then(function(r) {
+      if (!r.ok) throw new Error('Connection failed');
+      return r.json();
+    }).then(function(data) {
+      if (document.getElementById('settings-panel') !== panel) return;
+      panel._settingsSaving = false;
+      if (data.success) {
+        showNotification('Ajustes guardados. Conectado a eMule.');
+        closeSettingsPanel();
+      } else {
+        if (status) status.innerHTML = '<div class="emule-status err">Ajustes guardados. ' + escapeHTML(emuleConnectionMessage(data)) + '</div>';
+        showNotification('Ajustes guardados. Revisa la conexión con eMule.');
+      }
+    }).catch(function() {
+      if (document.getElementById('settings-panel') !== panel) return;
+      panel._settingsSaving = false;
+      if (status) status.innerHTML = '<div class="emule-status err">Ajustes guardados. No se ha podido comprobar la conexión con eMule. Vuelve a probar.</div>';
+      showNotification('Ajustes guardados. No se ha podido comprobar la conexión con eMule.');
+    });
   }).catch(function() {
+    if (document.getElementById('settings-panel') !== panel) return;
+    panel._settingsSaving = false;
     showNotification(' Error al guardar');
   });
 }
@@ -355,6 +450,8 @@ function selectAiProvider(provider) {
   ['gemini','openai','claude','none'].forEach(function(p) {
     var card = document.getElementById('ai-card-' + p);
     if (card) card.style.borderColor = p === provider ? _PROVIDER_COLORS[p] : 'rgba(255,255,255,.08)';
+    var button = document.getElementById('choose-ai-' + p);
+    if (button) button.setAttribute('aria-pressed', String(p === provider));
   });
   // Show/hide detail areas
   var areas = { gemini: 'gemini-oauth-area', openai: 'openai-key-area', claude: 'claude-key-area' };
@@ -390,6 +487,7 @@ function updateGeminiSignInBtn() {
 
 function startGoogleOAuth(event) {
   if (event) event.stopPropagation();
+  var settingsOwner = document.getElementById('settings-panel');
 
   // Save client_id and client_secret first so server can use them
   var clientId     = (document.getElementById('google-client-id')     || {}).value || '';
@@ -421,7 +519,7 @@ function startGoogleOAuth(event) {
             if (status.ok) {
               if (statusEl) { statusEl.innerHTML = '<span style="color:#2ecc71">✔ Conectado con Google</span>'; }
               // Refresh the panel
-              setTimeout(function() { document.getElementById('settings-panel').remove(); toggleSettings(); }, 1200);
+              setTimeout(function() { if (settingsOwner && document.getElementById('settings-panel') === settingsOwner) { closeSettingsPanel(); toggleSettings(); } }, 1200);
             } else {
               if (statusEl) { statusEl.textContent = '✗ ' + (status.error || 'Error desconocido'); statusEl.style.color = '#e74c3c'; }
             }
@@ -447,10 +545,10 @@ function startGoogleOAuth(event) {
 function disconnectGemini(event) {
   if (event) event.stopPropagation();
   if (!confirm('¿Desconectar Google? Deberás volver a autorizar para usar Gemini.')) return;
+  var panel = document.getElementById('settings-panel');
   fetch('/api/ai/oauth/disconnect', { method: 'POST' }).then(function() {
     showNotification('Google desconectado');
-    document.getElementById('settings-panel').remove();
-    toggleSettings();
+    if (panel && document.getElementById('settings-panel') === panel) { closeSettingsPanel(); toggleSettings(); }
   });
 }
 

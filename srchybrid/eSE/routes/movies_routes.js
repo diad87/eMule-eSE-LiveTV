@@ -3,6 +3,8 @@ const fs    = require('fs');
 const https = require('https');
 const path  = require('path');
 const { TMDB_KEY } = require('../api_keys');
+const { createMetadataService } = require('../movie_metadata');
+const movieMetadata = createMetadataService();
 
 let _ctx = {};
 
@@ -84,16 +86,20 @@ function handle(url, req, res) {
     return true;
   }
 
-  if (url.pathname === '/api/movies/search') {
-    const q = url.searchParams.get('q') || '';
-    if (!q) { res.writeHead(400); res.end('{}'); return true; }
-    _ctx.proxyOMDB('s=' + encodeURIComponent(q), res);
-    return true;
-  }
-
-  if (url.pathname === '/api/movies/detail') {
+  if (url.pathname === '/api/movies/search' || url.pathname === '/api/movies/detail' || url.pathname === '/api/movies/season') {
     const id = url.searchParams.get('id') || '';
-    _ctx.proxyOMDB('i=' + encodeURIComponent(id) + '&plot=full', res);
+    const operation = url.pathname.endsWith('/season')
+      ? movieMetadata.season(id, /^\d{1,4}$/.test(url.searchParams.get('season') || '') ? Number(url.searchParams.get('season')) : NaN)
+      : url.pathname.endsWith('/search') ? movieMetadata.search(url.searchParams.get('q') || '') : movieMetadata.detail(id);
+    operation.then(data => {
+      if (res.destroyed || res.writableEnded) return;
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, max-age=300' });
+      res.end(JSON.stringify(data));
+    }).catch(error => {
+      if (res.destroyed || res.writableEnded) return;
+      res.writeHead(error.status || 502, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ Response: 'False', error: error.code || 'metadata_unavailable' }));
+    });
     return true;
   }
 

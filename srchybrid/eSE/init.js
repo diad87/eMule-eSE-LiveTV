@@ -5,98 +5,90 @@
   var params = new URLSearchParams(window.location.search);
   var detailId = params.get('detail');
   var searchQuery = params.get('search');
-  var localizedTitle = params.get('ltitle');
+  var playName = params.get('play');
+  var localizedTitle = params.get('ltitle') || params.get('title');
+  var returnTo = params.get('returnTo');
+  // Only known catalog pages are valid return destinations; never remote URLs.
+  if ((detailId || searchQuery || playName) && returnTo && /^\/(explore|search|mylist)(\?[^#\r\n]*)?$/.test(returnTo)) {
+    window._detailReturnTo = returnTo;
+  }
   if (detailId) {
     setTimeout(function() { showMovieDetail(detailId, null, localizedTitle); }, 800);
     history.replaceState(null, '', '/');
   } else if (searchQuery) {
-    setTimeout(function() {
-      var input = document.getElementById('search-input');
-      if (input) { input.value = searchQuery; searchEd2k(); }
-    }, 800);
+    window.location.replace('/search?q=' + encodeURIComponent(searchQuery));
+  } else if (playName) {
+    setTimeout(function() { playCompleted(encodeURIComponent(playName)); }, 0);
     history.replaceState(null, '', '/');
   }
+  if (params.get('settings') === '1') setTimeout(function() { toggleSettings(); }, 0);
 })();
 
-// ── "Continuar viendo" — banner al cargar la página ───────────────────────────
+// ── "Continuar viendo" — contexto de la biblioteca, sin tapar la página ──────
 (function() {
+  var slot = document.getElementById('home-resume-slot');
   var session = getWatchSession();
-  if (!session || !session.fileName) return;
+  if (!slot || !session || typeof session.fileName !== 'string' || !session.fileName) return;
+
+  function readLibrary(url) {
+    return fetch(url).then(function(r) {
+      if (!r.ok) throw new Error('library unavailable');
+      return r.json();
+    }).then(function(files) {
+      if (!Array.isArray(files)) throw new Error('invalid library');
+      return files;
+    }).catch(function() { return null; });
+  }
 
   Promise.all([
-    fetch('/api/stream/completed/list').then(function(r){return r.json();}).catch(function(){return [];}),
-    fetch('/api/emule/downloads').then(function(r){return r.json();}).catch(function(){return [];})
+    readLibrary('/api/stream/completed/list'),
+    readLibrary('/api/emule/downloads')
   ]).then(function(results) {
     var completed = results[0];
     var downloads = results[1];
-    var found = null;
-    var source = null;
+    var match = function(file) { return file && file.fileName === session.fileName; };
+    var found = completed && completed.find(match);
+    var source = found ? 'completed' : 'downloading';
+    if (!found && downloads) found = downloads.find(match);
+    // A failed request is unknown availability, never evidence to erase history.
+    if (!found) return;
 
-    if (completed) {
-      for (var i = 0; i < completed.length; i++) {
-        if (completed[i].fileName === session.fileName) {
-          found = completed[i]; source = 'completed'; break;
-        }
-      }
-    }
-
-    if (!found && downloads) {
-      for (var j = 0; j < downloads.length; j++) {
-        if (downloads[j].fileName === session.fileName) {
-          found = downloads[j]; source = 'downloading'; break;
-        }
-      }
-    }
-
-    if (!found) { clearWatchSession(); return; }
-
-    var sizeMB = found.sizeMB || Math.round((found.sizeBytes || 0) / (1024 * 1024));
-    var posMin = Math.floor(session.position / 60);
-    var posSec = session.position % 60;
-    var posText = session.position > 0 ? posMin + ':' + String(posSec).padStart(2, '0') : '';
+    var seekPos = Number.isFinite(Number(session.position)) ? Math.max(0, Math.floor(Number(session.position))) : 0;
+    var posText = Math.floor(seekPos / 60) + ':' + String(seekPos % 60).padStart(2, '0');
     var movieName = session.fileName.replace(/\.(avi|mkv|mp4|wmv|mov|flv|webm)$/i, '').replace(/\./g, ' ');
-
-    var banner = document.createElement('div');
+    var banner = document.createElement('section');
     banner.id = 'continue-banner';
-    banner.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:500;background:linear-gradient(135deg,rgba(22,22,30,.97),rgba(30,20,40,.97));border:1px solid rgba(255,107,53,.4);border-radius:16px;padding:16px 24px;display:flex;align-items:center;gap:16px;max-width:600px;width:calc(100% - 40px);backdrop-filter:blur(20px);box-shadow:0 8px 32px rgba(0,0,0,.6);animation:slideUp .4s ease';
+    banner.className = 'resume-card';
+    banner.setAttribute('aria-label', 'Seguir viendo');
+    banner.innerHTML = '<div class="resume-copy"><p>SEGUIR VIENDO</p><h2>' + escapeHTML(movieName) + '</h2>' +
+      '<span>' + (seekPos ? 'Última posición: ' + escapeHTML(posText) + ' · ' : '') +
+      (source === 'completed' ? 'En tu biblioteca' : 'Descarga en curso · Según los datos disponibles') + '</span></div>' +
+      '<button type="button" id="continue-play-btn" class="resume-play">Continuar</button>' +
+      '<button type="button" id="continue-dismiss-btn" class="resume-dismiss" aria-label="Ocultar Seguir viendo">&times;</button>';
+    slot.appendChild(banner);
 
-    var style = document.createElement('style');
-    style.textContent = '@keyframes slideUp{from{transform:translateX(-50%) translateY(100px);opacity:0}to{transform:translateX(-50%) translateY(0);opacity:1}}';
-    document.head.appendChild(style);
-
-    banner.innerHTML = '<div style="flex:1;min-width:0"><div style="font-size:14px;color:#ff6b35;font-weight:700;margin-bottom:4px">▶ Seguir viendo</div>' +
-      '<div style="font-size:13px;color:#fff;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHTML(movieName) + '</div>' +
-      '<div style="font-size:11px;color:#888;margin-top:2px">' + escapeHTML(String(sizeMB)) + ' MB' + (posText ? ' · ' + escapeHTML(posText) : '') + (source === 'downloading' ? ' · Descargando...' : ' · Descargado') + '</div></div>' +
-      '<button id="continue-play-btn" style="background:linear-gradient(135deg,#ff6b35,#ff2d78);border:none;color:#fff;padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:700;font-size:14px;white-space:nowrap">▶ Continuar</button>' +
-      '<button onclick="document.getElementById(\'continue-banner\').remove();clearWatchSession()" style="background:none;border:none;color:#555;font-size:20px;cursor:pointer;padding:4px">×</button>';
-
-    document.body.appendChild(banner);
-
-    document.getElementById('continue-play-btn').onclick = function() {
+    document.getElementById('continue-dismiss-btn').onclick = function() {
+      try { clearWatchSession(); } catch (_) {}
       banner.remove();
-      var seekPos = session.position || 0;
+      var destination = document.getElementById('library-title');
+      if (destination) { destination.setAttribute('tabindex', '-1'); destination.focus({ preventScroll: true }); }
+    };
+    document.getElementById('continue-play-btn').onclick = function() {
       var old = document.getElementById('movie-modal');
-      if (old) old.remove();
+      if (old && typeof closeMovieModal === 'function') closeMovieModal();
       var modal = document.createElement('div');
       modal.id = 'movie-modal';
       modal.className = 'movie-modal active';
-      modal.innerHTML = '<button class="modal-close" onclick="closeMovieModal()">&times;</button>' +
-        '<div id="modal-player-zone"></div>' +
-        '<div id="modal-info-zone" style="display:none"></div>';
+      modal._previousOverflow = document.body.style.overflow || '';
+      modal.innerHTML = '<button type="button" class="modal-close" aria-label="Cerrar reproducción" onclick="closeMovieModal()">&times;</button>' +
+        '<div id="modal-player-zone"></div><div id="modal-info-zone" style="display:none"></div>';
       document.body.appendChild(modal);
       document.body.style.overflow = 'hidden';
       modal._keyHandler = function(e) { if (e.key === 'Escape') closeMovieModal(); };
       document.addEventListener('keydown', modal._keyHandler);
 
-      playInModal(encodeURIComponent(session.fileName));
-      if (seekPos > 10) {
-        setTimeout(function() {
-          window._cinemaSeekOffset = seekPos;
-          var q = document.getElementById('cinema-quality');
-          var quality = q ? q.value : 'auto';
-          startCompletedMSE(session.fileName, quality, seekPos);
-        }, 2000);
-      }
+      if (source === 'completed') playInModal(encodeURIComponent(session.fileName), seekPos);
+      else playPartFile(found.partFile, session.fileName, seekPos);
     };
   });
 })();
@@ -105,7 +97,7 @@
 (function() {
   // 1. Logo eMule SVG (official mascot, served as static file)
   var logoLink = document.querySelector('.logo');
-  if (logoLink && logoLink.textContent.trim().indexOf('eSE') !== -1) {
+  if (logoLink && !logoLink.querySelector('img') && logoLink.textContent.trim().indexOf('eSE') !== -1) {
     var img = document.createElement('img');
     img.src = '/emule_mascot.svg';
     img.alt = 'eMule';
@@ -124,88 +116,11 @@
   link.href = '/emule_mascot.svg';
   document.head.appendChild(link);
 
-  // 3. Search Overlay — toggle, debounced TMDB suggestions, Enter → eMule search
-  var _soTimer = null;
-
-  window.toggleSearchOverlay = function() {
-    var overlay = document.getElementById('search-overlay');
-    if (!overlay) return;
-    if (overlay.classList.contains('active')) {
-      overlay.classList.remove('active');
-      document.body.style.overflow = '';
-    } else {
-      overlay.classList.add('active');
-      document.body.style.overflow = 'hidden';
-      var input = document.getElementById('search-overlay-input');
-      if (input) { input.value = ''; input.focus(); }
-      var results = document.getElementById('search-overlay-results');
-      if (results) results.innerHTML = '';
-    }
-  };
-
-  window.onSearchOverlayInput = function(e) {
-    var q = e.target.value.trim();
-    var c = document.getElementById('search-overlay-results');
-    if (!c) return;
-    if (q.length < 2) { c.innerHTML = ''; return; }
-    clearTimeout(_soTimer);
-    _soTimer = setTimeout(function() {
-      fetch('/api/movies/search?q=' + encodeURIComponent(q))
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-          if (!data.Search || !data.Search.length) {
-            c.innerHTML = '<div style="color:#555;text-align:center;padding:32px">Sin sugerencias para &quot;' + escapeHTML(q) + '&quot;</div>';
-            return;
-          }
-          c.innerHTML = data.Search.slice(0, 8).map(function(m) {
-            var poster = sanitizeURL((m.Poster && m.Poster !== 'N/A') ? m.Poster : '');
-            var safe = escapeAttr(m.Title || '');
-            var imdb = escapeAttr(m.imdbID || '');
-            return '<div class="search-suggestion" onclick="toggleSearchOverlay();showMovieDetail(\'' + imdb + '\',null,\'' + safe + '\')">' +
-              (poster
-                ? '<img src="' + escapeHTML(poster) + '" alt="" loading="lazy">'
-                : '<div style="width:45px;height:67px;background:#1a1a2e;border-radius:6px;flex-shrink:0"></div>') +
-              '<div class="search-suggestion-info">' +
-                '<div class="search-suggestion-title">' + escapeHTML(m.Title || '') + '</div>' +
-                '<div class="search-suggestion-meta">' + escapeHTML(m.Year || '') + ' \u00b7 ' + escapeHTML(m.Type || '') + '</div>' +
-              '</div></div>';
-          }).join('');
-        })
-        .catch(function() {
-          c.innerHTML = '<div style="color:#e74c3c;text-align:center;padding:20px">Error de conexi\u00f3n</div>';
-        });
-    }, 400);
-  };
-
-  window.onSearchOverlayKeydown = function(e) {
-    if (e.key === 'Escape') { toggleSearchOverlay(); return; }
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      var q = e.target.value.trim();
-      if (q.length < 2) return;
-      toggleSearchOverlay();
-      // Use existing search infrastructure
-      var searchInput = document.getElementById('search-input');
-      if (searchInput) {
-        searchInput.value = q;
-        if (typeof searchEd2k === 'function') searchEd2k();
-        var resultsSection = document.getElementById('search-results');
-        if (resultsSection) resultsSection.scrollIntoView({ behavior: 'smooth' });
-      }
-    }
-  };
-
-  // Close overlay on click outside content
-  document.addEventListener('click', function(e) {
-    var overlay = document.getElementById('search-overlay');
-    if (overlay && overlay.classList.contains('active') && e.target === overlay) {
-      toggleSearchOverlay();
-    }
-  });
-
-  // Keyboard shortcut: Ctrl+K or / to open search
+  // The page route is the single catalog search entry, including shortcuts.
+  window.toggleSearchOverlay = function() { window.location.href = '/search'; };
   document.addEventListener('keydown', function(e) {
-    if ((e.ctrlKey && e.key === 'k') || (e.key === '/' && !e.target.closest('input, textarea, select'))) {
+    if (e.target && e.target.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')) return;
+    if ((e.ctrlKey && e.key.toLowerCase() === 'k') || e.key === '/') {
       e.preventDefault();
       toggleSearchOverlay();
     }
@@ -216,23 +131,47 @@
 (function() {
   var STORAGE_KEY = 'ese_mylist';
 
+  function readList() {
+    try {
+      var list = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+      if (!Array.isArray(list) || list.some(function(item) {
+        return !item || typeof item !== 'object' || typeof item.imdbId !== 'string' || !item.imdbId;
+      })) return null;
+      return list;
+    } catch (_) { return null; }
+  }
+
+  function writeList(list) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(list)); return true; }
+    catch (_) {
+      showNotification('No se ha podido guardar el cambio. Comprueba el espacio y los permisos del navegador.');
+      return false;
+    }
+  }
+
+  function editableList() {
+    var list = readList();
+    if (!list) showNotification('No se pueden leer tus títulos guardados. Los datos se han conservado.');
+    return list;
+  }
+
   window.getMyList = function() {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
-    catch(e) { return []; }
+    return readList() || [];
   };
 
   window.addToMyList = function(item) {
-    if (!item || !item.imdbId) return;
-    var list = getMyList();
-    if (list.some(function(x) { return x.imdbId === item.imdbId; })) return;
-    item.addedAt = Date.now();
-    list.unshift(item);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+    if (!item || typeof item.imdbId !== 'string' || !item.imdbId) return false;
+    var list = editableList();
+    if (!list) return false;
+    if (list.some(function(x) { return x.imdbId === item.imdbId; })) return true;
+    list.unshift(Object.assign({}, item, { addedAt: Date.now() }));
+    return writeList(list);
   };
 
   window.removeFromMyList = function(imdbId) {
-    var list = getMyList().filter(function(x) { return x.imdbId !== imdbId; });
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+    var list = editableList();
+    if (!list) return false;
+    return writeList(list.filter(function(x) { return x.imdbId !== imdbId; }));
   };
 
   window.isInMyList = function(imdbId) {
@@ -241,12 +180,12 @@
 
   window.toggleMyList = function(imdbId, title, poster, year, type) {
     if (isInMyList(imdbId)) {
-      removeFromMyList(imdbId);
-      showNotification('\u2716 Eliminado de Mi Lista');
+      if (!removeFromMyList(imdbId)) return null;
+      showNotification('Título quitado de Guardados.');
       return false;
     } else {
-      addToMyList({ imdbId: imdbId, title: title, poster: poster, year: year, type: type || 'movie' });
-      showNotification('\u2714 A\u00f1adido a Mi Lista');
+      if (!addToMyList({ imdbId: imdbId, title: title, poster: poster, year: year, type: type || 'movie' })) return null;
+      showNotification('Título guardado en Biblioteca.');
       return true;
     }
   };
@@ -260,19 +199,96 @@
     var m = window._modalMovie;
     if (!m) return;
     var added = (typeof toggleMyList === 'function')
-      && toggleMyList(m.imdbId, m.title, m.poster, m.year);
+      && toggleMyList(m.imdbId, m.title, m.poster, m.year, m.type);
+    if (added === null) return;
+    btn.setAttribute('aria-pressed', String(added));
+    btn.setAttribute('aria-label', added ? 'Guardado. Quitar de Guardados' : 'Guardar en Biblioteca');
+    btn.setAttribute('title', added ? 'Quitar de Guardados' : 'Guardar en Biblioteca');
     var listIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" '
       + 'stroke="currentColor" stroke-width="2" style="margin-right:6px;'
       + 'vertical-align:-2px"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 '
       + '0 0 1 2 2z"></path></svg>';
     if (added) {
       btn.classList.add('btn-list-active');
-      btn.innerHTML = listIcon + ' Quitar de Mi Lista';
+      btn.innerHTML = listIcon + ' Guardado';
     } else {
       btn.classList.remove('btn-list-active');
-      btn.innerHTML = listIcon + ' Mi Lista';
+      btn.innerHTML = listIcon + ' Guardar';
     }
   };
+})();
+
+// Movie dialogs are created by several playback/detail entry points.
+// Keep their keyboard behavior consistent without changing media handlers.
+(function() {
+  if (typeof MutationObserver === 'undefined') return;
+  var activeModal = null;
+  var returnFocus = null;
+  var focusableSelector = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
+  function controls() {
+    return Array.prototype.filter.call(activeModal.querySelectorAll(focusableSelector), function(el) {
+      return el.tabIndex >= 0 && !el.hidden && el.getClientRects().length > 0;
+    });
+  }
+
+  function focusFirst() {
+    var items = controls();
+    (items[0] || activeModal).focus({ preventScroll: true });
+  }
+
+  function syncModal() {
+    var modal = document.getElementById('movie-modal');
+    if (modal && modal.inert) return;
+    if (!modal) {
+      if (activeModal) {
+        activeModal = null;
+        if (returnFocus && returnFocus.isConnected) returnFocus.focus({ preventScroll: true });
+        returnFocus = null;
+      }
+      return;
+    }
+    if (modal !== activeModal) {
+      if (!activeModal) returnFocus = document.activeElement;
+      activeModal = modal;
+      modal.setAttribute('role', 'dialog');
+      modal.setAttribute('aria-modal', 'true');
+      modal.setAttribute('tabindex', '-1');
+    }
+    var title = modal.querySelector('.modal-title');
+    if (title) {
+      if (!title.id) title.id = 'movie-modal-title';
+      modal.setAttribute('aria-labelledby', title.id);
+      modal.removeAttribute('aria-label');
+    } else {
+      modal.removeAttribute('aria-labelledby');
+      modal.setAttribute('aria-label', 'Película y reproducción');
+    }
+    // Detail loading replaces innerHTML, including the focused close button.
+    if (!modal.contains(document.activeElement)) focusFirst();
+  }
+
+  document.addEventListener('keydown', function(event) {
+    if (event.key !== 'Tab' || !activeModal || !activeModal.isConnected || activeModal.inert) return;
+    var items = controls();
+    var first = items[0];
+    var last = items[items.length - 1];
+    if (!first) {
+      event.preventDefault();
+      activeModal.focus({ preventScroll: true });
+    } else if (!activeModal.contains(document.activeElement) || document.activeElement === activeModal) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+  new MutationObserver(syncModal).observe(document.body, { childList: true, subtree: true });
+  syncModal();
 })();
 
 // ── NAT Health Reactive Alert ─────────────────────────────────────────────────

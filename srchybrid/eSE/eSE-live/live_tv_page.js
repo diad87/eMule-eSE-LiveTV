@@ -1,6 +1,7 @@
 /**
  * eSE Live — Live TV Page (viewer-only)
- * Renders /live with 3-state UI: disconnected, empty, active channels.
+ * Renders /live as a Twitch/YouTube-style directory: category chips, featured
+ * stream and channel grid. Diagnostics live in the footer's advanced section.
  * 
  * REMOVED to /live/debug (Phase 2+3):
  *   - P2P Mesh Stats panel
@@ -24,52 +25,114 @@ const navbar = require('../shared/navbar');
 function render(status, meta) {
   const channels = channelSearch.search({});
   const channelCount = channels.length;
+  const featured = directory.pickFeatured(channels);
+  const featuredHtml = featured ? directory.renderFeatured(featured, Math.floor(Date.now() / 20000)) : '';
 
   const liveCSS = `
-.main{max-width:1200px;margin:0 auto;padding:80px 40px 40px}
+.main{max-width:1600px;margin:0 auto;padding:36px var(--ese-page-padding,40px) 48px}
 
 /* Header */
-.live-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:32px;flex-wrap:wrap;gap:12px}
-.live-title{font-size:28px;font-weight:800;color:#fff;display:flex;align-items:center;gap:12px}
-.live-status{display:flex;align-items:center;gap:8px;font-size:13px;color:#888}
+.live-header{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:26px;flex-wrap:wrap;gap:18px}
+.live-title{display:flex;align-items:center;gap:14px;font-size:clamp(30px,3vw,42px);font-weight:800;letter-spacing:-1.2px;line-height:1.1;color:#fff}
+.live-title-dot{width:12px;height:12px;border-radius:50%;background:#ff3b30;box-shadow:0 0 0 0 #ff3b3099;animation:live-ping 2s infinite}
+.live-intro{max-width:620px;margin-top:10px;color:#a9a9b7;font-size:15px;line-height:1.6}
+.live-header-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.live-status{display:flex;align-items:center;gap:9px;min-height:44px;font-size:13px;color:#c8c8d2;padding:10px 14px;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(255,255,255,.035)}
 .status-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
 .status-dot.connected{background:#2ecc71;box-shadow:0 0 8px rgba(46,204,113,.5)}
 .status-dot.disconnected{background:#e74c3c}
 .status-dot.checking{background:#f39c12;animation:pulse 1.5s infinite}
+.live-link-toggle{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:10px 18px;border-radius:999px;border:1px solid #ffffff2b;background:#ffffff0d;color:#f4f4f7;font:inherit;font-size:13px;font-weight:700;cursor:pointer}
+.live-link-toggle:hover,.live-link-toggle[aria-expanded="true"]{background:#ffffff1a;border-color:#ffffff40}
 
 /* Empty state */
-.live-empty{text-align:center;padding:100px 20px 80px}
-.live-empty-icon{font-size:64px;opacity:.3;margin-bottom:24px}
-.live-empty h2{font-size:22px;color:#888;margin-bottom:8px;font-weight:600}
-.live-empty p{color:#555;font-size:14px;max-width:400px;margin:0 auto}
-.live-empty-spinner{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:24px;color:#555;font-size:13px}
+.live-empty{text-align:center;padding:64px 24px;margin-top:8px;background:radial-gradient(ellipse at 50% 0,rgba(255,107,80,.08),transparent 70%);border:1px solid rgba(255,255,255,.08);border-radius:20px}
+.live-empty-icon{color:#ff9a85;margin-bottom:20px}
+.live-empty h3{font-size:clamp(20px,2vw,25px);color:#f4f4f7;margin-bottom:12px;font-weight:700;letter-spacing:-.4px}
+.live-empty p{color:#aaaab8;font-size:15px;line-height:1.7;max-width:460px;margin:0 auto}
+.live-empty-actions{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:28px}
 .spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.1);border-top-color:#ff6b35;border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.live-empty-cta{display:inline-block;margin-top:32px;padding:14px 32px;background:linear-gradient(135deg,#ff6b35,#ff2d78);color:#fff;border-radius:10px;font-weight:700;text-decoration:none;transition:all .2s;font-size:14px}
-.live-empty-cta:hover{transform:translateY(-2px);box-shadow:0 8px 25px rgba(255,107,53,.3)}
+.live-empty-cta{display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:14px 24px;background:#f5f5f8;color:#101015;border-radius:10px;font-weight:700;text-decoration:none;font-size:14px;border:0;font-family:inherit;cursor:pointer}
+.live-empty-cta.secondary{background:transparent;color:#f4f4f7;border:1px solid #ffffff2b}
+.live-empty-cta:hover{background:#fff}.live-empty-cta.secondary:hover{background:#ffffff0d}
 
 /* Network footer */
-.live-net-footer{max-width:1200px;margin:40px auto 0;padding:16px 40px;border-top:1px solid rgba(255,255,255,.06);display:flex;gap:16px;font-size:12px;color:#555;flex-wrap:wrap;align-items:center}
-.live-net-footer a{color:#ff6b35;text-decoration:none;font-weight:600;margin-left:auto}
+.live-net-footer{max-width:1600px;margin:8px auto 0;padding:20px var(--ese-page-padding,40px) 32px;border-top:1px solid rgba(255,255,255,.09);display:flex;gap:12px;font-size:12px;color:#a4a4b3;flex-wrap:wrap;align-items:flex-start}
+.live-net-footer a{color:#ff9a85;text-decoration:none;font-weight:600;display:inline-flex;align-items:center;min-height:40px}
 .live-net-footer a:hover{text-decoration:underline}
+.live-net-summary{display:flex;gap:12px;flex-wrap:wrap;align-items:center;min-height:44px}
+.live-advanced{flex:1 1 100%;order:3}.live-advanced>summary{min-height:44px;display:list-item;align-content:center;color:#c1c1cd;font-weight:600;cursor:pointer;padding:10px 0}
+.live-advanced-body{display:grid;gap:12px;padding:6px 0 8px}
+.live-advanced-links{display:flex;gap:20px;flex-wrap:wrap}
+.live-net-footer .live-privacy{margin-left:auto;min-height:44px}
+.live-tools{margin:0;padding:0 18px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.09);border-radius:12px}
+.live-tools summary{min-height:48px;padding:14px 0;color:#b7b7c5;cursor:pointer;font-size:13px;font-weight:600}
+.live-tools[open] summary{color:#f4f4f7;margin-bottom:4px}
+.live-tool-content{padding:0 0 18px}
+.live-tools input,.live-tools button,.direct-join-row input,.direct-join-row button{min-height:44px;font:inherit}
+.live-tools input::placeholder,.direct-join-row input::placeholder{color:#a3a3b3;opacity:1}
+.live-panel-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:13px}
+.live-panel-row input{flex:1;min-width:120px;padding:10px 12px;background:#101017;border:1px solid #42424f;border-radius:8px;color:#eee;font-family:monospace}
+.live-panel-row button{padding:10px 18px;background:#f5f5f8;color:#16161c;border:none;border-radius:8px;font-weight:700;cursor:pointer}
+#hp-target-port{flex:0 1 150px}
+#preflight-panel #pf-ip{overflow-wrap:anywhere}
+.direct-join-panel{margin:0 0 28px;padding:22px;background:linear-gradient(110deg,rgba(255,107,80,.08),rgba(255,255,255,.025));border:1px solid rgba(255,145,117,.22);border-radius:16px}
+.direct-join-panel[hidden]{display:none}
+.direct-join-label{display:block;font-size:15px;color:#f4f4f7;font-weight:700;margin-bottom:6px}
+.direct-join-hint{font-size:13px;line-height:1.6;color:#aaaab8;margin-bottom:16px}
+.direct-join-row{display:flex;align-items:stretch;gap:12px}
+.direct-join-row input{flex:1;min-width:0;padding:12px 14px;background:#101017;border:1px solid #42424f;border-radius:9px;color:#eee;font-family:monospace;font-size:13px}
+.direct-join-row button{padding:12px 22px;background:#ff806b;color:#170d0b;border:none;border-radius:9px;font-size:14px;font-weight:800;cursor:pointer}
+.direct-join-row button:hover{background:#ff9a85}
+.direct-join-row button:disabled{cursor:wait;opacity:.6}
+.live-result{margin-top:10px;font-size:13px;color:#aaaab8;line-height:1.6;overflow-wrap:anywhere}
+.live-freshness{font-size:12px;line-height:1.6;color:#aaaab8;margin-top:12px}
+.live-monitor{margin:0 0 20px;padding:14px 18px;background:rgba(46,204,113,.05);border:1px solid rgba(46,204,113,.25);border-radius:12px}
+.live-monitor-label{font-weight:700;color:#8ce1b0;min-width:100px}
+.live-monitor-values{display:contents}
+.live-monitor.is-stale,.live-tools.is-stale{border-color:rgba(255,190,100,.4);background:rgba(255,190,100,.04)}
+.is-stale .live-freshness,.is-stale .live-monitor-label{color:#e7be84}
+.live-monitor.is-stale .live-monitor-values{display:none}
+.live-directory.only-featured .dir-head,.live-directory.only-featured #channel-list{display:none}
 
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 
 ${directory.getCSS()}
+@media(max-width:760px){
+  .main{padding-top:24px;padding-bottom:32px}
+  .live-header{margin-bottom:20px;gap:14px;align-items:flex-start;flex-direction:column}
+  .live-intro{font-size:14px}
+  .live-status{font-size:12px}
+  .live-tools{padding:0 14px}
+  .direct-join-panel{padding:18px}
+  .live-empty{padding:40px 18px}
+  .live-net-footer{gap:10px;padding-top:16px}
+}
+@media(max-width:480px){
+  .direct-join-row{flex-direction:column}
+  .live-panel-row input{flex-basis:100%}
+  #hp-target-port{flex:1 1 120px}
+  .live-header-actions{width:100%}.live-link-toggle{flex:1;justify-content:center}
+}
+@media(prefers-reduced-motion:reduce){.spinner,.status-dot.checking,.live-title-dot{animation:none}}
 `;
 
-  let html = navbar.getHead('Live TV \u2014 eSE', liveCSS);
+  let html = navbar.getHead('En directo \u2014 eSE', liveCSS);
   html += navbar.getHTML('live');
-  html += '<div class="main">';
+  html += '<main class="main" id="main-content">';
 
   // Header
   html += `
 <div class="live-header">
-  <h1 class="live-title">Live TV</h1>
-  <div class="live-status">
-    <span class="status-dot checking" id="status-dot"></span>
-    <span id="status-text">Comprobando conexi\u00f3n...</span>
+  <div><h1 class="live-title"><span class="live-title-dot" aria-hidden="true"></span>En directo</h1><p class="live-intro">Emisiones de la red eSE, de persona a persona y sin servidores. Elige un canal o entra con un enlace.</p></div>
+  <div class="live-header-actions">
+    <div class="live-status" role="status">
+      <span class="status-dot checking" id="status-dot" aria-hidden="true"></span>
+      <span id="status-text">Comprobando conexi\u00f3n...</span>
+    </div>
+    <button type="button" class="live-link-toggle" id="direct-join-toggle" aria-expanded="false" aria-controls="direct-join-panel"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>Pegar enlace</button>
   </div>
 </div>`;
 
@@ -80,9 +143,80 @@ ${directory.getCSS()}
   <a id="update-link" href="#" target="_blank" style="color:#10b981;font-weight:700;text-decoration:underline">Descargar</a>
 </div>`;
 
-  // Pre-flight check panel (Phase 5.1 \u2014 surfaces blockers before broadcasting)
+  // Direct Join panel (Phase 1 \u2014 paste an ed2k://|live|... link to bypass Kad).
+  // Collapsed behind the header button; opens by itself when there are no channels.
   html += `
-<div id="preflight-panel" style="margin:0 0 16px;padding:12px 16px;background:rgba(20,30,50,.5);border:1px solid #1f2937;border-radius:10px">
+<div id="direct-join-panel" class="direct-join-panel" hidden>
+  <label class="direct-join-label" for="direct-join-link">Entrar con un enlace de emisi&oacute;n</label>
+  <p class="direct-join-hint" id="direct-join-hint">Pega el enlace eSE Live que te han compartido para abrir el canal.</p>
+  <div class="direct-join-row">
+    <input id="direct-join-link" type="text" aria-describedby="direct-join-hint direct-join-msg" placeholder="ed2k://|live|..." autocomplete="off" spellcheck="false">
+    <button id="direct-join-btn">Conectar</button>
+  </div>
+  <div id="direct-join-msg" class="live-result" role="status"></div>
+</div>`;
+
+  // Mini-monitor (Phase 5.2 \u2014 only visible while broadcasting/viewing)
+  html += `
+<div id="live-monitor" class="live-monitor" style="display:none">
+  <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;font-size:12px">
+    <div class="live-monitor-label" id="mon-label" role="status">En vivo</div>
+    <div class="live-monitor-values">
+    <div>Modo: <b id="mon-mode">\u2014</b></div>
+    <div>Buffer: <b id="mon-buf">\u2014</b></div>
+    <div>Viewers: <b id="mon-viewers">\u2014</b></div>
+    <div>Servidos: <b id="mon-served">\u2014</b></div>
+    <div>Recibidos: <b id="mon-recv">\u2014</b></div>
+    <div>Faltan: <b id="mon-missing">\u2014</b></div>
+    <div>Mesh: <b id="mon-mesh">\u2014</b></div>
+    </div>
+  </div>
+  <p class="live-freshness" id="mon-freshness">Esperando datos del monitor...</p>
+</div>`;
+
+  // Keep controls mounted while channels appear, disappear or fail to load.
+  html += `
+<section class="live-directory${featured && channelCount === 1 ? ' only-featured' : ''}" id="live-directory" aria-label="Canales en directo">
+<div id="filters-host">${directory.renderFilters()}</div>
+<div class="dir-feedback">
+  <p class="dir-status" id="directory-status" role="status" aria-live="polite" aria-atomic="true" tabindex="-1">${channelCount ? channelCount + (channelCount === 1 ? ' canal en directo' : ' canales en directo') : 'Comprobando canales disponibles…'}</p>
+  <button class="dir-retry" type="button" id="directory-retry" onclick="filterChannels()" hidden>Reintentar</button>
+</div>
+<div class="live-featured" id="live-featured"${featuredHtml ? '' : ' hidden'}>${featuredHtml}</div>
+<div class="dir-head"><h2 class="dir-heading" id="live-directory-title">Todos los canales</h2></div>
+<div class="live-empty" id="live-empty"${channelCount ? ' style="display:none"' : ''}>
+  <div class="live-empty-icon" aria-hidden="true">
+    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/>
+      <circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/>
+      <path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/>
+    </svg>
+  </div>
+  <h3 id="live-empty-title">No hay emisiones en directo</h3>
+  <p id="live-empty-text">Los canales aparecer&aacute;n aqu&iacute; cuando haya emisiones disponibles.</p>
+  <div class="live-empty-actions"><button type="button" class="live-empty-cta" onclick="openDirectJoin()">Pegar un enlace</button><a href="/explore" class="live-empty-cta secondary">Explorar cat&aacute;logo</a></div>
+</div>
+<div id="channel-list" aria-busy="false"${channelCount ? '' : ' style="display:none"'}>${channelCount ? directory.renderGrid(channels, {}, featured ? featured.streamKey : '') : ''}</div>
+</section>`;
+  html += '</main>'; // .main
+
+  // Network footer: status summary + diagnostics, out of the viewer's way.
+  html += `
+<div class="live-net-footer" id="net-footer">
+  <div class="live-net-summary">
+    <span>Red: <b id="net-state">\u2014</b></span>
+    <span>\u00b7</span>
+    <span>Nodos: <b id="node-count">\u2014</b></span>
+    <span>\u00b7</span>
+    <span>Actualizado: <b id="last-refresh">\u2014</b></span>
+  </div>
+  <a href="/privacy" class="live-privacy">Privacidad</a>
+  <details class="live-advanced">
+    <summary>Estado de la red y herramientas avanzadas</summary>
+    <div class="live-advanced-body">
+<details id="preflight-panel" class="live-tools">
+  <summary>Estado t&eacute;cnico de la conexi&oacute;n<span id="pf-summary-state" role="status"></span></summary>
+  <div class="live-tool-content">
   <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:12px">
     <div style="font-weight:700;color:#9ca3af;min-width:100px">\ud83d\udd0d Pre-flight</div>
     <div id="pf-kad" style="color:#888">\u23f3 Kad...</div>
@@ -91,115 +225,22 @@ ${directory.getCSS()}
     <div id="pf-ff"  style="color:#888">\u23f3 FFmpeg...</div>
     <div id="pf-ip"  style="margin-left:auto;color:#666;font-family:monospace;font-size:11px"></div>
   </div>
-</div>`;
-
-  // Mini-monitor (Phase 5.2 \u2014 only visible while broadcasting/viewing)
-  html += `
-<div id="live-monitor" style="display:none;margin:0 0 16px;padding:12px 16px;background:rgba(46,204,113,.05);border:1px solid rgba(46,204,113,.25);border-radius:10px">
-  <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;font-size:12px">
-    <div style="font-weight:700;color:#2ecc71;min-width:100px">\ud83d\udcca En vivo</div>
-    <div>Modo: <b id="mon-mode">\u2014</b></div>
-    <div>Buffer: <b id="mon-buf">\u2014</b></div>
-    <div>Viewers: <b id="mon-viewers">\u2014</b></div>
-    <div>Servidos: <b id="mon-served">\u2014</b></div>
-    <div>Recibidos: <b id="mon-recv">\u2014</b></div>
-    <div>Faltan: <b id="mon-missing">\u2014</b></div>
-    <div>Mesh: <b id="mon-mesh">\u2014</b></div>
+  <p class="live-freshness" id="pf-freshness">Esperando datos de conexi&oacute;n...</p>
+</div></details>
+<details id="hp-test-panel" class="live-tools">
+  <summary>Prueba avanzada de conexi&oacute;n</summary>
+  <div class="live-tool-content">
+  <p class="direct-join-hint">Comprueba la conexi&oacute;n UDP con otro equipo (hole-punch).</p>
+  <div class="live-panel-row">
+    <input id="hp-target-ip" type="text" aria-label="Direcci&oacute;n IP del equipo remoto" placeholder="IP (ej. 88.11.22.161)">
+    <input id="hp-target-port" type="text" inputmode="numeric" aria-label="Puerto UDP" placeholder="Puerto UDP (4672)">
+    <button id="hp-test-btn">Disparar</button>
   </div>
-</div>`;
-
-  // Hole-punch test panel (diagnostic \u2014 verify LowID-LowID uTP traversal)
-  html += `
-<div id="hp-test-panel" style="margin:0 0 16px;padding:12px 16px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.25);border-radius:10px">
-  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-    <div style="font-weight:700;color:#f59e0b;min-width:180px;font-size:13px">\ud83c\udfaf Hole-punch test</div>
-    <input id="hp-target-ip" type="text" placeholder="IP (ej. 88.11.22.161)" style="flex:1;min-width:140px;padding:8px 12px;background:#0e0e10;border:1px solid #2a2a2e;border-radius:6px;color:#ddd;font-size:12px;font-family:monospace">
-    <input id="hp-target-port" type="text" placeholder="UDP port (4672)" style="width:130px;padding:8px 12px;background:#0e0e10;border:1px solid #2a2a2e;border-radius:6px;color:#ddd;font-size:12px;font-family:monospace">
-    <button id="hp-test-btn" style="padding:8px 18px;background:#f59e0b;color:#fff;border:none;border-radius:6px;font-weight:700;cursor:pointer;font-size:12px">Disparar</button>
-  </div>
-  <div id="hp-test-result" style="margin-top:8px;font-size:11px;color:#888;font-family:monospace"></div>
-</div>`;
-
-  // v7.4.0 \u2014 Cloudflare Tunnel panel removed. Symmetric-NAT users now point
-  // to Tailscale / Tor / manual overlay (see README) instead of falling back
-  // to a third-party tunnel that violates the project's "sin dominios" rule.
-
-  // Direct Join panel (Phase 1 \u2014 paste an ed2k://|live|... link to bypass Kad)
-  html += `
-<div id="direct-join-panel" style="margin:0 0 24px;padding:14px 18px;background:rgba(255,107,53,.06);border:1px solid rgba(255,107,53,.25);border-radius:10px">
-  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-    <div style="font-size:13px;color:#ff9b66;font-weight:700;min-width:180px">\u26a1 Conectar directo por link</div>
-    <input id="direct-join-link" type="text" placeholder="ed2k://|live|HEXKEY|IP:PUERTO|TITULO|/" style="flex:1;min-width:280px;padding:8px 12px;background:#0e0e10;border:1px solid #2a2a2e;border-radius:6px;color:#ddd;font-size:12px;font-family:monospace">
-    <button id="direct-join-btn" style="padding:8px 18px;background:linear-gradient(135deg,#ff6b35,#ff2d78);color:#fff;border:none;border-radius:6px;font-weight:700;cursor:pointer;font-size:12px">Conectar</button>
-  </div>
-  <div id="direct-join-msg" style="margin-top:8px;font-size:11px;color:#888"></div>
-</div>`;
-
-  // Content: empty state or channel grid
-  if (channelCount === 0) {
-    // Render filters AND an (initially empty) channel-list anyway so that when
-    // streams appear via background Kad discovery we can populate the grid
-    // in-place without needing the user to reload the page.
-    html += `
-<div class="live-empty" id="live-empty">
-  <div class="live-empty-icon">
-    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-      <path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/>
-      <circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/>
-      <path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/>
-    </svg>
-  </div>
-  <h2>No hay emisiones en directo</h2>
-  <p>Escaneando la red P2P en busca de streams activos...</p>
-  <div class="live-empty-spinner">
-    <div class="spinner"></div>
-    <span id="last-scan">Buscando...</span>
-  </div>
-  <a href="/explore" class="live-empty-cta">Explorar cat\u00e1logo \u2192</a>
-</div>
-<div id="filters-host" style="display:none">${directory.renderFilters()}</div>
-<div id="channel-list" style="display:none"></div>`;
-  } else {
-    html += `
-<div class="live-empty" id="live-empty" style="display:none">
-  <div class="live-empty-icon">
-    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-      <path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/>
-      <circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/>
-      <path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/>
-    </svg>
-  </div>
-  <h2>No hay emisiones en directo</h2>
-  <p>Escaneando la red P2P en busca de streams activos...</p>
-  <div class="live-empty-spinner">
-    <div class="spinner"></div>
-    <span id="last-scan">Buscando...</span>
-  </div>
-</div>`;
-    html += directory.renderFilters();
-    html += '<div id="channel-list">';
-    html += directory.renderGrid(channels, {});
-    html += '</div>';
-  }
-
-  html += '</div>'; // .main
-
-  // Network footer (discrete)
-  html += `
-<div class="live-net-footer" id="net-footer">
-  <span>Red: <b id="net-state">\u2014</b></span>
-  <span>\u00b7</span>
-  <span>Nodos: <b id="node-count">\u2014</b></span>
-  <span>\u00b7</span>
-  <span>Actualizado: <b id="last-refresh">\u2014</b></span>
-  <a href="/live/debug">
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px">
-      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-    </svg>
-    Debug
-  </a>
-  <a href="/debug" style="margin-left:14px">📜 Logs</a>
-  <a href="/privacy" style="margin-left:14px">🔒 Privacidad</a>
+  <div id="hp-test-result" class="live-result" role="status"></div>
+</div></details>
+      <div class="live-advanced-links"><a href="/live/debug">Diagn&oacute;stico Live</a><a href="/debug">Registro de actividad</a></div>
+    </div>
+  </details>
 </div>`;
 
   // Inline JS: polling
@@ -208,7 +249,7 @@ ${directory.getCSS()}
 <script>
 // Connection status polling
 function checkConnection(){
-  fetch('/api/live/connection-status').then(r=>r.json()).then(d=>{
+  return fetch('/api/live/connection-status').then(r=>{if(!r.ok)throw new Error('connection unavailable');return r.json();}).then(d=>{
     var dot=document.getElementById('status-dot');
     var text=document.getElementById('status-text');
     var net=document.getElementById('net-state');
@@ -222,51 +263,58 @@ function checkConnection(){
       text.textContent='eMule no detectado';
       if(net)net.textContent='Offline';
     }
-    if(nodes)nodes.textContent=d.nodeCount||'\\u2014';
+    if(nodes)nodes.textContent=d.nodeCount==null?'\\u2014':d.nodeCount;
   }).catch(()=>{
     var dot=document.getElementById('status-dot');
     if(dot)dot.className='status-dot disconnected';
+    var text=document.getElementById('status-text');
+    var net=document.getElementById('net-state');
+    if(text)text.textContent='No se puede comprobar la conexión';
+    if(net)net.textContent='Sin conexión';
+    var nodes=document.getElementById('node-count');
+    if(nodes)nodes.textContent='—';
   });
 }
 
 // Channel refresh polling
 function refreshChannels(){
-  fetch('/api/live/channels').then(r=>r.json()).then(d=>{
-    var grid=document.getElementById('channel-list');
-    var empty=document.getElementById('live-empty');
-    var filters=document.getElementById('filters-host');
-    var lr=document.getElementById('last-refresh');
-    if(lr)lr.textContent='ahora';
-    if(!d.channels||d.channels.length===0){
-      if(grid)grid.style.display='none';
-      if(filters)filters.style.display='none';
-      if(empty)empty.style.display='';
-      return;
-    }
-    // Channels available: hide empty state, reveal filters + grid and
-    // populate the grid via filterChannels() so the user sees streams
-    // appear live as background discovery surfaces them.
-    if(empty)empty.style.display='none';
-    if(filters)filters.style.display='';
-    if(grid){
-      grid.style.display='';
-      if(typeof filterChannels==='function')filterChannels();
-    }
-  }).catch(()=>{});
+  if(typeof filterChannels==='function')return filterChannels({background:true});
 }
 
 // Pre-flight + live monitor pollers (Phase 5 / Tier 1.4-1.5)
+var preflightLastUpdated = null;
+var monitorLastUpdated = null;
+var preflightRequest = 0;
+var monitorRequest = 0;
+function setLiveText(id, text) {
+  var el = document.getElementById(id);
+  if (el && el.textContent !== String(text)) el.textContent = text;
+}
+function showFreshness(panelId, textId, lastUpdated, stale) {
+  var panel = document.getElementById(panelId);
+  if (panel) panel.classList.toggle('is-stale', stale);
+  var text = lastUpdated
+    ? (stale ? 'Datos desactualizados · Última actualización: ' : 'Actualizado: ') + lastUpdated.toLocaleTimeString('es-ES')
+    : 'Sin datos disponibles · Reintentando automáticamente';
+  setLiveText(textId, text);
+}
 function paintCheck(elId, state, label, hint) {
-  // state: 'ok' | 'fail' | 'checking'
+  // state: 'ok' | 'fail' | 'checking' | 'stale'
   var el = document.getElementById(elId);
   if (!el) return;
-  var icon = state === 'ok' ? '✅' : (state === 'checking' ? '⏳' : '❌');
-  var color = state === 'ok' ? '#2ecc71' : (state === 'checking' ? '#f39c12' : '#e74c3c');
+  var icon = state === 'stale' ? '—' : state === 'ok' ? '✅' : (state === 'checking' ? '⏳' : '❌');
+  var color = state === 'stale' ? '#aaaab8' : state === 'ok' ? '#2ecc71' : (state === 'checking' ? '#f39c12' : '#e74c3c');
   el.textContent = icon + ' ' + label + (hint ? ' (' + hint + ')' : '');
   el.style.color = color;
 }
 function refreshPreflight() {
-  fetch('/api/live/preflight').then(function(r){return r.json();}).then(function(d){
+  var request = ++preflightRequest;
+  return fetch('/api/live/preflight').then(function(r){if(!r.ok)throw new Error('preflight unavailable');return r.json();}).then(function(d){
+    if (request !== preflightRequest) return;
+    if (!d || d.error || typeof d.kad_connected !== 'boolean') throw new Error('invalid preflight');
+    preflightLastUpdated = new Date();
+    showFreshness('preflight-panel', 'pf-freshness', preflightLastUpdated, false);
+    setLiveText('pf-summary-state', '');
     paintCheck('pf-kad', d.kad_connected ? 'ok' : 'fail', 'Kad');
     // Tier 1.5: while UDP firewall test still running, show "checking" not "fail"
     var idState = d.high_id ? 'ok' : (d.firewall_checking ? 'checking' : 'fail');
@@ -291,13 +339,26 @@ function refreshPreflight() {
       else                      ipEl.textContent = 'detectando…';
     }
   }).catch(function(){
-    paintCheck('pf-kad', 'fail', 'Kad', 'eMule offline');
+    if (request !== preflightRequest) return;
+    showFreshness('preflight-panel', 'pf-freshness', preflightLastUpdated, true);
+    setLiveText('pf-summary-state', preflightLastUpdated ? ' · Datos desactualizados' : ' · Sin datos');
+    paintCheck('pf-kad', 'stale', 'Kad', 'sin datos actuales');
+    paintCheck('pf-id', 'stale', 'NAT', 'sin datos actuales');
+    paintCheck('pf-up', 'stale', 'Subida', 'sin datos actuales');
+    paintCheck('pf-ff', 'stale', 'FFmpeg', 'sin datos actuales');
+    setLiveText('pf-ip', 'IP sin actualizar');
   });
 }
 function refreshMonitor() {
-  fetch('/api/live/monitor').then(function(r){return r.json();}).then(function(d){
+  var request = ++monitorRequest;
+  return fetch('/api/live/monitor').then(function(r){if(!r.ok)throw new Error('monitor unavailable');return r.json();}).then(function(d){
+    if (request !== monitorRequest) return;
+    if (!d || d.error || (typeof d.broadcasting !== 'boolean' && typeof d.viewing !== 'boolean')) throw new Error('invalid monitor');
     var box = document.getElementById('live-monitor');
     if (!box) return;
+    monitorLastUpdated = new Date();
+    showFreshness('live-monitor', 'mon-freshness', monitorLastUpdated, false);
+    setLiveText('mon-label', 'En vivo');
     var active = d.broadcasting || d.viewing;
     box.style.display = active ? '' : 'none';
     if (!active) return;
@@ -309,7 +370,14 @@ function refreshMonitor() {
     setT('mon-recv',    (d.counters && d.counters.chunksReceived)|| 0);
     setT('mon-missing', (d.counters && d.counters.chunksMissing) || 0);
     setT('mon-mesh',    (d.meshPeers||0) + ' (S:' + (d.superSeeders||0) + ' M:' + (d.middlePeers||0) + ' L:' + (d.leafPeers||0) + ')');
-  }).catch(function(){});
+  }).catch(function(){
+    if (request !== monitorRequest) return;
+    var box = document.getElementById('live-monitor');
+    if (box) box.style.display = '';
+    showFreshness('live-monitor', 'mon-freshness', monitorLastUpdated, true);
+    setLiveText('mon-label', 'Estado de la emisión sin confirmar');
+    ['mon-mode','mon-buf','mon-viewers','mon-served','mon-recv','mon-missing','mon-mesh'].forEach(function(id){setLiveText(id, '—');});
+  });
 }
 
 checkConnection();
@@ -403,10 +471,10 @@ fetch('/api/eSE/update/check').then(function(r){return r.json();}).then(function
   btn.addEventListener('click', function(){
     var ip = (ipIn.value || '').trim();
     var port = (portIn.value || '').trim();
-    if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
+    if (!/^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$/.test(ip)) {
       setOut('IP no válida.', false); return;
     }
-    if (!/^\d+$/.test(port) || parseInt(port,10) === 0) {
+    if (!/^\\d+$/.test(port) || parseInt(port,10) === 0) {
       setOut('Puerto UDP no válido.', false); return;
     }
     btn.disabled = true; btn.textContent = '⏳';
@@ -620,6 +688,27 @@ fetch('/api/eSE/update/check').then(function(r){return r.json();}).then(function
   });
   input.addEventListener('keydown', function(e){
     if (e.key === 'Enter') btn.click();
+  });
+})();
+
+// Direct-join panel: collapsed behind the header button.
+function openDirectJoin(){
+  var panel=document.getElementById('direct-join-panel');
+  var toggle=document.getElementById('direct-join-toggle');
+  if(!panel)return;
+  panel.hidden=false;
+  if(toggle)toggle.setAttribute('aria-expanded','true');
+  var input=document.getElementById('direct-join-link');
+  if(input)input.focus();
+}
+(function(){
+  var toggle=document.getElementById('direct-join-toggle');
+  var panel=document.getElementById('direct-join-panel');
+  if(!toggle||!panel)return;
+  toggle.addEventListener('click',function(){
+    if(panel.hidden)return openDirectJoin();
+    panel.hidden=true;
+    toggle.setAttribute('aria-expanded','false');
   });
 })();
 

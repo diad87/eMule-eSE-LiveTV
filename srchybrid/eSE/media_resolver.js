@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { safeBasename, isPathWithin } = require('./utils');
+const { parsePartMetadata } = require('./part_metadata');
 
 const VIDEO_EXTENSIONS_RE = /\.(avi|mkv|mp4|wmv|mov|flv|webm|mpg|mpeg)$/i;
 const MET_FILENAME_RE = /[^\x00-\x1F\x7F-\x9F]{5,}\.(avi|mkv|mp4|wmv|mov|webm|flv)/i;
@@ -30,7 +31,7 @@ const HASH_LENGTH = 16;
  */
 function extractHash(metBuf) {
   try {
-    return metBuf.slice(HASH_OFFSET, HASH_OFFSET + HASH_LENGTH).toString('hex').toUpperCase();
+    return parsePartMetadata(metBuf).hash;
   } catch(e) {
     return '';
   }
@@ -42,6 +43,7 @@ function extractHash(metBuf) {
  * @returns {string|null} The filename or null
  */
 function extractFileName(metBuf) {
+  try { return parsePartMetadata(metBuf).fileName || null; } catch (_) {}
   const metText = metBuf.toString('latin1');
   const m = metText.match(MET_FILENAME_RE);
   return m ? m[0] : null;
@@ -50,9 +52,9 @@ function extractFileName(metBuf) {
 /**
  * Resolve a media file by name across Incoming and Temp directories.
  * Supports: exact match, case-insensitive, partNum, substring match.
- * 
+ *
  * @param {string} fileName - Name to search for
- * @param {string} incomingDir - Path to eMule Incoming directory 
+ * @param {string} incomingDir - Path to eMule Incoming directory
  * @param {string} tempDir - Path to eMule Temp directory
  * @returns {object|null} { filePath, isPartFile, fileSize, hash?, realFileName? }
  */
@@ -85,11 +87,11 @@ function resolveMediaFile(fileName, incomingDir, tempDir) {
       }
     }
   } catch(e) {}
-  
+
   // 3-6. Search in Temp (.part files)
   try {
     const partFiles = fs.readdirSync(tempDir).filter(f => PART_FILE_RE.test(f));
-    
+
     // 3. Exact filename match via .part.met metadata
     for (const pf of partFiles) {
       const metPath = path.join(tempDir, pf + '.met');
@@ -101,7 +103,7 @@ function resolveMediaFile(fileName, incomingDir, tempDir) {
         return { filePath: path.join(tempDir, pf), isPartFile: true, fileSize: stat.size, hash: extractHash(metBuf) };
       }
     }
-    
+
     // 4. Case-insensitive match via .part.met
     for (const pf of partFiles) {
       const metPath = path.join(tempDir, pf + '.met');
@@ -113,7 +115,7 @@ function resolveMediaFile(fileName, incomingDir, tempDir) {
         return { filePath: path.join(tempDir, pf), isPartFile: true, fileSize: stat.size, hash: extractHash(metBuf) };
       }
     }
-    
+
     // 5. Match by partNum (e.g. '003' or '3')
     if (/^\d+$/.test(fileName)) {
       const partFile = fileName.padStart(3, '0') + '.part';
@@ -128,7 +130,7 @@ function resolveMediaFile(fileName, incomingDir, tempDir) {
         return { filePath: partPath, isPartFile: true, fileSize: stat.size, hash };
       }
     }
-    
+
     // 6. Substring match (e.g. 'Mufasa' matches 'Mufasa.El.rey.leon...')
     const searchLower = fileName.toLowerCase();
     for (const pf of partFiles) {
@@ -142,7 +144,7 @@ function resolveMediaFile(fileName, incomingDir, tempDir) {
       }
     }
   } catch(e) {}
-  
+
   return null;
 }
 
@@ -151,7 +153,7 @@ function resolveMediaFile(fileName, incomingDir, tempDir) {
  * @param {string} tempDir - Path to eMule Temp directory
  * @returns {Array} Array of download objects
  */
-function listDownloads(tempDir) {
+function listDownloads(tempDir, options) {
   const downloads = [];
   try {
     const partFiles = fs.readdirSync(tempDir).filter(f => PART_FILE_RE.test(f));
@@ -159,12 +161,15 @@ function listDownloads(tempDir) {
       const metFile = path.join(tempDir, pf + '.met');
       const partPath = path.join(tempDir, pf);
       if (!fs.existsSync(metFile)) continue;
-      
+
       const metBuf = fs.readFileSync(metFile);
-      const fileName = extractFileName(metBuf) || pf;
+      let metadata;
+      try { metadata = parsePartMetadata(metBuf); }
+      catch (_) { metadata = { fileName: extractFileName(metBuf) || pf, hash: '', totalSizeBytes: null, completedBytes: null, metadataSource: 'unavailable' }; }
+      const fileName = metadata.fileName || pf;
       const stat = fs.statSync(partPath);
       const isActive = (Date.now() - stat.mtimeMs) < 30000; // Modified in last 30s
-      
+
       downloads.push({
         partFile: pf,
         partNum: pf.replace('.part', ''),
@@ -174,10 +179,13 @@ function listDownloads(tempDir) {
         partPath,
         lastModified: stat.mtimeMs,
         active: isActive,
-        hash: extractHash(metBuf)
+        hash: metadata.hash,
+        totalSizeBytes: metadata.totalSizeBytes,
+        completedBytes: metadata.completedBytes,
+        metadataSource: metadata.metadataSource
       });
     }
-  } catch(e) {}
+  } catch(e) { if (options && options.strict) throw e; }
   return downloads;
 }
 

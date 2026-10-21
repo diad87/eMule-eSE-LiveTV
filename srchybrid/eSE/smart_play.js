@@ -1,7 +1,32 @@
 // smart_play.js — smartPlay, trySmartSource, monitorForFile
+var _smartEpoch = 0;
+var _smartTimers = [];
+var _smartPolls = [];
+function stopSmartPlay() {
+  _smartEpoch++;
+  _smartTimers.forEach(clearTimeout); _smartTimers = [];
+  _smartPolls.forEach(clearInterval); _smartPolls = [];
+}
+function smartPlayGuard() {
+  var epoch = _smartEpoch;
+  var modal = document.getElementById('movie-modal');
+  var screen = document.getElementById('smart-play-title');
+  return function() {
+    return !!modal && !!screen && epoch === _smartEpoch &&
+      document.getElementById('movie-modal') === modal && document.getElementById('smart-play-title') === screen;
+  };
+}
+function smartLater(callback, delay, alive) {
+  var timer = setTimeout(function() {
+    _smartTimers = _smartTimers.filter(function(id) { return id !== timer; });
+    if (alive()) callback();
+  }, delay);
+  _smartTimers.push(timer);
+}
 
 // ── Smart Play: evalúa → decide → actúa ───────────────────────────────────────
 function smartPlay(movieTitle, movieYear) {
+  stopSmartPlay();
   var playerZone = document.getElementById('modal-player-zone');
   var infoZone = document.getElementById('modal-info-zone');
   if (!playerZone) return;
@@ -33,6 +58,7 @@ function smartPlay(movieTitle, movieYear) {
   var progressEl = document.getElementById('smart-play-progress');
   var titleEl = document.getElementById('smart-play-title');
   var actionsEl = document.getElementById('smart-play-actions');
+  var alive = smartPlayGuard();
 
   function updateStatus(msg, pct) {
     if (statusEl) statusEl.textContent = msg;
@@ -84,6 +110,7 @@ function smartPlay(movieTitle, movieYear) {
   // pointless new Phase 2 search when the bytes are already on disk.
   fetch('/api/v1/lifecycle').then(function(r){return r.json();}).catch(function(){return { epoch: 0, restartedAt: 0 };})
     .then(function(lc) {
+      if (!alive()) return;
       var epochChanged = (window._emuleEpoch !== undefined && window._emuleEpoch !== lc.epoch);
       window._emuleEpoch = lc.epoch;
       var justRestarted = epochChanged && (Date.now() - lc.restartedAt < 60000);
@@ -92,6 +119,7 @@ function smartPlay(movieTitle, movieYear) {
         fetch('/api/stream/completed/list').then(function(r){return r.json();}).catch(function(){return [];}),
         fetch('/api/emule/downloads').then(function(r){return r.json();}).catch(function(){return [];})
       ]).then(function(results) {
+        if (!alive()) return;
         var completed = results[0] || [];
         var downloads = results[1] || [];
 
@@ -100,7 +128,7 @@ function smartPlay(movieTitle, movieYear) {
           if (matchTitle(completed[i].fileName)) {
             updateStatus('Archivo encontrado: ' + completed[i].fileName, 100);
             if (titleEl) titleEl.textContent = 'Listo para reproducir';
-            (function(fn){ setTimeout(function() { playInModal(encodeURIComponent(fn)); }, 1000); })(completed[i].fileName);
+            (function(fn){ smartLater(function() { playInModal(encodeURIComponent(fn)); }, 1000, alive); })(completed[i].fileName);
             return;
           }
         }
@@ -112,16 +140,17 @@ function smartPlay(movieTitle, movieYear) {
         for (var j = 0; j < downloads.length; j++) {
           var dl = downloads[j];
           if (!matchTitle(dl.fileName)) continue;
-          var isPlayable = (dl.active && dl.sizeMB > 50) ||
-                           (justRestarted && dl.sizeMB > 50) ||
-                           (dl.sizeMB > 300);
+          var receivedMB = Number.isFinite(dl.completedBytes) ? dl.completedBytes / 1048576 : 0;
+          var isPlayable = (dl.active && receivedMB > 50) ||
+                           (justRestarted && receivedMB > 50) ||
+                           (receivedMB > 300);
           if (isPlayable) {
             var msg = justRestarted
               ? 'eMule acaba de reiniciar — usando descarga existente'
               : (dl.active ? 'Descarga en progreso' : 'Reanudando descarga existente');
             updateStatus(msg + ': ' + dl.fileName + ' (' + dl.sizeMB + ' MB)', 80);
             if (titleEl) titleEl.textContent = justRestarted ? 'Reanudando' : 'Datos disponibles';
-            (function(pf, fn){ setTimeout(function() { playPartFile(pf, fn); }, 2000); })(dl.partFile, dl.fileName);
+            (function(pf, fn){ smartLater(function() { playPartFile(pf, fn); }, 2000, alive); })(dl.partFile, dl.fileName);
             return;
           }
         }
@@ -133,6 +162,7 @@ function smartPlay(movieTitle, movieYear) {
     fetch('/api/emule/smartsearch?q=' + encodeURIComponent(movieTitle) + (movieYear ? '&year=' + movieYear : ''))
       .then(function(r) { return r.json(); })
       .then(function(data) {
+        if (!alive()) return;
         if (!data.success) {
           hideSpinner();
           if (titleEl) titleEl.textContent = 'Error de conexion';
@@ -142,7 +172,7 @@ function smartPlay(movieTitle, movieYear) {
           if (data.reason === 'webserver_down') {
             actions.push({ text: 'He abierto eMule', primary: true, action: function() {
               updateStatus('Reintentando...', 10);
-              setTimeout(function() { smartPlay(movieTitle, movieYear); }, 500);
+              smartLater(function() { smartPlay(movieTitle, movieYear); }, 500, alive);
             }});
           } else if (data.reason === 'password_mismatch') {
             actions.push({ text: 'Resincronizar', primary: true, action: function() {
@@ -150,6 +180,7 @@ function smartPlay(movieTitle, movieYear) {
               fetch('/api/emule/resync', { method: 'POST' })
                 .then(function(r) { return r.json(); })
                 .then(function(d) {
+                  if (!alive()) return;
                   if (d.success) smartPlay(movieTitle, movieYear);
                   else updateStatus('No se pudo resincronizar: ' + (d.error || ''), 0);
                 });
@@ -187,6 +218,7 @@ function smartPlay(movieTitle, movieYear) {
         }
       })
       .catch(function(err) {
+        if (!alive()) return;
         hideSpinner();
         if (titleEl) titleEl.textContent = 'Error';
         updateStatus('Error: ' + err.message, 0);
@@ -263,6 +295,9 @@ if (typeof escapeHTML !== 'function') {
 
 // ── Prueba una fuente concreta ────────────────────────────────────────────────
 function trySmartSource(index) {
+  stopSmartPlay();
+  var alive = smartPlayGuard();
+  if (!alive()) return;
   var results = window._smartPlayResults || [];
   if (index >= results.length) {
     var titleEl = document.getElementById('smart-play-title');
@@ -299,7 +334,7 @@ function trySmartSource(index) {
   if (statusEl) statusEl.textContent = (best.quality || '?').toUpperCase() + ' | ' + (best.language || '?') + ' | ' + best.sources + '/' + best.completeSources + ' fuentes | Score: ' + best.score;
   if (progressEl) progressEl.style.width = '40%';
 
-  setTimeout(function() {
+  smartLater(function() {
     if (statusEl) statusEl.textContent = 'Iniciando descarga: ' + best.fileName.substring(0, 50) + '...';
     // Pass exact name+size so eMule can add by full ed2k link even if this hash
     // is no longer in its live search list (multi-variant search wipes it).
@@ -308,23 +343,27 @@ function trySmartSource(index) {
     fetch(dlUrl, { headers: { 'X-Requested-With': 'eSE' } })
       .then(function(r) { return r.json(); })
       .then(function(dlData) {
+        if (!alive()) return;
         if (dlData.success) {
           if (progressEl) progressEl.style.width = '60%';
           if (titleEl) titleEl.textContent = 'Monitorizando velocidad...';
           monitorForFile(window._smartPlayTitle, best.fileName, best.sizeMB || 0, index);
         } else {
           if (statusEl) statusEl.textContent = 'Error al iniciar descarga';
-          setTimeout(function() { trySmartSource(index + 1); }, 2000);
+          smartLater(function() { trySmartSource(index + 1); }, 2000, alive);
         }
       })
       .catch(function() {
-        setTimeout(function() { trySmartSource(index + 1); }, 2000);
+        if (alive()) smartLater(function() { trySmartSource(index + 1); }, 2000, alive);
       });
-  }, 1500);
+  }, 1500, alive);
 }
 
 // ── Monitoriza la descarga hasta que hay buffer suficiente ────────────────────
 function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) {
+  stopSmartPlay();
+  var alive = smartPlayGuard();
+  if (!alive()) return;
   var statusEl = document.getElementById('smart-play-status');
   var progressEl = document.getElementById('smart-play-progress');
   var titleEl = document.getElementById('smart-play-title');
@@ -357,7 +396,7 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) 
       buttons.push({ text: 'Probar otra fuente (' + remaining + ' disponibles)', primary: true, action: onNextSource });
     }
     buttons.push({
-      text: remaining === 0 ? 'Descargar y avisar cuando este lista' : 'Dejar descargando',
+      text: 'Dejar descargando',
       primary: remaining === 0,
       action: function() { backToDetail(); showNotification('La descarga continua en segundo plano'); }
     });
@@ -381,9 +420,11 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) 
   }
 
   var checker = setInterval(function() {
+    if (!alive()) { clearInterval(checker); return; }
     checkCount++;
 
     fetch('/api/stream/completed/list').then(function(r) { return r.json(); }).then(function(files) {
+      if (!alive()) return;
       if (files && files.length) {
         for (var i = 0; i < files.length; i++) {
           if (matchTitle(files[i].fileName)) {
@@ -391,13 +432,14 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) 
             if (progressEl) progressEl.style.width = '100%';
             if (titleEl) titleEl.textContent = 'Listo para reproducir';
             if (statusEl) statusEl.textContent = files[i].fileName;
-            setTimeout(function() { playInModal(encodeURIComponent(files[i].fileName)); }, 1500);
+            smartLater(function() { playInModal(encodeURIComponent(files[i].fileName)); }, 1500, alive);
             return;
           }
         }
       }
 
       fetch('/api/emule/downloads').then(function(r2) { return r2.json(); }).then(function(downloads) {
+        if (!alive()) return;
         if (downloads && downloads.length) {
           for (var j = 0; j < downloads.length; j++) {
             var dl = downloads[j];
@@ -427,9 +469,9 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) 
             if (waitingSec >= BUFFER_WAIT_SEC && activeChecks >= 3) {
               clearInterval(checker);
               if (progressEl) progressEl.style.width = '100%';
-              if (titleEl) titleEl.textContent = 'Reproduciendo';
-              if (statusEl) statusEl.textContent = 'Buffer listo';
-              setTimeout(function() { playPartFile(dl.partFile, dl.fileName); }, 1000);
+              if (titleEl) titleEl.textContent = 'Preparando reproducción';
+              if (statusEl) statusEl.textContent = 'Comprobando los datos disponibles';
+              smartLater(function() { playPartFile(dl.partFile, dl.fileName); }, 1000, alive);
               return;
             }
 
@@ -464,4 +506,5 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) 
       }).catch(function() {});
     }).catch(function() {});
   }, 5000);
+  _smartPolls.push(checker);
 }

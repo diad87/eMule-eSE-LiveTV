@@ -1,11 +1,127 @@
 // cinema_player.js — reproductor modal cinema, controles, subtítulos, sesión
 
+// Each dialog and each stream owns its asynchronous work. Closing, seeking or
+// opening another title invalidates callbacks before they can touch a new video.
+var cinemaSession = null;
+function cinemaIsCurrent(session) {
+  return !!session && session.active && cinemaSession === session && video === session.video &&
+    (!session.modal || document.getElementById('movie-modal') === session.modal);
+}
+function cinemaListen(session, target, event, callback, stream) {
+  var handler = function(e) {
+    if (cinemaIsCurrent(session) && (!stream || session.stream === stream)) callback(e);
+  };
+  target.addEventListener(event, handler);
+  (stream || session).listeners.push(function() { target.removeEventListener(event, handler); });
+}
+function cinemaLater(session, callback, delay, stream) {
+  var owner = stream || session;
+  var timer = setTimeout(function() {
+    owner.timers = owner.timers.filter(function(id) { return id !== timer; });
+    if (cinemaIsCurrent(session) && (!stream || session.stream === stream)) callback();
+  }, delay);
+  owner.timers.push(timer);
+  return timer;
+}
+function cancelCinemaWork(owner) {
+  if (!owner) return;
+  owner.timers.forEach(clearTimeout);
+  owner.timers = [];
+  owner.listeners.forEach(function(remove) { remove(); });
+  owner.listeners = [];
+}
+function saveCinemaPosition(session) {
+  if (!session || !session.hasPlayed) return;
+  if (session.duration > 0) session.position = Math.min(session.duration, session.position);
+  saveWatchSession(session.fileName, session.position);
+  if (session.position <= 10) return;
+  try {
+    var saved = JSON.parse(localStorage.getItem('ese_resume') || '{}');
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) saved = {};
+    saved[session.fileName] = { time: Math.floor(session.position), ts: Date.now() };
+    localStorage.setItem('ese_resume', JSON.stringify(saved));
+  } catch (_) { /* Storage must never prevent stopping or leaving playback. */ }
+}
+function stopCinemaPlayback() {
+  if (typeof stopSmartPlay === 'function') stopSmartPlay();
+  var session = cinemaSession;
+  if (session) {
+    saveCinemaPosition(session);
+    session.active = false;
+    cinemaSession = null;
+    cancelCinemaWork(session.stream);
+    cancelCinemaWork(session);
+    if (session.controller) session.controller.abort();
+    try {
+      session.video.pause();
+      session.video.removeAttribute('src');
+      clearCinemaSubtitles(session);
+      session.video.load();
+    } catch (_) {}
+  }
+  if (typeof stopLegacyPlayback === 'function') stopLegacyPlayback();
+  else if (abortController) { try { abortController.abort(); } catch (_) {} }
+}
+function cinemaStatus(session, text) {
+  if (!cinemaIsCurrent(session)) return;
+  var status = document.getElementById('modal-player-status');
+  if (status) { status.textContent = text; status.style.opacity = text === 'Reproduciendo' ? '' : '1'; }
+}
+function cinemaDuration(session) {
+  if (session.duration > 0) return session.duration;
+  var duration = Number(session.video.duration);
+  return Number.isFinite(duration) && duration > 0 ? duration + session.offset : 0;
+}
+function cinemaPosition(session) {
+  var position = Math.max(0, session.offset + (Number(session.video.currentTime) || 0));
+  return session.duration > 0 ? Math.min(session.duration, position) : position;
+}
+function updateCinemaProgress(session) {
+  if (!cinemaIsCurrent(session)) return;
+  var total = cinemaDuration(session);
+  var position = cinemaPosition(session);
+  var progress = document.getElementById('cinema-progress');
+  var time = document.getElementById('cinema-time');
+  var seek = document.getElementById('cinema-seek');
+  if (progress) progress.style.width = (total ? Math.min(100, position / total * 100) : 0) + '%';
+  if (time) time.textContent = fmtT(position) + ' / ' + (total ? fmtT(total) : 'Duración desconocida');
+  if (seek) {
+    seek.setAttribute('aria-disabled', String(!total));
+    seek.setAttribute('aria-valuemax', String(total || 0));
+    seek.setAttribute('aria-valuenow', String(total ? Math.min(total, Math.floor(position)) : 0));
+    seek.setAttribute('aria-valuetext', total ? fmtT(position) + ' de ' + fmtT(total) : 'Duración desconocida');
+  }
+  var buffered = session.video.buffered;
+  var buffer = document.getElementById('cinema-buffer');
+  if (buffer && buffered && buffered.length && total) {
+    buffer.style.width = Math.min(100, (session.offset + buffered.end(buffered.length - 1)) / total * 100) + '%';
+  }
+}
+function seekCinemaTo(target) {
+  var session = cinemaSession;
+  if (!cinemaIsCurrent(session)) return;
+  var duration = cinemaDuration(session);
+  if (!duration || !Number.isFinite(target)) return;
+  target = Math.max(0, Math.min(Math.max(0, duration - 1), Math.floor(target)));
+  var quality = (document.getElementById('cinema-quality') || {}).value || currentQuality || 'auto';
+  var request = ++session.seekRequest;
+  cinemaStatus(session, 'Buscando ' + fmtT(target) + '…');
+  var restart = function() {
+    if (cinemaIsCurrent(session) && request === session.seekRequest) startCompletedMSE(session.fileName, quality, target);
+  };
+  if (session.isPartFile) {
+    fetch('/api/stream/seek?name=' + encodeURIComponent(session.fileName) + '&time=' + target,
+      session.controller ? { signal: session.controller.signal } : {}).then(restart, restart);
+  } else restart();
+}
+
 // ── Reproductor modal cinema ───────────────────────────────────────────────────
-function playInModal(encodedName) {
+function playInModal(encodedName, resumePosition) {
   var fileName = decodeURIComponent(encodedName);
   var playerZone = document.getElementById('modal-player-zone');
   var infoZone = document.getElementById('modal-info-zone');
   if (!playerZone) return;
+  stopCinemaPlayback();
 
   // Hide movie info, show player
   if (infoZone) infoZone.style.display = 'none';
@@ -21,22 +137,22 @@ function playInModal(encodedName) {
     '<span class="modal-player-title">' + escapeHTML(movieTitle) + '</span>' +
     '<video id="modal-video"></video>' +
     '<div class="cinema-controls" id="cinema-controls">' +
-      '<div class="cinema-seek" id="cinema-seek">' +
+      '<div class="cinema-seek" id="cinema-seek" role="slider" tabindex="0" aria-label="Posición de reproducción" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-disabled="true">' +
         '<div class="cinema-buffer" id="cinema-buffer"></div>' +
         '<div class="cinema-progress" id="cinema-progress"></div>' +
       '</div>' +
       '<div class="cinema-controls-row">' +
-        '<button class="cinema-ctrl-btn" id="cinema-play-btn" onclick="toggleCinemaPlay()">⏸</button>' +
-        '<span class="cinema-time" id="cinema-time">0:00 / 0:00</span>' +
+        '<button type="button" class="cinema-ctrl-btn" id="cinema-play-btn" aria-label="Reproducir" onclick="toggleCinemaPlay()">▶</button>' +
+        '<span class="cinema-time" id="cinema-time">0:00 / Duración desconocida</span>' +
         '<div style="flex:1"></div>' +
-        '<button class="cinema-ctrl-btn" id="cinema-vol-btn" onclick="toggleCinemaVol()"></button>' +
-        '<input type="range" id="cinema-vol-slider" min="0" max="100" value="100" class="cinema-vol-range" oninput="setCinemaVol(this.value)">' +
-        '<button class="cinema-ctrl-btn" id="cinema-settings-btn" onclick="toggleCinemaSettings()" style="font-size:18px" title="Ajustes">&#9881;</button>' +
-        '<button class="cinema-ctrl-btn" onclick="toggleCinemaFS()">&#x26F6;</button>' +
+        '<button type="button" class="cinema-ctrl-btn" id="cinema-vol-btn" aria-label="Silenciar" aria-pressed="false" onclick="toggleCinemaVol()">🔊</button>' +
+        '<input type="range" id="cinema-vol-slider" aria-label="Volumen" min="0" max="100" value="100" class="cinema-vol-range" oninput="setCinemaVol(this.value)">' +
+        '<button type="button" class="cinema-ctrl-btn" id="cinema-settings-btn" aria-label="Ajustes del reproductor" aria-controls="cinema-settings-popup" aria-expanded="false" onclick="toggleCinemaSettings()" style="font-size:18px" title="Ajustes">&#9881;</button>' +
+        '<button type="button" class="cinema-ctrl-btn" id="cinema-fs-btn" aria-label="Pantalla completa" onclick="toggleCinemaFS()">&#x26F6;</button>' +
       '</div>' +
       '<div id="cinema-settings-popup" style="display:none;position:absolute;bottom:56px;right:12px;background:rgba(15,15,20,.96);border:1px solid #333;border-radius:12px;padding:16px;min-width:240px;z-index:50;backdrop-filter:blur(12px)">' +
         '<div style="font-size:13px;font-weight:600;color:#fff;margin-bottom:12px">Ajustes del reproductor</div>' +
-        '<div style="margin-bottom:10px"><label style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px">Calidad</label>' +
+        '<div style="margin-bottom:10px"><label for="cinema-quality" style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px">Calidad</label>' +
         '<select id="cinema-quality" class="cinema-quality" onchange="changeCinemaQuality(this.value)" style="width:100%;margin-top:4px">' +
           '<option value="auto" selected>Auto</option>' +
           '<option value="480p">480p</option>' +
@@ -44,305 +160,287 @@ function playInModal(encodedName) {
           '<option value="1080p">1080p</option>' +
           '<option value="original">Original</option>' +
         '</select></div>' +
-        '<div id="cinema-audio-row" style="margin-bottom:10px;display:none"><label style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px">Audio</label>' +
+        '<div id="cinema-audio-row" style="margin-bottom:10px;display:none"><label for="cinema-audio" style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px">Audio</label>' +
         '<select id="cinema-audio" class="cinema-quality" onchange="changeCinemaAudio(this.value)" style="width:100%;margin-top:4px"></select></div>' +
-        '<div id="cinema-subs-row" style="display:none"><label style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px">Subtítulos</label>' +
+        '<div id="cinema-subs-row" style="display:none"><label for="cinema-subs" style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px">Subtítulos</label>' +
         '<select id="cinema-subs" class="cinema-quality" onchange="changeCinemaSubs(this.value)" style="width:100%;margin-top:4px"></select></div>' +
       '</div>' +
       '</div>' +
-    '</div>' +
-    '<div class="cinema-status" id="modal-player-status">Preparando streaming...</div>' +
+    '<div class="cinema-status" id="modal-player-status" role="status" aria-live="polite">Preparando vídeo…</div>' +
   '</div>';
 
-  // Assign video
   video = document.getElementById('modal-video');
+  var initialPosition = Number(resumePosition);
+  initialPosition = Number.isFinite(initialPosition) && initialPosition > 0 ? Math.floor(initialPosition) : 0;
+  var session = cinemaSession = {
+    active: true, video: video, modal: document.getElementById('movie-modal'), fileName: fileName,
+    offset: initialPosition, position: initialPosition, duration: 0, hasPlayed: false,
+    listeners: [], timers: [], stream: null, seekRequest: 0, isPartFile: false,
+    controller: typeof AbortController === 'function' ? new AbortController() : null
+  };
   window._cinemaFileName = fileName;
-  window._cinemaSeekOffset = 0;
-
-  // Save watch session
-  saveWatchSession(fileName, 0);
-
-  // Save position every 5 seconds
-  video.addEventListener('timeupdate', function() {
-    if (video.currentTime > 0) {
-      var realPos = (window._cinemaSeekOffset || 0) + video.currentTime;
-      saveWatchSession(fileName, Math.floor(realPos));
-    }
-  });
-
-  // Video click = play/pause
-  video.addEventListener('click', toggleCinemaPlay);
-  // Double-click = fullscreen
-  video.addEventListener('dblclick', function(e) {
-    e.preventDefault();
-    toggleCinemaFS();
-  });
-
-  // Time update → custom progress bar
-  video.addEventListener('timeupdate', function() {
-    var currentReal = (window._cinemaSeekOffset || 0) + video.currentTime;
-    var total = estTotalSec || video.duration || 0;
-    if (total > 0) {
-      var pEl = document.getElementById('cinema-progress');
-      var tEl = document.getElementById('cinema-time');
-      if (pEl) pEl.style.width = (currentReal / total * 100) + '%';
-      if (tEl) tEl.textContent = fmtT(currentReal) + ' / ' + fmtT(total);
-    }
-    if (video.buffered.length > 0 && estTotalSec > 0) {
-      var buffEnd = (window._cinemaSeekOffset || 0) + video.buffered.end(video.buffered.length - 1);
-      var bEl = document.getElementById('cinema-buffer');
-      if (bEl) bEl.style.width = (buffEnd / estTotalSec * 100) + '%';
-    }
-  });
-
-  video.addEventListener('play', function() { var b = document.getElementById('cinema-play-btn'); if (b) b.textContent = '⏸'; });
-  video.addEventListener('pause', function() { var b = document.getElementById('cinema-play-btn'); if (b) b.textContent = '▶'; });
-
-  // Seek bar click
-  document.getElementById('cinema-seek').addEventListener('click', function(e) {
-    var rect = e.currentTarget.getBoundingClientRect();
-    var pct = (e.clientX - rect.left) / rect.width;
-    var targetSec = Math.floor(pct * (estTotalSec || video.duration || 0));
-    if (targetSec >= 0 && window._cinemaFileName) {
-      window._cinemaSeekOffset = targetSec;
-      var status = document.getElementById('modal-player-status');
-      var q = (document.getElementById('cinema-quality') || {}).value || currentQuality || 'auto';
-
-      if (window._isPartFile && currentPartNum) {
-        // .part file — tell eMule to download from this position + restart stream
-        if (status) status.textContent = 'Seeking a ' + fmtT(targetSec) + '...';
-        var seekUrl = '/api/stream/seek?name=' + encodeURIComponent(window._cinemaFileName) + '&time=' + targetSec;
-        fetch(seekUrl).then(function(r) { return r.json(); }).then(function(data) {
-          console.log('[Seek] eMule notified: part ' + data.targetPart + '/' + data.totalParts);
-          if (status) status.textContent = 'eMule → part ' + data.targetPart + '/' + data.totalParts;
-          switchStreamSeamless(q, targetSec);
-        }).catch(function() {
-          switchStreamSeamless(q, targetSec);
-        });
-      } else {
-        // Completed file — restart ffmpeg from new position
-        if (status) status.textContent = 'Seeking a ' + fmtT(targetSec) + '...';
-        startCompletedMSE(window._cinemaFileName, q, targetSec);
-      }
-    }
-  });
-
-  // Fade title after 3s
-  setTimeout(function() {
-    var player = document.getElementById('cinema-player');
-    if (player) player.classList.add('title-fade');
-  }, 3000);
-
-  // Hide modal close button
-  var closeBtn = document.querySelector('.modal-close');
-  if (closeBtn) closeBtn.style.display = 'none';
-  var modal = document.getElementById('movie-modal');
-  if (modal) { modal.style.overflow = 'hidden'; modal.scrollTop = 0; }
-
-  // Start streaming — probe tracks first, then play
+  window._cinemaSeekOffset = initialPosition;
   window._cinemaAudioTrack = null;
-  window._cinemaSubTrack = '-1'; // no subs by default
-
-  // v7.4.0 - start streaming IMMEDIATELY with defaults instead of waiting for
-  // /info + /tracks in series. ffprobe on partial HEVC can take 15-20s and
-  // blocking the spinner there is what people perceive as "no arranca".
-  // Both calls now run in parallel and patch the UI in place.
-  estTotalSec = 7200;
+  window._cinemaSubTrack = '-1';
   window._isPartFile = false;
   currentPartNum = null;
   currentQuality = 'auto';
-  var status0 = document.getElementById('modal-player-status');
-  if (status0) status0.textContent = 'Iniciando streaming...';
-  startCompletedMSE(fileName, 'auto', 0);
+  estTotalSec = 0;
+  userWantsPause = false;
 
-  // Show transcoding hint as soon as response headers arrive.
-  // Endpoint is /api/stream/completed/<encodedName>?quality=… (positional path,
-  // not ?name=… — see stream_completed.js:129).
-  fetch('/api/stream/completed/' + encodeURIComponent(fileName) + '?quality=auto', { method: 'HEAD' })
-    .then(function(r) {
-      var mode = r.headers.get('X-ESE-Transcoding');
-      var s = document.getElementById('modal-player-status');
-      if (s && mode === 'hevc-to-h264') s.textContent = 'Transcodificando HEVC en vivo — puede tardar hasta 60s en empezar';
-      else if (s && mode === 'transcode') s.textContent = 'Transcodificando — puede tardar';
-    }).catch(function(){});
+  // Preserve saved progress until this stream has actually started playing.
+  cinemaListen(session, video, 'timeupdate', function() {
+    if (session.stream && session.stream.hasPlayed) {
+      session.position = cinemaPosition(session);
+      saveWatchSession(fileName, Math.floor(session.position));
+    }
+    updateCinemaProgress(session);
+  });
+  cinemaListen(session, video, 'loadedmetadata', function() { updateCinemaProgress(session); });
+  cinemaListen(session, video, 'durationchange', function() { updateCinemaProgress(session); });
+  cinemaListen(session, video, 'playing', function() {
+    if (!session.stream) return;
+    session.stream.hasPlayed = true;
+    session.hasPlayed = true;
+    session.position = cinemaPosition(session);
+    saveWatchSession(fileName, Math.floor(session.position));
+    cinemaStatus(session, 'Reproduciendo');
+  });
+  cinemaListen(session, video, 'waiting', function() { cinemaStatus(session, 'Cargando vídeo…'); });
+  cinemaListen(session, video, 'stalled', function() { cinemaStatus(session, 'Esperando datos…'); });
+  cinemaListen(session, video, 'ended', function() { cinemaStatus(session, 'Reproducción finalizada'); });
+  function playButton(paused) {
+    var button = document.getElementById('cinema-play-btn');
+    if (button) { button.textContent = paused ? '▶' : '⏸'; button.setAttribute('aria-label', paused ? 'Reproducir' : 'Pausar'); }
+  }
+  cinemaListen(session, video, 'play', function() { playButton(false); });
+  cinemaListen(session, video, 'pause', function() {
+    playButton(true);
+    if (session.hasPlayed && session.stream && session.stream.hasPlayed && !session.video.ended) cinemaStatus(session, 'En pausa');
+  });
+  cinemaListen(session, video, 'volumechange', syncCinemaVolume);
+  cinemaListen(session, video, 'click', toggleCinemaPlay);
+  cinemaListen(session, video, 'dblclick', function(e) { e.preventDefault(); toggleCinemaFS(); });
+  cinemaListen(session, document, 'fullscreenchange', function() {
+    var button = document.getElementById('cinema-fs-btn');
+    if (button) button.setAttribute('aria-label', document.fullscreenElement ? 'Salir de pantalla completa' : 'Pantalla completa');
+  });
+  var seek = document.getElementById('cinema-seek');
+  cinemaListen(session, seek, 'click', function(e) {
+    var rect = seek.getBoundingClientRect();
+    if (rect.width > 0) seekCinemaTo((e.clientX - rect.left) / rect.width * cinemaDuration(session));
+  });
+  cinemaListen(session, seek, 'keydown', function(e) {
+    var position = session.offset + (Number(session.video.currentTime) || 0);
+    var target = { ArrowLeft: position - 10, ArrowDown: position - 10, ArrowRight: position + 10,
+      ArrowUp: position + 10, PageDown: position - 60, PageUp: position + 60, Home: 0, End: cinemaDuration(session) };
+    if (Object.prototype.hasOwnProperty.call(target, e.key)) { e.preventDefault(); seekCinemaTo(target[e.key]); }
+  });
+  cinemaLater(session, function() {
+    var player = document.getElementById('cinema-player');
+    if (player) player.classList.add('title-fade');
+  }, 3000);
+  var closeBtn = document.querySelector('.modal-close');
+  if (closeBtn) closeBtn.style.display = 'none';
+  if (session.modal) { session.modal.style.overflow = 'hidden'; session.modal.scrollTop = 0; }
+  updateCinemaProgress(session);
+  syncCinemaVolume();
+  startCompletedMSE(fileName, 'auto', initialPosition);
 
-  // /info enriches the UI when it is ready (true duration, part flag).
-  fetch('/api/stream/completed/info?name=' + encodeURIComponent(fileName))
-    .then(function(r){return r.json();}).catch(function(){return {};})
+  var options = session.controller ? { signal: session.controller.signal } : {};
+  fetch('/api/stream/completed/' + encodeURIComponent(fileName) + '?quality=auto',
+    Object.assign({ method: 'HEAD' }, options)).then(function(r) {
+    if (!cinemaIsCurrent(session) || session.hasPlayed || (session.stream && session.stream.failed) || r.ok === false) return;
+    var mode = r.headers.get('X-ESE-Transcoding');
+    if (mode === 'hevc-to-h264') cinemaStatus(session, 'Preparando vídeo HEVC — puede tardar hasta 60 s');
+    else if (mode === 'transcode') cinemaStatus(session, 'Preparando vídeo — puede tardar');
+  }).catch(function() {});
+
+  fetch('/api/stream/completed/info?name=' + encodeURIComponent(fileName), options)
+    .then(function(r) { if (r.ok === false) throw new Error('Info unavailable'); return r.json(); })
     .then(function(data) {
-      estTotalSec = data.estimatedTotalSec || 7200;
-      window._isPartFile = !!data.isPartFile;
-      if (data.isPartFile && data.partNum) currentPartNum = data.partNum;
-      var s = document.getElementById('modal-player-status');
-      if (s && s.textContent.indexOf('Transcod') !== 0)
-        s.textContent = 'Streaming iniciado — ' + fmtT(estTotalSec);
-    });
+      if (!cinemaIsCurrent(session) || !data) return;
+      var duration = Number(data.estimatedTotalSec);
+      session.duration = data.durationKnown !== false && Number.isFinite(duration) && duration > 0 ? duration : 0;
+      estTotalSec = session.duration;
+      session.isPartFile = !!data.isPartFile;
+      window._isPartFile = session.isPartFile;
+      currentPartNum = data.isPartFile && data.partNum ? data.partNum : null;
+      updateCinemaProgress(session);
+    }).catch(function() { /* Unknown duration stays unknown; playback state comes from video events. */ });
 
-  // /tracks patches the audio/subtitle selectors when ready.
-  fetch('/api/stream/tracks?name=' + encodeURIComponent(fileName))
-    .then(function(r){return r.json();}).catch(function(){return {audio:[],subtitles:[]};})
+  fetch('/api/stream/tracks?name=' + encodeURIComponent(fileName), options)
+    .then(function(r) { if (r.ok === false) throw new Error('Tracks unavailable'); return r.json(); })
     .then(function(tracks) {
+      if (!cinemaIsCurrent(session) || !tracks) return;
       var audioSel = document.getElementById('cinema-audio');
-      if (audioSel && tracks.audio && tracks.audio.length > 1) {
+      if (audioSel && Array.isArray(tracks.audio) && tracks.audio.length > 1) {
         audioSel.innerHTML = '';
         tracks.audio.forEach(function(a, i) {
           var label = (a.lang || 'und').toUpperCase();
-          if (a.title) label += ' \u2014 ' + a.title;
+          if (a.title) label += ' — ' + a.title;
           if (a.channels) label += ' (' + a.channels + 'ch)';
-          var opt = document.createElement('option');
-          opt.value = a.index;
-          opt.textContent = label;
-          if (i === 0) opt.selected = true;
-          audioSel.appendChild(opt);
+          var option = document.createElement('option');
+          option.value = a.index; option.textContent = label; option.selected = i === 0;
+          audioSel.appendChild(option);
         });
-        var audioRow = document.getElementById('cinema-audio-row');
-        if (audioRow) audioRow.style.display = '';
+        document.getElementById('cinema-audio-row').style.display = '';
       }
       var subSel = document.getElementById('cinema-subs');
-      if (subSel && tracks.subtitles && tracks.subtitles.length > 0) {
+      if (subSel && Array.isArray(tracks.subtitles) && tracks.subtitles.length) {
         subSel.innerHTML = '<option value="-1" selected>Desactivados</option>';
-        tracks.subtitles.forEach(function(s, i) {
-          var label = (s.lang || 'und').toUpperCase();
-          if (s.title) label += ' \u2014 ' + s.title;
-          if (s.forced) label += ' [Forzados]';
-          var opt = document.createElement('option');
-          opt.value = i;
-          opt.textContent = label;
-          subSel.appendChild(opt);
+        tracks.subtitles.forEach(function(sub, i) {
+          var label = (sub.lang || 'und').toUpperCase();
+          if (sub.title) label += ' — ' + sub.title;
+          if (sub.forced) label += ' [Forzados]';
+          var option = document.createElement('option');
+          option.value = i; option.textContent = label;
+          subSel.appendChild(option);
         });
-        var subsRow = document.getElementById('cinema-subs-row');
-        if (subsRow) subsRow.style.display = '';
+        document.getElementById('cinema-subs-row').style.display = '';
       }
-    });
+    }).catch(function() {});
 }
 
 // ── Controles del cinema player ────────────────────────────────────────────────
 function toggleCinemaSettings() {
   var popup = document.getElementById('cinema-settings-popup');
-  if (popup) popup.style.display = popup.style.display === 'none' ? 'block' : 'none';
+  var button = document.getElementById('cinema-settings-btn');
+  if (!popup) return;
+  var open = popup.style.display === 'none';
+  popup.style.display = open ? 'block' : 'none';
+  if (button) button.setAttribute('aria-expanded', String(open));
 }
-
+function syncCinemaVolume() {
+  var session = cinemaSession;
+  if (!cinemaIsCurrent(session)) return;
+  var muted = session.video.muted || session.video.volume === 0;
+  var button = document.getElementById('cinema-vol-btn');
+  if (button) {
+    button.textContent = muted ? '🔇' : '🔊';
+    button.setAttribute('aria-label', muted ? 'Activar sonido' : 'Silenciar');
+    button.setAttribute('aria-pressed', String(muted));
+  }
+  var slider = document.getElementById('cinema-vol-slider');
+  if (slider) slider.value = Math.round((muted ? 0 : session.video.volume) * 100);
+}
+function playCinemaVideo(session, stream) {
+  if (!cinemaIsCurrent(session) || session.stream !== stream || userWantsPause) return;
+  var result = session.video.play();
+  if (result && result.catch) result.catch(function() {
+    if (cinemaIsCurrent(session) && session.stream === stream) cinemaStatus(session, 'Pulsa Reproducir para iniciar el vídeo');
+  });
+}
 function toggleCinemaPlay() {
-  if (video.paused) { userWantsPause = false; video.play().catch(function(){}); }
-  else { userWantsPause = true; video.pause(); }
+  var session = cinemaSession;
+  if (!cinemaIsCurrent(session)) return;
+  if (session.video.paused) { userWantsPause = false; playCinemaVideo(session, session.stream); }
+  else { userWantsPause = true; session.video.pause(); }
 }
-
 function toggleCinemaVol() {
+  if (!cinemaIsCurrent(cinemaSession)) return;
   video.muted = !video.muted;
-  var btn = document.getElementById('cinema-vol-btn');
-  if (btn) btn.textContent = video.muted ? '' : '';
+  if (!video.muted && video.volume === 0) video.volume = 1;
+  syncCinemaVolume();
 }
-
-function setCinemaVol(val) {
-  video.volume = val / 100;
-  video.muted = val == 0;
+function setCinemaVol(value) {
+  if (!cinemaIsCurrent(cinemaSession)) return;
+  var volume = Number(value);
+  if (!Number.isFinite(volume)) return;
+  video.volume = Math.max(0, Math.min(100, volume)) / 100;
+  video.muted = video.volume === 0;
+  syncCinemaVolume();
 }
-
 function toggleCinemaFS() {
-  var el = document.getElementById('cinema-player');
-  if (document.fullscreenElement) document.exitFullscreen();
-  else if (el) el.requestFullscreen().catch(function(){});
+  var element = document.getElementById('cinema-player');
+  var result;
+  if (document.fullscreenElement && document.exitFullscreen) result = document.exitFullscreen();
+  else if (element && element.requestFullscreen) result = element.requestFullscreen();
+  if (result && result.catch) result.catch(function() { cinemaStatus(cinemaSession, 'Pantalla completa no disponible en este navegador'); });
 }
-
-function changeCinemaQuality(q) {
-  if (!window._cinemaFileName) return;
-  var currentReal = (window._cinemaSeekOffset || 0) + (video.currentTime || 0);
-  window._cinemaSeekOffset = Math.floor(currentReal);
-  var status = document.getElementById('modal-player-status');
-  if (status) status.textContent = 'Cambiando calidad a ' + q + '...';
-  startCompletedMSE(window._cinemaFileName, q, window._cinemaSeekOffset);
+function changeCinemaQuality(quality) {
+  var session = cinemaSession;
+  if (!cinemaIsCurrent(session)) return;
+  ++session.seekRequest;
+  startCompletedMSE(session.fileName, quality, session.offset + (session.video.currentTime || 0));
 }
-
 function changeCinemaAudio(trackIndex) {
-  if (!window._cinemaFileName) return;
+  var session = cinemaSession;
+  if (!cinemaIsCurrent(session)) return;
   window._cinemaAudioTrack = trackIndex;
-  var currentReal = (window._cinemaSeekOffset || 0) + (video.currentTime || 0);
-  window._cinemaSeekOffset = Math.floor(currentReal);
-  var status = document.getElementById('modal-player-status');
-  if (status) status.textContent = 'Cambiando audio...';
-  var q = document.getElementById('cinema-quality');
-  startCompletedMSE(window._cinemaFileName, q ? q.value : 'auto', window._cinemaSeekOffset);
+  ++session.seekRequest;
+  var quality = document.getElementById('cinema-quality');
+  startCompletedMSE(session.fileName, quality ? quality.value : 'auto', session.offset + (session.video.currentTime || 0));
 }
-
-function changeCinemaSubs(subIndex) {
-  if (!window._cinemaFileName) return;
-  window._cinemaSubTrack = subIndex;
-
-  // Remove existing subtitle tracks
-  var existingTracks = video.querySelectorAll('track');
-  existingTracks.forEach(function(t) { t.remove(); });
-
-  // Disable all text tracks
-  if (video.textTracks) {
-    for (var i = 0; i < video.textTracks.length; i++) {
-      video.textTracks[i].mode = 'disabled';
-    }
-  }
-
-  if (subIndex === '-1' || subIndex === -1) {
-    var status = document.getElementById('modal-player-status');
-    if (status) status.textContent = 'Subtítulos desactivados';
-    setTimeout(function() { if (status) status.textContent = ''; }, 1500);
-    return;
-  }
-
-  // Add new WebVTT track — NO stream restart needed!
-  var subUrl = '/api/stream/subtitle?name=' + encodeURIComponent(window._cinemaFileName) + '&track=' + subIndex;
+function clearCinemaSubtitles(session) {
+  var player = session.video;
+  var previous = session.subtitleTrack;
+  session.subtitleTrack = null;
+  var tracks = [];
+  if (player.textTracks) for (var i = 0; i < player.textTracks.length; i++) tracks.push(player.textTracks[i]);
+  if (previous && previous.track && tracks.indexOf(previous.track) < 0) tracks.push(previous.track);
+  // Disable and empty the TextTrack while it is still attached. Removing the
+  // HTMLTrackElement first can leave its last active cue painted by Chromium.
+  tracks.forEach(function(textTrack) {
+    var cues = textTrack.cues ? Array.prototype.slice.call(textTrack.cues) : [];
+    textTrack.mode = 'disabled';
+    cues.forEach(function(cue) { try { textTrack.removeCue(cue); } catch (_) {} });
+  });
+  player.querySelectorAll('track').forEach(function(track) {
+    track.default = false;
+    track.removeAttribute('default');
+    track.removeAttribute('src');
+    track.remove();
+  });
+}
+function applyCinemaSubtitles(session) {
+  var player = session.video;
+  clearCinemaSubtitles(session);
+  if (window._cinemaSubTrack === '-1' || window._cinemaSubTrack == null) return;
   var track = document.createElement('track');
+  session.subtitleTrack = track;
   track.kind = 'subtitles';
-  track.src = subUrl;
-  track.srclang = 'es';
-  track.label = 'Subtítulos';
-  track.default = true;
-  video.appendChild(track);
-
-  // Activate track
-  setTimeout(function() {
-    if (video.textTracks && video.textTracks.length > 0) {
-      video.textTracks[video.textTracks.length - 1].mode = 'showing';
-    }
-    var status = document.getElementById('modal-player-status');
-    if (status) status.textContent = 'Subtítulos activados';
-    setTimeout(function() { if (status) status.textContent = ''; }, 1500);
-  }, 500);
+  track.src = '/api/stream/subtitle?name=' + encodeURIComponent(session.fileName) + '&track=' + encodeURIComponent(window._cinemaSubTrack) + '&ss=' + session.offset;
+  track.srclang = 'es'; track.label = 'Subtítulos'; track.default = true;
+  cinemaListen(session, track, 'load', function() {
+    if (session.subtitleTrack !== track) return;
+    if (track.track) track.track.mode = 'showing';
+    cinemaStatus(session, 'Subtítulos activados');
+  }, session.stream);
+  cinemaListen(session, track, 'error', function() {
+    if (session.subtitleTrack === track) cinemaStatus(session, 'No se han podido cargar los subtítulos. Selecciona otra pista o inténtalo de nuevo.');
+  }, session.stream);
+  player.appendChild(track);
+}
+function changeCinemaSubs(subIndex) {
+  var session = cinemaSession;
+  if (!cinemaIsCurrent(session)) return;
+  window._cinemaSubTrack = String(subIndex);
+  applyCinemaSubtitles(session);
+  cinemaStatus(session, String(subIndex) === '-1' ? 'Subtítulos desactivados' : 'Cargando subtítulos…');
 }
 
 // ── Volver a la ficha del film ─────────────────────────────────────────────────
 function backToDetail() {
-  // Save playback position for resume
-  if (video && window._cinemaFileName) {
-    var currentReal = (window._cinemaSeekOffset || 0) + (video.currentTime || 0);
-    if (currentReal > 10) {
-      var resumeData = JSON.parse(localStorage.getItem('ese_resume') || '{}');
-      resumeData[window._cinemaFileName] = {
-        time: Math.floor(currentReal),
-        ts: Date.now()
-      };
-      localStorage.setItem('ese_resume', JSON.stringify(resumeData));
-    }
-  }
-
-  // ALWAYS stop video — regardless of MSE or direct src
-  try {
-    video.pause();
-    video.removeAttribute('src');
-    video.load();
-  } catch(e) {}
-  if (abortController) { try { abortController.abort(); } catch(e) {} }
-
-  // Remove subtitle tracks
-  var tracks = video.querySelectorAll('track');
-  tracks.forEach(function(t) { t.remove(); });
-
-  var playerZone = document.getElementById('modal-player-zone');
+  stopCinemaPlayback();
   var infoZone = document.getElementById('modal-info-zone');
-  if (playerZone) playerZone.style.display = 'none';
-  if (infoZone) infoZone.style.display = 'block';
+  if (!infoZone || !infoZone.innerHTML.trim()) {
+    if (typeof closeMovieModal === 'function') closeMovieModal();
+    return;
+  }
+  var playerZone = document.getElementById('modal-player-zone');
+  if (playerZone) { playerZone.style.display = 'none'; playerZone.innerHTML = ''; }
+  infoZone.style.display = 'block';
   var closeBtn = document.querySelector('.modal-close');
   if (closeBtn) closeBtn.style.display = 'flex';
   var modal = document.getElementById('movie-modal');
   if (modal) modal.style.overflow = 'auto';
-  if (document.fullscreenElement) document.exitFullscreen();
+  if (document.fullscreenElement && document.exitFullscreen) {
+    var exit = document.exitFullscreen();
+    if (exit && exit.catch) exit.catch(function() {});
+  }
+  var control = infoZone.querySelector('button, a[href]') || closeBtn;
+  if (control) control.focus({ preventScroll: true });
 }
 
 // ── Tráiler ────────────────────────────────────────────────────────────────────
@@ -350,17 +448,20 @@ function loadTrailer(query) {
   var container = document.getElementById('trailer-container');
   var btn = document.getElementById('trailer-btn');
   if (!container) return;
+  var request = container._trailerRequest = (container._trailerRequest || 0) + 1;
 
-  if (container.innerHTML) {
+  if (container.innerHTML && !container._trailerFailed) {
     container.innerHTML = '';
     if (btn) btn.innerHTML = '&#127916; Ver Tráiler';
     return;
   }
 
+  container._trailerFailed = false;
   container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;padding:40px"><div class="spinner"></div></div>';
   if (btn) btn.innerHTML = '&#127916; Cargando...';
 
   fetch('/api/movies/trailer?q=' + encodeURIComponent(query)).then(function(r) { return r.json(); }).then(function(data) {
+    if (container._trailerRequest !== request || document.getElementById('trailer-container') !== container) return;
     if (data.videoId && /^[a-zA-Z0-9_-]{6,15}$/.test(data.videoId)) {
       container.innerHTML = '<div class="trailer-container"><iframe src="https://www.youtube.com/embed/' + escapeAttr(data.videoId) + '?autoplay=1&rel=0" allow="autoplay;encrypted-media" allowfullscreen></iframe></div>';
       if (btn) btn.innerHTML = '&#127916; Ocultar Tráiler';
@@ -369,7 +470,9 @@ function loadTrailer(query) {
       if (btn) btn.innerHTML = '&#127916; Ver Tráiler';
     }
   }).catch(function() {
-    container.innerHTML = '';
+    if (container._trailerRequest !== request || document.getElementById('trailer-container') !== container) return;
+    container._trailerFailed = true;
+    container.innerHTML = '<p role="status">No se ha podido cargar el tráiler. Pulsa Tráiler para reintentar.</p>';
     if (btn) btn.innerHTML = '&#127916; Ver Tráiler';
   });
 }
@@ -399,9 +502,8 @@ function getWatchSession() {
 }
 
 // ── Helper: iniciar desde .part ────────────────────────────────────────────────
-function playPartFile(partFile, displayName) {
-  saveWatchSession(displayName, 0);
-  playInModal(encodeURIComponent(displayName));
+function playPartFile(partFile, displayName, resumePosition) {
+  playInModal(encodeURIComponent(displayName), resumePosition);
 }
 
 // ── requestMovie (delegación a showMovieDetail) ────────────────────────────────
@@ -424,7 +526,8 @@ function playCompleted(encodedName) {
   var quickModal = document.createElement('div');
   quickModal.id = 'movie-modal';
   quickModal.className = 'movie-modal active';
-  quickModal.innerHTML = '<button class="modal-close" onclick="closeMovieModal()">&times;</button>' +
+  quickModal._previousOverflow = document.body.style.overflow || '';
+  quickModal.innerHTML = '<button type="button" class="modal-close" aria-label="Cerrar reproducción" onclick="closeMovieModal()">&times;</button>' +
     '<div id="modal-player-zone"></div>' +
     '<div id="modal-info-zone" style="display:none"></div>';
   document.body.appendChild(quickModal);
@@ -436,89 +539,76 @@ function playCompleted(encodedName) {
 
 // ── Streaming de archivo completado (src directo, sin MSE) ─────────────────────
 function startCompletedMSE(fileName, quality, seekSec) {
-  if (abortController) abortController.abort();
-
-  var streamUrl = '/api/stream/completed/' + encodeURIComponent(fileName) + '?q=' + encodeURIComponent(quality) + '&ss=' + encodeURIComponent(seekSec);
-  if (window._cinemaAudioTrack) streamUrl += '&audio=' + encodeURIComponent(window._cinemaAudioTrack);
-  // NO sub= parameter — subtitles are loaded as WebVTT tracks (0% CPU)
-  window._currentFileName = fileName;
-  window._isPartFile = false;
-
-  video.src = streamUrl;
-  video.load();
-
-  // Remove any existing subtitle tracks
-  var existingTracks = video.querySelectorAll('track');
-  existingTracks.forEach(function(t) { t.remove(); });
-
-  // Add WebVTT subtitle track if requested
-  if (window._cinemaSubTrack && window._cinemaSubTrack !== '-1') {
-    var subUrl = '/api/stream/subtitle?name=' + encodeURIComponent(fileName) + '&track=' + encodeURIComponent(window._cinemaSubTrack);
-    var track = document.createElement('track');
-    track.kind = 'subtitles';
-    track.src = subUrl;
-    track.srclang = 'es';
-    track.label = 'Subtítulos';
-    track.default = true;
-    video.appendChild(track);
-    video.addEventListener('loadedmetadata', function onMeta() {
-      video.removeEventListener('loadedmetadata', onMeta);
-      if (video.textTracks && video.textTracks.length > 0) {
-        video.textTracks[0].mode = 'showing';
-      }
-    });
+  if (typeof stopLegacyPlayback === 'function') stopLegacyPlayback();
+  else if (abortController) abortController.abort();
+  var session = cinemaSession;
+  if (!session) {
+    session = cinemaSession = { active: true, video: video, modal: document.getElementById('movie-modal'),
+      fileName: fileName, offset: 0, position: 0, duration: 0, hasPlayed: false,
+      listeners: [], timers: [], stream: null, seekRequest: 0 };
   }
-
-  video.addEventListener('canplay', function onCanPlay() {
-    video.removeEventListener('canplay', onCanPlay);
-    if (!userWantsPause) {
-      video.muted = true;
-      video.play().then(function() { video.muted = false; }).catch(function() {});
-    }
-  });
-
-  // v7.4.0 — retry up to MAX_RETRIES on video errors, then surface a real
-  // error state instead of looping forever. Previous code kept reissuing
-  // `?retry=1` indefinitely if the underlying issue was a codec mismatch
-  // or the stream genuinely had no data.
-  var _retryCount = 0;
-  var MAX_RETRIES = 3;
-  video.addEventListener('error', function onErr() {
-    _retryCount++;
-    console.log('[Player] Video error, retry ' + _retryCount + '/' + MAX_RETRIES);
-    if (_retryCount > MAX_RETRIES) {
-      video.removeEventListener('error', onErr);
-      var status = document.getElementById('modal-player-status');
-      if (status) status.textContent = 'No se puede reproducir — codec incompatible o sin datos suficientes';
-      showPlayerErrorActions();
+  if (!cinemaIsCurrent(session) || session.fileName !== fileName) return;
+  cancelCinemaWork(session.stream);
+  var stream = session.stream = { listeners: [], timers: [], retries: 0, hasPlayed: false, retryTimer: null };
+  var player = session.video;
+  clearCinemaSubtitles(session);
+  var offset = Number(seekSec);
+  session.offset = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
+  window._cinemaSeekOffset = session.offset;
+  window._currentFileName = fileName;
+  currentQuality = quality;
+  var streamUrl = '/api/stream/completed/' + encodeURIComponent(fileName) + '?q=' + encodeURIComponent(quality) + '&ss=' + session.offset;
+  if (window._cinemaAudioTrack != null) streamUrl += '&audio=' + encodeURIComponent(window._cinemaAudioTrack);
+  var oldActions = document.getElementById('modal-player-error-actions');
+  if (oldActions) oldActions.remove();
+  cinemaStatus(session, session.offset ? 'Preparando vídeo desde ' + fmtT(session.offset) + '…' : 'Preparando vídeo…');
+  cinemaListen(session, player, 'canplay', function() { playCinemaVideo(session, stream); }, stream);
+  cinemaListen(session, player, 'error', function() {
+    if (stream.retryTimer !== null) return;
+    stream.retries++;
+    if (stream.retries > 3) {
+      stream.failed = true;
+      cinemaStatus(session, 'No se puede reproducir: formato incompatible o datos insuficientes');
+      showPlayerErrorActions(session);
       return;
     }
-    setTimeout(function() {
-      video.src = streamUrl + '&retry=' + _retryCount;
-      video.load();
-      video.play().catch(function(){});
-    }, 2000);
-  });
+    cinemaStatus(session, 'No se ha podido cargar el vídeo. Reintentando (' + stream.retries + '/3)…');
+    stream.retryTimer = cinemaLater(session, function() {
+      stream.retryTimer = null;
+      player.src = streamUrl + '&retry=' + stream.retries;
+      player.load();
+    }, 2000, stream);
+  }, stream);
+  player.src = streamUrl;
+  player.load();
+  applyCinemaSubtitles(session);
+  updateCinemaProgress(session);
 }
 
-// v7.4.0 — show a clear error UI inside the player modal with two actions:
-// retry from scratch (resets retry count + reloads) or close.
-function showPlayerErrorActions() {
-  var modal = document.getElementById('cinema-player');
-  if (!modal) return;
+function showPlayerErrorActions(session) {
+  session = session || cinemaSession;
+  if (!cinemaIsCurrent(session)) return;
+  var player = document.getElementById('cinema-player');
+  if (!player) return;
   var existing = document.getElementById('modal-player-error-actions');
   if (existing) existing.remove();
   var bar = document.createElement('div');
   bar.id = 'modal-player-error-actions';
   bar.style.cssText = 'position:absolute;bottom:80px;left:50%;transform:translateX(-50%);display:flex;gap:12px;z-index:1000';
   var retry = document.createElement('button');
-  retry.textContent = 'Reintentar';
-  retry.style.cssText = 'background:linear-gradient(135deg,#ff6b35,#ff2d78);border:none;color:#fff;padding:10px 22px;border-radius:8px;cursor:pointer;font-weight:600';
-  retry.onclick = function() { bar.remove(); location.reload(); };
+  retry.type = 'button'; retry.textContent = 'Reintentar';
+  retry.style.cssText = 'background:#ff806b;border:none;color:#191013;padding:12px 22px;border-radius:8px;cursor:pointer;font-weight:600;min-height:44px';
+  retry.onclick = function() {
+    if (!cinemaIsCurrent(session)) return;
+    bar.remove();
+    startCompletedMSE(session.fileName, currentQuality || 'auto', session.hasPlayed ? session.position : session.offset);
+    var control = document.getElementById('cinema-play-btn');
+    if (control) control.focus();
+  };
   var close = document.createElement('button');
-  close.textContent = 'Volver';
-  close.style.cssText = 'background:transparent;border:1px solid #444;color:#888;padding:10px 22px;border-radius:8px;cursor:pointer';
-  close.onclick = function() { bar.remove(); var c = document.getElementById('cinema-player'); if (c) c.style.display = 'none'; };
+  close.type = 'button'; close.textContent = 'Volver';
+  close.style.cssText = 'background:#161620;border:1px solid #888;color:#fff;padding:12px 22px;border-radius:8px;cursor:pointer;min-height:44px';
+  close.onclick = function() { if (cinemaIsCurrent(session)) backToDetail(); };
   bar.appendChild(retry); bar.appendChild(close);
-  modal.appendChild(bar);
+  player.appendChild(bar);
 }

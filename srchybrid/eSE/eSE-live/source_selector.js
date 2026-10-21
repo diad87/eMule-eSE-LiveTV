@@ -10,6 +10,10 @@ const fs = require('fs');   // BUG-067 FIX: hoisted from validateSource()
 const path = require('path');
 const dns = require('dns');
 const net = require('net');
+const { runFile } = require('../bounded_process');
+
+let cachedLoopbackDevice = null;
+let loopbackRefresh = null;
 
 /**
  * @typedef {Object} SourceConfig
@@ -175,13 +179,23 @@ function validateSource(source) {
  * @returns {string|null} Device name or null if not found.
  */
 function findLoopbackDevice(ffmpegPath) {
-  const { spawnSync } = require('child_process');
-  try {
-    const result = spawnSync(ffmpegPath,
+  if (!loopbackRefresh) void refreshLoopbackDevice(ffmpegPath);
+  return cachedLoopbackDevice;
+}
+
+async function refreshLoopbackDevice(ffmpegPath) {
+  if (loopbackRefresh) return loopbackRefresh;
+  loopbackRefresh = (async () => {
+    let stderr = '';
+    try {
+      const result = await runFile(ffmpegPath,
       ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'],
-      { timeout: 10000, encoding: 'utf8' }
-    );
-    const stderr = result.stderr || '';
+      { timeoutMs: 10000, maxOutputBytes: 1024 * 1024 });
+      stderr = result.stderr;
+    } catch (error) {
+      // FFmpeg exits non-zero after listing DirectShow devices.
+      stderr = String(error.stderr || '');
+    }
     
     // Parse audio device names
     const lines = stderr.split('\n');
@@ -211,15 +225,16 @@ function findLoopbackDevice(ffmpegPath) {
       const match = audioDevices.find(d => pattern.test(d));
       if (match) {
         console.log('[Audio] Loopback device found:', match);
-        return match;
+        cachedLoopbackDevice = match;
+        return cachedLoopbackDevice;
       }
     }
     
     console.log('[Audio] No loopback device found. Available:', audioDevices.join(', ') || 'none');
+    cachedLoopbackDevice = null;
     return null;
-  } catch (e) {
-    return null;
-  }
+  })().finally(() => { loopbackRefresh = null; });
+  return loopbackRefresh;
 }
 
 function quoteDshowName(name) {
@@ -425,6 +440,7 @@ module.exports = {
   buildInputArgs,
   validateSource,
   findLoopbackDevice,
+  refreshLoopbackDevice,
   isAllowedInputUrl,
   isPrivateOrLocalAddress,
   resolveAndPinInputUrl,

@@ -6,7 +6,8 @@
  */
 'use strict';
 
-const { spawn, execSync } = require('child_process');
+const { spawn } = require('child_process');
+const { runFile } = require('../bounded_process');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
@@ -158,11 +159,11 @@ function stop() {
   try {
     const pid = rtmpProcess.pid;
     if (process.platform === 'win32' && pid) {
-      try {
-        execSync('taskkill /F /T /PID ' + pid, { stdio: 'ignore', timeout: 3000 });
-      } catch (e) {
-        console.warn('[eSE Live] RTMP: taskkill failed:', e.message);
-      }
+      void runFile(
+        'taskkill',
+        ['/F', '/T', '/PID', String(pid)],
+        { timeoutMs: 3000, maxOutputBytes: 256 * 1024 })
+        .catch(e => console.warn('[eSE Live] RTMP: taskkill failed:', e.message));
     } else {
       rtmpProcess.kill('SIGTERM');
     }
@@ -171,7 +172,11 @@ function stop() {
       try {
         if (proc && !proc.killed) {
           if (process.platform === 'win32' && pid) {
-            execSync('taskkill /F /T /PID ' + pid, { stdio: 'ignore', timeout: 3000 });
+            void runFile(
+              'taskkill',
+              ['/F', '/T', '/PID', String(pid)],
+              { timeoutMs: 3000, maxOutputBytes: 256 * 1024 })
+              .catch(() => {});
           } else {
             proc.kill('SIGKILL');
           }

@@ -15,6 +15,16 @@ let lastBitrateCheck = 0;
 let currentBitrate = 0;
 
 var video = document.getElementById('video-player');
+var mainVideo = video;
+var mainSeekRequest = 0;
+var mainSeek = document.getElementById('seek-container');
+mainSeek.setAttribute('role', 'slider');
+mainSeek.setAttribute('tabindex', '0');
+mainSeek.setAttribute('aria-label', 'Posición de reproducción');
+mainSeek.setAttribute('aria-valuemin', '0');
+mainSeek.setAttribute('aria-valuemax', '0');
+mainSeek.setAttribute('aria-valuenow', '0');
+mainSeek.setAttribute('aria-disabled', 'true');
 
 // ── Utilidades ─────────────────────────────────────────────────────────────────
 function fmtT(s) {
@@ -49,12 +59,18 @@ function toggleFS() {
 }
 
 // ── Listeners del elemento <video> principal ───────────────────────────────────
-video.addEventListener('timeupdate', function () {
-  var total = estTotalSec || video.duration || 0;
+mainVideo.addEventListener('timeupdate', function () {
+  if (video !== mainVideo) return;
+  var total = estTotalSec || (Number.isFinite(mainVideo.duration) ? mainVideo.duration : 0);
   if (total > 0) {
     document.getElementById('progress-bar-inner').style.width = (video.currentTime / total * 100) + '%';
     document.getElementById('time-display').textContent = fmtT(video.currentTime) + ' / ' + fmtT(total);
   }
+  if (!total) document.getElementById('time-display').textContent = fmtT(mainVideo.currentTime) + ' / Duración desconocida';
+  mainSeek.setAttribute('aria-disabled', String(!total));
+  mainSeek.setAttribute('aria-valuemax', String(total || 0));
+  mainSeek.setAttribute('aria-valuenow', String(total ? Math.min(total, mainVideo.currentTime) : 0));
+  mainSeek.setAttribute('aria-valuetext', total ? fmtT(mainVideo.currentTime) + ' de ' + fmtT(total) : 'Duración desconocida');
   if (video.buffered.length > 0 && estTotalSec > 0) {
     var buffEnd = video.buffered.end(video.buffered.length - 1);
     document.getElementById('buffer-bar').style.width = (buffEnd / estTotalSec * 100) + '%';
@@ -62,18 +78,31 @@ video.addEventListener('timeupdate', function () {
   }
 });
 
-video.addEventListener('play', function () { document.getElementById('play-btn').textContent = '⏸'; });
-video.addEventListener('pause', function () { document.getElementById('play-btn').textContent = '▶'; });
+mainVideo.addEventListener('play', function () { if (video === mainVideo) { var b = document.getElementById('play-btn'); b.textContent = '⏸'; b.setAttribute('aria-label', 'Pausar'); } });
+mainVideo.addEventListener('pause', function () { if (video === mainVideo) { var b = document.getElementById('play-btn'); b.textContent = '▶'; b.setAttribute('aria-label', 'Reproducir'); } });
+mainVideo.addEventListener('playing', function() { if (video === mainVideo) document.getElementById('player-status').textContent = 'Reproduciendo'; });
+mainVideo.addEventListener('ended', function() { if (video === mainVideo) document.getElementById('player-status').textContent = 'Reproducción finalizada'; });
 
 // ── Seek bar ───────────────────────────────────────────────────────────────────
-document.getElementById('seek-container').addEventListener('click', function (e) {
+mainSeek.addEventListener('click', function (e) {
   var rect = e.currentTarget.getBoundingClientRect();
-  var pct = (e.clientX - rect.left) / rect.width;
-  // BUG-047 FIX: clamp pct and validate target
-  pct = Math.max(0, Math.min(1, pct));
-  var totalSec = estTotalSec || video.duration || 0;
-  var target = pct * totalSec;
-  if (!isFinite(target) || target < 0) return;
+  var total = estTotalSec || (Number.isFinite(mainVideo.duration) ? mainVideo.duration : 0);
+  if (rect.width > 0) seekMainTo((e.clientX - rect.left) / rect.width * total);
+});
+mainSeek.addEventListener('keydown', function(e) {
+  var pos = mainVideo.currentTime || 0;
+  var total = estTotalSec || (Number.isFinite(mainVideo.duration) ? mainVideo.duration : 0);
+  var targets = { ArrowLeft: pos - 10, ArrowDown: pos - 10, ArrowRight: pos + 10, ArrowUp: pos + 10,
+    PageDown: pos - 60, PageUp: pos + 60, Home: 0, End: total };
+  if (Object.prototype.hasOwnProperty.call(targets, e.key)) { e.preventDefault(); seekMainTo(targets[e.key]); }
+});
+function seekMainTo(target) {
+  if (video !== mainVideo) return;
+  var generation = typeof legacyPlaybackGeneration === 'number' ? legacyPlaybackGeneration : 0;
+  var request = ++mainSeekRequest;
+  var totalSec = estTotalSec || (Number.isFinite(video.duration) ? video.duration : 0);
+  if (!totalSec || !Number.isFinite(target)) return;
+  target = Math.max(0, Math.min(Math.max(0, totalSec - 1), target));
 
   // Check if target is within buffered range
   var isBuffered = false;
@@ -89,7 +118,7 @@ document.getElementById('seek-container').addEventListener('click', function (e)
   if (isBuffered) {
     video.currentTime = target;
   } else {
-    var fileName = window._cinemaFileName || window._currentFileName;
+    var fileName = window._currentFileName;
     if (!fileName) return;
 
     var bufLabel = document.getElementById('buffer-label');
@@ -101,6 +130,7 @@ document.getElementById('seek-container').addEventListener('click', function (e)
       if (bufLabel) bufLabel.textContent = 'Solicitando seek a ' + fmtT(target) + '...';
 
       fetch(seekUrl).then(function(r) { return r.json(); }).then(function(data) {
+        if (video !== mainVideo || generation !== legacyPlaybackGeneration || request !== mainSeekRequest) return;
         console.log('[Seek] Response:', data);
         if (bufLabel) bufLabel.textContent = 'eMule descargando part ' + data.targetPart + '/' + data.totalParts + ' — reiniciando stream...';
         window._cinemaSeekOffset = target;
@@ -109,6 +139,7 @@ document.getElementById('seek-container').addEventListener('click', function (e)
           switchStreamSeamless(q, Math.floor(target));
         }
       }).catch(function(err) {
+        if (video !== mainVideo || generation !== legacyPlaybackGeneration || request !== mainSeekRequest) return;
         console.log('[Seek] Error:', err);
         if (bufLabel) bufLabel.textContent = 'Error al solicitar seek';
       });
@@ -121,7 +152,7 @@ document.getElementById('seek-container').addEventListener('click', function (e)
       startCompletedMSE(fileName, q, Math.floor(target));
     }
   }
-});
+}
 
 // ── Cola MSE (Media Source Extensions) ────────────────────────────────────────
 var appendQueue = [];
@@ -133,6 +164,10 @@ function processAppendQueue() {
 
   isAppending = true;
   var chunk = appendQueue.shift();
+  var buffer = sourceBuffer;
+  var player = video;
+  var generation = typeof legacyPlaybackGeneration === 'number' ? legacyPlaybackGeneration : 0;
+  var request = typeof legacySwitchGeneration === 'number' ? legacySwitchGeneration : 0;
 
   // Remove old data to prevent QuotaExceeded
   try {
@@ -142,6 +177,7 @@ function processAppendQueue() {
         sourceBuffer.remove(video.buffered.start(0), removeEnd);
         // BUG-046 FIX: use {once:true} to prevent listener leak
         sourceBuffer.addEventListener('updateend', function () {
+          if (sourceBuffer !== buffer || video !== player || generation !== legacyPlaybackGeneration || request !== legacySwitchGeneration) return;
           doAppend(chunk);
         }, { once: true });
         return;
@@ -153,19 +189,27 @@ function processAppendQueue() {
 }
 
 function doAppend(chunk) {
+  var buffer = sourceBuffer;
+  var player = video;
+  var generation = typeof legacyPlaybackGeneration === 'number' ? legacyPlaybackGeneration : 0;
+  var request = typeof legacySwitchGeneration === 'number' ? legacySwitchGeneration : 0;
+  function current() { return sourceBuffer === buffer && video === player && generation === legacyPlaybackGeneration && request === legacySwitchGeneration; }
+  if (!buffer) return;
   try {
-    sourceBuffer.appendBuffer(chunk);
+    buffer.appendBuffer(chunk);
     // BUG-046 FIX: use {once:true} to prevent listener leak
-    sourceBuffer.addEventListener('updateend', function () {
+    buffer.addEventListener('updateend', function () {
+      if (!current()) return;
       isAppending = false;
 
       if (!userWantsPause && video.paused && video.buffered.length > 0 && video.buffered.end(0) > 0.5) {
-        video.muted = true;
-        video.play().then(function () { video.muted = false; }).catch(function () { });
+        player.play().catch(function () {
+          if (current()) document.getElementById('player-status').textContent = 'Pulsa Reproducir para iniciar el vídeo';
+        });
       }
 
       processAppendQueue();
-    });
+    }, { once: true });
   } catch (e) {
     isAppending = false;
     if (e.name === 'QuotaExceededError') {
@@ -174,13 +218,14 @@ function doAppend(chunk) {
         if (video.buffered.length > 0 && !sourceBuffer.updating) {
           sourceBuffer.remove(video.buffered.start(0), video.currentTime - 5);
           sourceBuffer.addEventListener('updateend', function onCleared() {
-            sourceBuffer.removeEventListener('updateend', onCleared);
+            buffer.removeEventListener('updateend', onCleared);
+            if (!current()) return;
             processAppendQueue();
-          });
+          }, { once: true });
         }
-      } catch (e2) { setTimeout(processAppendQueue, 500); }
+      } catch (e2) { setTimeout(function() { if (current()) processAppendQueue(); }, 500); }
     } else {
-      setTimeout(processAppendQueue, 100);
+      setTimeout(function() { if (current()) processAppendQueue(); }, 100);
     }
   }
 }

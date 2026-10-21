@@ -38,11 +38,15 @@ labs/
 docs/archive/
 docs/*.docx
 docs/*_PLAN*.md
-!docs/KAD6_IMPLEMENTATION_PLAN.md
+!docs/V9.2_DEVELOPMENT_AND_TEST_PLAN.md
+!docs/V9.2_MODULARIZATION_AND_ARCHITECTURE_PLAN.md
+!docs/V9.3_DEVELOPMENT_AND_TEST_PLAN.md
+!docs/V9.4_DEVELOPMENT_AND_TEST_PLAN.md
 docs/*_AUDIT*.md
 docs/*_CLOSURE*.md
 docs/*_CHECKLIST*.md
 docs/*_ROADMAP*.md
+!docs/EMULEAI_INTEGRATED_RELEASE_ROADMAP.md
 docs/*_TICKET*.md
 docs/*_VALIDATION*.md
 docs/*_PAPER*.md
@@ -82,3 +86,15 @@ node_modules/
 
 # Dist folder (binaries go in GitHub Releases, not in repo)
 dist/
+
+# Lab runs, captured evidence and agent scratch space (evidence stays on disk)
+artifacts/
+lab-runs/
+.codex_tmp/
+.codex-remote-attachments/
+/v92-*
+/.tmp*
+/.scratch*
+/.o01-*
+.claude/launch.json
+.claude/worktrees/

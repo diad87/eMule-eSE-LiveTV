@@ -327,14 +327,15 @@ void CTitleMenu::SetMenuBitmap(UINT nFlags, UINT nIDNewItem, LPCTSTR /*lpszNewIt
 		int nPos;
 		void *pvIndex;
 		if (m_mapIconNameToIconIdx.Lookup(strIconLower, pvIndex)) {
-			nPos = (int)pvIndex;
+			nPos = static_cast<int>(reinterpret_cast<INT_PTR>(pvIndex));
 			m_mapMenuIdToIconIdx[nIDNewItem] = nPos;
 		} else {
 			HICON hIcon = theApp.LoadIcon(strIconLower);
 			if (hIcon) {
 				nPos = m_ImageList.Add(hIcon);
 				if (nPos >= 0) {
-					m_mapIconNameToIconIdx[strIconLower] = (void*)nPos;
+					m_mapIconNameToIconIdx[strIconLower] =
+						reinterpret_cast<void*>(static_cast<INT_PTR>(nPos));
 					m_mapMenuIdToIconIdx[nIDNewItem] = nPos;
 				}
 				VERIFY(::DestroyIcon(hIcon));

@@ -79,6 +79,17 @@ void CLiveMeshManager::RemoveMeshPeer(CUpDownClient* peer)
     }
 }
 
+void CLiveMeshManager::ResetSessionPeers()
+{
+    CSingleLock lock(&m_lock, TRUE);
+    m_meshPeers.RemoveAll();
+    m_pendingRequests.RemoveAll();
+    m_uploadTracker.RemoveAll();
+    m_dwLastSchedule = 0;
+    m_dwLastTimeoutCheck = 0;
+    m_dwLastPeerCheck = 0;
+}
+
 int CLiveMeshManager::GetMeshPeerCount() const
 {
     CSingleLock lock(&m_lock, TRUE);

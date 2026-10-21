@@ -1,6 +1,10 @@
 //this file is part of eMule
 // eSE — Live broadcaster identity (Ed25519 keypair, sign/verify) — impl
+#ifndef ESE_LIVECRYPTO_STANDALONE_TEST
 #include "stdafx.h"
+#else
+#include <cstring>
+#endif
 #include "LiveCrypto.h"
 #include "../cryptopp/xed25519.h"
 #include "../cryptopp/osrng.h"

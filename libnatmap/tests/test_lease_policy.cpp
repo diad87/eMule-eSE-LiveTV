@@ -83,6 +83,15 @@ void TestChangedEndpointIsNotSilentRenewal() {
     CHECK(controller.Activate(mapped.lease, 0));
     CHECK(controller.ShouldRenew(900));
     CHECK(controller.IsExpired(2000));
+    CHECK(!controller.AcceptRenewal(mapped.lease,2000));
+    CHECK(controller.timing().expires_monotonic_ms==2000);
+    CHECK(!controller.AcceptRenewal(mapped.lease,2001));
+    LeaseController clockGuard;
+    CHECK(clockGuard.Activate(mapped.lease,100));
+    CHECK(!clockGuard.AcceptRenewal(mapped.lease,99));
+    CHECK(clockGuard.timing().acquired_monotonic_ms==100);
+    CHECK(clockGuard.AcceptRenewal(mapped.lease,2099));
+    CHECK(clockGuard.timing().expires_monotonic_ms==4099);
     mapped.lease.granted_external_port = 50001;
     mapped.lease.public_endpoint.port = 50001;
     CHECK(!controller.AcceptRenewal(mapped.lease, 1000));
@@ -176,6 +185,22 @@ void TestPermanentMappingHealthProbe() {
 } // namespace
 
 int main() {
+    {
+        LeaseController tcp,udp;
+        CHECK(!MappingLeasesRequireInvalidation(tcp,udp,0));
+        FakeGateway gateway{}; gateway.mapper=MapperKind::Pcp;
+        gateway.gateway=Ep(192,168,1,1,5351);
+        gateway.external_address=IpAddress::V4(88,11,22,4);
+        gateway.lifetime_seconds=2;
+        const auto mapped=gateway.Map(BuildAutomaticPortIntent(Transport::Tcp,Ep(192,168,1,20,4662),2,7),9);
+        CHECK(mapped.success && tcp.Activate(mapped.lease,100));
+        CHECK(!MappingLeasesRequireInvalidation(tcp,udp,2099));
+        CHECK(MappingLeasesRequireInvalidation(tcp,udp,2100));
+        CHECK(MappingLeasesRequireInvalidation(tcp,udp,99));
+        tcp=LeaseController{}; CHECK(udp.Activate(mapped.lease,100));
+        CHECK(MappingLeasesRequireInvalidation(tcp,udp,2100));
+        CHECK(!MappingLeasesRequireInvalidation(tcp,udp,2099));
+    }
     TestCandidatePolicy();
     TestDifferentPortRenewAndDelete();
     TestChangedEndpointIsNotSilentRenewal();

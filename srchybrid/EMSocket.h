@@ -18,6 +18,8 @@
 #include "packets.h"
 #include "EncryptedStreamSocket.h"
 #include "ThrottledSocket.h" // ZZ:UploadBandWithThrottler (UDP)
+#include <memory>
+namespace ese { class QuicEd2kWriter; }
 
 class CAsyncProxySocketLayer;
 
@@ -41,7 +43,7 @@ public:
 	virtual void SendPacket(Packet *packet, bool controlpacket = true, uint32 actualPayloadSize = 0, bool bForceImmediateSend = false);
 	bool	IsConnected() const				{ return byConnected == EMS_CONNECTED; }
 	uint8	GetConState() const				{ return byConnected; }
-	void	SetConState(uint8 val)			{ sendLocker.Lock(); byConnected = val; sendLocker.Unlock(); }
+	void	SetConState(uint8 val)			{ sendLocker.Lock(); byConnected = (m_directMode && !m_directWriter) ? EMS_DISCONNECTED : val; sendLocker.Unlock(); }
 	virtual bool IsRawDataMode() const		{ return false; }
 	void	SetDownloadLimit(uint32 limit);
 	void	DisableDownloadLimit();
@@ -94,6 +96,11 @@ public:
 #endif
 
 protected:
+    bool PrepareLayeredSend(); // Reject in-flight OS sends; subsequent output traverses AsyncSocketEx layers.
+    // Fresh direct-only socket; never migrate a live/queued TCP stream.
+    // Caller owns main-thread draining and destroys all writer refs before pool retirement.
+    bool BindDirectWriter(const std::shared_ptr<ese::QuicEd2kWriter>&);
+    void StopDirectWriter(); // releases the socket ref; direct mode stays terminal
 	virtual int	OnLayerCallback(std::vector<t_callbackMsg> &callbacks);
 
 	virtual void	DataReceived(const BYTE *pcData, UINT uSize);
@@ -129,6 +136,8 @@ private:
 
 	// Upload control
 	char	*sendbuffer;
+    std::shared_ptr<ese::QuicEd2kWriter> m_directWriter;
+    bool m_directMode = false; // sticky: stopped direct socket can never become TCP
 	uint32	sendblen; //packet length in sendbuffer
 	uint32	sent;
 	WSAOVERLAPPED m_PendingSendOperation;

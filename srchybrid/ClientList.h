@@ -105,6 +105,8 @@ public:
 	CUpDownClient* FindClientByConnIP(uint32 clientip, UINT port) const;
 	CUpDownClient* FindClientByIP(uint32 clientip, UINT port) const;
 	CUpDownClient* FindClientByUserHash(const uchar *clienthash, uint32 dwIP = 0, uint16 nTCPPort = 0) const;
+	CUpDownClient* FindClientByUserHashAndLifetime(const uchar *clienthash,uint64 lifetime) const;
+	CUpDownClient* FindClientByLifetime(uint64 lifetime) const;
 	CUpDownClient* FindClientByIP(uint32 clientip) const;
 	CUpDownClient* FindClientByIP_UDP(uint32 clientip, UINT nUDPport) const;
 	CUpDownClient* FindClientByServerID(uint32 uServerIP, uint32 uED2KUserID) const;
@@ -176,6 +178,7 @@ protected:
 
 private:
 	CUpDownClientPtrList list;
+	CUpDownClientPtrList m_directRouteClients; // bounded pre-auth registry, not connected users/UI/source discovery
 	CUpDownClientPtrList m_KadList;
 	CMap<uint32, uint32, DWORD, DWORD> m_bannedList;
 	std::map<CAddress, DWORD> m_bannedAddressList;

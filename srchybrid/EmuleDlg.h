@@ -19,6 +19,7 @@
 #include "TaskbarNotifier.h"
 #include "TitleMenu.h"
 #include "TrayDialog.h"
+namespace natmap { struct OwnedMapperResult; }
 
 namespace Kademlia
 {
@@ -29,6 +30,7 @@ namespace Kademlia
 };
 
 class CChatWnd;
+class CUPnPImpl;
 class CIrcWnd;
 class CKademliaWnd;
 class CKnownFileList;
@@ -76,6 +78,7 @@ public:
 
 	CImageList& GetClientIconList();
 	void ShowConnectionState();
+    void UpdateDirectStatusPane();
 	// v0.71 P3.8 — lightweight 1 Hz refresh of the SBarPrivacy pane.
 	// Called from CKademlia::Process (already runs at 1 Hz) so the
 	// pane shows real-time circuit counts without dragging
@@ -138,7 +141,7 @@ public:
 	bool IsTrayIconToFlash()				{ return m_iMsgIcon != 0; }
 	void SetToolTipsDelay(UINT uMilliseconds);
 	void StartUPnP(bool bReset = true, uint16 nForceTCPPort = 0, uint16 nForceUDPPort = 0);
-	void RefreshUPnP(bool bRequestAnswer = false);
+	void RefreshUPnP(bool bRequestAnswer = false, bool healthReadback = false);
 	HBRUSH GetCtlColor(CDC*, CWnd*, UINT);
 
 	virtual void OnTrayRButtonUp(CPoint pt);
@@ -361,6 +364,10 @@ protected:
 	afx_msg LRESULT OnConsoleThreadEvent(WPARAM wParam, LPARAM lParam);
 	// UPnP
 	afx_msg LRESULT OnUPnPResult(WPARAM wParam, LPARAM lParam);
+	afx_msg LRESULT OnOwnedMapperResult(WPARAM wParam, LPARAM lParam);
+	LRESULT HandleUPnPResult(WPARAM wParam, LPARAM lParam, const natmap::OwnedMapperResult* owned);
+	bool ArmMapperResult(CUPnPImpl* impl, uint16 tcp, uint16 udp, bool refresh);
+	void CancelMapperAttempt();
 };
 
 #ifdef _DEBUG

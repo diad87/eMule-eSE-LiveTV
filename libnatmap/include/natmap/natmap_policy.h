@@ -95,4 +95,10 @@ private:
     bool last_epoch_reset_ = false;
 };
 
+inline bool MappingLeasesRequireInvalidation(const LeaseController& tcp,
+    const LeaseController& udp,std::uint64_t now) noexcept {
+    return (tcp.HasLease() && (tcp.IsExpired(now) || now<tcp.timing().acquired_monotonic_ms)) ||
+        (udp.HasLease() && (udp.IsExpired(now) || now<udp.timing().acquired_monotonic_ms));
+}
+
 } // namespace natmap

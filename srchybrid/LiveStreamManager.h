@@ -264,6 +264,8 @@ struct LiveWebBroadcastReq {
 // eSE: worker -> main-thread marshaling block for /api/live/leave
 // (UM_LIVE_WEB_LEAVE, ghost-viewer fix 2026-06).
 struct LiveWebLeaveReq {
+    uchar streamKey[16];      // optional session key supplied by the player page
+    bool  hasStreamKey;       // false keeps the legacy "leave current" behavior
     bool wasViewing;         // [out] true if a viewing session was actually ended
 };
 
@@ -433,8 +435,17 @@ public:
     void Process();     // Main timer tick (every 1 second)
 
     // === State ===
-    const CLiveChunkBuffer& GetBuffer() const { return m_chunkBuffer; }
-    const LiveStreamInfo& GetStreamInfo() const { return m_streamInfo; }
+    // The mesh manager follows the viewer session whenever one is active.
+    // A pure broadcaster falls back to the broadcast session.  Callers which
+    // require a specific role must use the explicit accessors below.
+    const CLiveChunkBuffer& GetBuffer() const
+        { return m_bViewing ? m_chunkBuffer : m_broadcastChunkBuffer; }
+    const LiveStreamInfo& GetStreamInfo() const
+        { return m_bViewing ? m_streamInfo : m_broadcastStreamInfo; }
+    const CLiveChunkBuffer& GetBroadcastBuffer() const { return m_broadcastChunkBuffer; }
+    const CLiveChunkBuffer& GetViewerBuffer() const { return m_chunkBuffer; }
+    const LiveStreamInfo& GetBroadcastStreamInfo() const { return m_broadcastStreamInfo; }
+    const LiveStreamInfo& GetViewerStreamInfo() const { return m_streamInfo; }
     uint32 GetViewerCount() const;
     uint32 GetMinUploadRequired() const;  // For UploadBandwidthThrottler
     CLiveKadBridge& GetKadBridge() { return m_kadBridge; }
@@ -450,10 +461,16 @@ public:
     bool GetPinnedPubkey(const uchar streamKey[16], uchar outPubkey[32]) const;
 
     // Accessors for WebServer and UI
-    const uchar* GetStreamKey() const { return m_streamInfo.streamKey; }
-    CString GetStreamTitle() const { return m_streamInfo.title; }
-    uint32 GetBitrate() const { return m_streamInfo.bitrate; }
-    uint32 GetBroadcastStartTime() const { return m_streamInfo.startedAt; }
+    const uchar* GetStreamKey() const
+        { return m_bViewing ? m_streamInfo.streamKey : m_broadcastStreamInfo.streamKey; }
+    const uchar* GetBroadcastStreamKey() const { return m_broadcastStreamInfo.streamKey; }
+    const uchar* GetViewerStreamKey() const { return m_streamInfo.streamKey; }
+    CString GetStreamTitle() const
+        { return m_bViewing ? m_streamInfo.title : m_broadcastStreamInfo.title; }
+    uint32 GetBitrate() const
+        { return m_bViewing ? m_streamInfo.bitrate : m_broadcastStreamInfo.bitrate; }
+    uint32 GetBroadcastBitrate() const { return m_broadcastStreamInfo.bitrate; }
+    uint32 GetBroadcastStartTime() const { return m_broadcastStreamInfo.startedAt; }
     bool IsEmergencyMode() const { return m_bEmergencyMode; }
 
     // Ghost-viewer watchdog (2026-06). A web player session that stops
@@ -537,12 +554,20 @@ private:
     // Stream state
     bool                m_bBroadcasting;
     bool                m_bViewing;
-    LiveStreamInfo      m_streamInfo;
+    // Viewer and broadcaster identities must never alias.  beta.1 used a
+    // single m_streamInfo/m_chunkBuffer pair; JoinStream consequently replaced
+    // the active broadcaster key and local FFmpeg chunks were written into the
+    // remote viewer namespace.  Keep the viewer members under their historical
+    // names to minimize protocol-path churn, and give the broadcaster an
+    // authoritative, independent state pair.
+    LiveStreamInfo      m_streamInfo;              // current remote viewer
+    LiveStreamInfo      m_broadcastStreamInfo;     // current local broadcaster
     // v7.6.0 — broadcaster's Ed25519 private key. Generated freshly on every
     // StartBroadcast(); never serialized to disk; zeroed on StopBroadcast.
-    // The matching public key lives in m_streamInfo.pubkey and IS published.
+    // The matching public key lives in m_broadcastStreamInfo.pubkey and IS published.
     uint8_t             m_broadcasterPrivkey[32];
-    CLiveChunkBuffer    m_chunkBuffer;
+    CLiveChunkBuffer    m_chunkBuffer;              // received remote chunks
+    CLiveChunkBuffer    m_broadcastChunkBuffer;     // locally produced chunks
     uint32              m_nNextSeqNum;      // Next segment sequence number
     // R.3 relay egress (gated by pref EseRelayEgress): proactively forward new segments to a
     // relay buddy when we are an unreachable broadcaster (symmetric NAT/CGNAT).
@@ -565,6 +590,7 @@ private:
 
     // Timers
     DWORD               m_dwLastBitmapSend;
+    DWORD               m_dwLastViewerBitmapSend;
     DWORD               m_dwLastAnnounceSend;
     DWORD               m_dwLastKadPublish;
     DWORD               m_dwLastHealthCheck;
@@ -793,7 +819,7 @@ private:
     void PrunePeerState(DWORD now);
 
     // Internal helpers
-    void SendBitmapToAll();
+    void SendBitmapToAll(bool broadcastRole);
     void SendAnnounceToAll();
     void RelayPushNewSegments();   // R.3: forward new segments to the active relay buddy (main thread, lock-free)
     void TickReachabilitySelector(DWORD now);   // [eSE v9] reachability escalation (dormant unless m_bReachSelectorOn)
@@ -818,7 +844,7 @@ private:
 
     // V2-S03 helpers
     void PingAllPeers();           // periodic, called from Process()
-    void PingPeer(CUpDownClient* peer);
+    void PingPeer(CUpDownClient* peer, const uchar* streamKey);
     void ReapStalePings(DWORD now); // delete pending pings older than 30 s
 
     // V2-S19 multi-parent: keep >= 3 active sources by dialing extras from

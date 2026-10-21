@@ -351,7 +351,15 @@ bool CServerSocket::ProcessPacket(const BYTE *packet, uint32 size, uint8 opcode)
 					}
 					break;
 				}
-				if (thePrefs.GetSmartIdCheck())
+				if (serverconnect->IsCallbackFallbackPending())
+					break; // duplicate/late ID packets do not establish an old login
+				if (::IsLowID(la->clientid) && !m_bRelayRouted &&
+					theApp.directreachability &&
+					theApp.directreachability->ObserveServerIdChange(false, m_nReachVerificationGeneration) &&
+					serverconnect->ScheduleCallbackFallback(this, m_nReachVerificationGeneration))
+					break; // dispatch outside this socket's packet parser
+				if (thePrefs.GetSmartIdCheck() && (!thePrefs.IsEseNetLabActive() ||
+					!serverconnect->HasUsedCallbackFallback()))
 					if (!::IsLowID(la->clientid))
 						thePrefs.SetSmartIdState(1);
 					else {
@@ -375,7 +383,7 @@ bool CServerSocket::ProcessPacket(const BYTE *packet, uint32 size, uint8 opcode)
 				}
 				if (!m_bRelayRouted && theApp.directreachability != NULL)
 					theApp.directreachability->ObserveServerIdChange(
-						!::IsLowID(la->clientid));
+						!::IsLowID(la->clientid),m_nReachVerificationGeneration);
 				serverconnect->SetClientID(la->clientid);
 				if (m_bRelayRouted && theApp.relayclient != NULL)
 					theApp.relayclient->OnEd2kIdChange(la->clientid, true);
@@ -791,6 +799,12 @@ void CServerSocket::SetConnectionState(int newstate)
 
 void CServerSocket::SendPacket(Packet *packet, bool controlpacket, uint32 actualPayloadSize, bool bForceImmediateSend)
 {
+	if (packet && packet->opcode==OP_LOGINREQUEST) {
+		m_nReachVerificationGeneration=0;
+		if (!m_bRelayRouted && theApp.directreachability &&
+			theApp.directreachability->BeginEd2kVerification())
+			m_nReachVerificationGeneration=theApp.directreachability->GetTopologyGeneration();
+	}
 	m_dwLastTransmission = ::GetTickCount();
 	CEMSocket::SendPacket(packet, controlpacket, actualPayloadSize, bForceImmediateSend);
 }

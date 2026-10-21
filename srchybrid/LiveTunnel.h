@@ -667,7 +667,12 @@ private:
                                 const kad6::K6ShapeSlot& slot);
     void DeliverK6ShapedOriginLocked(const std::shared_ptr<CLiveCircuit>& circ,
                                      const uint8_t* pkt, size_t size);
-    void StopK6ShapeTimerLocked();
+    // The USER32 timer is shared by the tunnel-locked class-5 shaper and the
+    // pending-locked fair queue.  Protect it with its own leaf lock so neither
+    // subsystem ever has to acquire the other's lock merely to start/stop it.
+    bool EnsureK6ShapeTimer();
+    void StopK6ShapeTimer();
+    mutable CCriticalSection m_k6ShapeTimerLock;
     std::map<uint32_t, K6ShapedLinkState> m_k6ShapeReverse;
     std::map<uint64_t, Bulk::BulkReplayWindow> m_k6ShapeReplay;
     UINT_PTR m_k6ShapeTimer = 0;

@@ -93,7 +93,7 @@ protected:
 	void StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nTCPWebPort, bool bSecondTry);
 	void AddDevice(DevicePointer device, bool bAddChildren, int nLevel = 0);
 	void RemoveDevice(CComBSTR bsUDN);
-	bool OnSearchComplete();
+	bool OnSearchComplete(const std::shared_ptr<OwnedNotification>& notification);
 	bool VerifyPortMapping(ServicePointer pService, uint16 nPort, LPCTSTR pszProtocol);
 	void Init();
 
@@ -115,14 +115,14 @@ protected:
 
 // Implementation
 	static FinderPointer CreateFinderInstance();
-	struct FindDevice : private std::unary_function<DevicePointer, bool>
+	struct FindDevice
 	{
 		explicit FindDevice(const CComBSTR &udn)
 			: m_udn(udn)
 		{
 		}
 
-		result_type operator()(argument_type device) const
+		bool operator()(DevicePointer device) const
 		{
 			CComBSTR deviceName;
 			HRESULT hr = device->get_UniqueDeviceName(&deviceName);
@@ -139,10 +139,10 @@ protected:
 
 	void ProcessAsyncFind(CComBSTR bsSearchType);
 	HRESULT GetDeviceServices(DevicePointer pDevice);
-	void StartPortMapping();
-	HRESULT MapPort(const ServicePointer &service);
+	void StartPortMapping(const std::shared_ptr<OwnedNotification>& notification);
+	HRESULT MapPort(const ServicePointer &service, const std::shared_ptr<OwnedNotification>& notification);
 	void DeleteExistingPortMappings(ServicePointer pService);
-	void CreatePortMappings(ServicePointer pService);
+	void CreatePortMappings(ServicePointer pService, const std::shared_ptr<OwnedNotification>& notification);
 	HRESULT SaveServices(EnumUnknownPtr pEU, const LONG nTotalItems);
 	HRESULT InvokeAction(ServicePointer pService, CComBSTR action
 						, LPCTSTR pszInArgString, CString &strResult);
@@ -189,6 +189,8 @@ public:
 	explicit CDeviceFinderCallback(CUPnPImplWinServ &instance)
 		: m_instance(instance)
 		, m_lRefCount()
+		, m_operation(instance.GetOwnedResultOperation())
+		, m_notification(instance.CaptureResultNotification())
 	{
 	}
 
@@ -206,6 +208,9 @@ private:
 
 	CUPnPImplWinServ &m_instance;
 	LONG m_lRefCount;
+	const uint64 m_operation;
+	const std::shared_ptr<CUPnPImplWinServ::OwnedNotification> m_notification;
+	bool IsCurrentSearch(LONG handle) const;
 };
 
 // Service Callback
@@ -215,6 +220,7 @@ public:
 	explicit CServiceCallback(CUPnPImplWinServ &instance)
 		: m_instance(instance)
 		, m_lRefCount()
+		, m_operation(instance.GetOwnedResultOperation())
 	{
 	}
 
@@ -231,4 +237,6 @@ private:
 
 	CUPnPImplWinServ &m_instance;
 	LONG m_lRefCount;
+	const uint64 m_operation;
+	bool IsCurrentOperation() const;
 };

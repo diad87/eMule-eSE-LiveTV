@@ -814,7 +814,7 @@ void CLiveTunnel::Stop()
     std::set<uint32_t> retiredCircuits;
     {
         CSingleLock lock(&m_lock, TRUE);
-        StopK6ShapeTimerLocked();
+        StopK6ShapeTimer();
         m_k6ShapeReverse.clear();
         m_k6ShapeReplay.clear();
         for (const auto& circuit : m_circuits)
@@ -3405,15 +3405,10 @@ bool CLiveTunnel::QueueK6FairPayloadLocked(uint64 streamId, uint8 direction,
     if (queue.size() >= 64 || streamBytes + bytes.size() > 2u * 1024u * 1024u ||
         m_k6FairPayloadBytes + bytes.size() > kad6::kK6FairMaxQueuedBytes)
         return false;
-    {
-        // Global lock order is pending -> tunnel. The timer is shared with
-        // class-5, but the fair queue has independent state and payload caps.
-        CSingleLock lock(&m_lock, TRUE);
-        if (m_k6ShapeTimer == 0) {
-            m_k6ShapeTimer = ::SetTimer(NULL, 0, 10, K6Class5TimerProc);
-            if (m_k6ShapeTimer == 0) return false;
-        }
-    }
+    // Do not acquire m_lock here: every caller owns m_pendingLock, while
+    // Tick() owns m_lock before it snapshots pending state.  The timer has a
+    // dedicated leaf lock precisely to avoid a pending -> tunnel edge.
+    if (!EnsureK6ShapeTimer()) return false;
     if (!m_k6FairScheduler.Enqueue(streamId, bytes.size())) return false;
     K6FairPayload payload;
     payload.direction = direction;
@@ -3873,8 +3868,9 @@ void CLiveTunnel::OnPeerDisconnected(CUpDownClient* peer)
 
     // Download activations and established origin streams keep a non-owning
     // client pointer. Drop those references before the client can be deleted.
-    // This is deliberately done before taking m_lock (the global lock order is
-    // m_pendingLock -> m_lock).
+    // Finish and release the pending-state section before taking m_lock.  The
+    // tunnel-wide order is m_lock -> m_pendingLock where nesting is required;
+    // this path needs no nesting at all.
     {
         CSingleLock pl(&m_pendingLock, TRUE);
         for (auto it = m_k6DownloadActivations.begin();
@@ -10125,8 +10121,17 @@ bool CLiveTunnel::SendBulkCellToPeer(CUpDownClient* peer, const uint8_t* bytes, 
     return true;
 }
 
-void CLiveTunnel::StopK6ShapeTimerLocked()
+bool CLiveTunnel::EnsureK6ShapeTimer()
 {
+    CSingleLock timerLock(&m_k6ShapeTimerLock, TRUE);
+    if (m_k6ShapeTimer != 0) return true;
+    m_k6ShapeTimer = ::SetTimer(NULL, 0, 10, K6Class5TimerProc);
+    return m_k6ShapeTimer != 0;
+}
+
+void CLiveTunnel::StopK6ShapeTimer()
+{
+    CSingleLock timerLock(&m_k6ShapeTimerLock, TRUE);
     if (m_k6ShapeTimer != 0) {
         ::KillTimer(NULL, m_k6ShapeTimer);
         m_k6ShapeTimer = 0;
@@ -10191,12 +10196,9 @@ bool CLiveTunnel::EnsureK6ShaperLocked(const std::shared_ptr<CLiveCircuit>& circ
         return false;
     m_k6ShapeReverse.emplace(circ->Id(), std::move(state));
 
-    if (m_k6ShapeTimer == 0) {
-        m_k6ShapeTimer = ::SetTimer(NULL, 0, 10, K6Class5TimerProc);
-        if (m_k6ShapeTimer == 0) {
-            m_k6ShapeReverse.erase(circ->Id());
-            return false;
-        }
+    if (!EnsureK6ShapeTimer()) {
+        m_k6ShapeReverse.erase(circ->Id());
+        return false;
     }
     AddDebugLogLine(false,
         _T("Kad6 K6-6: class-5 link active circ=0x%08x hop=%u bucket=%uKiB/s reservoir=%u records"),
@@ -10466,7 +10468,7 @@ void CLiveTunnel::ProcessClass5Tick()
     const bool fairActive = ProcessK6FairTick();
     CSingleLock lock(&m_lock, TRUE);
     if (m_k6ShapeReverse.empty()) {
-        if (!fairActive) StopK6ShapeTimerLocked();
+        if (!fairActive) StopK6ShapeTimer();
         return;
     }
     const uint64_t nowUs = K6ShapeNowUs();
@@ -10504,7 +10506,7 @@ void CLiveTunnel::ProcessClass5Tick()
                 it->second.exposed = circ->m_traffic_shaping_exposed = true;
         ++it;
     }
-    if (m_k6ShapeReverse.empty() && !fairActive) StopK6ShapeTimerLocked();
+    if (m_k6ShapeReverse.empty() && !fairActive) StopK6ShapeTimer();
 }
 
 bool CLiveTunnel::OnBulkCellReceived(const uint8_t* pkt, uint32_t size, CUpDownClient* fromPeer)
@@ -11370,9 +11372,9 @@ void CLiveTunnel::Tick()
         const DWORD RTT_PING_INTERVAL_MS = 5000u;
         if ((DWORD)(now - m_lastRttPingTick) >= RTT_PING_INTERVAL_MS) {
             m_lastRttPingTick = now;
-            // req_id is a fresh random NewCircuitId(), NOT deduped against m_pending
-            // (can't take m_pendingLock here — Tick holds m_lock, and the order is
-            // m_pendingLock->m_lock). A ~2^-32 collision with an in-flight manual
+            // req_id is a fresh random NewCircuitId(), NOT deduped against m_pending.
+            // Tick owns m_lock and must not call helpers that acquire locks in an
+            // undocumented order. A ~2^-32 collision with an in-flight manual
             // TunnelPing would cost one washed-out EWMA sample; accepted given the odds
             // and that TunnelPing is a dev-only diagnostic path.
             const uint32_t rttReqId = NewCircuitId();
@@ -11430,7 +11432,7 @@ void CLiveTunnel::Tick()
                 && c->HopCount() >= 1 && c->m_bulk_ok) { haveBulk = true; break; }
         if (haveBulk) {
             m_lastBulkSubTick = now;
-            BulkSubscribe(theApp.liveStreamManager->GetStreamKey());
+            BulkSubscribe(theApp.liveStreamManager->GetViewerStreamKey());
         }
     }
 

@@ -15,6 +15,9 @@
 //along with this program; if not, write to the Free Software
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #include "stdafx.h"
+static unsigned GetOwnedEseDashboardPort(HANDLE process);
+#include "updownclient.h"
+#include "EseCapabilityPolicy.h"
 #include <afxinet.h>
 #define MMNODRV			// mmsystem: Installable driver support
 //#define MMNOSOUND		// mmsystem: Sound support
@@ -55,11 +58,28 @@
 #include "ServerList.h"
 #include "Opcodes.h"
 #include "NodeIdentity.h"   // v8.x Phase 1 — eSE node identity init at startup
+#include "eMuleAI/UtpSocket.h"
+#ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
+#include "EseQuicSharedSocketSelfTest.h"
+#include "EseKad6PublicationDescriptor.h"
+#include "EseKad6PublisherHostSelfTest.h"
+#include "EseServerCallbackHostSelfTest.h"
+#include "EseKad6IndexHostSelfTest.h"
+#include "EseKad2IndexPersistenceSelfTest.h"
+#include "EseQuicPairSelfTest.h"
+#endif
+#include "EseKad2SoakSelfTest.h"
+void EseRecordKad2SoakTimer() {
+	static unsigned ticks=0;
+	if (ese::kad2_soak::Enabled() && ++ticks%60==0)
+		ese::kad2_soak::Record(_T("UPLOAD_TIMER_KAD_PROCESS"));
+}
 #include "SharedFileList.h"
 #include "ED2KLink.h"
 #include "LiveStreamManager.h"
 #include "RelayClient.h"
 #include "DirectReachabilityManager.h"
+#include "MapperWindowsNotification.h"
 #include "Splashscreen.h"
 #include "PartFileConvert.h"
 #include "EnBitmap.h"
@@ -354,6 +374,7 @@ BEGIN_MESSAGE_MAP(CemuleDlg, CTrayDialog)
 
 	// UPnP
 	ON_MESSAGE(UM_UPNP_RESULT, OnUPnPResult)
+	ON_MESSAGE(UM_MAPPER_OWNED_RESULT, OnOwnedMapperResult)
 
 	///////////////////////////////////////////////////////////////////////////
 	// WM_APP messages
@@ -519,7 +540,8 @@ void CemuleDlg::DoDataExchange(CDataExchange *pDX)
 
 LRESULT CemuleDlg::OnAreYouEmule(WPARAM, LPARAM)
 {
-	return UWM_ARE_YOU_EMULE;
+	// Isolated labs are not the user's normal CLI/link recipient.
+	return theApp.m_bReachBindingSelfTest ? 0 : UWM_ARE_YOU_EMULE;
 }
 
 void DialogCreateIndirect(CDialog *pWnd, UINT uID)
@@ -837,9 +859,7 @@ BOOL CemuleDlg::OnInitDialog()
 	if (thePrefs.GetVerbose() && !m_hTimer)
 		AddDebugLogLine(true, _T("Failed to create 'startup' timer - %s"), (LPCTSTR)GetErrorMessage(::GetLastError()));
 
-	// Start UPnP port forwarding
-	if (thePrefs.IsUPnPEnabled())
-		StartUPnP();
+	// Mapping starts in StartupTimer, after TCP/UDP bindings exist.
 
 	if (thePrefs.IsFirstStart()) {
 		// temporary disable the 'startup minimized' option, otherwise no window will be shown at all
@@ -1047,9 +1067,750 @@ LRESULT CemuleDlg::OnProcessKnownMetSave(WPARAM, LPARAM)
 	return 0;
 }
 
+static bool RunReachBindingSelfTest()
+{
+	CNativeDirectSelfTestAccess::TestWindowIsolation();
+	auto fail = [](LPCTSTR stage) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: %s"),stage); return false; };
+	if (!theApp.directreachability || !theApp.listensocket || !theApp.clientudp
+		|| thePrefs.IsUPnPEnabled() || thePrefs.DoAutoConnect() || thePrefs.IsIPv6Enabled()
+		|| !thePrefs.GetBindAddr() || _tcscmp(thePrefs.GetBindAddr(),_T("127.0.0.1")) != 0)
+		return fail(_T("loopback-only profile prerequisites"));
+	const uint16 tcp = thePrefs.GetLocalTcpPort(), udp = thePrefs.GetLocalUdpPort();
+	if (!tcp || !udp || theApp.listensocket->GetConnectedPort() || theApp.clientudp->GetConnectedPort()) return fail(_T("ports and initially closed sockets"));
+	struct Cleanup {
+		uint16 udp;
+		~Cleanup() {
+			thePrefs.SetUDPPort(0);
+			theApp.clientudp->Rebind();
+			theApp.clientudp->Close();
+			theApp.listensocket->Close();
+			theApp.directreachability->SynchronizeLocalSocketBindings();
+			thePrefs.SetUDPPort(udp);
+		}
+	} cleanup{udp};
+	auto& manager = *theApp.directreachability;
+	manager.SynchronizeLocalSocketBindings();
+	const uint64 emptyGeneration = manager.GetTopologyGeneration();
+	if (manager.GetLocalTcpPort() || manager.GetLocalUdpPort()
+		|| manager.BeginMapperOperation(natmap::MapperKind::Pcp,tcp,udp,false,10000)) return fail(_T("reject mapping before binding"));
+	if (!theApp.listensocket->StartListening()) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST TCP bind WSA error=%u"),::WSAGetLastError());
+		return fail(_T("bind TCP socket"));
+	}
+	if (!theApp.clientudp->Create()) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST UDP bind WSA error=%u"),::WSAGetLastError());
+		return fail(_T("bind UDP socket"));
+	}
+	if (manager.GetLocalTcpPort()!=tcp || manager.GetLocalUdpPort()!=udp
+		|| manager.GetTopologyGeneration()<=emptyGeneration) return fail(_T("manager binding synchronization"));
+	reach::NativeDirectCandidateSnapshotV1 directSnapshot;
+	directSnapshot.local_generation=manager.GetTopologyGeneration();
+	directSnapshot.remote_generation=99;
+	const uint64 downloadSubscriber=manager.AcquireDirectSubscriber(100,reach::DirectConsumerKind::Download);
+	const uint64 uploadSubscriber=manager.AcquireDirectSubscriber(100,reach::DirectConsumerKind::Upload);
+	const auto admitted=manager.RequestDirectConnection(directSnapshot,42,1,downloadSubscriber);
+	const auto joined=manager.RequestDirectConnection(directSnapshot,42,1,uploadSubscriber);
+	if(admitted.request.status!=reach::DirectRequestStatus::Created
+		|| joined.request.status!=reach::DirectRequestStatus::Joined
+		|| admitted.request.handle.slot!=joined.request.handle.slot
+		|| admitted.request.handle.generation!=joined.request.handle.generation)
+		return fail(_T("native snapshot admission and shared attempt"));
+	const auto attemptSnapshot=manager.DirectConnections().Snapshot(admitted.request.handle);
+	if(!manager.HasDirectTransferSubscription(100,admitted.request.handle)
+		|| manager.HasDirectTransferSubscription(101,admitted.request.handle))
+		return fail(_T("transfer subscriber lifetime authority"));
+	if(!attemptSnapshot || attemptSnapshot->subscribers!=2
+		|| !reach::NonzeroIdentity(attemptSnapshot->attempt_id)) return fail(_T("host attempt identity"));
+	if(manager.RequestDirectConnection(directSnapshot,43,1,downloadSubscriber).request.status!=reach::DirectRequestStatus::InvalidRequest
+		|| manager.DirectConnections().Size()!=1) return fail(_T("subscriber peer rebinding rejection"));
+	const auto firstRetirement=manager.RetireDirectSubscriber(downloadSubscriber);
+	if(!firstRetirement.actions.empty() || manager.ResolveDirectSubscriber(downloadSubscriber)
+		|| manager.DirectConnections().Snapshot(admitted.request.handle)->subscribers!=1)
+		return fail(_T("retire first shared subscriber"));
+	const auto lastRetirement=manager.RetireDirectSubscriber(uploadSubscriber);
+	if(manager.HasDirectTransferSubscription(100,admitted.request.handle))
+		return fail(_T("last transfer retirement removes delivery authority"));
+	if(lastRetirement.actions.empty() || manager.ResolveDirectSubscriber(uploadSubscriber))
+		return fail(_T("retire last shared subscriber"));
+	if(!manager.DirectConnections().Release(admitted.request.handle)) return fail(_T("release route-free admission"));
+	Log(_T("REACH_SELFTEST V3 PASS: host CSPRNG admission and shared native attempt"));
+	Log(_T("REACH_SELFTEST V4 PASS: owned subscriber binding, peer fence and single-use retirement"));
+	auto lifetimeClient=std::make_unique<CUpDownClient>(static_cast<CPartFile*>(nullptr),4662,0x01020304,0,0,false);
+	const auto nativeCandidates=lifetimeClient->NativeDirectCandidates(directSnapshot.local_generation,1000);
+	if(nativeCandidates.count!=1 || nativeCandidates.candidates[0].route.family!=4
+		|| nativeCandidates.candidates[0].route.address[0]!=1 || nativeCandidates.candidates[0].route.address[1]!=2
+		|| nativeCandidates.candidates[0].route.address[2]!=3 || nativeCandidates.candidates[0].route.address[3]!=4
+		|| nativeCandidates.candidates[0].route.port!=4662 || nativeCandidates.remote_generation)
+		return fail(_T("native client IPv4 snapshot byte order"));
+	const byte v6Bytes[16]={0x20,0x01,0x48,0x60,0,0,0,0,0,0,0,0,0,0,0,1};
+	lifetimeClient->SetIPv6Address(CAddress::FromIPv6Bytes(v6Bytes));
+	lifetimeClient->SetIP(lifetimeClient->GetIPv6Address().ToSyntheticUInt32());
+	const auto v6Candidates=lifetimeClient->NativeDirectCandidates(directSnapshot.local_generation,1000);
+	reach::DirectPolicy candidatePolicy; candidatePolicy.topology_generation=directSnapshot.local_generation;
+	if(v6Candidates.count!=1 || v6Candidates.candidates[0].route.family!=6
+		|| memcmp(v6Candidates.candidates[0].route.address.data(),v6Bytes,16)
+		|| v6Candidates.candidates[0].route.evidence!=reach::DirectEvidence::Advertised
+		|| !reach::BuildNativeDirectPlan(v6Candidates,candidatePolicy).plan.routes.empty()
+		|| nativeCandidates.candidates[0].route.address[0]!=1)
+		return fail(_T("native IPv6-only snapshot, owned copy and advertised evidence"));
+	Log(_T("REACH_SELFTEST V6 PASS: real client native endpoints, byte order and no invented route proof"));
+	const uint64 clientLifetime=lifetimeClient->GetDirectClientLifetime();
+	const uint64 lifetimeSubscriber=manager.AcquireDirectSubscriber(clientLifetime,reach::DirectConsumerKind::ClientList);
+	const auto lifetimeAdmission=manager.RequestDirectConnection(directSnapshot,44,1,lifetimeSubscriber);
+	if(!clientLifetime || lifetimeAdmission.request.status!=reach::DirectRequestStatus::Created)
+		return fail(_T("real client lifetime admission"));
+	lifetimeClient.reset(); // actual CUpDownClient destructor: no DCO callback here
+	if(manager.ResolveDirectSubscriber(lifetimeSubscriber)
+		|| manager.DirectConnections().Snapshot(lifetimeAdmission.request.handle)->subscribers!=1)
+		return fail(_T("destructor token invalidation before deferred unsubscribe"));
+	const auto retirementBatches=manager.PumpDirectEvents();
+	if(retirementBatches.empty() || manager.DirectConnections().Snapshot(lifetimeAdmission.request.handle)->state!=reach::DirectSessionState::Cancelled
+		|| !manager.DirectConnections().Release(lifetimeAdmission.request.handle))
+		return fail(_T("deferred real client retirement"));
+	Log(_T("REACH_SELFTEST V5 PASS: real client lifetime destructor and deferred retirement"));
+	natmap::MapperResult result;
+	result.success=true; result.external_ipv4=123; result.external_tcp=50000; result.external_udp=50001;
+	natmap::OwnedMapperResult owned;
+	const uint64 first = manager.BeginMapperOperation(natmap::MapperKind::Pcp,tcp,udp,false,10000);
+	if (!first || !manager.MapperResults()->Publish(first,result) || !manager.TakeMapperResult(first,owned)
+		|| owned.operation.tcp!=tcp || owned.operation.udp!=udp || manager.TakeMapperResult(first,owned)) return fail(_T("consume mapper result exactly once"));
+	const uint64 oldGeneration = manager.GetTopologyGeneration();
+	const uint64 networkPending = manager.BeginMapperOperation(natmap::MapperKind::Pcp,tcp,udp,true,10000);
+	if (!networkPending || !manager.MapperResults()->Publish(networkPending,result)
+		|| manager.ObserveLocalNetworkSignature(17) || !manager.ObserveLocalNetworkSignature(18)
+		|| manager.GetTopologyGeneration()<=oldGeneration || manager.TakeMapperResult(networkPending,owned)
+		|| manager.ObserveLocalNetworkSignature(18) || !manager.ObserveLocalNetworkSignature(0)
+		|| manager.ObserveLocalNetworkSignature(0) || !manager.MappingRediscoveryNeeded()
+		|| !manager.MappingRediscoveryNeeded() || !manager.ConsumeMappingRediscovery()
+		|| manager.ConsumeMappingRediscovery()) return fail(_T("network signature invalidation and one-shot rediscovery"));
+	const uint64 beforeResume = manager.GetTopologyGeneration();
+	const uint64 resumePending = manager.BeginMapperOperation(natmap::MapperKind::Pcp,tcp,udp,true,10000);
+	if (!resumePending || !manager.MapperResults()->Publish(resumePending,result)) return fail(_T("queue mapper result before resume"));
+	if (theApp.emuledlg->SendMessage(WM_POWERBROADCAST,PBT_APMRESUMEAUTOMATIC,0)!=TRUE)
+		return fail(_T("resume Windows message handler"));
+	if (manager.GetTopologyGeneration()<=beforeResume || manager.TakeMapperResult(resumePending,owned)
+		|| !manager.ConsumeMappingRediscovery() || manager.ConsumeMappingRediscovery()) return fail(_T("resume retires prior generation with unchanged network signature"));
+#ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
+	{
+		ese::control::PacketBudget budget;
+		const auto boundPort=theApp.clientudp->GetConnectedPort();
+		auto host=ese::CreateQuicSessionHost(*theApp.clientudp,manager.DirectBuffers(),manager.DirectEvents(),budget);
+		if(!boundPort || !host || !host->Empty()) return fail(_T("native host attaches actual shared UDP"));
+		// Exercise the real factory's failure cleanup on the shared socket.
+		// An absent endpoint must never allocate a surviving session or rebind UDP.
+		ese::NativeQuicConfig invalidNative;
+		ese::QuicPeerConfig invalidPeer;
+		reach::DirectSessionRoute invalidRoute;
+		if(host->Begin(invalidNative,invalidPeer,{0,1},invalidRoute)!=0
+			|| !host->Empty() || theApp.clientudp->GetConnectedPort()!=boundPort)
+			return fail(_T("native shared UDP invalid session admission cleanup"));
+		auto duplicate=ese::CreateQuicSessionHost(*theApp.clientudp,manager.DirectBuffers(),manager.DirectEvents(),budget);
+		if(duplicate) { duplicate->Stop(); host->Stop(); return fail(_T("shared UDP exclusive ingress")); }
+		host->Stop(); host.reset();
+		auto reattached=ese::CreateQuicSessionHost(*theApp.clientudp,manager.DirectBuffers(),manager.DirectEvents(),budget);
+		if(!reattached || !reattached->Empty() || theApp.clientudp->GetConnectedPort()!=boundPort)
+			return fail(_T("native host detach and reattach without socket rebind"));
+		reattached->Stop();
+	}
+	Log(_T("REACH_SELFTEST V16 PASS: native shared UDP host attach, exclusive ingress, detach and reattach, no sessions"));
+	Log(_T("REACH_SELFTEST V17 PASS: invalid native session admission leaves shared socket bound and host empty"));
+	try { ese::shared_socket_selftest::Run(*theApp.clientudp,manager.GetTopologyGeneration()); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: shared UDP peer: %hs"),error.what());
+		return false;
+	}
+	Log(_T("REACH_SELFTEST V18 PASS: real MFC shared UDP authenticated peer, DCO winners, bidirectional 4096 bytes and drained resources"));
+	Log(_T("REACH_SELFTEST V20 PASS: received native bytes disk MD4, owned session receipt and single-use DCO VerifiedPart, not PartFile consumer"));
+	try { ese::shared_socket_selftest::Run(*theApp.clientudp,manager.GetTopologyGeneration(),true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: shared UDP bad signature: %hs"),error.what());
+		return false;
+	}
+	Log(_T("REACH_SELFTEST V19 PASS: real MFC shared UDP rejects peer bad signature, typed DCO failure, zero useful bytes and drained resources"));
+#endif
+	const uint64 beforeUdpDisable = manager.GetTopologyGeneration();
+	const uint64 stale = manager.BeginMapperOperation(natmap::MapperKind::Pcp,tcp,udp,true,10000);
+	if (!stale || !manager.MapperResults()->Publish(stale,result)) return fail(_T("queue result before rebind"));
+	thePrefs.SetUDPPort(0);
+	if (!theApp.clientudp->Rebind() || manager.GetLocalUdpPort()!=0
+		|| manager.GetLocalTcpPort()!=tcp || manager.GetTopologyGeneration()<=beforeUdpDisable
+		|| manager.TakeMapperResult(stale,owned) || owned.operation.id) return fail(_T("UDP disable fences stale result"));
+	const uint64 current = manager.BeginMapperOperation(natmap::MapperKind::Pcp,tcp,0,true,10000);
+	if (!current || current<=stale || !manager.MapperResults()->Publish(current,result)
+		|| !manager.TakeMapperResult(current,owned) || owned.operation.udp!=0) return fail(_T("new operation after UDP disable"));
+	theApp.listensocket->Close();
+	manager.SynchronizeLocalSocketBindings();
+	if (manager.GetLocalTcpPort()!=0 || manager.GetLocalUdpPort()!=0
+		|| manager.BeginMapperOperation(natmap::MapperKind::Pcp,tcp,0,false,10000)) return fail(_T("reject mapping after TCP close"));
+	if(!manager.InstallQuicDownloadConsumer() || !manager.InstallQuicDownloadConsumer()
+		|| manager.EnableNativeQuicLab()) return fail(_T("QUIC consumer installation without host activation"));
+	manager.TickDirectConnections();
+	Log(_T("REACH_SELFTEST V7 PASS: installed QUIC consumer without implicit host activation"));
+	{
+		const int savedConsent=thePrefs.GetEseNetLabConsent(); const bool savedEnabled=thePrefs.GetEseNetLabEnabled();
+		thePrefs.SetEseNetLabConsent(CPreferences::EseNetLabAccepted); thePrefs.SetEseNetLabEnabled(true);
+		const bool tcpAvailable=manager.DirectDownloadAvailable(); const bool quicAvailable=manager.DirectQuicDownloadAvailable();
+		thePrefs.SetEseNetLabEnabled(false);
+		const bool disabledAvailable=manager.DirectDownloadAvailable();
+		thePrefs.SetEseNetLabConsent(savedConsent); thePrefs.SetEseNetLabEnabled(savedEnabled);
+		if(!tcpAvailable || quicAvailable || disabledAvailable) return fail(_T("TCP consumer availability independent from QUIC host"));
+	}
+	Log(_T("REACH_SELFTEST V128 PASS: LAB consumer TCP availability without QUIC host or UDP socket; disabled rejected; availability only no route start"));
+	reach::NativeDirectCandidateSnapshotV1 failedStartSnapshot;
+	failedStartSnapshot.local_generation=manager.GetTopologyGeneration();
+	failedStartSnapshot.peer.expected_node_pub=std::array<std::uint8_t,32>{};
+	(*failedStartSnapshot.peer.expected_node_pub)[0]=9;
+	const uint64 failedStartToken=manager.AcquireDirectSubscriber(300,reach::DirectConsumerKind::Download);
+	const auto failedStart=manager.RequestDirectConnection(failedStartSnapshot,0,0,failedStartToken);
+	if(failedStart.request.status!=reach::DirectRequestStatus::Created) return fail(_T("owned QUIC scheduling admission"));
+	reach::DirectSessionRoute registeredRoute;
+	registeredRoute.id=1; registeredRoute.transport=reach::DirectQuic;
+	registeredRoute.candidate.id=1; registeredRoute.candidate.family=4;
+	registeredRoute.candidate.address[0]=1; registeredRoute.candidate.address[1]=2;
+	registeredRoute.candidate.address[2]=3; registeredRoute.candidate.address[3]=4;
+	registeredRoute.candidate.port=4662; registeredRoute.candidate.transport_mask=reach::DirectQuic;
+	registeredRoute.candidate.evidence=reach::DirectEvidence::Observed;
+	registeredRoute.candidate.topology_generation=failedStartSnapshot.local_generation;
+	registeredRoute.candidate.expires_monotonic_ms=(std::numeric_limits<uint64>::max)();
+	ese::NativeQuicConfig noHostConfig;
+	ese::QuicPeerConfig pinnedPeer; pinnedPeer.expectedNode=*failedStartSnapshot.peer.expected_node_pub;
+	pinnedPeer.pin=pinnedPeer.expectedNode; pinnedPeer.hasPin=true;
+	pinnedPeer.local.attempt=manager.DirectConnections().Snapshot(failedStart.request.handle)->attempt_id;
+	if(!manager.RegisterDirectQuicRoute(failedStart.request.handle,registeredRoute,noHostConfig,pinnedPeer))
+		return fail(_T("register owned QUIC route context"));
+	auto alteredRoute=registeredRoute; alteredRoute.candidate.port=1;
+	if(manager.ScheduleDirectQuicRoutes(failedStart.request.handle,{alteredRoute})
+		|| manager.DirectConnections().Snapshot(failedStart.request.handle)->state!=reach::DirectSessionState::Gathering)
+		return fail(_T("registered QUIC endpoint fence"));
+	if(!manager.ScheduleDirectQuicRoutes(failedStart.request.handle,{registeredRoute})
+		|| manager.TakeDirectTerminal(failedStartToken,301)
+		|| manager.TakeDirectTerminal(failedStartToken,300)!=reach::DirectReason::DirectUnreachable
+		|| manager.TakeDirectTerminal(failedStartToken,300)) return fail(_T("owned QUIC start failure terminal delivery"));
+	manager.TickDirectConnections();
+	if(manager.DirectConnections().Snapshot(failedStart.request.handle)) return fail(_T("failed QUIC start context drain"));
+	manager.RetireDirectSubscriber(failedStartToken);
+	Log(_T("REACH_SELFTEST V8 PASS: owned QUIC scheduling, endpoint fence, terminal sink and failed-start drain"));
+	{
+		class AuthoritySocket final : public CClientReqSocket {
+		public:
+			explicit AuthoritySocket(CUpDownClient* client):CClientReqSocket(client) {}
+			~AuthoritySocket() override = default;
+			bool Authority(reach::DirectHandle handle) const { return HasDirectTransferAuthority(handle); }
+		};
+		std::array<std::uint8_t,16> fixtureHash{}; fixtureHash[0]=1;
+		auto duplicate=std::make_unique<CUpDownClient>(static_cast<CPartFile*>(nullptr),4663,0x01020305,0,0,false);
+		duplicate->SetUserHash(fixtureHash.data()); theApp.clientlist->AddClient(duplicate.get());
+		auto client=std::make_unique<CUpDownClient>(static_cast<CPartFile*>(nullptr),4662,0x01020304,0,0,false);
+		client->SetUserHash(fixtureHash.data());
+		theApp.clientlist->AddClient(client.get());
+		if(theApp.clientlist->FindClientByUserHashAndLifetime(fixtureHash.data(),client->GetDirectClientLifetime())!=client.get()
+			|| theApp.clientlist->FindClientByUserHashAndLifetime(fixtureHash.data(),duplicate->GetDirectClientLifetime())!=duplicate.get()
+			|| theApp.clientlist->FindClientByUserHashAndLifetime(fixtureHash.data(),0))
+			return fail(_T("duplicate userhash exact client lifetime lookup"));
+		AuthoritySocket socket(client.get());
+		const auto token=manager.AcquireDirectSubscriber(client->GetDirectClientLifetime(),reach::DirectConsumerKind::Download);
+		reach::NativeDirectCandidateSnapshotV1 snapshot;
+		snapshot.local_generation=manager.GetTopologyGeneration();
+		std::array<std::uint8_t,16> hash{}; hash[0]=1; snapshot.peer.expected_user_hash=hash;
+		const auto request=manager.RequestDirectConnection(snapshot,900,1,token);
+		if(request.request.status!=reach::DirectRequestStatus::Created || !socket.Authority(request.request.handle))
+			return fail(_T("real socket transfer authority"));
+		if(manager.DirectTransferClientLifetime(request.request.handle)!=client->GetDirectClientLifetime())
+			return fail(_T("manager selects subscribed transfer lifetime"));
+		auto stale=request.request.handle; ++stale.generation;
+		if(socket.Authority(stale)) return fail(_T("socket stale subscription generation"));
+		socket.SetClient(nullptr);
+		if(socket.Authority(request.request.handle)) return fail(_T("socket detached client authority"));
+		socket.SetClient(client.get());
+		manager.RetireDirectSubscriber(token);
+		if(socket.Authority(request.request.handle) || !manager.DirectConnections().Release(request.request.handle))
+			return fail(_T("socket subscription revocation"));
+	}
+	Log(_T("REACH_SELFTEST V21 PASS: real registered client and socket transfer authority, stale generation, detach and subscriber revocation"));
+	{
+		auto malformedClient=std::make_unique<CUpDownClient>();
+		try { CNativeDirectSelfTestAccess::TestMalformedBlockTimer(*malformedClient); }
+		catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: block timer: %hs"),error.what()); return false; }
+		try { CNativeDirectSelfTestAccess::TestPackedLimits(*malformedClient); }
+		catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: packed limits: %hs"),error.what()); return false; }
+		const uchar bytes[32]={};
+		for(const bool packed : {false,true}) for(const bool wide : {false,true}) {
+			const uint32 header=16+(wide ? 8 : 4)+(packed ? 4 : wide ? 8 : 4);
+			for(uint32 size=0;size<=header;++size) {
+				bool rejected=false;
+				try { malformedClient->ProcessBlockPacket(bytes,size,packed,wide); }
+				catch(const CString&) { rejected=true; }
+				if(!rejected) return fail(_T("truncated block header rejected before state checks"));
+			}
+			bool rejected=false;
+			try { malformedClient->ProcessBlockPacket(nullptr,header+1,packed,wide); }
+			catch(const CString&) { rejected=true; }
+			if(!rejected) return fail(_T("null block buffer rejected"));
+		}
+	}
+	Log(_T("REACH_SELFTEST V26 PASS: block parser rejects truncated empty and null headers for packed plain and I64 before offset reads"));
+	Log(_T("REACH_SELFTEST V91 PASS: production unzip seven-byte input fragments exact512 and reserved32 rejects expansion2048 at probe33 with no returned output; direct decoder lab not native file acceptance"));
+	Log(_T("REACH_SELFTEST V94 PASS: production unzip altered checksum and trailing byte after zlib end reject with zero returned output; direct decoder lab not full malformed native corpus"));
+	if(!CUtpSocket::RunExactAcceptSelfTest(udp)) return fail(_T("real UDP libutp exact accept"));
+	Log(_T("REACH_SELFTEST V35 PASS: real shared UDP libutp rejects nearby port, accepts exact ownerless endpoint and retires wrapper"));
+	Log(_T("REACH_SELFTEST V135 PASS: actual accepted uTP GetPeerName exact full IPv4 short buffer reports required size unchanged null negative rejected; no authenticated DCO uTP transfer"));
+	Log(_T("REACH_SELFTEST V36 PASS: real shared UDP libutp rejects stale owner generation and unregister removes expectations"));
+#ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
+	try { ese::shared_socket_selftest::RunContactRefresh(manager,udp); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: contact refresh: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V37 PASS: signed contact GET and RESULT over real shared UDP, manager cache epoch update and single-use owner; trusted session fixture, not bootstrap"));
+	Log(_T("REACH_SELFTEST V49 PASS: manager selects fresh signed witness with live bootstrap session, sends persistent signed FIND over shared UDP byte-exact, cancel invalidates owner"));
+	Log(_T("REACH_SELFTEST V50 PASS: shared manager signed SOURCES then persistent DESC_GET and signed RESULT produce exact owned candidate delivered once"));
+	Log(_T("REACH_SELFTEST V51 PASS: shared manager rejects corrupt SOURCES without GET and corrupt RESULT without candidate, valid replies complete original owners"));
+	Log(_T("REACH_SELFTEST V52 PASS: shared manager located-source snapshot supplies verified file size witness endpoint locator and remaining TTL for signed GET"));
+	Log(_T("REACH_SELFTEST V53 PASS: manager builds and persistent-signs GET from located source, invalid index rejected, exact peer UDP request produces verified candidate"));
+	Log(_T("REACH_SELFTEST V54 PASS: manager reserves GET sequence after FIND in exact bootstrap attempt generation and signs exact shared UDP request"));
+	try { ese::shared_socket_selftest::RunContactRefresh(manager,udp,false,false,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: automatic descriptor GET: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V55 PASS: shared manager automatically reserves signs sends GET after SOURCES, verifies candidate, repeated ticks send no duplicate"));
+	try { ese::shared_socket_selftest::RunContactRefresh(manager,udp,false,false,true,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: automatic FIND and GET: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V56 PASS: shared manager selects witness reserves signs sends FIND then automatic GET and verified candidate"));
+	try { ese::shared_socket_selftest::RunContactRefresh(manager,udp,false,false,true,true,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: lost FIND retry: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V57 PASS: unanswered first FIND retransmitted signed byte-exact after backoff, automatic GET delivers verified candidate"));
+	try { ese::shared_socket_selftest::RunContactRefresh(manager,udp,false,false,true,true,false,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: lost GET retry: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V58 PASS: unanswered first GET retransmitted signed byte-exact after backoff, same owner verifies candidate once"));
+	try { ese::shared_socket_selftest::RunResolutionAlternates(manager,udp); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: alternative witness: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V59 PASS: shared manager first witness expires then automatically GETs second witness, late first reply grants no candidate, second delivers once"));
+	try { ese::shared_socket_selftest::RunResolutionAlternates(manager,udp,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: learned CLOSER probation: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V60 PASS: corrupt CLOSER not imported, signed learned contact remains probation with no FIND until live return promotion"));
+	try { ese::shared_socket_selftest::RunResolutionAlternates(manager,udp,true,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: learned bootstrap: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V61 PASS: signed CLOSER learned witness real cookie bootstrap rejects bad ACK, retries and automatically promotes signed FIND in exact session"));
+	Log(_T("REACH_SELFTEST V62 PASS: learned witness real bootstrap FIND SOURCES automatic signed GET rejects corrupt RESULT and delivers exact candidate once"));
+	try { ese::shared_socket_selftest::RunDiscoveryConsumer(manager); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: discovery client consumer: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V63 PASS: real requested file client owns signed discovery snapshot, topology and detach fence, no hash or credit mutation"));
+	try { ese::shared_socket_selftest::RunDiscoveryConsumer(manager,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: discovery download queue: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V64 PASS: DownloadQueue exact requested file and size, existing node peer only, signed client snapshot and credit identity unchanged"));
+	try { ese::shared_socket_selftest::RunResolutionAlternates(manager,udp,true,true,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: learned discovery queue delivery: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V65 PASS: learned witness bootstrap FIND SOURCES GET shared manager ingress and DownloadQueue Process adopts signed route once, duplicate no lease or credit renewal"));
+	try { ese::shared_socket_selftest::RunDiscoveryConsumer(manager,true,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: cold discovery source: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V66 PASS: signed Kad6 creates node-only requested-file sources, duplicate no lease renewal, distinct nodes never merge by claimed hash, no HELLO credits socket consent or slot invented"));
+	try { ese::shared_socket_selftest::RunResolutionAlternates(manager,udp,true,true,true,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: learned cold source delivery: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V67 PASS: learned witness real bootstrap FIND SOURCES GET shared ingress and Process creates exactly one cold requested-file source, corrupt and duplicate grant no identity credits socket or slot"));
+	Log(_T("REACH_SELFTEST V38 PASS: corrupt signed contact RESULT processed and rejected by manager, cache unchanged, valid reply still completes same owner"));
+	try { ese::shared_socket_selftest::RunContactRefresh(manager,udp,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: contact session revoke: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V39 PASS: pending contact owner retired by manager pump on session revocation before deadline, restored session cannot resurrect owner, cache unchanged"));
+	Log(_T("REACH_SELFTEST V40 PASS: real shared UDP PROBE CHALLENGE persistent-signed PROVE and peer-signed ACK, manager control session authorizes contact refresh"));
+	Log(_T("REACH_SELFTEST V41 PASS: corrupt bootstrap ACK rejected without Ready, byte-exact PROVE retry, peer duplicate with one adoption, valid ACK completes"));
+	try { ese::shared_socket_selftest::RunContactRefresh(manager,udp,false,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: bootstrap exhaustion: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V42 PASS: lost first CHALLENGE and three corrupt ACKs, bounded PROBE and PROVE retries, deadline no session or cache mutation, fresh owner allowed"));
+	try { ese::shared_socket_selftest::RunControlResponder(manager,udp); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: control responder: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V43 PASS: production shared UDP responder challenge, corrupt PROVE rejected without session, valid PROVE admission and persistent ACK, duplicate exact ACK"));
+	Log(_T("REACH_SELFTEST V44 PASS: correctly re-signed PROVE with changed cookie rejected by production responder without session, original PROVE still admitted"));
+	Log(_T("REACH_SELFTEST V45 PASS: valid signed PROVE cookie reused from separately authorized second UDP port rejected without session, original endpoint completes"));
+	Log(_T("REACH_SELFTEST V46 PASS: second UDP port fresh CSPRNG attempt and nonce, new challenge and signed PROVE ACK establish rebound session without changing original session"));
+	Log(_T("REACH_SELFTEST V47 PASS: disabled pending initiator sends zero UDP packets for 350ms, rejects new bootstrap, reenable allocates fresh owner"));
+	Log(_T("REACH_SELFTEST V48 PASS: manager resolution invalid size and duplicate rejected, disable pump cancels, reenable and explicit cancel permit fresh operation"));
+	try { ese::shared_socket_selftest::RunIndexHost(manager,udp); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: index host: %hs"),error.what()); return false;
+	}
+	try { ese::shared_socket_selftest::RunConsumer(manager,udp); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: manager consumer: %hs"),error.what()); return false;
+	}
+	try { ese::shared_socket_selftest::RunKad2IndexPersistence(udp); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: Kad2 index persistence: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V22 PASS: manager QUIC consumer authenticated client attachment, real outgoing HELLO, logical peer address and subscriber retirement, no incoming PartFile"));
+	Log(_T("REACH_SELFTEST V23 PASS: peer serialized HELLOANSWER through native consumer and production parser, handshake finished, bound identity and endpoint preserved, zero file progress"));
+	try { ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,false,false,false,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: prepared server consent: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V71 PASS: explicit prepared server route authorizes real UDP cookie PROVE signed selected4 ACK then peer QUIC client and production HELLOANSWER, no automatic consent"));
+	Log(_T("REACH_SELFTEST V72 PASS: pending pinned subscriber authorization rejects wrong pin and duplicate, real UDP PROVE loopback policy yields signed ACK0 without new attempt route or lease renewal"));
+	try { ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,false,false,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: cold authenticated HELLO: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V68 PASS: initially unidentified signed source attaches by lifetime to authenticated QUIC then real HELLOANSWER establishes bound identity, explicit fixture authorization only, zero file progress"));
+	try { ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,false,true,false,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: cold first-use TOFU: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V73 PASS: cold source without pin through manager host consumer persists TOFU before production HELLO then HELLOANSWER and 4097 byte real PartFile hash completion, explicit first-use fixture"));
+	Log(_T("REACH_SELFTEST V74 PASS: manager profile unknown key rejects implicit first-use, explicit TOFU persists before HELLO and reconnect configuration reloads known pin without new committer"));
+	try {
+		ese::shared_socket_selftest::Identity sharedPeer;
+		ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,false,false,true,false,true,true,&sharedPeer);
+		ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,false,true,false,false,true,&sharedPeer,true);
+		ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,true,true,false,false,true,&sharedPeer,true);
+		ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,false,true,false,false,true,&sharedPeer,true,true);
+		ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,false,false,true,false,false,true,&sharedPeer,true,false,false,false,false,false,false,false,false,true);
+		ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,false,false,true,false,false,true,&sharedPeer,true,false,false,false,false,false,false,false,false,true,true);
+	}
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: simulated automatic ACK handoff: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V75 PASS: simulated namespace signed cookie PROVE ACK4 triggers manager owned handoff without manual route schedule then native AUTH TOFU production HELLO HELLOANSWER; no physical UDP NAT or AskForDownload scheduler"));
+	Log(_T("REACH_SELFTEST V76 PASS: same authenticated peer durable pin second handshake AskForDownload creates single-flight admission then signed ACK4 owned handoff AUTH HELLO HELLOANSWER without explicit BeginOwned or new TOFU; simulated namespace no physical NAT"));
+	Log(_T("REACH_SELFTEST V77 PASS: AskForDownload known-pin signed source through ACK4 native AUTH HELLO then same requested PartFile 4097 exact bytes IOCP disk duplicate suppression real hash and completion; simulated namespace single part no physical NAT"));
+	Log(_T("REACH_SELFTEST V78 PASS: production filename answer ACCEPTUPLOADREQ generates exact signed-file OP_REQUESTPARTS and real pending blocks then 4097 byte hash completion over automatic caller QUIC; no manual ReserveDownload simulated single part"));
+	Log(_T("REACH_SELFTEST V79 PASS: owned negotiation enters DS_CONNECTING then HELLOANSWER triggers real filename request signed file ID upload request and requested slot before automatic blocks; no unsolicited file status simulated single part"));
+	Log(_T("REACH_SELFTEST V80 PASS: AskForDownload survives dropped first challenge and ACK with two PROBEs two byte-identical PROVEs single admission no premature route then automatic file hash completion; simulated loss not physical NAT"));
+	Log(_T("REACH_SELFTEST V81 PASS: two additional native QUIC datagrams lost during first file block recover exact bytes without new attempt winner epoch or subscriber then duplicate suppression disk hash completion; simulated packet loss not disconnected transport"));
+	Log(_T("REACH_SELFTEST V82 PASS: automatic QUIC corrupt final byte fails real hash regaps no completion then AskForDownload same socket filename slot real block requests repair exact disk bytes and verified completion; simulated single part no manual repair reservation"));
+	Log(_T("REACH_SELFTEST V83 PASS: PartFile periodic source processing while classic network disconnected invokes native caller creates one attempt repeated tick preserves subscriber then signed ACK QUIC automatic file completion; fixture source membership no full queue timer"));
+	Log(_T("REACH_SELFTEST V84 PASS: actual DownloadQueue Process ten-tick cycles dispatch registered PartFile native caller offline second cycle single-flight then automatic QUIC file completion; explicit fixture source insertion no elapsed real timer"));
+	Log(_T("REACH_SELFTEST V85 PASS: production queue rejects corrupted signed discovery creates cold source from valid evidence duplicate preserves lifetime then queue native caller automatic QUIC requests disk hash completion and corrupt repair; resolved candidate fixture not network FIND GET"));
+	Log(_T("REACH_SELFTEST V86 PASS: signed explicit witness real cookie PROVE ACK0 automatic signed FIND SOURCES GET RESULT manager owned candidate then production queue source QUIC ACK4 AUTH requests disk hash completion; memory datagrams no physical NAT seed discovery"));
+	Log(_T("REACH_SELFTEST V87 PASS: production discovery mailbox queue Process source then elapsed Windows timer native caller ACK4 AUTH HELLO file hash corruption repair; repair cooldown and banned state prevent reask then seeded expired timestamp timer requests same socket blocks exact disk hash; memory single part explicit witness no physical NAT multipart"));
+	Log(_T("REACH_SELFTEST V88 PASS: continuous discovered source and requested file through native AUTH HELLO then multipart PARTSIZE plus 4097 real status hashset slot block requests bounded chunks two hash callbacks and exact disk completion; memory explicit witness no physical NAT F1 fallback restart"));
+	try {
+		for(const auto variant : {ese::shared_socket_selftest::HelloCase::ChangedHash,
+			ese::shared_socket_selftest::HelloCase::ChangedNode,ese::shared_socket_selftest::HelloCase::MissingNode,
+			ese::shared_socket_selftest::HelloCase::DuplicateNode,ese::shared_socket_selftest::HelloCase::Truncated,
+			ese::shared_socket_selftest::HelloCase::PreHelloData})
+			ese::shared_socket_selftest::RunConsumer(manager,udp,variant,false,false,true);
+	} catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: cold pre-HELLO rejection: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V69 PASS: cold changed hash or node, missing duplicate or truncated node and pre-HELLO data reject before identity or credits, typed terminal single use and owner drain"));
+	try { ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::ChangedHash); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: changed HELLO hash: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V24 PASS: native consumer rejects changed HELLO hash before legacy identity mutation, terminal IdentityMismatch and drained resources"));
+	try {
+		for(const auto variant : {ese::shared_socket_selftest::HelloCase::ChangedNode,
+			ese::shared_socket_selftest::HelloCase::MissingNode,
+			ese::shared_socket_selftest::HelloCase::DuplicateNode,
+			ese::shared_socket_selftest::HelloCase::Truncated})
+			ese::shared_socket_selftest::RunConsumer(manager,udp,variant);
+	} catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: HELLO identity variants: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V25 PASS: changed missing duplicate node and truncated HELLO rejected before legacy mutation, terminal IdentityMismatch and drained resources"));
+	try { ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: native file block: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V27 PASS: native SENDINGPART production parser accepts 4096 bytes into real PartFile, final gap remains, useful progress without integrity proof"));
+	Log(_T("REACH_SELFTEST V28 PASS: native PartFile production IOCP writes drained and 4096 disk bytes exact, final gap and no integrity proof"));
+	Log(_T("REACH_SELFTEST V29 PASS: native final byte production hash callback manager VerifiedPart and completed file 4097 bytes exact"));
+	try { ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,false,false,false,false,false,nullptr,false,false,false,false,false,false,false,false,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: mixed QUIC TCP file recovery: %hs"),error.what()); return false;
+	}
+	try { ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,false,false,false,false,false,false,nullptr,false,false,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: native product upload: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V89 PASS: authenticated native peer requests real shared file normal upload slot disk worker throttler plain32 packets 65537 exact bytes and MD4; loopback harness receiver no physical NAT F1 bidirectional fallback restart"));
+	try { ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,false,false,false,false,false,false,nullptr,false,false,true,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: native packed product upload: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V90 PASS: normal shared file upload disk worker compression throttler native stream bounded packed32 reconstruction 65537 exact bytes and MD4; harness receiver not product download F1 I64 or physical NAT"));
+	try { ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,false,false,false,false,false,nullptr,false,false,false,false,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: native packed download: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V92 PASS: authenticated native compressed37-byte fragments production PartFile4096 useful final gap duplicate plain no new receipt then final plain byte IOCP real hash and exact4097 disk; harness source not F1 I64 or physical NAT"));
+	try { ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,false,false,false,false,false,nullptr,false,false,false,false,true,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: native all packed download: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V93 PASS: authenticated native all useful file bytes compressed same zstream sync flush4096 final gap then compressed final byte stream end IOCP real hash exact4097 disk; plain duplicate no useful credit harness source not F1 I64 physical NAT"));
+	try { ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,false,false,false,false,false,nullptr,false,false,false,false,true,true,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: native malformed packed download: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V95 PASS: native packed checksum error retains4096 gap1 rejects late byte; remote release clears reservation normal slot requests missing byte real hash completes exact4097 same authenticated socket; harness source not full malformed corpus"));
+	try {
+		ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,false,false,false,false,false,nullptr,false,false,false,false,false,false,false,true);
+		ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,false,false,false,false,false,nullptr,false,false,false,false,true,true,false,true);
+	}
+	catch(const std::exception& error) { throw std::runtime_error(std::string("native I64 reception: ")+error.what()); }
+	Log(_T("REACH_SELFTEST V96 PASS: native plain64 and continued packed64 exact4097 IOCP hash completion duplicate receipt stable; harness source low offsets not above4GiB or request64 acceptance"));
+    try { CNativeDirectSelfTestAccess::TestDiagnosticRetirement(manager); }
+    catch(const std::exception& error) { Log(_T("REACH_SELFTEST FAIL diagnostic retirement: %hs"),error.what()); return false; }
+	try { ese::shared_socket_selftest::RunKnownDirectAdmission(manager); }
+	catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: normal DCO admission: %hs"),error.what()); return false; }
+	Log(_T("REACH_SELFTEST V142 PASS: capable download normal TryToConnect automatic DCO admission missing QUIC trust BootstrapRequired once no advertised TCP upgrade classic socket or cooldown cascade; no positive public route fallback"));
+	try { ese::shared_socket_selftest::RunLegacyReservationCancellation(manager); ese::shared_socket_selftest::RunLegacyReservationCancellation(manager,true); }
+	catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: legacy reservation cancellation: %hs"),error.what()); return false; }
+	Log(_T("REACH_SELFTEST V132 PASS: reserved legacy TCP cancellation before Start drains context attempt subscription no socket preserves original client ranges; no injected allocation failure"));
+	Log(_T("REACH_SELFTEST V133 PASS: two TCP reservations invalid third creates no context owner retirement drains both late old handle rejected; no automatic registration failure branch or allocation injection"));
+	Log(_T("REACH_SELFTEST V134 PASS: explicit consumer NoRoute failure drains two unscheduled TCP reservations terminal exactly once original client preserved; no automatic selector failure trigger"));
+	try { ese::shared_socket_selftest::RunLegacyUtpStart(manager,udp); }
+	catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: owned uTP Start: %hs"),error.what()); return false; }
+	Log(_T("REACH_SELFTEST V136 PASS: DCO authorized uTP Start real shared UDP connect HELLO exact IPv4 endpoint isolated client retirement; no SecureIdent winner file transfer or physical drain proof"));
+	try { ese::shared_socket_selftest::RunLegacyUtpStart(manager,udp,true); }
+	catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: owned uTP authentication: %hs"),error.what()); return false; }
+	Log(_T("REACH_SELFTEST V137 PASS: real shared UDP uTP wire HELLOANSWER capabilities challenge PUBLICKEY SIGNATURE fresh RSA DCO adopts original client no TCP observation useful bytes or file proof; no two products public fallback"));
+	try { ese::shared_socket_selftest::RunLegacyUtpStart(manager,udp,true,true); }
+	catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: owned uTP corrupt signature: %hs"),error.what()); return false; }
+	Log(_T("REACH_SELFTEST V138 PASS: real shared UDP uTP corrupt wire SIGNATURE rejects IdentityMismatch terminal once drains route original hash lifetime credits socket untouched; no file public fallback or physical drain proof"));
+	try { ese::shared_socket_selftest::RunLegacyUtpStart(manager,udp,true,false,true); }
+	catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: owned uTP file: %hs"),error.what()); return false; }
+	Log(_T("REACH_SELFTEST V139 PASS: authenticated DCO uTP wire FILESTATUS slot REQUESTPARTS partial4096 duplicate stable final byte real IOCP hash callback VerifiedPart completed4097 disk exact; no F1 public fallback two products"));
+	try { ese::shared_socket_selftest::RunLegacyUtpStart(manager,udp,false,false,false,true); }
+	catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: owned uTP pending close: %hs"),error.what()); return false; }
+	Log(_T("REACH_SELFTEST V140 PASS: actual DCO uTP pending session Close twice detaches before ACK owner cancel drains attempt reservation subscription preserves original; no physical libutp drain proof"));
+	try { for(unsigned variant=0;variant<4;++variant) ese::shared_socket_selftest::RunClassicTcpObservation(manager,variant); }
+	catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: classic TCP observation: %hs"),error.what()); return false; }
+	Log(_T("REACH_SELFTEST V125 PASS: classic outbound real TCP fresh RSA observation TCP-only TTL duplicate stable missing and mismatching own challenge corrupt signature rejected; handlers loopback no public selector file fallback"));
+	Log(_T("REACH_SELFTEST V126 PASS: classic TCP wire HELLOANSWER PUBLICKEY SIGNATURE and duplicate actually parsed fresh RSA observation or rejection; loopback no public selector file fallback"));
+	Log(_T("REACH_SELFTEST V127 PASS: classic TCP capabilities trigger key-and-signature challenge received before peer key then fresh signature observation duplicate TTL stable; loopback no two products public selector fallback"));
+	try { ese::shared_socket_selftest::RunLegacyTcpOwner(manager); }
+	catch(const std::exception& error) { throw std::runtime_error(std::string("legacy TCP route owner: ")+error.what()); }
+	Log(_T("REACH_SELFTEST V97 PASS: real loopback TCP socket exact route owner Connected then Closed once no auth winner useful proof; explicit fixture cleanup not mixed consumer fallback"));
+	try { ese::shared_socket_selftest::RunLegacyTcpOwner(manager,true); }
+	catch(const std::exception& error) { throw std::runtime_error(std::string("legacy TCP wrong destination: ")+error.what()); }
+	Log(_T("REACH_SELFTEST V98 PASS: real TCP wrong destination rejected before Connected authentication winner useful bytes or proof"));
+	Log(_T("REACH_SELFTEST V99 PASS: legacy HELLO frozen expected hash preflight rejects changed truncated null input no authentication; direct preflight calls not wire SecureIdent acceptance"));
+	try { ese::shared_socket_selftest::RunLegacyTcpOwner(manager,false,true); }
+	catch(const std::exception& error) { throw std::runtime_error(std::string("legacy TCP HELLO rejection: ")+error.what()); }
+	Log(_T("REACH_SELFTEST V100 PASS: connected TCP owned HELLO packet rejection preserves hash credits handshake emits exact AuthenticationFailed no winner proof; direct packet call not wire SecureIdent"));
+	try { ese::shared_socket_selftest::RunLegacyTcpOwner(manager,false,true,true); }
+	catch(const std::exception& error) { throw std::runtime_error(std::string("legacy TCP wire HELLO rejection: ")+error.what()); }
+	Log(_T("REACH_SELFTEST V101 PASS: actual TCP wire HELLOANSWER changed hash reaches receive parser rejects before identity credits handshake mutation owned AuthFailed no winner proof; no SecureIdent adoption"));
+	Log(_T("REACH_SELFTEST V102 PASS: terminal TCP route rejects late matching HELLO preflight; legacy owner merge guard implemented not incoming merge runtime acceptance"));
+	try { ese::shared_socket_selftest::RunLegacyTcpOwner(manager,false,false,false,true); }
+	catch(const std::exception& error) { throw std::runtime_error(std::string("legacy TCP valid HELLO: ")+error.what()); }
+	Log(_T("REACH_SELFTEST V103 PASS: matching HELLOANSWER production parser preserves TCP owner lifetime no DCO authentication winner useful proof; direct packet call no SecureIdent adoption"));
+	try {
+		ese::shared_socket_selftest::RunLegacyTcpOwner(manager,false,false,false,true,1);
+		ese::shared_socket_selftest::RunLegacyTcpOwner(manager,false,false,false,true,2);
+	} catch(const std::exception& error) { throw std::runtime_error(std::string("legacy real SecureIdent: ")+error.what()); }
+	Log(_T("REACH_SELFTEST V104 PASS: actual RSA SecureIdent valid winner epoch1 Attach corrupt IdentityMismatch no winner duplicate no event; direct signature handler not wire adoption mixed transfer"));
+	Log(_T("REACH_SELFTEST V105 PASS: authenticated TCP exact winner adoption once rejects stale handle route epoch real peer close carries epoch1; explicit fixture adoption not mixed consumer or file recovery"));
+	Log(_T("REACH_SELFTEST V106 PASS: owned TCP peer close preserves client lifetime hash credit requestfile download state subscription detaches socket; no active range or file recovery acceptance"));
+	Log(_T("REACH_SELFTEST V107 PASS: adopted TCP real peer close preserves seeded pending block offsets transferred unzipped accounting; no real file range recovery acceptance"));
+	try { ese::shared_socket_selftest::RunLegacyTcpOwner(manager,false,false,false,true,3); }
+	catch(const std::exception& error) { throw std::runtime_error(std::string("prepared legacy consumer: ")+error.what()); }
+	Log(_T("REACH_SELFTEST V108 PASS: prepared TCP consumer owns real SecureIdent Attach OS close common drain and subscriber retirement preserves pending range; no automatic Start mixed race or real file recovery"));
+    try { ese::shared_socket_selftest::RunLegacyTcpOwner(manager,false,false,false,true,3,true); }
+    catch(const std::exception& error) { throw std::runtime_error(std::string("authenticated provisional merge: ")+error.what()); }
+	try { ese::shared_socket_selftest::RunLegacyTcpOwner(manager,false,false,false,true,4); }
+	catch(const std::exception& error) { throw std::runtime_error(std::string("isolated route credits: ")+error.what()); }
+	Log(_T("REACH_SELFTEST V109 PASS: real TCP route SecureIdent uses private credits global record unchanged second same hash route challenge proof independent; no original client promotion or automatic race"));
+	Log(_T("REACH_SELFTEST V110 PASS: route RSA transcript promotion rejects changed signature challenge pinned key invalid kind preserves destination counters challenges; isolated socket cannot adopt no original client handoff yet"));
+	try { ese::shared_socket_selftest::RunLegacyTcpOwner(manager,false,false,false,true,5); }
+	catch(const std::exception& error) { throw std::runtime_error(std::string("isolated TCP original handoff: ")+error.what()); }
+	Log(_T("REACH_SELFTEST V111 PASS: separate preauth TCP client RSA consumer adopts original transfer client preserves seeded pending range retires temporary client OS close recovery drain; no automatic Start race or real file fallback"));
+	try { ese::shared_socket_selftest::RunLegacyTcpOwner(manager,false,false,false,true,6); }
+	catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: scheduled legacy TCP Start: %hs"),error.what()); return false; }
+	try { ese::shared_socket_selftest::RunLegacyTcpOwner(manager,false,false,false,true,7); }
+	catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: legacy TCP corrupt repair: %hs"),error.what()); return false; }
+	try { ese::shared_socket_selftest::RunLegacyTcpOwner(manager,false,false,false,true,8); }
+	catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: legacy TCP route recovery: %hs"),error.what()); return false; }
+	try { ese::shared_socket_selftest::RunLegacyTcpOwner(manager,false,false,false,true,9); }
+	catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: legacy TCP packed route recovery: %hs"),error.what()); return false; }
+	Log(_T("REACH_SELFTEST V112 PASS: reserved TCP route DCO Start consumer creates connects isolated socket Hello real RSA original handoff range preservation close drain; no mixed race or real file fallback"));
+	Log(_T("REACH_SELFTEST V129 PASS: observed TCP start without request file returns Unavailable preserves subscription attempt epoch route highwater and creates no socket; no eligible public positive start"));
+	Log(_T("REACH_SELFTEST V113 PASS: adopted TCP close releases actual OS socket immediately while delayed wrapper retains late callback safety; no uTP physical drain or cancellation timing acceptance"));
+	Log(_T("REACH_SELFTEST V114 PASS: host owned TCP snapshot rejects advertised unobserved endpoint changed hash unknown mask zero id no socket starts QUIC wrapper preserved; no positive public mixed selection or transfer"));
+	Log(_T("REACH_SELFTEST V115 PASS: actual authenticated adopted TCP records exact endpoint lifetime hash topology expiry proof TCP only rejects mismatched port hash generation lifetime stale and UDP masks; no first contact gathering or mixed file fallback"));
+	try { ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,false,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: cold native file: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V70 PASS: initially unidentified signed source authenticates QUIC and HELLO then same requested PartFile receives 4097 bytes, real IOCP hash completion and exact disk, explicit fixture authorization and route"));
+	try { ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,true); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: native corrupt file: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST V30 PASS: native corrupt file production hash callback regaps all 4097 bytes, no VerifiedPart or completion, useful bytes remain transport progress"));
+	Log(_T("REACH_SELFTEST V31 PASS: native corrupt file repaired on same session with new real hash callback, VerifiedPart, completed disk exact and 8194 useful bytes"));
+	Log(_T("REACH_SELFTEST V32 PASS: native duplicate SENDINGPART fully consumed without useful byte inflation or receipt mutation, valid and repair flows preserved"));
+	Log(_T("REACH_SELFTEST V33 PASS: real TryToConnect reuses adopted native socket before and after HELLO without new attempt winner epoch or file progress"));
+	Log(_T("REACH_SELFTEST V34 PASS: client owned admission joins same token, typed single-use terminal blocks unread retry, consumed drained retry uses fresh token generation"));
+#endif
+	{
+		auto firstFile=std::make_unique<CPartFile>();
+		auto secondFile=std::make_unique<CPartFile>();
+		const auto firstKey=firstFile->NativeDirectFileKey();
+		const auto secondKey=secondFile->NativeDirectFileKey();
+		if(!firstKey.lifetime || !secondKey.lifetime || firstKey.lifetime==secondKey.lifetime
+			|| firstKey.hash!=secondKey.hash) return fail(_T("real part-file lifetime identity"));
+		firstFile.reset();
+		if(secondFile->NativeDirectFileKey().lifetime!=secondKey.lifetime || !firstKey.lifetime)
+			return fail(_T("part-file destruction and owned key copy"));
+	}
+	Log(_T("REACH_SELFTEST V9 PASS: real part-file lifetimes and owned keys, no file hash acceptance"));
+	{
+		const uchar input[3]={'a','b','c'};
+		const uchar expected[16]={0xa4,0x48,0x01,0x7a,0xaf,0x21,0xd8,0x52,0x5f,0xc1,0x0a,0xe8,0x7a,0xa6,0x72,0x9d};
+		uchar digest[16]={};
+		if(!CKnownFile::CreateHash(input,3,digest) || memcmp(digest,expected,16))
+			return fail(_T("production MD4 known vector"));
+		const uchar changed[3]={'a','b','d'};
+		if(!CKnownFile::CreateHash(changed,3,digest) || !memcmp(digest,expected,16)
+			|| reach::ClassifyPartVerification(true,memcmp(digest,expected,16)!=0,false,false)!=reach::PartVerification::Corrupt)
+			return fail(_T("production MD4 changed payload rejection"));
+	}
+	Log(_T("REACH_SELFTEST V10 PASS: production MD4 known vector and changed payload, not disk/hash-job acceptance"));
+	{
+		CString path=thePrefs.GetTempDir();
+		CString checkedPath=path; checkedPath.MakeLower();
+		if(checkedPath.Left(7)!=_T("d:\\tmp\\")) return fail(_T("disk hash fixture path fence"));
+		path+=_T("\\v93-worker-hash-fixture.part");
+		if(::GetFileAttributes(path)!=INVALID_FILE_ATTRIBUTES) return fail(_T("disk hash fixture must be new"));
+		const uchar input[3]={'a','b','c'};
+		{ CFile fixture(path,CFile::modeCreate|CFile::modeWrite|CFile::shareExclusive); fixture.Write(input,3); fixture.Flush(); }
+		CPartFile lifetimeFile;
+		PartHashJob_Struct job{};
+		job.sFilePath=path; job.uLength=3; job.uGen=7;
+		job.fileLifetime=lifetimeFile.NativeDirectFileKey().lifetime;
+		const uchar expected[16]={0xa4,0x48,0x01,0x7a,0xaf,0x21,0xd8,0x52,0x5f,0xc1,0x0a,0xe8,0x7a,0xa6,0x72,0x9d};
+		const auto verdict=CPartHashThread::ComputeJob(job);
+		if(verdict->bReadError || verdict->bAICHValid || verdict->uGen!=7 ||
+			verdict->fileLifetime!=job.fileLifetime || memcmp(verdict->aMD4Hash,expected,16))
+			return fail(_T("production disk hash and job identity"));
+		job.uLength=4;
+		if(!CPartHashThread::ComputeJob(job)->bReadError) return fail(_T("short disk hash input rejection"));
+		job.uStart=4; job.uLength=1;
+		if(!CPartHashThread::ComputeJob(job)->bReadError) return fail(_T("disk hash offset rejection"));
+		job.uStart=0; job.uLength=3; job.pFile=&lifetimeFile;
+		CPartHashThread worker;
+		struct StopWorker { CPartHashThread& worker; ~StopWorker() { worker.EndThread(); } } stopWorker{worker};
+		if(!worker.IsRunning()) return fail(_T("hash worker thread start"));
+		std::unique_ptr<PartHashJob_Struct> queued(new PartHashJob_Struct(job));
+		worker.QueueJob(queued.get()); queued.release();
+		MSG result{}; bool received=false;
+		const DWORD started=::GetTickCount();
+		while(static_cast<DWORD>(::GetTickCount()-started)<5000) {
+			if(::PeekMessage(&result,theApp.emuledlg->m_hWnd,TM_PARTHASHED,TM_PARTHASHED,PM_REMOVE)) { received=true; break; }
+			::Sleep(10);
+		}
+		worker.EndThread();
+		if(!received) received=::PeekMessage(&result,theApp.emuledlg->m_hWnd,TM_PARTHASHED,TM_PARTHASHED,PM_REMOVE)!=FALSE;
+		if(!received) return fail(_T("queued disk hash result timeout"));
+		std::unique_ptr<PartHashVerdict_Struct> delivered(reinterpret_cast<PartHashVerdict_Struct*>(result.wParam));
+		if(result.lParam!=reinterpret_cast<LPARAM>(&lifetimeFile) || delivered->bReadError ||
+			delivered->fileLifetime!=job.fileLifetime || delivered->uGen!=job.uGen ||
+			memcmp(delivered->aMD4Hash,expected,16)) return fail(_T("queued worker digest and identity delivery"));
+		if(!CPartFile::RunHashVerdictAcceptanceSelfTest(*delivered)) return fail(_T("PartFile valid and corrupt disk verdict acceptance"));
+	}
+	Log(_T("REACH_SELFTEST V11 PASS: production disk hash job, identity and truncated range rejection, not async callback acceptance"));
+	Log(_T("REACH_SELFTEST V12 PASS: real hash worker queue and window-message delivery, not PartFile verdict acceptance"));
+	if(!CPartFile::RunHashVerdictFenceSelfTest()) return fail(_T("PartFile verdict lifetime and generation fences"));
+	Log(_T("REACH_SELFTEST V13 PASS: PartFile stale verdict preserves pending job and snapshot, no valid hash acceptance"));
+	Log(_T("REACH_SELFTEST V14 PASS: part hash generation saturates without reuse"));
+	Log(_T("REACH_SELFTEST V15 PASS: PartFile accepts disk digest and rejects changed digest, fixture pending marker prevents completion"));
+	Log(_T("REACH_SELFTEST PASS: real bindings, generation fence, single-use, UDP disable and TCP close"));
+	Log(_T("REACH_SELFTEST V2 PASS: signature invalidation and WM_POWERBROADCAST resume handler"));
+	LIVE_LOG("REACH_SELFTEST", "PASS actual TCP/UDP bindings, closed-port rejection, generation invalidation, stale result discard, single-use and UDP disable; no router/transfer acceptance");
+	return true;
+}
+
 void CemuleDlg::RunHeadlessAction() noexcept
 {
 	try {
+		if (theApp.m_bReachBindingSelfTest) {
+			if (ese::kad2_soak::Enabled()) {
+				ese::kad2_soak::Start();
+				TCHAR dashboard[8]={};
+				if (GetEnvironmentVariable(_T("ESE_KAD2_DASHBOARD"),dashboard,8) && !_tcscmp(dashboard,_T("1"))) {
+					TCHAR testMode[8]={};
+					GetEnvironmentVariable(_T("ESE_TEST_MODE"),testMode,8);
+					if (_tcscmp(testMode,_T("1")) || !thePrefs.GetWSIsEnabled()) {
+						ScheduleSelfTestExit(1); return;
+					}
+					LaunchEseServer(false); // Actual launcher, owned child, no browser.
+					const auto deadline=ese::shared_socket_selftest::Now()+20000;
+					while (!GetOwnedEseDashboardPort(m_hEseProcess) && ese::shared_socket_selftest::Now()<deadline) {
+						MSG message;
+						while(PeekMessage(&message,nullptr,0,0,PM_REMOVE)) {
+							TranslateMessage(&message); DispatchMessage(&message);
+						}
+						Sleep(10);
+					}
+					const unsigned port=GetOwnedEseDashboardPort(m_hEseProcess);
+					if (!port) { PostMessage(WM_CLOSE); return; }
+					Log(_T("DASHBOARD_HOST_SELFTEST owned child marker accepted port=%u"),port);
+					std::deque<CStringA> startupEvents;
+					CLiveDebugLog::Get().GetRecent(100,startupEvents);
+					for (const auto& event : startupEvents) {
+						if (event.Find("StartServer")>=0 || event.Find("Listener thread started")>=0 ||
+							event.Find("BOUND OK")>=0 || event.Find("WSASocket FAILED")>=0 || event.Find("bind(")>=0)
+							Log(_T("DASHBOARD_HOST_SELFTEST socket diagnostic: %hs"),(LPCSTR)event);
+					}
+				}
+				return; // Real modal pump and existing UploadTimer; no WM_QUIT shortcut.
+			}
+
+            // Optional explicitly enabled loopback HTTP diagnostic fixture.
+            // Generic --selftest and ordinary reach fixtures remain unchanged.
+            if(thePrefs.GetWSIsEnabled()) {
+                if(!theApp.m_strQuicPairSelfTestRole.IsEmpty() || !thePrefs.GetBindAddrA() ||
+                    strcmp(thePrefs.GetBindAddrA(),"127.0.0.1") ||
+                    thePrefs.GetWSPort()<1024 || thePrefs.GetWSPort()==thePrefs.GetPort() ||
+                    thePrefs.GetWSPort()==thePrefs.GetUDPPort())
+                    throw std::runtime_error("unsafe diagnostic HTTP fixture binding");
+                theApp.webserver->StartServer();
+            }
+			bool passed=false;
+			try { passed=theApp.m_strQuicPairSelfTestRole.IsEmpty() ? RunReachBindingSelfTest() : ese::pair_selftest::Run(); }
+			catch(CException* error) {
+				TCHAR message[1024]={}; GetExceptionMessage(*error,message,_countof(message));
+				LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: MFC exception: %s"),message);
+				error->Delete();
+			}
+			catch(const CString& error) {
+				LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: CString exception: %s"),(LPCTSTR)error);
+			}
+			catch(const std::exception& error) {
+				LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: standard exception: %hs"),error.what());
+			}
+			LIVE_LOG("REACH_SELFTEST", "reach binding selftest exit=%u",passed ? 0 : 1);
+			ScheduleSelfTestExit(passed ? 0 : 1);
+			return;
+		}
 		// LiveTV selftest: require a real FFmpeg prebuffer, then feed one signed
 		// V2 segment through an isolated viewer's production ingest path.
 		if (theApp.m_bSelfTest) {
@@ -1104,7 +1865,7 @@ void CemuleDlg::RunHeadlessAction() noexcept
 	// The normal selftest branch returns immediately after posting its result.
 	// Reaching here in selftest mode means an exception was caught by the MFC
 	// safety macro, so make the failure observable instead of hanging forever.
-	if (theApp.m_bSelfTest)
+	if (theApp.m_bSelfTest || theApp.m_bReachBindingSelfTest)
 		ScheduleSelfTestExit(2);
 }
 
@@ -1193,7 +1954,7 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				if (thePrefs.IsIPv6Enabled()) {
 					if (theApp.emuledlg->m_hUPnPLeaseTimer == 0)
 						VERIFY((theApp.emuledlg->m_hUPnPLeaseTimer = ::SetTimer(NULL, 0,
-							SEC2MS(30), UPnPLeaseTimer)) != 0);
+							SEC2MS(1), UPnPLeaseTimer)) != 0);
 					CFirewallProberV6::Instance().ProbeAsync();
 				}
 
@@ -1267,12 +2028,11 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				//                       query sharded — no producer side).
 				//   M5 bloom gossip   : opcode bodies counted, never parsed.
 				//   M6 k-effective    : zero callers; dead code.
-				// They stay OFF until their phase lands and flips the gate
-				// below (replace the predicate, then OR the bit). SEALED_RECORDS
-				// + GOSSIP_PROTOCOL have real, ProVerif-audited implementations
-				// (LiveChannel/LiveGossip/LiveOnionCrypto) and keep their bits.
-				// PRIVACY_TUNNELING/COVER/DATAPLANE are set below from the
-				// user's mode policy.
+				// They stay OFF until their phase lands and flips the gate.
+				// SEALED_RECORDS and GOSSIP_PROTOCOL also remain OFF: their
+				// bounded codecs exist, but the peer-facing channel handlers
+				// are still reserved/no-op. A codec is not an end-to-end cap.
+				// PRIVACY_TUNNELING/COVER/DATAPLANE are set below from policy.
 				// v8.x Phase 1 — bring up the persistent eSE node identity (Ed25519)
 				// BEFORE the first HELLO so peers receive TAG_ESE_NODE_PUB (0x6D).
 				// Load-or-generate; generation persists via INodeIdentityStorage
@@ -1283,9 +2043,13 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 					&& eSELive::NodeIdentityIsPersistent();
 				if (!nodeIdentityReady)
 					AddDebugLogLine(false, _T("Privacy: eSE node identity init FAILED (TAG_ESE_NODE_PUB absent this session)"));
-				g_uEseCapsRuntime = ESE_CAP_SEALED_RECORDS
-				                  | ESE_CAP_GOSSIP_PROTOCOL
-				                  | ESE_CAP_LIVE_CHUNK_FRAG;  // v8.1.x — validated transport feature
+				static_assert(ESE_CAP_SEALED_RECORDS == eSELive::kEseCapSealedRecords,
+					"capability policy drift: sealed records");
+				static_assert(ESE_CAP_GOSSIP_PROTOCOL == eSELive::kEseCapGossipProtocol,
+					"capability policy drift: gossip");
+				static_assert(ESE_CAP_LIVE_CHUNK_FRAG == eSELive::kEseCapLiveChunkFrag,
+					"capability policy drift: live fragmentation");
+				g_uEseCapsRuntime = eSELive::EseOperationalBaselineCapabilities();
 				if (thePrefs.GetUtpHolePunchEnabled())
 					g_uEseCapsRuntime |= ESE_CAP_HOLEPUNCH_COOKIE;
 				// Alpha boundary: bulk/reach-v2/auth/strict/shaping remain invisible
@@ -1339,6 +2103,7 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 					AddLogLine(true, GetResString(IDS_MAIN_READY), (LPCTSTR)theApp.m_strCurVersionLong);
 
 				theApp.m_app_state = APP_STATE_RUNNING; //initialization completed
+				if (thePrefs.IsUPnPEnabled()) theApp.emuledlg->StartUPnP();
 				theApp.emuledlg->toolbar->EnableButton(TBBTN_CONNECT, TRUE);
 				theApp.emuledlg->m_SysMenuOptions.EnableMenuItem(MP_CONNECT, MF_ENABLED);
 				theApp.emuledlg->serverwnd->GetDlgItem(IDC_ED2KCONNECT)->EnableWindow();
@@ -1504,7 +2269,7 @@ void CemuleDlg::AddLogText(UINT uFlags, LPCTSTR pszText)
 		if (statusbar->m_hWnd) {
 			if (!theApp.IsClosing())
 				statusbar->SetText(pszText, SBarLog, 0);
-		} else
+		} else if(!theApp.m_bReachBindingSelfTest)
 			AfxMessageBox(pszText);
 	}
 #if defined(_DEBUG) || defined(USE_DEBUG_DEVICE)
@@ -1682,6 +2447,19 @@ void CemuleDlg::UpdatePrivacyStatusPane()
 	statusbar->SetText(privText, SBarPrivacy, 0);
 }
 
+void CemuleDlg::UpdateDirectStatusPane()
+{
+    if(theApp.IsClosing() || !statusbar) return;
+    CString text=GetConnectionStateString();
+    if(theApp.directreachability) {
+        const auto label=theApp.directreachability->GetDirectStatusLabel();
+        if(!label.empty()) {
+            text+=_T(" / Direct: "); text+=CString(label.c_str());
+        }
+    }
+    statusbar->SetText(text,SBarConnected,0);
+}
+
 void CemuleDlg::ShowConnectionState()
 {
 	if (theApp.IsClosing())
@@ -1692,7 +2470,7 @@ void CemuleDlg::ShowConnectionState()
 	kademliawnd->UpdateControlsState();
 
 	ShowConnectionStateIcon();
-	statusbar->SetText(GetConnectionStateString(), SBarConnected, 0);
+    UpdateDirectStatusPane();
 
 	// v0.71 IPv6 Sprint 9 + hotfix — status bar pane.
 	// Auto and Preferred both request a dual-stack listener; an IPv4-only
@@ -2031,8 +2809,11 @@ void CemuleDlg::ProcessED2KLink(LPCTSTR pszData)
 							0);
 					}
 					CString url;
-					url.Format(_T("http://localhost:8080/live/watch/%s"), (LPCTSTR)pStreamLink->GetHash());
-					ShellExecute(NULL, _T("open"), url, NULL, NULL, SW_SHOWNORMAL);
+					const auto dashboardPort=GetOwnedEseDashboardPort(m_hEseProcess);
+					if(dashboardPort) {
+						url.Format(_T("http://localhost:%u/live/watch/%s"), dashboardPort, (LPCTSTR)pStreamLink->GetHash());
+						ShellExecute(NULL, _T("open"), url, NULL, NULL, SW_SHOWNORMAL);
+					}
 				}
 			}
 			break;
@@ -2084,7 +2865,9 @@ LRESULT CemuleDlg::OnLiveWebLeave(WPARAM, LPARAM lParam)
 	LiveWebLeaveReq *r = (LiveWebLeaveReq *)lParam;
 	if (r == NULL || theApp.liveStreamManager == NULL || theApp.IsClosing())
 		return 0;
-	r->wasViewing = theApp.liveStreamManager->IsViewingLive();
+	r->wasViewing = theApp.liveStreamManager->IsViewingLive()
+		&& (!r->hasStreamKey
+			|| memcmp(r->streamKey, theApp.liveStreamManager->GetViewerStreamKey(), 16) == 0);
 	if (r->wasViewing)
 		theApp.liveStreamManager->LeaveStream();
 	return 1;
@@ -2112,6 +2895,10 @@ LRESULT CemuleDlg::OnLiveWebBroadcast(WPARAM, LPARAM lParam)
 
 LRESULT CemuleDlg::OnWMData(WPARAM, LPARAM lParam)
 {
+	if(theApp.m_bReachBindingSelfTest) {
+		Log(_T("REACH_SELFTEST isolated window: external COPYDATA ignored"));
+		return FALSE;
+	}
 	PCOPYDATASTRUCT data = (PCOPYDATASTRUCT)lParam;
 	ULONG_PTR op = data->dwData;
 	if ((op == OP_ED2KLINK && thePrefs.IsBringToFront()) || op == OP_COLLECTION) {
@@ -2432,6 +3219,7 @@ bool CemuleDlg::CanClose()
 
 void CemuleDlg::OnClose()
 {
+	if (ese::kad2_soak::Enabled()) ese::kad2_soak::Record(_T("CLOSE_ENTER"));
 	static LONG closing = 0;
 	if (::InterlockedExchange(&closing, 1))
 		return; //already closing
@@ -2592,6 +3380,8 @@ void CemuleDlg::OnClose()
 	// dtors are indirectly calling functions which access several windows which would not be available
 	// after we have closed the main window -> crash!
 	delete theApp.listensocket;				theApp.listensocket = NULL;
+	if (theApp.directreachability != NULL)
+		theApp.directreachability->ShutdownDirectHost();
 	delete theApp.clientudp;				theApp.clientudp = NULL;
 	delete theApp.sharedfiles;				theApp.sharedfiles = NULL;
 	delete theApp.serverconnect;			theApp.serverconnect = NULL;
@@ -2619,6 +3409,9 @@ void CemuleDlg::OnClose()
 	delete theApp.m_pUploadDiskIOThread;	theApp.m_pUploadDiskIOThread = NULL;
 	delete theApp.m_pPartFileWriteThread;	theApp.m_pPartFileWriteThread = NULL;
 	delete theApp.m_pPartHashThread;		theApp.m_pPartHashThread = NULL;
+	if (theApp.directreachability)
+		theApp.directreachability->SaveChangedDirectKad6Contacts(
+			thePrefs.GetMuleDirectory(EMULE_CONFIGDIR, false) + _T("kad6_direct_contacts.dat"));
 	delete theApp.directreachability;		theApp.directreachability = NULL;
 
 	thePrefs.Uninit();
@@ -2628,6 +3421,7 @@ void CemuleDlg::OnClose()
 	theApp.HandleDebugLogQueue();
 	theApp.HandleLogQueue();
 	AddDebugLogLine(DLP_VERYLOW, _T("Closed eMule"));
+	if (ese::kad2_soak::Enabled()) ese::kad2_soak::Record(_T("CLOSE_DONE"));
 }
 
 void CemuleDlg::DestroyMiniMule()
@@ -4008,14 +4802,36 @@ bool CemuleDlg::IsEseServerRunning() const
 // localhost:8080. A loopback connect resolves instantly both ways
 // (refused while nothing listens, accepted once the server is up),
 // so this is safe to call from the UI thread.
-static bool IsEseDashboardListening()
+static unsigned GetOwnedEseDashboardPort(HANDLE process)
 {
+	if(!process || WaitForSingleObject(process,0)!=WAIT_TIMEOUT) return 0;
+	typedef DWORD (WINAPI *GetPid)(HANDLE);
+	const auto getPid=reinterpret_cast<GetPid>(GetProcAddress(GetModuleHandle(_T("kernel32.dll")),"GetProcessId"));
+	if(!getPid) return 0;
+	const DWORD expected=getPid(process); if(!expected) return 0;
+	CString marker=thePrefs.GetMuleDirectory(EMULE_CONFIGDIR); marker+=_T("ese-dashboard.endpoint");
+	HANDLE file=CreateFile(marker,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,
+		OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL|FILE_FLAG_OPEN_REPARSE_POINT,NULL);
+	if(file==INVALID_HANDLE_VALUE) return 0;
+	BY_HANDLE_FILE_INFORMATION info={}; char bytes[65]={}; DWORD read=0;
+	const bool valid=GetFileInformationByHandle(file,&info) &&
+		!(info.dwFileAttributes&(FILE_ATTRIBUTE_REPARSE_POINT|FILE_ATTRIBUTE_DIRECTORY)) &&
+		!info.nFileSizeHigh && info.nFileSizeLow>0 && info.nFileSizeLow<=64 &&
+		ReadFile(file,bytes,info.nFileSizeLow,&read,NULL) && read==info.nFileSizeLow;
+	CloseHandle(file);
+	unsigned long pid=0; unsigned port=0; char extra=0;
+	if(!valid || sscanf_s(bytes,"%lu %u %c",&pid,&port,&extra,1)!=2 || pid!=expected || !port || port>65535) return 0;
+	return port;
+}
+static bool IsEseDashboardListening(unsigned port)
+{
+	if(!port) return false;
 	SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (s == INVALID_SOCKET)
 		return false;
 	sockaddr_in sa = {};
 	sa.sin_family = AF_INET;
-	sa.sin_port = htons(8080);
+	sa.sin_port = htons(static_cast<u_short>(port));
 	sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	bool bListening = connect(s, (sockaddr*)&sa, sizeof(sa)) == 0;
 	closesocket(s);
@@ -4024,8 +4840,10 @@ static bool IsEseDashboardListening()
 
 void CemuleDlg::OpenEseDashboardWhenReady()
 {
-	if (IsEseDashboardListening()) {
-		ShellExecute(NULL, _T("open"), _T("http://localhost:8080"),
+	const auto port=GetOwnedEseDashboardPort(m_hEseProcess);
+	if (IsEseDashboardListening(port)) {
+		CString url; url.Format(_T("http://localhost:%u"),port);
+		ShellExecute(NULL, _T("open"), url,
 		             NULL, NULL, SW_SHOWNORMAL);
 		return;
 	}
@@ -4043,10 +4861,12 @@ void CALLBACK CemuleDlg::EseDashboardProbeTimer(HWND /*hwnd*/, UINT /*uiMsg*/,
 		::KillTimer(NULL, idEvent);
 		return;
 	}
-	if (IsEseDashboardListening()) {
+	const auto port=GetOwnedEseDashboardPort(dlg->m_hEseProcess);
+	if (IsEseDashboardListening(port)) {
 		::KillTimer(NULL, idEvent);
 		dlg->m_hEseProbeTimer = 0;
-		ShellExecute(NULL, _T("open"), _T("http://localhost:8080"),
+		CString url; url.Format(_T("http://localhost:%u"),port);
+		ShellExecute(NULL, _T("open"), url,
 		             NULL, NULL, SW_SHOWNORMAL);
 		return;
 	}
@@ -4145,10 +4965,6 @@ void CemuleDlg::LaunchEseServer(bool bOpenBrowser)
 		CString sharedPw = eSEHelpers::EnsureSharedPassword(configDir);
 
 		bool needRestartSockets = false;
-		if (thePrefs.GetWSPort() != 4711) {
-			thePrefs.SetWSPort(4711);
-			needRestartSockets = true;
-		}
 		if (!thePrefs.GetWSIsEnabled())
 			thePrefs.SetWSIsEnabled(true);
 		thePrefs.SetWSPass(sharedPw);  // siempre sincroniza (idempotente)
@@ -4165,6 +4981,11 @@ void CemuleDlg::LaunchEseServer(bool bOpenBrowser)
 
 		// Pasar la password al hijo vía env var (el child la hereda)
 		SetEnvironmentVariable(_T("ESE_EMULE_PASSWORD"), sharedPw);
+		CString webPort; webPort.Format(_T("%u"),thePrefs.GetWSPort());
+		SetEnvironmentVariable(_T("ESE_EMULE_WEB_PORT"),webPort);
+		SetEnvironmentVariable(_T("ESE_EMULE_CONFIG_DIR"),configDir);
+		SetEnvironmentVariable(_T("ESE_RUNTIME_DIR"),configDir+_T("eSE"));
+		SetEnvironmentVariable(_T("ESE_DASHBOARD_ENDPOINT_FILE"),configDir+_T("ese-dashboard.endpoint"));
 	}
 
 	// Launch hidden, with the resolved working directory.
@@ -4539,12 +5360,15 @@ void CemuleDlg::SetToolTipsDelay(UINT uMilliseconds)
 	sharedfileswnd->SetToolTipsDelay(uMilliseconds);
 }
 
-void CALLBACK CemuleDlg::UPnPTimeOutTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*idEvent*/, DWORD /*dwTime*/) noexcept
+void CALLBACK CemuleDlg::UPnPTimeOutTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR idEvent, DWORD /*dwTime*/) noexcept
 {
-	if (theApp.emuledlg != NULL)
-		theApp.emuledlg->PostMessage(UM_UPNP_RESULT,
-			(WPARAM)CUPnPImpl::UPNP_TIMEOUT,
-			theApp.emuledlg->m_bUPnPTimeoutForRefresh ? 1 : 0);
+	try {
+		if (theApp.emuledlg != NULL && idEvent == theApp.emuledlg->m_hUPnPTimeOutTimer)
+			theApp.emuledlg->HandleUPnPResult(CUPnPImpl::UPNP_TIMEOUT,
+				theApp.emuledlg->m_bUPnPTimeoutForRefresh ? 1 : 0, NULL);
+	} catch (...) {
+		DebugLogError(_T("Unexpected exception while processing mapper timeout"));
+	}
 }
 
 void CALLBACK CemuleDlg::UPnPLeaseTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*idEvent*/, DWORD /*dwTime*/) noexcept
@@ -4567,25 +5391,25 @@ void CemuleDlg::CheckUPnPLease()
 	CUPnPImpl *impl = theApp.m_pUPnPFinder->GetImplementation();
 	if (impl == NULL)
 		return;
-
-	const uint64 networkSignature = GetUPnPNetworkSignature();
-	if (networkSignature != 0 && m_uUPnPNetworkSignature == 0)
-		m_uUPnPNetworkSignature = networkSignature;
-	else if (networkSignature != 0
-		&& networkSignature != m_uUPnPNetworkSignature) {
-		if (!impl->IsReady())
+	if (theApp.directreachability) {
+		theApp.directreachability->SynchronizeLocalSocketBindings();
+		const uint16 tcp = theApp.directreachability->GetLocalTcpPort();
+		const uint16 udp = theApp.directreachability->GetLocalUdpPort();
+		if (!tcp) return;
+		if (impl->IsReady() && !natmap::MatchesLocalMappingPorts(tcp,udp,
+			impl->GetUsedTCPPort(),impl->GetUsedUDPPort())) {
+			StartUPnP(true);
 			return;
-		const uint64 previous = m_uUPnPNetworkSignature;
-		m_uUPnPNetworkSignature = networkSignature;
-		LIVE_LOG("NATMAP", "network topology changed signature=%llu->%llu; restarting mapper discovery",
-			(unsigned long long)previous,
-			(unsigned long long)networkSignature);
-		StartUPnP(true);
-		return;
+		}
 	}
 
 	if (!impl->IsReady())
 		return;
+	impl->SynchronizeMappingHealthReadback();
+	if (theApp.directreachability && theApp.directreachability->MappingRediscoveryNeeded()) {
+		StartUPnP(true);
+		return;
+	}
 
 	if (impl->IsLeaseExpired()) {
 		LIVE_LOG("NATMAP", "finite lease expired; restarting mapper discovery (impl=%d)",
@@ -4594,21 +5418,63 @@ void CemuleDlg::CheckUPnPLease()
 		return;
 	}
 	if (impl->IsLeaseRefreshDue()) {
+		const bool healthReadback=impl->IsMappingHealthReadbackDue();
 		impl->BeginLeaseRefreshAttempt();
-		if (impl->GetMappingLeaseLifetime() != 0)
+		if(healthReadback)
+			LIVE_LOG("NATMAP", "owned mapping health readback due (impl=%d)",impl->GetImplementationID());
+		else if (impl->GetMappingLeaseLifetime() != 0)
 			LIVE_LOG("NATMAP", "45%% lease renewal attempt=%u (impl=%d)",
 				impl->GetLeaseRefreshAttemptCount(), impl->GetImplementationID());
 		else
 			LIVE_LOG("NATMAP", "permanent mapping health probe attempt=%u (impl=%d)",
 				impl->GetLeaseRefreshAttemptCount(), impl->GetImplementationID());
-		RefreshUPnP(true);
+		RefreshUPnP(true,healthReadback);
 	}
 }
 
 LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 {
+	if (!theApp.m_pUPnPFinder) return 0;
+	CUPnPImpl* impl = theApp.m_pUPnPFinder->GetImplementation();
+	if (!impl || impl->GetOwnedResultOperation()) return 0; // queued legacy result has no operation authority
+	return HandleUPnPResult(wParam, lParam, NULL);
+}
+
+LRESULT CemuleDlg::OnOwnedMapperResult(WPARAM wParam, LPARAM lParam)
+{
+	if (!theApp.IsRunning() || !theApp.m_pUPnPFinder || !theApp.directreachability)
+		return 0;
+	const uint64 operation = natmap::DecodeMapperOperation(wParam,lParam);
+	CUPnPImpl* impl = theApp.m_pUPnPFinder->GetImplementation();
+	if (!impl || impl->GetOwnedResultOperation() != operation)
+		return 0;
+	natmap::OwnedMapperResult owned;
+	if (!theApp.directreachability->TakeMapperResult(operation, owned))
+		return 0;
+	const int implementation = impl->GetImplementationID();
+	const natmap::MapperKind mapper = implementation == UPNP_IMPL_NATPMP ? natmap::MapperKind::NatPmp
+		: implementation == UPNP_IMPL_PCP ? natmap::MapperKind::Pcp
+		: (implementation == UPNP_IMPL_MINIUPNPLIB || implementation == UPNP_IMPL_WINDOWSERVICE)
+			? natmap::MapperKind::UpnpIgd : natmap::MapperKind::None;
+	if (mapper != owned.operation.mapper)
+		return 0;
+	return HandleUPnPResult(owned.result.success ? CUPnPImpl::UPNP_OK : CUPnPImpl::UPNP_FAILED,
+		owned.operation.refresh ? 1 : 0, &owned);
+}
+
+LRESULT CemuleDlg::HandleUPnPResult(WPARAM wParam, LPARAM lParam, const natmap::OwnedMapperResult* owned)
+{
 	bool bWasRefresh = lParam != 0;
 	CUPnPImpl *impl = theApp.m_pUPnPFinder->GetImplementation();
+	if(!owned && wParam==CUPnPImpl::UPNP_OK && !natmap::MatchesLocalMappingPorts(
+		thePrefs.GetLocalTcpPort(),thePrefs.GetLocalUdpPort(),
+		impl->GetUsedTCPPort(),impl->GetUsedUDPPort())) {
+		DebugLogWarning(_T("Ignoring mapper success for obsolete local ports"));
+		return 0;
+	}
+	if(bWasRefresh && wParam!=CUPnPImpl::UPNP_OK && thePrefs.IsEseNetLabActive() &&
+		theApp.directreachability && !owned && wParam==CUPnPImpl::UPNP_TIMEOUT && impl->GetOwnedResultOperation())
+		theApp.directreachability->InvalidateLocalTopology();
 	LIVE_LOG("NATMAP", "impl=%d result=%u refresh=%u stage=%s(%ld) local=%u/%u external=%u/%u ip=%u lease=%u epoch=%u",
 		impl->GetImplementationID(), (unsigned)wParam, (unsigned)bWasRefresh,
 		impl->GetDiagnosticStageName(), impl->GetDiagnosticStage(),
@@ -4621,6 +5487,8 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		m_hUPnPTimeOutTimer = 0;
 	}
 	m_bUPnPTimeoutForRefresh = false;
+	if (wParam == CUPnPImpl::UPNP_TIMEOUT)
+		impl->SetMessageOnResult(NULL, 0); // cancel owned publication before stopping the worker
 	if (wParam == CUPnPImpl::UPNP_TIMEOUT)
 		impl->StopAsyncFind();
 
@@ -4641,7 +5509,7 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 	}
 
 	if (wParam == CUPnPImpl::UPNP_OK) {
-		impl->RecordLeaseSuccess();
+		impl->RecordLeaseSuccess(owned ? owned->result.lifetime : impl->GetMappingLeaseLifetime());
 		if (impl->GetMappingLeaseLifetime() != 0) {
 			LIVE_LOG("NATMAP", "finite lease scheduler armed lifetime=%u renew_in=%llu seconds",
 				impl->GetMappingLeaseLifetime(),
@@ -4663,10 +5531,14 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 			|| impl->GetImplementationID() == UPNP_IMPL_WINDOWSERVICE)
 			mapper = natmap::MapperKind::UpnpIgd;
 		const bool observed = theApp.directreachability->ObserveMappedPorts(mapper,
-			impl->GetMappingExternalIP(), impl->GetUsedTCPPort(),
-			impl->GetExternalTCPPort(), impl->GetUsedUDPPort(),
-			impl->GetExternalUDPPort(), impl->GetMappingLeaseLifetime(),
-			impl->GetMapperEpoch(), bWasRefresh);
+			owned ? owned->result.external_ipv4 : impl->GetMappingExternalIP(),
+			owned ? owned->operation.tcp : impl->GetUsedTCPPort(),
+			owned ? owned->result.external_tcp : impl->GetExternalTCPPort(),
+			owned ? owned->operation.udp : impl->GetUsedUDPPort(),
+			owned ? owned->result.external_udp : impl->GetExternalUDPPort(),
+			owned ? owned->result.lifetime : impl->GetMappingLeaseLifetime(),
+			owned ? owned->result.epoch : impl->GetMapperEpoch(), bWasRefresh);
+		if (observed && owned) theApp.directreachability->ConsumeMappingRediscovery();
 		if (observed && bWasRefresh
 			&& theApp.directreachability->GetTopologyGeneration()
 				!= previousGeneration
@@ -4708,13 +5580,25 @@ LRESULT CemuleDlg::OnPowerBroadcast(WPARAM wParam, LPARAM lParam)
 	switch (wParam) {
 	case PBT_APMRESUMEAUTOMATIC:
 		theApp.ResetStandbyOff();
+		if (theApp.directreachability) {
+			theApp.directreachability->SynchronizeLocalSocketBindings();
+			theApp.directreachability->InvalidateLocalTopology();
+		}
+		if (m_hUPnPTimeOutTimer) {
+			VERIFY(::KillTimer(NULL,m_hUPnPTimeOutTimer));
+			m_hUPnPTimeOutTimer=0;
+		}
+		m_bUPnPTimeoutForRefresh=false;
+		if (theApp.m_pUPnPFinder && theApp.m_pUPnPFinder->GetImplementation())
+			theApp.m_pUPnPFinder->GetImplementation()->SetMessageOnResult(NULL,0);
+		CheckUPnPLease(); // Rediscovery remains pending if the mapper worker is still busy.
 		if (m_bEd2kSuspendDisconnect || m_bKadSuspendDisconnect) {
 			DebugLog(_T("Reconnect after Power state change. wParam=%d lPararm=%ld"), wParam, lParam);
-			RefreshUPnP(true);
 			PostMessage(WM_SYSCOMMAND, MP_CONNECT, 0); // tell to connect. a sec later...
 		}
 		return TRUE; // message processed.
 	case PBT_APMSUSPEND:
+		if (theApp.directreachability) theApp.directreachability->InvalidateLocalTopology();
 		DebugLog(_T("System is going is suspending operation, disconnecting. wParam=%d lPararm=%ld"), wParam, lParam);
 		m_bEd2kSuspendDisconnect = theApp.serverconnect->IsConnected();
 		m_bKadSuspendDisconnect = Kademlia::CKademlia::IsRunning();
@@ -4724,10 +5608,42 @@ LRESULT CemuleDlg::OnPowerBroadcast(WPARAM wParam, LPARAM lParam)
 	return FALSE; // we do not process this message
 }
 
+bool CemuleDlg::ArmMapperResult(CUPnPImpl* impl, uint16 tcp, uint16 udp, bool refresh)
+{
+	if (!impl || !theApp.directreachability) return false;
+	const int implementation = impl->GetImplementationID();
+	const natmap::MapperKind mapper = implementation == UPNP_IMPL_NATPMP ? natmap::MapperKind::NatPmp
+		: implementation == UPNP_IMPL_PCP ? natmap::MapperKind::Pcp
+		: (implementation == UPNP_IMPL_MINIUPNPLIB || implementation == UPNP_IMPL_WINDOWSERVICE)
+			? natmap::MapperKind::UpnpIgd : natmap::MapperKind::None;
+	const uint64 operation = theApp.directreachability->BeginMapperOperation(mapper,tcp,udp,refresh,refresh ? 10000 : 40000);
+	if (!operation) return false;
+	const auto queue = theApp.directreachability->MapperResults();
+	return natmap::ArmMapperNotification(queue,operation,[&] {
+		return impl->SetOwnedMessageOnResult(this,UM_MAPPER_OWNED_RESULT,queue,operation);
+	});
+}
+
+void CemuleDlg::CancelMapperAttempt()
+{
+	if (m_hUPnPTimeOutTimer) {
+		VERIFY(::KillTimer(NULL,m_hUPnPTimeOutTimer));
+		m_hUPnPTimeOutTimer = 0;
+	}
+	m_bUPnPTimeoutForRefresh = false;
+	if (theApp.m_pUPnPFinder) {
+		CUPnPImpl* impl = theApp.m_pUPnPFinder->GetImplementation();
+		if (impl) {
+			impl->SetMessageOnResult(NULL,0);
+			impl->StopAsyncFind();
+		}
+	}
+}
+
 void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort, uint16 nForceUDPPort)
 {
 	if (m_hUPnPLeaseTimer == 0)
-		VERIFY((m_hUPnPLeaseTimer = ::SetTimer(NULL, 0, SEC2MS(30), UPnPLeaseTimer)) != 0);
+		VERIFY((m_hUPnPLeaseTimer = ::SetTimer(NULL, 0, SEC2MS(1), UPnPLeaseTimer)) != 0);
 	if (m_uUPnPNetworkSignature == 0)
 		m_uUPnPNetworkSignature = GetUPnPNetworkSignature();
 	if (theApp.m_pUPnPFinder != NULL && (m_hUPnPTimeOutTimer == 0 || !bReset)) {
@@ -4738,27 +5654,42 @@ void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort, uint16 nForceUDPPor
 		try {
 			CUPnPImpl *impl = theApp.m_pUPnPFinder->GetImplementation();
 			if (impl->IsReady()) {
-				impl->SetMessageOnResult(this, UM_UPNP_RESULT);
+				const uint16 tcp = nForceTCPPort ? nForceTCPPort : thePrefs.GetLocalTcpPort();
+				const uint16 udp = nForceUDPPort ? nForceUDPPort : thePrefs.GetLocalUdpPort();
+				if (!ArmMapperResult(impl,tcp,udp,false)) {
+					HandleUPnPResult(CUPnPImpl::UPNP_FAILED,0,NULL);
+					return;
+				}
 				m_bUPnPTimeoutForRefresh = false;
 				if (m_hUPnPTimeOutTimer == 0)
 					VERIFY((m_hUPnPTimeOutTimer = ::SetTimer(NULL, 0, SEC2MS(40), (TIMERPROC)UPnPTimeOutTimer)) != 0);
-				impl->StartDiscovery((nForceTCPPort ? nForceTCPPort : thePrefs.GetPort())
-					, (nForceUDPPort ? nForceUDPPort : thePrefs.GetUDPPort())
+				if (!m_hUPnPTimeOutTimer) {
+					impl->SetMessageOnResult(NULL,0);
+					HandleUPnPResult(CUPnPImpl::UPNP_FAILED,0,NULL);
+					return;
+				}
+				impl->StartDiscovery(tcp, udp
 					// Automatic direct reachability is only for eD2K TCP and Kad
 					// UDP. Never expose the WebServer through the router.
 					, 0);
 			} else
 				/*theApp.emuledlg->*/PostMessage(UM_UPNP_RESULT, (WPARAM)CUPnPImpl::UPNP_FAILED, 0);
 		} catch (const CUPnPImpl::UPnPError&) {
-			//ignore
+			CancelMapperAttempt();
+			HandleUPnPResult(CUPnPImpl::UPNP_FAILED,0,NULL);
 		} catch (CException *ex) {
 			ex->Delete();
+			CancelMapperAttempt();
+			HandleUPnPResult(CUPnPImpl::UPNP_FAILED,0,NULL);
+		} catch (const std::exception&) {
+			CancelMapperAttempt();
+			HandleUPnPResult(CUPnPImpl::UPNP_FAILED,0,NULL);
 		}
 	} else
 		ASSERT(0);
 }
 
-void CemuleDlg::RefreshUPnP(bool bRequestAnswer)
+void CemuleDlg::RefreshUPnP(bool bRequestAnswer, bool healthReadback)
 {
 	if (!thePrefs.IsUPnPEnabled())
 		return;
@@ -4766,19 +5697,32 @@ void CemuleDlg::RefreshUPnP(bool bRequestAnswer)
 		try {
 			CUPnPImpl *impl = theApp.m_pUPnPFinder->GetImplementation();
 			if (impl->IsReady()) {
-				if (bRequestAnswer)
-					impl->SetMessageOnResult(this, UM_UPNP_RESULT);
-				if (impl->CheckAndRefresh() && bRequestAnswer) {
-					m_bUPnPTimeoutForRefresh = true;
-					VERIFY((m_hUPnPTimeOutTimer = ::SetTimer(NULL, 0, SEC2MS(10), UPnPTimeOutTimer)) != 0);
-				} else
+				(void)bRequestAnswer; // Every renewal must update the owned lease state, even if caller requested no UI answer.
+				if (!ArmMapperResult(impl,impl->GetUsedTCPPort(),impl->GetUsedUDPPort(),true)) return;
+				m_bUPnPTimeoutForRefresh = true;
+				m_hUPnPTimeOutTimer = ::SetTimer(NULL,0,SEC2MS(healthReadback ? 4 : 10),UPnPTimeOutTimer);
+				if (!m_hUPnPTimeOutTimer) {
+					impl->SetMessageOnResult(NULL,0);
+					m_bUPnPTimeoutForRefresh = false;
+					return;
+				}
+				if (healthReadback ? impl->CheckMappingHealth() : impl->CheckAndRefresh()) {
+					// Timer and ownership were installed before the worker could start.
+				} else {
 					impl->SetMessageOnResult(NULL, 0);
+					VERIFY(::KillTimer(NULL,m_hUPnPTimeOutTimer));
+					m_hUPnPTimeOutTimer = 0;
+					m_bUPnPTimeoutForRefresh = false;
+				}
 			} else
 				DebugLogWarning(_T("RefreshUPnP, implementation not ready"));
 		} catch (const CUPnPImpl::UPnPError&) {
-			//ignore
+			CancelMapperAttempt();
 		} catch (CException *ex) {
 			ex->Delete();
+			CancelMapperAttempt();
+		} catch (const std::exception&) {
+			CancelMapperAttempt();
 		}
 	} else
 		ASSERT(0);

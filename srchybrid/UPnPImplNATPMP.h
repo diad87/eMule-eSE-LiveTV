@@ -46,10 +46,11 @@ public:
     public:
         virtual BOOL InitInstance();
         virtual int Run();
-        void SetValues(CUPnPImplNATPMP *pOwner) { m_pOwner = pOwner; }
+        void SetValues(CUPnPImplNATPMP *pOwner) { m_pOwner = pOwner; m_notification = pOwner->CaptureResultNotification(); }
 
     private:
         CUPnPImplNATPMP *m_pOwner;
+        std::shared_ptr<OwnedNotification> m_notification;
     };
 
 protected:

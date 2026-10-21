@@ -109,8 +109,13 @@ public:
 			// return signature size, 0 = Failed | use sigkey param for debug only
 	uint8	CreateSignature(CClientCredits *pTarget, uchar *pachOutput, uint8 nMaxSize, uint32 ChallengeIP, uint8 byChaIPKind, CryptoPP::RSASSA_PKCS1v15_SHA_Signer *sigkey = NULL) const;
 	bool	VerifyIdent(CClientCredits *pTarget, const uchar *pachSignature, uint8 nInputSize, uint32 dwForIP, uint8 byChaIPKind);
+	// Reverify a route-owned transcript without borrowing the destination's
+	// challenge fields. Caller must fence route/winner/lifetimes before commit.
+	bool PromoteDirectIdent(CClientCredits& destination,const uchar* publicKey,uint8 publicKeySize,
+		const uchar* signature,uint8 signatureSize,uint32 challenge,uint32 peerIP,uint8 challengeIPKind);
 
 	CClientCredits* GetCredit(const uchar *key);
+	CClientCredits* FindCredit(const uchar *key) const;
 	void	Process();
 	uint8	GetPubKeyLen() const			{ return m_nMyPublicKeyLen; }
 	byte*	GetPublicKey()					{ return m_abyMyPublicKey; }

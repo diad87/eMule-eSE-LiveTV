@@ -114,7 +114,7 @@ void CLiveStreamDlg::UpdateStatusBar()
 
 		// Bitrate — from stream info (always available after StartBroadcast)
 		CString bitrate;
-		bitrate.Format(GetResString(IDS_LIVE_BITRATE_FMT), mgr->GetBitrate());
+		bitrate.Format(GetResString(IDS_LIVE_BITRATE_FMT), mgr->GetBroadcastBitrate());
 		m_staticBitrateVal.SetWindowText(bitrate);
 
 		// Mesh health proxy: min(peers*12, 100)
@@ -259,7 +259,7 @@ void CLiveStreamDlg::PopulateSharePanel()
 	// If the public IP is unknown (LowID, Kad/UPnP not yet ready) we fall back
 	// to the legacy stream link without endpoint, which still works via Kad.
 	CString ed2k;
-	const uchar* key = theApp.liveStreamManager->GetStreamKey();
+	const uchar* key = theApp.liveStreamManager->GetBroadcastStreamKey();
 	if (key) {
 		CString hexKey;
 		for (int i = 0; i < 16; i++)

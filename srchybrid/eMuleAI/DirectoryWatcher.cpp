@@ -8,6 +8,8 @@
 #include "emule.h"
 #include "Preferences.h"
 #include "Log.h"
+#include "Opcodes.h"
+#include "SharedFileIntakePolicy.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -199,26 +201,44 @@ void CDirectoryWatcher::WatcherThread()
 					if (pNotify->Action == FILE_ACTION_ADDED ||
 						pNotify->Action == FILE_ACTION_RENAMED_NEW_NAME)
 					{
-						// Skip directories, temporary files, and .part files
-						DWORD dwAttr = ::GetFileAttributes(strFullPath);
-						if (dwAttr != INVALID_FILE_ATTRIBUTES &&
-							!(dwAttr & FILE_ATTRIBUTE_DIRECTORY) &&
-							strFullPath.Right(5).CompareNoCase(_T(".part")) != 0 &&
-							strFullPath.Right(4).CompareNoCase(_T(".tmp")) != 0)
+						WIN32_FILE_ATTRIBUTE_DATA attributes;
+						if (::GetFileAttributesEx(
+								strFullPath,
+								GetFileExInfoStandard,
+								&attributes))
 						{
-							CSingleLock lock(&m_csQueue, TRUE);
-							// Avoid duplicates in the queue
-							bool bDuplicate = false;
-							for (POSITION qpos = m_listPendingFiles.GetHeadPosition(); qpos != NULL;) {
-								if (m_listPendingFiles.GetNext(qpos).CompareNoCase(strFullPath) == 0) {
-									bDuplicate = true;
-									break;
+							SharedFileIntakePolicy::FileFacts intakeFacts;
+							intakeFacts.isDirectory =
+								(attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+							intakeFacts.isSystem =
+								(attributes.dwFileAttributes & FILE_ATTRIBUTE_SYSTEM) != 0;
+							intakeFacts.isTemporary =
+								(attributes.dwFileAttributes & FILE_ATTRIBUTE_TEMPORARY) != 0;
+							intakeFacts.size =
+								(static_cast<uint64>(attributes.nFileSizeHigh) << 32)
+								| attributes.nFileSizeLow;
+							const SharedFileIntakePolicy::Rejection rejection =
+								SharedFileIntakePolicy::ClassifyFile(
+									static_cast<LPCWSTR>(strFileName),
+									static_cast<size_t>(strFileName.GetLength()),
+									intakeFacts,
+									MAX_EMULE_FILE_SIZE);
+
+							if (rejection == SharedFileIntakePolicy::Rejection::None) {
+								CSingleLock lock(&m_csQueue, TRUE);
+								// Avoid duplicates in the queue.
+								bool bDuplicate = false;
+								for (POSITION qpos = m_listPendingFiles.GetHeadPosition(); qpos != NULL;) {
+									if (m_listPendingFiles.GetNext(qpos).CompareNoCase(strFullPath) == 0) {
+										bDuplicate = true;
+										break;
+									}
 								}
-							}
-							if (!bDuplicate) {
-								m_listPendingFiles.AddTail(strFullPath);
-								AddDebugLogLine(false, _T("eSE DirectoryWatcher: Queued new file '%s'"),
-									(LPCTSTR)strFullPath);
+								if (!bDuplicate) {
+									m_listPendingFiles.AddTail(strFullPath);
+									AddDebugLogLine(false, _T("eSE DirectoryWatcher: Queued new file '%s'"),
+										(LPCTSTR)strFullPath);
+								}
 							}
 						}
 					}

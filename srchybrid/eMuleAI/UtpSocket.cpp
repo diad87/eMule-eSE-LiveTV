@@ -5,6 +5,7 @@
 
 #include "stdafx.h"
 #include "UtpSocket.h"
+#include "../EseUtpEndpoint.h"
 #include "utp.h"
 #include "Address.h"
 #include "../emule.h"
@@ -20,6 +21,7 @@
 #include "../Opcodes.h"
 #include <set>
 #include <vector>
+#include <limits>
 #include <iphlpapi.h> // dynamic MTU query (GetIpInterfaceEntry)
 #include <netioapi.h> // dynamic route query (GetBestRoute2)
 
@@ -117,7 +119,9 @@ struct ExpectedPeerEntry {
 	socklen_t len;
 	DWORD expires;
 	CUtpSocket* owner;
+	uint64 ownerGeneration;
 };
+static uint64 g_nextEndpointOwnerGeneration=0; // protected by g_utpRuntimeLock, never reused
 static std::vector<ExpectedPeerEntry> g_expectedPeers;
 static const DWORD kExpectedPeerTTLms = 20000; // 20s TTL
 
@@ -173,54 +177,9 @@ static uint16 GetBestLocalUtpPort()
 
 static bool SockaddrEqual(const sockaddr* a, socklen_t alen, const sockaddr* b, socklen_t blen)
 {
-    if (!a || !b || alen <= 0 || blen <= 0)
-        return false;
-
-    if (a->sa_family == b->sa_family) {
-        if (a->sa_family == AF_INET) {
-            const sockaddr_in* pa = reinterpret_cast<const sockaddr_in*>(a);
-            const sockaddr_in* pb = reinterpret_cast<const sockaddr_in*>(b);
-            return pa->sin_port == pb->sin_port && pa->sin_addr.S_un.S_addr == pb->sin_addr.S_un.S_addr;
-        }
-        if (a->sa_family == AF_INET6) {
-            const sockaddr_in6* pa6 = reinterpret_cast<const sockaddr_in6*>(a);
-            const sockaddr_in6* pb6 = reinterpret_cast<const sockaddr_in6*>(b);
-            return pa6->sin6_port == pb6->sin6_port && memcmp(&pa6->sin6_addr, &pb6->sin6_addr, sizeof(in6_addr)) == 0;
-        }
-        return false;
-    }
-
-    // Cross-family compare via v4-mapped equivalence
-    uint32 a4, b4; uint16 ap = 0, bp = 0;
-    if (ExtractIPv4(a, a4, &ap) && ExtractIPv4(b, b4, &bp))
-        return a4 == b4 && ap == bp;
-    return false;
+    return ese::EqualUtpEndpoint(a,static_cast<int>(alen),b,static_cast<int>(blen));
 }
 
-// Compare only IP address, ignore port (for NAT remap tolerant matching)
-static bool SockaddrEqualIPOnly(const sockaddr* a, socklen_t alen, const sockaddr* b, socklen_t blen)
-{
-    if (!a || !b || alen <= 0 || blen <= 0)
-        return false;
-
-    if (a->sa_family == b->sa_family) {
-        if (a->sa_family == AF_INET) {
-            const sockaddr_in* pa = reinterpret_cast<const sockaddr_in*>(a);
-            const sockaddr_in* pb = reinterpret_cast<const sockaddr_in*>(b);
-            return pa->sin_addr.S_un.S_addr == pb->sin_addr.S_un.S_addr;
-        }
-        if (a->sa_family == AF_INET6) {
-            const sockaddr_in6* pa6 = reinterpret_cast<const sockaddr_in6*>(a);
-            const sockaddr_in6* pb6 = reinterpret_cast<const sockaddr_in6*>(b);
-            return memcmp(&pa6->sin6_addr, &pb6->sin6_addr, sizeof(in6_addr)) == 0;
-        }
-        return false;
-    }
-    uint32 a4, b4;
-    if (ExtractIPv4(a, a4, NULL) && ExtractIPv4(b, b4, NULL))
-        return a4 == b4;
-    return false;
-}
 
 // Helper to compare two sockaddr by IP first (numerically), then PORT.
 // Returns: <0 if a<b, 0 if equal, >0 if a>b.
@@ -275,28 +234,7 @@ static int CompareSockaddrIPAndPort(const sockaddr* a, socklen_t alen, const soc
 
 static bool SockaddrEqualIPAndPort(const sockaddr* a, socklen_t alen, const sockaddr* b, socklen_t blen)
 {
-    if (!a || !b || alen <= 0 || blen <= 0)
-        return false;
-
-    if (a->sa_family == b->sa_family) {
-        if (a->sa_family == AF_INET) {
-            const sockaddr_in* pa = reinterpret_cast<const sockaddr_in*>(a);
-            const sockaddr_in* pb = reinterpret_cast<const sockaddr_in*>(b);
-            return (pa->sin_addr.S_un.S_addr == pb->sin_addr.S_un.S_addr) && (pa->sin_port == pb->sin_port);
-        }
-        if (a->sa_family == AF_INET6) {
-            const sockaddr_in6* pa6 = reinterpret_cast<const sockaddr_in6*>(a);
-            const sockaddr_in6* pb6 = reinterpret_cast<const sockaddr_in6*>(b);
-            return (memcmp(&pa6->sin6_addr, &pb6->sin6_addr, sizeof(in6_addr)) == 0) && (pa6->sin6_port == pb6->sin6_port);
-        }
-        return false;
-    }
-    // IPv4-mapped IPv6 comparison
-    uint32 a4, b4;
-    uint16 ap, bp;
-    if (ExtractIPv4(a, a4, &ap) && ExtractIPv4(b, b4, &bp))
-        return (a4 == b4) && (ap == bp);
-    return false;
+    return ese::EqualUtpEndpoint(a,static_cast<int>(alen),b,static_cast<int>(blen));
 }
 
 static void RemoveExpectedPeersForOwner(CUtpSocket* owner)
@@ -315,7 +253,8 @@ static void RemoveExpectedPeersForOwner(CUtpSocket* owner)
 
 static void AddExpectedPeer(CUtpSocket* owner, const sockaddr* to, socklen_t tolen)
 {
-	if (!to || tolen <= 0)
+	CSingleLock runtimeLock(&g_utpRuntimeLock,TRUE);
+	if (!ese::ValidUtpEndpoint(to,static_cast<int>(tolen)))
 		return; // owner may be NULL (from RegisterExpectedPeer hole-punch hints)
 
 	// Sweep expired entries
@@ -330,10 +269,11 @@ static void AddExpectedPeer(CUtpSocket* owner, const sockaddr* to, socklen_t tol
 	}
 
 	ExpectedPeerEntry e = {};
-	memcpy(&e.addr, to, (size_t)tolen > sizeof(e.addr) ? sizeof(e.addr) : (size_t)tolen);
+	memcpy(&e.addr, to, static_cast<size_t>(tolen)); // size validated before any field read
 	e.len = tolen;
 	e.expires = ::GetTickCount() + kExpectedPeerTTLms;
 	e.owner = owner;
+	e.ownerGeneration = owner ? owner->GetEndpointOwnerGeneration() : 0;
 
 	// De-dup by address only (regardless of owner) to prevent duplicate uTP sockets
 	// Use IP+port comparison to avoid sockaddr struct padding/format differences
@@ -342,7 +282,10 @@ static void AddExpectedPeer(CUtpSocket* owner, const sockaddr* to, socklen_t tol
 			// Already exists - refresh TTL. Only upgrade owner (don't degrade non-NULL to NULL).
 			g_expectedPeers[i].expires = e.expires;
 			if (owner != NULL)
+			{
 				g_expectedPeers[i].owner = owner;
+				g_expectedPeers[i].ownerGeneration = e.ownerGeneration;
+			}
 			g_expectedPeersLock.Unlock();
 			if (thePrefs.GetVerbose())
 				DebugLog(_T("[uTP][ExpectPeer] Duplicate prevented: entry already exists for this endpoint, refreshing TTL only"));
@@ -817,6 +760,7 @@ static uint64 on_utp_accept(utp_callback_arguments* a)
 			g_utpSocketsLock.Unlock();
 
 			CUtpSocket* adoptOwner = NULL;
+			uint64 adoptGeneration = 0;
 
 			g_expectedPeersLock.Lock();
 			// Sweep expired and search match
@@ -830,6 +774,7 @@ static uint64 on_utp_accept(utp_callback_arguments* a)
 					if (g_expectedPeers[i].owner != NULL) {
 						// Exact match with valid owner — consume and adopt
 						adoptOwner = g_expectedPeers[i].owner;
+						adoptGeneration = g_expectedPeers[i].ownerGeneration;
 						g_expectedPeers.erase(g_expectedPeers.begin() + i);
 						break;
 					}
@@ -844,7 +789,8 @@ static uint64 on_utp_accept(utp_callback_arguments* a)
 				// Validate that adoptOwner is still alive
 				bool alive = false;
 				g_utpSocketsLock.Lock();
-				alive = (theApp.g_UtpSockets.find(adoptOwner) != theApp.g_UtpSockets.end());
+				alive = (theApp.g_UtpSockets.find(adoptOwner) != theApp.g_UtpSockets.end())
+					&& adoptGeneration && adoptOwner->GetEndpointOwnerGeneration()==adoptGeneration;
 				g_utpSocketsLock.Unlock();
 
 				if (!alive) {
@@ -869,109 +815,7 @@ static uint64 on_utp_accept(utp_callback_arguments* a)
 			}
 		}
 
-		// No exact match -> try IP-only fallback (NAT remap tolerant)
-	CUtpSocket* ipOwner = NULL;
-	int ipOwnerCount = 0;
-	CUtpSocket* bestOwner = NULL;
-	uint16 bestExpectedPort = 0;
-	int bestAbsDiff = INT_MAX;
-	g_expectedPeersLock.Lock();
-	for (size_t i = 0; i < g_expectedPeers.size();) {
-		bool expired = (int)(now - g_expectedPeers[i].expires) >= 0;
-		if (expired) { 
-			g_expectedPeers.erase(g_expectedPeers.begin() + i);
-			continue;
-		}
-
-		if (SockaddrEqualIPOnly((sockaddr*)&g_expectedPeers[i].addr, g_expectedPeers[i].len, (sockaddr*)&peer, peerlen)) {
-			++ipOwnerCount;
-			ipOwner = g_expectedPeers[i].owner; // last owner for this IP (may be NULL from RegisterExpectedPeer)
-			// Only consider non-NULL owners for direct adoption — NULL entries
-			// come from RegisterExpectedPeer (hole-punch hints) and are handled
-			// by the NatExpectation fallback path below (L913+).
-			if (ipOwner != NULL) {
-				uint16 expPort = 0;
-				if (g_expectedPeers[i].addr.ss_family == AF_INET)
-					expPort = ntohs(reinterpret_cast<const sockaddr_in*>(&g_expectedPeers[i].addr)->sin_port);
-				else if (g_expectedPeers[i].addr.ss_family == AF_INET6)
-					expPort = ntohs(reinterpret_cast<const sockaddr_in6*>(&g_expectedPeers[i].addr)->sin6_port);
-				uint16 peerPort = 0;
-				if (peer.ss_family == AF_INET)
-					peerPort = ntohs(reinterpret_cast<const sockaddr_in*>(&peer)->sin_port);
-				else if (peer.ss_family == AF_INET6)
-					peerPort = ntohs(reinterpret_cast<const sockaddr_in6*>(&peer)->sin6_port);
-				int diff = (int)peerPort - (int)expPort;
-				int ad = diff >= 0 ? diff : -diff;
-				if (ad < bestAbsDiff) {
-					bestAbsDiff = ad;
-					bestOwner = ipOwner;
-					bestExpectedPort = expPort;
-				}
-			}
-		}
-		++i;
-	}
-	g_expectedPeersLock.Unlock();
-
-		// Harden IP-only fallback: adopt only if there is a unique owner for this IP,
-		// the owner has no active uTP socket, and the observed port is close to the expected port.
-		if (bestOwner && ipOwnerCount == 1) {
-			// Check if ipOwner already has an active uTP socket by probing GetPeerName
-			SOCKADDR_STORAGE tmp = {};
-			int tmplen = sizeof(tmp);
-			if (bestOwner->GetPeerName((SOCKADDR*)&tmp, &tmplen)) {
-				// Already bound to a peer, do not adopt.
-			} else {
-				uint16 peerPort = 0;
-				if (peer.ss_family == AF_INET)
-					peerPort = ntohs(reinterpret_cast<const sockaddr_in*>(&peer)->sin_port);
-				else if (peer.ss_family == AF_INET6)
-					peerPort = ntohs(reinterpret_cast<const sockaddr_in6*>(&peer)->sin6_port);
-
-				uint16 expectedPort = bestExpectedPort;
-				const uint16 kPortWindow = 120; // Accept if peer port is within configured window.
-				int diff = (int)peerPort - (int)expectedPort;
-				if (diff < 0)
-					diff = -diff;
-
-				if (expectedPort != 0 && diff <= (int)kPortWindow) {
-					if (thePrefs.GetVerbose())
-						DebugLog(_T("[NatTraversal][uTP] ACCEPT fallback by IP-only match (validated, |%u-%u|<=%u)"), (UINT)peerPort, (UINT)expectedPort, (UINT)kPortWindow);
-
-					// Validate that the owner is still alive before adopting.
-					bool alive2 = false;
-					g_utpSocketsLock.Lock();
-					alive2 = (theApp.g_UtpSockets.find(bestOwner) != theApp.g_UtpSockets.end());
-					g_utpSocketsLock.Unlock();
-					if (!alive2) {
-						utp_close(a->socket);
-						return 0;
-					}
-
-					CUpDownClient* adoptClient2 = bestOwner->GetOwnerClient();
-					if (adoptClient2 != NULL) {
-						adoptClient2->ResetUtpFlowControl();
-						adoptClient2->RequestUtpQueuePurge();
-					}
-					bestOwner->Destroy();
-					bestOwner->Setup(a->socket, true);
-
-					// Remove all expected entries for this owner to avoid stale records.
-					RemoveExpectedPeersForOwner(bestOwner);
-
-					if (thePrefs.GetVerbose())
-						DebugLog(_T("[NatTraversal][uTP] ACCEPT fallback IP-only: matches=%d peerPort=%u expectedPort=%u window=%u"), ipOwnerCount, (UINT)peerPort, (UINT)expectedPort, (UINT)kPortWindow);
-					return 0;
-				}
-
-				if (thePrefs.GetVerbose()) {
-					DebugLog(_T("[NatTraversal][uTP] ACCEPT fallback IP-only skipped: peerPort=%u expectedPort=%u window=%u"),
-						(UINT)peerPort, (UINT)expectedPort, (UINT)kPortWindow);
-				}
-			}
-		} else if (bestOwner && ipOwnerCount > 1 && thePrefs.GetVerbose()) {
-			DebugLog(_T("[NatTraversal][uTP] ACCEPT fallback IP-only skipped: ambiguous owners=%d"), ipOwnerCount);
-		}
+		// Endpoint rebinding needs a new expectation; never adopt by IP/nearby port.
 		// Final fallback - check m_aNatExpectations (CClientUDPSocket)
 		// This handles the "passive uploader" case where:
 		// - Instance5 received OP_ESERVER_PEER_INFO and registered NAT expectation
@@ -988,53 +832,27 @@ static uint64 on_utp_accept(utp_callback_arguments* a)
 			if (peerIP.GetType() == CAddress::IPv4)
 				peerIP.TryToUInt32(peerIPv4, true); // network to host order
 
-			// Check if there's at least a registered expectation for this IP
-			// (even without a client — hole-punch REQ handlers seed with NULL owner)
+			// Consume one exact, ownerless expectation. A cookie/endpoint hint
+			// authorizes transport setup only; it is not identity authentication.
 			bool bExactExpectation = false;
 			unsigned uSameIPExpectations = 0;
-			int iBestPortDiff = INT_MAX;
-			size_t uBestExpectationIndex = static_cast<size_t>(-1);
-			bool bBestPortAmbiguous = false;
 			g_expectedPeersLock.Lock();
 			for (size_t i = 0; i < g_expectedPeers.size();) {
 				if ((int)(now - g_expectedPeers[i].expires) >= 0) {
 					g_expectedPeers.erase(g_expectedPeers.begin() + i);
 					continue;
 				}
-				if (SockaddrEqualIPOnly((sockaddr*)&g_expectedPeers[i].addr, g_expectedPeers[i].len, (sockaddr*)&peer, peerlen)) {
-					++uSameIPExpectations;
-					if (SockaddrEqualIPAndPort((sockaddr*)&g_expectedPeers[i].addr,
-						g_expectedPeers[i].len, (sockaddr*)&peer, peerlen)) {
-						bExactExpectation = true;
-						iBestPortDiff = 0;
-						uBestExpectationIndex = i;
-						bBestPortAmbiguous = false;
-					} else {
-						uint16 expectedPort = 0;
-						if (g_expectedPeers[i].addr.ss_family == AF_INET)
-							expectedPort = ntohs(reinterpret_cast<const sockaddr_in*>(&g_expectedPeers[i].addr)->sin_port);
-						if (expectedPort != 0) {
-							int diff = (int)peerPort - (int)expectedPort;
-							if (diff < 0)
-								diff = -diff;
-							if (diff < iBestPortDiff) {
-								iBestPortDiff = diff;
-								uBestExpectationIndex = i;
-								bBestPortAmbiguous = false;
-							} else if (diff == iBestPortDiff) {
-								bBestPortAmbiguous = true;
-							}
-						}
-					}
+				if (g_expectedPeers[i].owner == NULL && SockaddrEqualIPAndPort(
+					(sockaddr*)&g_expectedPeers[i].addr, g_expectedPeers[i].len, (sockaddr*)&peer, peerlen)) {
+					bExactExpectation = true;
+					uSameIPExpectations = 1;
+					g_expectedPeers.erase(g_expectedPeers.begin() + i);
+					break;
 				}
 				++i;
 			}
-			const bool bHasExpectation = uBestExpectationIndex != static_cast<size_t>(-1)
-				&& (bExactExpectation || (!bBestPortAmbiguous && iBestPortDiff <= 120));
-			if (bHasExpectation)
-				g_expectedPeers.erase(g_expectedPeers.begin() + uBestExpectationIndex);
+			const bool bHasExpectation = bExactExpectation;
 			g_expectedPeersLock.Unlock();
-
 			if (bHasExpectation) {
 				if (thePrefs.GetVerbose()) {
 					if (peerIP.GetType() == CAddress::IPv6)
@@ -1231,6 +1049,11 @@ static uint64 on_utp_overhead_stats(utp_callback_arguments* /*a*/) { return 0; }
 
 CUtpSocket::CUtpSocket()
 {
+	{
+		CSingleLock lock(&g_utpRuntimeLock,TRUE);
+		if(g_nextEndpointOwnerGeneration==(std::numeric_limits<uint64>::max)()) AfxThrowMemoryException();
+		m_uEndpointOwnerGeneration=++g_nextEndpointOwnerGeneration;
+	}
 	if (false)
 		AddDebugLogLine(DLP_VERYLOW, false, _T("[uTP-DEBUG] *** CUtpSocket::CUtpSocket() this=%p ***"), this);
 	m_Socket = NULL;
@@ -1289,6 +1112,148 @@ size_t CUtpSocket::GetConnectedSocketCount()
 	return count;
 }
 
+bool CUtpSocket::RunExactAcceptSelfTest(uint16 fixturePort)
+{
+	if (!theApp.m_bReachBindingSelfTest || !theApp.clientudp || !theApp.listensocket
+		|| !fixturePort) return false;
+	struct Restore {
+		int consent=thePrefs.GetEseNetLabConsent();
+		bool enabled=thePrefs.GetEseNetLabEnabled(),punch=thePrefs.GetUtpHolePunchEnabled();
+		uint16 port=thePrefs.GetUDPPort();
+		~Restore() { thePrefs.SetUDPPort(port); theApp.clientudp->Rebind(); thePrefs.SetUtpHolePunchEnabled(punch); thePrefs.SetEseNetLabEnabled(enabled); thePrefs.SetEseNetLabConsent(consent); }
+	} restore;
+	thePrefs.SetEseNetLabConsent(CPreferences::EseNetLabAccepted);
+	thePrefs.SetEseNetLabEnabled(true); thePrefs.SetUtpHolePunchEnabled(true);
+	thePrefs.SetUDPPort(fixturePort);
+	if(theApp.clientudp->GetConnectedPort()!=fixturePort && !theApp.clientudp->Rebind()) return false;
+	if(!theApp.clientudp->IsUtpReady()) return false;
+	struct Peer {
+		SOCKET udp=INVALID_SOCKET;
+		utp_context* context=nullptr;
+		utp_socket* current=nullptr;
+		unsigned sent=0,errors=0,connected=0;
+		bool failed=false;
+		~Peer() { if(context) utp_destroy(context); if(udp!=INVALID_SOCKET) closesocket(udp); }
+		static uint64 Send(utp_callback_arguments* args) noexcept {
+			auto* p=static_cast<Peer*>(utp_context_get_userdata(args->context));
+			const int n=sendto(p->udp,reinterpret_cast<const char*>(args->buf),static_cast<int>(args->len),0,args->address,args->address_len);
+			if(n!=static_cast<int>(args->len)) p->failed=true;
+			++p->sent; return 0;
+		}
+		static uint64 Error(utp_callback_arguments* args) noexcept {
+			auto* p=static_cast<Peer*>(utp_context_get_userdata(args->context));
+			if(args->socket==p->current) ++p->errors; return 0;
+		}
+		static uint64 State(utp_callback_arguments* args) noexcept {
+			auto* p=static_cast<Peer*>(utp_context_get_userdata(args->context));
+			if(args->socket==p->current && args->state==UTP_STATE_CONNECT) ++p->connected;
+			return 0;
+		}
+	} peer;
+	peer.udp=::socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
+	if(peer.udp==INVALID_SOCKET) return false;
+	sockaddr_in source{}; source.sin_family=AF_INET; source.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+	if(bind(peer.udp,reinterpret_cast<sockaddr*>(&source),sizeof(source))) return false;
+	int sourceSize=sizeof(source);
+	if(getsockname(peer.udp,reinterpret_cast<sockaddr*>(&source),&sourceSize)) return false;
+	u_long nonblock=1; if(ioctlsocket(peer.udp,FIONBIO,&nonblock)) return false;
+	peer.context=utp_init(2); if(!peer.context) return false;
+	utp_context_set_userdata(peer.context,&peer);
+	utp_set_callback(peer.context,UTP_SENDTO,&Peer::Send);
+	utp_set_callback(peer.context,UTP_ON_ERROR,&Peer::Error);
+	utp_set_callback(peer.context,UTP_ON_STATE_CHANGE,&Peer::State);
+	sockaddr_in target=source; target.sin_port=htons(theApp.clientudp->GetConnectedPort());
+	auto wrong=source;
+	const uint16 port=ntohs(source.sin_port);
+	wrong.sin_port=htons(port==65535 ? port-1 : port+1);
+	struct Cleanup {
+		sockaddr_in source,wrong;
+		CClientReqSocket* accepted=nullptr;
+		~Cleanup() {
+			if(accepted && theApp.listensocket->IsValidSocket(accepted)) {
+				if(accepted->GetUtpLayer()) accepted->GetUtpLayer()->Close();
+				accepted->Safe_Delete();
+			}
+			CSingleLock lock(&g_expectedPeersLock,TRUE);
+			for(size_t i=0;i<g_expectedPeers.size();) {
+				const auto& e=g_expectedPeers[i];
+				if(!e.owner && (SockaddrEqualIPAndPort(reinterpret_cast<const sockaddr*>(&e.addr),e.len,reinterpret_cast<const sockaddr*>(&source),sizeof(source))
+					|| SockaddrEqualIPAndPort(reinterpret_cast<const sockaddr*>(&e.addr),e.len,reinterpret_cast<const sockaddr*>(&wrong),sizeof(wrong))))
+					g_expectedPeers.erase(g_expectedPeers.begin()+i);
+				else ++i;
+			}
+		}
+	} cleanup{source,wrong,nullptr};
+	auto findAccepted=[&]() -> CClientReqSocket* {
+		CSingleLock lock(&g_utpSocketsLock,TRUE);
+		for(auto* layer:theApp.g_UtpSockets) {
+			sockaddr_storage address{}; int size=sizeof(address);
+			if(layer && layer->GetPeerName(reinterpret_cast<sockaddr*>(&address),&size)
+				&& SockaddrEqualIPAndPort(reinterpret_cast<sockaddr*>(&address),size,reinterpret_cast<sockaddr*>(&source),sizeof(source))) {
+				sockaddr_storage sentinel; memset(&sentinel,0xA5,sizeof sentinel); const auto unchanged=sentinel;
+				int shortCapacity=1,invalid=-1;
+				if(layer->GetPeerName(reinterpret_cast<sockaddr*>(&sentinel),&shortCapacity) || shortCapacity!=sizeof(sockaddr_in) ||
+					memcmp(&sentinel,&unchanged,sizeof sentinel) ||
+					layer->GetPeerName(nullptr,&size) || layer->GetPeerName(reinterpret_cast<sockaddr*>(&sentinel),nullptr) ||
+					layer->GetPeerName(reinterpret_cast<sockaddr*>(&sentinel),&invalid) ||
+					memcmp(&sentinel,&unchanged,sizeof sentinel)) return nullptr;
+				return dynamic_cast<CClientReqSocket*>(layer->GetOwnerSocket());
+			}
+		}
+		return nullptr;
+	};
+	auto pump=[&](bool positive) {
+		const unsigned beforeConnected=peer.connected,beforeErrors=peer.errors;
+		const DWORD started=GetTickCount();
+		while(GetTickCount()-started<2000) {
+			MSG message{};
+			while(PeekMessage(&message,NULL,0,0,PM_REMOVE)) { TranslateMessage(&message); DispatchMessage(&message); }
+			char bytes[2048]; sockaddr_storage address{}; int size=sizeof(address);
+			const int count=recvfrom(peer.udp,bytes,sizeof(bytes),0,reinterpret_cast<sockaddr*>(&address),&size);
+			if(count>0) utp_process_udp(peer.context,reinterpret_cast<const byte*>(bytes),count,reinterpret_cast<sockaddr*>(&address),size);
+			utp_issue_deferred_acks(peer.context); utp_check_timeouts(peer.context);
+			if(peer.failed) return false;
+			if(positive) { cleanup.accepted=findAccepted(); if(cleanup.accepted && peer.connected>beforeConnected) return true; }
+			else if(peer.errors>beforeErrors || peer.connected>beforeConnected) return findAccepted()==nullptr;
+			Sleep(1);
+		}
+		return false;
+	};
+	// An owner still registered at the same pointer must not authorize an
+	// expectation captured for another generation. Inject only fixture metadata,
+	// then deliver a genuine SYN through the normal shared UDP callback.
+	CUtpSocket staleOwner;
+	AddExpectedPeer(&staleOwner,reinterpret_cast<sockaddr*>(&source),sizeof(source));
+	{
+		CSingleLock lock(&g_expectedPeersLock,TRUE);
+		bool changed=false;
+		for(auto& entry:g_expectedPeers) if(entry.owner==&staleOwner) {
+			entry.ownerGeneration=staleOwner.GetEndpointOwnerGeneration()==1 ? 2 : 1; changed=true;
+		}
+		if(!changed) return false;
+	}
+	auto* stale=utp_create_socket(peer.context);
+	peer.current=stale;
+	if(!stale || utp_connect(stale,reinterpret_cast<sockaddr*>(&target),sizeof(target)) || !pump(false)) return false;
+	AddExpectedPeer(&staleOwner,reinterpret_cast<sockaddr*>(&wrong),sizeof(wrong));
+	staleOwner.UnregisterFromGlobalSet();
+	{
+		CSingleLock lock(&g_expectedPeersLock,TRUE);
+		for(const auto& entry:g_expectedPeers) if(entry.owner==&staleOwner) return false;
+	}
+	RegisterExpectedPeer(reinterpret_cast<sockaddr*>(&wrong),sizeof(wrong));
+	auto* rejected=utp_create_socket(peer.context);
+	peer.current=rejected;
+	if(!rejected || utp_connect(rejected,reinterpret_cast<sockaddr*>(&target),sizeof(target)) || !pump(false)) return false;
+	RegisterExpectedPeer(reinterpret_cast<sockaddr*>(&source),sizeof(source));
+	auto* accepted=utp_create_socket(peer.context);
+	peer.current=accepted;
+	if(!accepted || utp_connect(accepted,reinterpret_cast<sockaddr*>(&target),sizeof(target)) || !pump(true)) return false;
+	if(!cleanup.accepted || cleanup.accepted->client || !peer.sent) return false;
+	cleanup.accepted->GetUtpLayer()->Close();
+	return findAccepted()==nullptr;
+}
+
 void CUtpSocket::OnReceive(int nErrorCode)
 {
 	// For uTP sockets, bypass the FD_READ check in CAsyncSocketExLayer::OnReceive
@@ -1301,6 +1266,8 @@ void CUtpSocket::OnReceive(int nErrorCode)
 
 void CUtpSocket::UnregisterFromGlobalSet()
 {
+	CSingleLock runtimeLock(&g_utpRuntimeLock,TRUE);
+	RemoveExpectedPeersForOwner(this);
     g_utpSocketsLock.Lock();
     std::set<CUtpSocket*>::iterator it = theApp.g_UtpSockets.find(this);
     if (it != theApp.g_UtpSockets.end())
@@ -1513,7 +1480,7 @@ void CUtpSocket::ExpectPeer(const struct sockaddr* to, socklen_t tolen)
 // Static bridge: register an expected peer without a CUtpSocket instance.
 // Used by hole-punch signaling where we know the remote endpoint (from Kad ACK)
 // but don't have a CUtpSocket yet. The on_utp_accept fallback consumes one
-// exact endpoint, or one uniquely-nearest remapped port, and then waits for
+// exact endpoint only; a remapped port needs a new expectation. Then wait for
 // OP_HELLO to authenticate the peer before attaching a client identity.
 /*static*/ void CUtpSocket::RegisterExpectedPeer(const struct sockaddr* to, socklen_t tolen)
 {
@@ -1764,11 +1731,12 @@ void CUtpSocket::OnContextDestroyed(utp_context* ctx)
 
 void CUtpSocket::Close()
 {
-	if (m_nLayerState == connected)	{
-		m_nLayerState = closed;
-		Destroy();
-		OnClose(0);
-	}
+	CSingleLock runtimeLock(&g_utpRuntimeLock, TRUE);
+	const bool notify = m_nLayerState == connected || m_nLayerState == connecting || m_nLayerState == attached;
+	m_nLayerState = closed;
+	RemoveExpectedPeersForOwner(this);
+	Destroy(); // Also detach pending connects; never leave a SYN retry owned by a closed wrapper.
+	if (notify) OnClose(0);
 }
 
 int CUtpSocket::Receive(void* lpBuf, int nBufLen, int /*nFlags*/)
@@ -1860,10 +1828,15 @@ BOOL CUtpSocket::ShutDown(int nHow)
 BOOL CUtpSocket::GetPeerName(SOCKADDR* lpSockAddr, int* lpSockAddrLen)
 {
 	CSingleLock runtimeLock(&g_utpRuntimeLock, TRUE);
-	if (!m_Socket)
+	if (!m_Socket || !lpSockAddr || !lpSockAddrLen || *lpSockAddrLen<=0)
 		return FALSE;
 
-	utp_getpeername(m_Socket, lpSockAddr, lpSockAddrLen);
+	SOCKADDR_STORAGE peer{}; int peerLength=sizeof peer;
+	if(utp_getpeername(m_Socket,reinterpret_cast<sockaddr*>(&peer),&peerLength)!=0 ||
+		(peer.ss_family!=AF_INET && peer.ss_family!=AF_INET6) ||
+		peerLength!=(peer.ss_family==AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6))) return FALSE;
+	if(*lpSockAddrLen<peerLength) { *lpSockAddrLen=peerLength; return FALSE; }
+	memcpy(lpSockAddr,&peer,peerLength); *lpSockAddrLen=peerLength;
 	return TRUE;
 }
 

@@ -692,6 +692,7 @@ void CUPnPImplMiniLib::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 n
 	m_nDiagnosticStage = UPNP_DIAG_DISCOVERING;
 	m_bUPnPPortsForwarded = TRIS_UNKNOWN;
 	m_bCheckAndRefresh = false;
+	m_bReadbackOnly = false;
 
 	Cleanup();
 	if (!m_bAbortDiscovery)
@@ -699,6 +700,14 @@ void CUPnPImplMiniLib::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 n
 }
 
 bool CUPnPImplMiniLib::CheckAndRefresh()
+{
+    return StartRefresh(false);
+}
+bool CUPnPImplMiniLib::CheckMappingHealth()
+{
+    return StartRefresh(true);
+}
+bool CUPnPImplMiniLib::StartRefresh(bool readbackOnly)
 {
 	// in CheckAndRefresh we don't do any new time consuming discovery tries, we expect to find the same router like the first time
 	// and of course we also don't delete old ports (this was done in Discovery) but only check that our current mappings still exist
@@ -718,6 +727,7 @@ bool CUPnPImplMiniLib::CheckAndRefresh()
 
 	DebugLog(_T("Checking and refreshing UPnP ports"));
 	m_bCheckAndRefresh = true;
+	m_bReadbackOnly = readbackOnly;
 	StartThread();
 	return true;
 }
@@ -821,7 +831,7 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 					static_cast<unsigned>(targets.size()), lastError);
 				m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;
 				m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-				m_pOwner->SendResultMessage();
+				m_pOwner->SendResultMessage(m_notification);
 				return 0;
 			}
 
@@ -856,7 +866,7 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			if (bNotFound || m_pOwner->m_pURLs->controlURL == NULL) {
 				m_pOwner->m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
 				m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-				m_pOwner->SendResultMessage();
+				m_pOwner->SendResultMessage(m_notification);
 				return 0;
 			}
 			DebugLog(_T("Our LAN IP: %S"), m_pOwner->m_achLanIP);
@@ -901,12 +911,13 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			if (!bSucceeded) {
 				// TCP+UDP is one direct-reachability transaction. Do not leave
 				// a half-created mapping when Kad UDP creation fails.
-				m_pOwner->DeletePort(m_pOwner->m_nExternalTCPPort, sTCP);
+				if(!m_pOwner->m_bReadbackOnly) m_pOwner->DeletePort(m_pOwner->m_nExternalTCPPort, sTCP);
 				m_pOwner->m_nExternalTCPPort = 0;
 			}
 		}
 		if (bSucceeded) {
-			if (m_pOwner->m_nOldTCPWebPort)
+			// A health readback must not remove a late-bound WebUI mapping.
+			if (!m_pOwner->m_bReadbackOnly && m_pOwner->m_nOldTCPWebPort)
 				m_pOwner->DeletePort(m_pOwner->m_nOldTCPWebPort, sTCP);	//unmap WebServer port (late binding)
 			if (m_pOwner->m_nTCPWebPort)
 				OpenPort(m_pOwner->m_nTCPWebPort, true, m_pOwner->m_achLanIP, m_pOwner->m_bCheckAndRefresh);	// don't fail if only the Web Interface port fails for some reason
@@ -923,7 +934,7 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			m_pOwner->m_bSucceededOnce = true;
 		} else
 			m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-		m_pOwner->SendResultMessage();
+		m_pOwner->SendResultMessage(m_notification);
 	}
 	return 0;
 }
@@ -986,7 +997,7 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(uint16 nPort, bool bTCP, 
 		const uint32 remaining = ParseLeaseDuration(achLeaseDuration, 0);
 		const bool ownedDescription =
 			strcmp(achOutDescription, pachDescription) == 0;
-		if (!bCheckAndRefresh || !ownedDescription || remaining == 0) {
+		if (!bCheckAndRefresh || m_pOwner->m_bReadbackOnly || !ownedDescription || remaining == 0) {
 			noteFiniteLease(remaining);
 			DebugLog(_T("UPNP: Reusing compatible mapping %hu -> %hu (%s) on %S%s"),
 				*pExternalPort, nPort, (bTCP ? sTCP : sUDP), achOutIP,
@@ -998,6 +1009,10 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(uint16 nPort, bool bTCP, 
 		DebugLog(_T("Checking UPnP: Owned finite mapping %hu -> %hu (%s) has %u seconds left; renewing it now"),
 			*pExternalPort, nPort, (bTCP ? sTCP : sUDP), remaining);
 	} else if (bCheckAndRefresh) {
+		if(m_pOwner->m_bReadbackOnly) {
+			DebugLogWarning(_T("UPNP: Health readback found absent/incompatible mapping; retiring old route before rediscovery"));
+			return false;
+		}
 		DebugLogWarning(_T("Checking UPnP: Mapping for port %hu (%s) is absent or incompatible (result %d); reopening"),
 			nPort, (bTCP ? sTCP : sUDP), nResult);
 	}
@@ -1183,7 +1198,20 @@ void CUPnPImplMiniLib::Cleanup()
 void CUPnPImplMiniLib::StartThread()
 {
 	CStartDiscoveryThread *pStartDiscoveryThread = (CStartDiscoveryThread*)AfxBeginThread(RUNTIME_CLASS(CStartDiscoveryThread), THREAD_PRIORITY_NORMAL, 0, CREATE_SUSPENDED);
+	if (!pStartDiscoveryThread) {
+		m_hThreadHandle = NULL;
+		m_bUPnPPortsForwarded = TRIS_FALSE;
+		m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
+		SendResultMessage();
+		return;
+	}
 	m_hThreadHandle = pStartDiscoveryThread->m_hThread;
 	pStartDiscoveryThread->SetValues(this);
-	pStartDiscoveryThread->ResumeThread();
+	if (pStartDiscoveryThread->ResumeThread() == static_cast<DWORD>(-1)) {
+		delete pStartDiscoveryThread;
+		m_hThreadHandle = NULL;
+		m_bUPnPPortsForwarded = TRIS_FALSE;
+		m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
+		SendResultMessage();
+	}
 }

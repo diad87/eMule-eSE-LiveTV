@@ -14,9 +14,11 @@
 //along with this program; if not, write to the Free Software
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #pragma once
+#include "OtherFunctions.h" // MDX_DIGEST_SIZE is used by this header itself.
 
 #include <functional>
 #include <vector>
+namespace ese { namespace discovery { struct ResolvedKad6Candidate; } }
 
 class CSafeMemFile;
 class CSearchFile;
@@ -70,6 +72,8 @@ public:
 	~CDownloadQueue();
 
 	void	Process();
+	bool AdoptDirectKad6Discovery(const ese::discovery::ResolvedKad6Candidate& candidate,bool allowNewSource=true);
+	unsigned RetireExpiredDirectKad6Sources();
 	void	Init();
 
 	// add/remove entries

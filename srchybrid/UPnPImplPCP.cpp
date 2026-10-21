@@ -461,7 +461,7 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 				m_pOwner->m_clientAddress)) {
 			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;
 			m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-			m_pOwner->SendResultMessage();
+			m_pOwner->SendResultMessage(m_notification);
 			return 0;
 		}
 		m_pOwner->DeletePorts(true);
@@ -541,7 +541,7 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_SUCCESS;
 		} else if (m_pOwner->m_nDiagnosticStage == UPNP_DIAG_TCP_MAPPING)
 			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
-		m_pOwner->SendResultMessage();
+		m_pOwner->SendResultMessage(m_notification);
 	}
 	return 0;
 }
@@ -561,5 +561,11 @@ void CUPnPImplPCP::StartThread()
 	}
 	m_hThreadHandle = thread->m_hThread;
 	thread->SetValues(this);
-	thread->ResumeThread();
+	if (thread->ResumeThread() == static_cast<DWORD>(-1)) {
+		delete thread;
+		m_hThreadHandle = NULL;
+		m_bUPnPPortsForwarded = TRIS_FALSE;
+		m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
+		SendResultMessage();
+	}
 }

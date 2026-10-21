@@ -15,6 +15,7 @@
 //along with this program; if not, write to the Free Software
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #include "stdafx.h"
+#include <chrono>
 #include "DebugHelpers.h"
 #include "emule.h"
 #include "ListenSocket.h"
@@ -28,12 +29,14 @@
 #include "../cryptopp/sha.h"   // v7.7.0 — SHA256 for OP_LIVE_CHUNK_V2 verify
 #include "eMuleAI/Address.h"   // v0.71 IPv6 Sprint 7 — CAddress in PEER_LIST_V2
 #include "UpDownClient.h"
+#include "ClientCredits.h"
 #include "ClientList.h"
 #include "DownloadQueue.h"
 #include "Statistics.h"
 #include "IPFilter.h"
 #include "SharedFileList.h"
 #include "PartFile.h"
+#include "reach/accepted_part_ranges.h"
 #include "SafeFile.h"
 #include "Packets.h"
 #include "UploadQueue.h"
@@ -55,6 +58,8 @@
 #include "FirewallProberV6.h"
 #include "Kad6GatewaySocket.h"
 #include "DirectReachabilityManager.h"
+#include "EseQuicEd2kPump.h"
+#include "EseQuicEd2kWriter.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -97,6 +102,10 @@ CUtpSocket* CClientReqSocket::InitUtpSupport()
 {
 	if (m_pUtpLayer != NULL)
 		return m_pUtpLayer; // already initialized
+	// Overlapped WSASend targets the OS TCP handle, not AsyncSocketEx layers.
+	// Never change the send path while an OS overlapped operation owns buffers.
+	if (!PrepareLayeredSend())
+		return NULL;
 
 	CUtpSocket* pUtpLayer = new CUtpSocket();
 	if (AddLayer(pUtpLayer)) {
@@ -180,8 +189,244 @@ void CClientReqSocket::ResetTimeOutTimer()
 	timeout_timer = ::GetTickCount();
 }
 
+bool CClientReqSocket::HasDirectTransferAuthority(reach::DirectHandle handle) const
+{
+	if(!(!deletethis && client && theApp.clientlist && theApp.directreachability
+		&& theApp.clientlist->IsValidClient(client) && client->socket==this
+		)) return false;
+	if(m_legacyDirectRoute) {
+		const auto owner=theApp.directreachability->DirectTransferClientLifetime(handle);
+		return client->GetDirectClientLifetime()==m_legacyDirectLifetime && owner && *owner==m_legacyTransferLifetime &&
+			theApp.clientlist->FindClientByLifetime(*owner) &&
+			theApp.directreachability->HasDirectTransferSubscription(*owner,handle);
+	}
+	return theApp.directreachability->HasDirectTransferSubscription(client->GetDirectClientLifetime(),handle);
+}
+
+bool CClientReqSocket::HasAuthenticatedDirectConnection() const
+{
+	if(m_legacyDirectRoute) {
+		if(!m_legacyDirectAdopted || m_legacyDirectClosed || !IsConnected() ||
+			!HasDirectTransferAuthority(m_legacyDirectHandle) || !m_legacyExpectedHash ||
+			client->GetDirectClientLifetime()!=m_legacyDirectLifetime ||
+			memcmp(client->GetUserHash(),m_legacyExpectedHash->data(),16) || !client->HasPassedSecureIdent(false)) return false;
+		const auto state=theApp.directreachability->DirectConnections().Snapshot(m_legacyDirectHandle);
+		return state && state->winner==m_legacyDirectRoute && state->epoch==m_legacyDirectEpoch &&
+			state->topology_generation==m_legacyDirectGeneration &&
+			theApp.directreachability->GetTopologyGeneration()==m_legacyDirectGeneration &&
+			(state->state==reach::DirectSessionState::Ready || state->state==reach::DirectSessionState::Transferring);
+	}
+	return m_directPeerOwner && HasDirectTransferAuthority(m_directPeerHandle)
+		&& client->CheckHandshakeFinished() && IsConnected()
+		&& theApp.directreachability->ValidateNativeQuicDelivery(m_directPeerOwner,
+			m_directPeerHandle,m_directPeerRoute,m_directPeerEpoch);
+}
+
+bool CClientReqSocket::AttachDirectWriter(uint64 owner, reach::DirectHandle handle,
+	uint32 route, uint64 epoch, const std::shared_ptr<ese::QuicEd2kWriter>& writer)
+{
+	if (!writer || !HasDirectTransferAuthority(handle)) return false;
+	auto& manager = *theApp.directreachability;
+	const auto* bound = manager.ValidateNativeQuicDelivery(owner, handle, route, epoch);
+	auto* source = manager.FindNativeQuicLab(owner);
+	if (!bound || !source || &source->TxPool() != &writer->Pool() ||
+		!client->MatchesNativeDirectBoundIdentity(bound->node,bound->userHash)) return false;
+	const auto* selected=source->BoundRoute();
+	if(!selected || selected->id!=route) return false;
+	CAddress address;
+	if(selected->candidate.family==6) address=CAddress::FromIPv6Bytes(selected->candidate.address.data());
+	else if(selected->candidate.family==4) {
+		uint32 networkOrder=0; memcpy(&networkOrder,selected->candidate.address.data(),4);
+		address=CAddress::FromIPv4NetworkOrder(networkOrder);
+	} else return false;
+	if(address.IsNull() || !BindDirectWriter(writer)) return false;
+	m_directPeerOwner=owner; m_directPeerHandle=handle; m_directPeerRoute=route;
+	m_directPeerEpoch=epoch; m_directPeerAddress=address;
+	if(epoch>1 && client->GetRequestFile()) {
+		// Adoption fences the previous stream's block reservations and inflater.
+		// Accepted PartFile ranges and disk/hash work remain owned by the file;
+		// HELLO on this authenticated route must request a fresh slot and gaps.
+		client->ClearDownloadBlockRequests();
+		client->SetDownloadState(DS_CONNECTING);
+	}
+	return true;
+}
+
+std::optional<reach::DirectPartContributor> CClientReqSocket::LegacyDirectPartContributor() const
+{
+	if(!m_legacyDirectRoute || !HasAuthenticatedDirectConnection() ||
+		m_legacyDirectLifetime!=m_legacyTransferLifetime) return std::nullopt;
+	return reach::DirectPartContributor{m_legacyTransferLifetime,m_legacyDirectHandle,
+		m_legacyDirectRoute,m_legacyDirectEpoch,m_legacyDirectGeneration,reach::DirectPartOwnerKind::Legacy};
+}
+
+std::optional<reach::DirectCandidate> CClientReqSocket::ObservedLegacyTcpCandidate()
+{
+	if(!m_legacyDirectRoute) {
+		if(m_directPeerOwner || m_pUtpLayer || !m_classicDirectVerified || !m_classicDirectTcpCandidate ||
+			!client || client->socket!=this || client->GetDirectClientLifetime()!=m_classicDirectTcpLifetime ||
+			memcmp(client->GetUserHash(),m_classicDirectTcpHash.data(),16) || !IsConnected() ||
+			!client->HasPassedSecureIdent(false) || !MatchesTcpEndpoint(*m_classicDirectTcpCandidate)) return std::nullopt;
+		return m_classicDirectTcpCandidate;
+	}
+	if(!m_legacyDirectRoute || m_pUtpLayer || !HasAuthenticatedDirectConnection() || !MatchesLegacyDirectEndpoint() ||
+		(m_legacyDirectCandidate.kind!=reach::DirectKind::DirectV4 && m_legacyDirectCandidate.kind!=reach::DirectKind::DirectV6)) return std::nullopt;
+	auto observed=m_legacyDirectCandidate;
+	observed.transport_mask=reach::DirectTcp; observed.evidence=reach::DirectEvidence::Observed;
+	return observed; // socket/identity proof is local; no Node binding or inbound status
+}
+
+CAddress CClientReqSocket::GetPeerCAddress()
+{
+	if(!m_directPeerOwner) return CEMSocket::GetPeerCAddress();
+	// Never fall back to TCP getpeername for a retired logical QUIC socket.
+	return HasDirectTransferAuthority(m_directPeerHandle)
+		&& theApp.directreachability->ValidateNativeQuicDelivery(m_directPeerOwner,
+			m_directPeerHandle,m_directPeerRoute,m_directPeerEpoch) ? m_directPeerAddress : CAddress();
+}
+
+uint32 CClientReqSocket::GetPeerAddressV4()
+{
+	if(!m_directPeerOwner) return CEMSocket::GetPeerAddressV4();
+	const auto address=GetPeerCAddress();
+	return address.GetType()==CAddress::IPv4 ? address.ToUInt32(false) : 0;
+}
+
+void CClientReqSocket::RecordDirectUsefulBytes(uint32 bytes)
+{
+	if(!bytes) return;
+	if(m_directFrameTracking) { m_directFrameUsefulBytes+=bytes; return; }
+	const auto source=LegacyDirectPartContributor();
+	if(!source || !theApp.directreachability ||
+		theApp.directreachability->ValidateLegacyDirectPartDelivery(*source)!=this) return;
+	if(!ReportLegacyDirectRouteEvent(reach::DirectEventType::UsefulRange,reach::DirectReason::None,bytes))
+		Disconnect(_T("Direct useful-range event capacity exhausted"));
+}
+
+bool CClientReqSocket::ReportLegacyVerifiedPart()
+{
+	if(!LegacyDirectPartContributor()) return false;
+	if(m_legacyVerifiedPartReported) return true;
+	if(!ReportLegacyDirectRouteEvent(reach::DirectEventType::VerifiedPart,reach::DirectReason::None)) return false;
+	m_legacyVerifiedPartReported=true;
+	return true;
+}
+
+void CClientReqSocket::RecordDirectPartBytes(CPartFile* file,uint64 start,uint64 end,uint32 bytes)
+{
+	if(!file || !bytes || !theApp.directreachability) return;
+	auto contributor=m_directFrameContributor;
+	if(!m_directFrameTracking) {
+		const auto legacy=LegacyDirectPartContributor();
+		if(!legacy || client->GetRequestFile()!=file) return;
+		contributor=*legacy;
+	}
+	const auto key=file->NativeDirectFileKey();
+	reach::ForEachAcceptedPart(start,end,bytes,PARTSIZE,[&](uint32 part,uint32 count) {
+		return theApp.directreachability->RecordDirectPartContribution(key,part,contributor,count);
+	});
+}
+
+bool CClientReqSocket::ProcessDirectFrame(uint64 owner, reach::DirectHandle handle,
+	uint32 route, uint64 epoch, const ese::Ed2kFramer& frame)
+{
+	if (!frame.Ready() || !HasDirectTransferAuthority(handle)) return false;
+	auto& manager = *theApp.directreachability;
+	const auto* bound = manager.ValidateNativeQuicDelivery(owner, handle, route, epoch);
+	auto* source = manager.FindNativeQuicLab(owner);
+	if (!bound || !source || &frame.Pool() != &source->RxPool()) return false;
+	const auto node = bound->node; const auto hash = bound->userHash;
+	const auto lifetime=client->GetDirectClientLifetime();
+	const bool pendingHello=client->IsNativeDirectDiscoveryOnly();
+	if(pendingHello && (frame.Header()[0]!=OP_EDONKEYPROT ||
+		(frame.Header()[5]!=OP_HELLO && frame.Header()[5]!=OP_HELLOANSWER))) {
+		source->Close(reach::DirectReason::IdentityMismatch); return false;
+	}
+	auto identityMatches = [&] { return HasDirectTransferAuthority(handle)
+		&& client->GetDirectClientLifetime()==lifetime &&
+		client->MatchesNativeDirectBoundIdentity(node,hash); };
+	if (!identityMatches()) {
+		if (auto* transport = manager.FindNativeQuicLab(owner)) transport->Close(reach::DirectReason::IdentityMismatch);
+		return false;
+	}
+	const auto bytes = frame.Payload();
+	// Account the Packet copy plus the bounded legacy packed-packet expansion.
+	const size_t reserve = bytes.size + 1 + (frame.Header()[0] == OP_PACKEDPROT ? 50000 : 0);
+	if (!frame.Pool().ReserveExact(reserve)) {
+		if (auto* transport = manager.FindNativeQuicLab(owner)) transport->Close(reach::DirectReason::ResourceLimit);
+		return false;
+	}
+	struct Release { reach::DirectBufferPool& pool; size_t bytes; ~Release() { pool.Release(bytes); } } release{frame.Pool(), reserve};
+	try {
+		char header[6]; memcpy(header, frame.Header().data(), sizeof(header));
+		Packet packet(header); packet.pBuffer = new char[bytes.size + 1]{};
+		if (bytes.size) memcpy(packet.pBuffer, bytes.data, bytes.size);
+		ResetTimeOutTimer();
+		if(m_directFrameTracking) return false; // no nested parser admission
+		m_directFrameUsefulBytes=0; m_directFrameTracking=true;
+		m_directFrameContributor={owner,handle,route,epoch,manager.GetTopologyGeneration()};
+		struct EndTracking { bool& active; ~EndTracking() { active=false; } } endTracking{m_directFrameTracking};
+		const bool accepted = PacketReceived(&packet); // existing HELLO/parts/credits logic
+		if (!accepted || !identityMatches() || (pendingHello && client->IsNativeDirectDiscoveryOnly())) {
+			if (auto* transport = manager.FindNativeQuicLab(owner)) transport->Close(
+				accepted ? reach::DirectReason::IdentityMismatch : reach::DirectReason::DirectUnreachable);
+			return false;
+		}
+		if(m_directFrameUsefulBytes) {
+			auto* current=manager.FindNativeQuicLab(owner);
+			if(!manager.ValidateNativeQuicDelivery(owner,handle,route,epoch) || !current
+				|| !current->ReportUsefulBytes(m_directFrameUsefulBytes,bytes.size+6)) return false;
+		}
+		return true;
+	} catch (CMemoryException* ex) {
+		ex->Delete();
+	} catch (...) {}
+	if (auto* transport = manager.FindNativeQuicLab(owner)) transport->Close(reach::DirectReason::ResourceLimit);
+	return false;
+}
+
+bool CClientReqSocket::PumpDirectStream(uint64 owner, reach::DirectHandle handle,
+	uint32 route, uint64 epoch, ese::Ed2kFramer& frame, size_t byteBudget, size_t frameBudget)
+{
+	if (!HasDirectTransferAuthority(handle) ||
+		!theApp.directreachability->ValidateNativeQuicDelivery(owner, handle, route, epoch)) return false;
+	auto* source = theApp.directreachability->FindNativeQuicLab(owner);
+	if (!source) return false;
+	return ese::PumpQuicEd2k(*source, frame, handle, route, epoch,
+		[this, owner, handle, route, epoch](const ese::Ed2kFramer& packet) {
+			return ProcessDirectFrame(owner, handle, route, epoch, packet);
+		}, byteBudget, frameBudget).valid;
+}
+
+reach::DirectSendResult CClientReqSocket::QueueDirectBytes(uint64 owner, reach::DirectHandle handle,
+	uint32 route, uint64 epoch, ese::QuicEd2kWriter& writer, reach::DirectByteView bytes)
+{
+	if (!HasDirectTransferAuthority(handle) ||
+		!theApp.directreachability->ValidateNativeQuicDelivery(owner, handle, route, epoch))
+		return {reach::DirectIoStatus::Invalid, 0};
+	auto* source = theApp.directreachability->FindNativeQuicLab(owner);
+	if (!source || &source->TxPool() != &writer.Pool()) return {reach::DirectIoStatus::Invalid, 0};
+	return writer.Queue(bytes);
+}
+
+reach::DirectSendResult CClientReqSocket::FlushDirectStream(uint64 owner, reach::DirectHandle handle,
+	uint32 route, uint64 epoch, ese::QuicEd2kWriter& writer, size_t budget)
+{
+	if (!HasDirectTransferAuthority(handle) ||
+		!theApp.directreachability->ValidateNativeQuicDelivery(owner, handle, route, epoch))
+		return {reach::DirectIoStatus::Invalid, 0};
+	auto* source = theApp.directreachability->FindNativeQuicLab(owner);
+	return source ? writer.Flush(*source, handle, route, epoch, budget) :
+		reach::DirectSendResult{reach::DirectIoStatus::Invalid, 0};
+}
+
 bool CClientReqSocket::CheckTimeOut()
 {
+	// The native QUIC adapter has no TCP receive events. Its authenticated
+	// route and logical subscriber are timed by QUIC/DCO, including recovery.
+	// A classic socket timer must not delete that client during UDP loss.
+	if (m_directPeerOwner && HasDirectTransferAuthority(m_directPeerHandle))
+		return false;
 	const DWORD curTick = ::GetTickCount();
 	if (m_nOnConnect == SS_Half) {
 		//This socket is still in a half connection state. Because of SP2, we don't know
@@ -216,6 +461,200 @@ bool CClientReqSocket::CheckTimeOut()
 	return true;
 }
 
+bool CClientReqSocket::RegisterLegacyDirectRoute(reach::DirectHandle handle,const reach::DirectSessionRoute& route,uint64 epoch,uint64 transferLifetime)
+{
+	if(!thePrefs.IsEseNetLabActive() || !theApp.directreachability || !theApp.clientlist ||
+		m_directPeerOwner || m_legacyDirectRoute || !client || !theApp.clientlist->IsValidClient(client) ||
+		client->socket!=this || (route.transport!=reach::DirectTcp && route.transport!=reach::DirectUtp) ||
+		(route.transport==reach::DirectUtp)!=(m_pUtpLayer!=nullptr)) return false;
+	auto& manager=*theApp.directreachability;
+	const auto state=manager.DirectConnections().Snapshot(handle);
+	const auto lifetime=client->GetDirectClientLifetime();
+	if(!transferLifetime) transferLifetime=lifetime;
+	auto* transfer=theApp.clientlist->FindClientByLifetime(transferLifetime);
+	const auto owner=manager.DirectTransferClientLifetime(handle);
+	if(!transfer || !owner || *owner!=transferLifetime ||
+		(transfer!=client && !client->HasIsolatedDirectRouteCredits())) return false;
+	if(!state || !manager.HasDirectTransferSubscription(transferLifetime,handle) ||
+		!manager.DirectConnections().AuthorizesStart(handle,route,epoch) ||
+		state->topology_generation!=manager.GetTopologyGeneration()) return false;
+	const auto expected=transfer->NativeDirectCandidates(state->topology_generation,route.candidate.expires_monotonic_ms).peer.expected_user_hash;
+	if(transfer!=client) {
+		if(!expected || memcmp(client->GetUserHash(),expected->data(),16) || !client->Credits()) return false;
+		auto* pinned=transfer->Credits();
+		if(!pinned) pinned=theApp.clientcredits->FindCredit(expected->data());
+		if(pinned && pinned->GetSecIDKeyLen() && (client->Credits()->GetSecIDKeyLen()!=pinned->GetSecIDKeyLen() ||
+			memcmp(client->Credits()->GetSecureIdent(),pinned->GetSecureIdent(),pinned->GetSecIDKeyLen()))) return false;
+	}
+	m_legacyDirectHandle=handle; m_legacyDirectRoute=route.id; m_legacyDirectEpoch=epoch;
+	m_legacyDirectGeneration=state->topology_generation; m_legacyDirectLifetime=lifetime;
+	m_legacyTransferLifetime=transferLifetime;
+	m_legacyDirectCandidate=route.candidate;
+	// Freeze the pre-HELLO expectation, never read the mutable parsed hash
+	// back as evidence. A discovery claim remains an expectation, not credit.
+	m_legacyExpectedHash=expected;
+	return true;
+}
+
+bool CClientReqSocket::MatchesLegacyDirectEndpoint()
+{
+	return MatchesTcpEndpoint(m_legacyDirectCandidate);
+}
+
+bool CClientReqSocket::MatchesTcpEndpoint(const reach::DirectCandidate& expected)
+{
+	SOCKADDR_STORAGE address{}; int size=sizeof address;
+	if(!CAsyncSocketEx::GetPeerName(reinterpret_cast<sockaddr*>(&address),&size)) return false;
+	if(address.ss_family==AF_INET && size>=sizeof(sockaddr_in) && expected.family==4) {
+		const auto& actual=*reinterpret_cast<const sockaddr_in*>(&address);
+		return ntohs(actual.sin_port)==expected.port && !memcmp(&actual.sin_addr,expected.address.data(),4);
+	}
+	if(address.ss_family==AF_INET6 && size>=sizeof(sockaddr_in6) && expected.family==6) {
+		const auto& actual=*reinterpret_cast<const sockaddr_in6*>(&address);
+		return ntohs(actual.sin6_port)==expected.port && !memcmp(&actual.sin6_addr,expected.address.data(),16)
+			&& (expected.scope==reach::DirectScope::SameLan
+				? actual.sin6_scope_id==expected.interface_id : actual.sin6_scope_id==0);
+	}
+	return false;
+}
+
+void CClientReqSocket::CaptureClassicDirectTcpEndpoint()
+{
+	m_classicDirectTcpCandidate.reset(); m_classicDirectVerified=false; m_classicDirectChallenge=0;
+	if(m_legacyDirectRoute || m_directPeerOwner || m_pUtpLayer || !client || !client->HasValidHash() ||
+		!thePrefs.IsEseNetLabActive() || !theApp.directreachability) return;
+	SOCKADDR_STORAGE address{}; int size=sizeof address;
+	if(!CAsyncSocketEx::GetPeerName(reinterpret_cast<sockaddr*>(&address),&size)) return;
+	reach::DirectCandidate candidate;
+	if(address.ss_family==AF_INET && size>=sizeof(sockaddr_in)) {
+		const auto& actual=*reinterpret_cast<const sockaddr_in*>(&address);
+		const auto expectedIP=client->GetIP() ? client->GetIP() : client->GetConnectIP();
+		if(!expectedIP || actual.sin_addr.s_addr!=expectedIP) return;
+		candidate.family=4; candidate.kind=reach::DirectKind::DirectV4; candidate.port=ntohs(actual.sin_port);
+		memcpy(candidate.address.data(),&actual.sin_addr,4);
+	} else return; // classical IPv6 SecureIdent remains unsupported, never manufacture its proof
+	if(!candidate.port || candidate.port!=client->GetUserPort()) return; // inbound ephemeral/proxy endpoints are not listener evidence
+	candidate.transport_mask=reach::DirectTcp; candidate.evidence=reach::DirectEvidence::Observed;
+	candidate.topology_generation=theApp.directreachability->GetTopologyGeneration();
+	m_classicDirectTcpCandidate=candidate; m_classicDirectTcpLifetime=client->GetDirectClientLifetime();
+	memcpy(m_classicDirectTcpHash.data(),client->GetUserHash(),16);
+}
+
+void CClientReqSocket::RememberClassicDirectChallenge(uint32 challenge)
+{
+	if(!m_legacyDirectRoute && m_classicDirectTcpCandidate && client &&
+		client->GetDirectClientLifetime()==m_classicDirectTcpLifetime && !m_classicDirectVerified)
+		m_classicDirectChallenge=challenge;
+}
+
+bool CClientReqSocket::ReportLegacyDirectRouteEvent(reach::DirectEventType type,reach::DirectReason reason,uint64 usefulBytes)
+{
+	if(!m_legacyDirectRoute || m_legacyDirectClosed || !theApp.directreachability || !theApp.clientlist ||
+		!client || !theApp.clientlist->IsValidClient(client) || client->socket!=this ||
+		client->GetDirectClientLifetime()!=m_legacyDirectLifetime ||
+		(type==reach::DirectEventType::Connected && m_legacyDirectConnected)) return false;
+	auto& manager=*theApp.directreachability;
+	const auto state=manager.DirectConnections().Snapshot(m_legacyDirectHandle);
+	if(!state || state->epoch!=m_legacyDirectEpoch || state->topology_generation!=m_legacyDirectGeneration ||
+		manager.GetTopologyGeneration()!=m_legacyDirectGeneration ||
+		!HasDirectTransferAuthority(m_legacyDirectHandle)) return false;
+	reach::DirectSessionEvent event{m_legacyDirectHandle,m_legacyDirectGeneration,m_legacyDirectRoute,
+		m_legacyDirectSequence+1,m_legacyDirectEpoch,type,usefulBytes,reason};
+	if(manager.DirectEvents().TryPush(event)!=reach::DirectEnqueueStatus::Accepted) return false;
+	if(theApp.m_bReachBindingSelfTest && m_pUtpLayer)
+		Log(_T("OWNED_UTP_EVENT_SELFTEST type=%u reason=%u"),static_cast<unsigned>(type),static_cast<unsigned>(reason));
+	++m_legacyDirectSequence;
+	if(type==reach::DirectEventType::Connected) m_legacyDirectConnected=true;
+	if(type==reach::DirectEventType::Closed) m_legacyDirectClosed=true;
+	return true;
+}
+
+void CClientReqSocket::NotifyLegacySecureIdentResult(bool verified)
+{
+	if(!m_legacyDirectRoute) {
+		if(!m_classicDirectTcpCandidate || !client || !client->Credits() || m_classicDirectVerified ||
+			!m_classicDirectChallenge || m_classicDirectChallenge!=client->Credits()->m_dwCryptRndChallengeFor ||
+			client->GetDirectClientLifetime()!=m_classicDirectTcpLifetime ||
+			memcmp(client->GetUserHash(),m_classicDirectTcpHash.data(),16)) return;
+		if(!verified || !client->HasPassedSecureIdent(false) || !MatchesTcpEndpoint(*m_classicDirectTcpCandidate)) {
+			m_classicDirectChallenge=0; return;
+		}
+		m_classicDirectVerified=true;
+		m_classicDirectTcpCandidate->expires_monotonic_ms=static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count())+15000;
+		if(theApp.directreachability) theApp.directreachability->RecordDirectTcpObservation(*this);
+		return;
+	}
+	if(!m_legacyDirectRoute || !m_legacyDirectConnected || !m_legacyHelloAccepted ||
+		m_legacySecureIdentReported || !m_legacyExpectedHash ||
+		!HasDirectTransferAuthority(m_legacyDirectHandle) ||
+		client->GetDirectClientLifetime()!=m_legacyDirectLifetime ||
+		memcmp(client->GetUserHash(),m_legacyExpectedHash->data(),16)) return;
+	if(verified && !client->HasPassedSecureIdent(false)) return;
+    if(verified && !theApp.directreachability->QueueAuthenticatedProvisionalPeer(*this)) {
+        if(ReportLegacyDirectRouteEvent(reach::DirectEventType::AuthenticationFailed,reach::DirectReason::ResourceLimit)) {
+            m_legacySecureIdentReported=true; m_legacySecureIdentVerified=false;
+        }
+        return;
+    }
+	if(ReportLegacyDirectRouteEvent(verified ? reach::DirectEventType::Authenticated :
+		reach::DirectEventType::AuthenticationFailed,verified ? reach::DirectReason::None :
+		reach::DirectReason::IdentityMismatch)) {
+		m_legacySecureIdentReported=true; m_legacySecureIdentVerified=verified;
+	}
+}
+
+bool CClientReqSocket::AdoptLegacyDirectRoute(reach::DirectHandle handle,uint32 route,uint64 epoch)
+{
+	if(!m_legacyDirectRoute || m_legacyDirectAdopted || m_legacyDirectClosed ||
+		!m_legacySecureIdentVerified || !m_legacyHelloAccepted ||
+		handle.slot!=m_legacyDirectHandle.slot || handle.generation!=m_legacyDirectHandle.generation ||
+		route!=m_legacyDirectRoute || !epoch || epoch!=m_legacyDirectEpoch+1 ||
+		!HasDirectTransferAuthority(handle) || client->GetDirectClientLifetime()!=m_legacyDirectLifetime ||
+		!m_legacyExpectedHash || memcmp(client->GetUserHash(),m_legacyExpectedHash->data(),16) ||
+		!client->HasPassedSecureIdent(false) || !MatchesLegacyDirectEndpoint()) return false;
+	const auto state=theApp.directreachability->DirectConnections().Snapshot(handle);
+	if(!state || state->state!=reach::DirectSessionState::Ready || state->winner!=route || state->epoch!=epoch ||
+		state->topology_generation!=m_legacyDirectGeneration ||
+		theApp.directreachability->GetTopologyGeneration()!=m_legacyDirectGeneration) return false;
+	if(client->HasIsolatedDirectRouteCredits()) {
+		auto* transfer=theApp.clientlist->FindClientByLifetime(m_legacyTransferLifetime);
+		if(!transfer || transfer==client || transfer->socket || transfer->HasIsolatedDirectRouteCredits() ||
+			m_legacyHelloPacket.empty()) return false;
+		const auto expected=transfer->NativeDirectCandidates(m_legacyDirectGeneration,m_legacyDirectCandidate.expires_monotonic_ms).peer.expected_user_hash;
+		if(!expected || *expected!=*m_legacyExpectedHash) return false;
+		auto* destination=transfer->Credits();
+		if(!destination) destination=theApp.clientcredits->GetCredit(m_legacyExpectedHash->data());
+		if(!client->PromoteDirectRouteIdentTo(*destination)) return false;
+		auto* temporary=client;
+		temporary->socket=nullptr; client=transfer; transfer->socket=this;
+		try {
+			if(m_legacyHelloPrefix) transfer->ProcessHelloPacket(m_legacyHelloPacket.data(),static_cast<uint32>(m_legacyHelloPacket.size()));
+			else transfer->ProcessHelloAnswer(m_legacyHelloPacket.data(),static_cast<uint32>(m_legacyHelloPacket.size()));
+		} catch(...) {
+			transfer->socket=nullptr; client=temporary; temporary->socket=this;
+			throw; // consumer cancels/drains; never resume queues after partial parse
+		}
+		if(transfer->Credits()!=destination || !transfer->HasPassedSecureIdent(false)) {
+			transfer->socket=nullptr; client=temporary; temporary->socket=this; return false;
+		}
+		m_legacyDirectLifetime=m_legacyTransferLifetime;
+		m_legacyHelloPacket.clear();
+	}
+	m_legacyDirectEpoch=epoch; m_legacyDirectAdopted=true;
+	theApp.directreachability->RecordDirectTcpObservation(*this);
+	if(epoch>1 && client->GetRequestFile()) {
+		// A compressed reservation belongs to the previous byte stream. Do not
+		// feed a new stream into its inflater or carry the old peer's slot grant.
+		// Clear only transport reservations: PartFile retains accepted ranges,
+		// hash progress and disk buffers; new requests select its remaining gaps.
+		client->ClearDownloadBlockRequests();
+		client->SetDownloadState(DS_CONNECTING);
+	}
+	client->ConnectionEstablished(); // normal queues resume only after coordinator adoption
+	return true;
+}
+
 void CClientReqSocket::OnClose(int nErrorCode)
 {
 	ASSERT(theApp.listensocket->IsValidSocket(this));
@@ -229,8 +668,22 @@ void CClientReqSocket::OnClose(int nErrorCode)
 
 void CClientReqSocket::Disconnect(LPCTSTR pszReason)
 {
+	ReportLegacyDirectRouteEvent(reach::DirectEventType::Closed,reach::DirectReason::DirectUnreachable);
+	StopDirectWriter();
 	CEMSocket::SetConState(EMS_DISCONNECTED);
 	AsyncSelect(FD_CLOSE);
+	if(m_legacyDirectRoute) {
+		// A registered transport is one route, not the lifetime of the logical
+		// transfer. DCO receives Closed above and owns recovery/terminal delivery.
+		// Classic Disconnected would clear pending blocks/queue state or delete
+		// the subscriber client before another transport can resume that transfer.
+		if(client && theApp.clientlist && theApp.clientlist->IsValidClient(client) &&
+			client->GetDirectClientLifetime()==m_legacyDirectLifetime && client->socket==this)
+			client->socket=nullptr;
+		SetClient(nullptr);
+		Safe_Delete();
+		return;
+	}
 	if (client) {
 		CString sMsg;
 		sMsg.Format(_T("CClientReqSocket::Disconnect(): %s"), pszReason);
@@ -267,10 +720,94 @@ void CClientReqSocket::Safe_Delete()
 		client = NULL;
 	}
 	deletethis = true;
+	if(m_legacyDirectRoute) {
+		// Keep the wrapper alive for late MFC notifications, not its OS socket
+		// or uTP connection. Fence callbacks before closing the layered socket.
+		CAsyncSocketEx::Close();
+		m_legacyHelloPacket.clear();
+	}
+}
+
+bool CClientReqSocket::ValidateDirectHelloIdentity(const BYTE* packet,uint32 size,bool prefix) const
+{
+	if(!m_directPeerOwner && !m_legacyDirectRoute) return true; // unowned classic behavior unchanged
+	if(m_legacyDirectRoute) {
+		if(!packet || !m_legacyExpectedHash || m_legacyDirectClosed ||
+			!HasDirectTransferAuthority(m_legacyDirectHandle) ||
+			client->GetDirectClientLifetime()!=m_legacyDirectLifetime) return false;
+		const auto state=theApp.directreachability->DirectConnections().Snapshot(m_legacyDirectHandle);
+		if(!state || state->epoch!=m_legacyDirectEpoch ||
+			state->topology_generation!=m_legacyDirectGeneration ||
+			theApp.directreachability->GetTopologyGeneration()!=m_legacyDirectGeneration ||
+			state->state==reach::DirectSessionState::Failed || state->state==reach::DirectSessionState::Cancelled ||
+			state->state==reach::DirectSessionState::Recovering ||
+			(state->winner && state->winner!=m_legacyDirectRoute)) return false;
+		try {
+			CSafeMemFile data(packet,size);
+			if(prefix && data.ReadUInt8()!=16) return false;
+			uchar hash[16]; data.ReadHash16(hash);
+			if(memcmp(hash,m_legacyExpectedHash->data(),16)) return false;
+			data.ReadUInt32(); data.ReadUInt16();
+			const auto tags=data.ReadUInt32(); if(tags>128) return false;
+			for(uint32 i=0;i<tags;++i) {
+				CTag tag(data,true);
+				if(data.GetPosition()>data.GetLength()) return false;
+			}
+			// A matching claimed hash is NOT authenticated and cannot produce
+			// NODE_BOUND, credit bonus or an Authenticated DCO event.
+			return data.GetLength()-data.GetPosition()>=6;
+		} catch(CException* error) { error->Delete(); } catch(...) {}
+		return false;
+	}
+	if(!HasDirectTransferAuthority(m_directPeerHandle) || !packet) return false;
+	const auto* bound=theApp.directreachability->ValidateNativeQuicDelivery(m_directPeerOwner,
+		m_directPeerHandle,m_directPeerRoute,m_directPeerEpoch);
+	if(!bound) return false;
+	try {
+		CSafeMemFile data(packet,size);
+		if(prefix && data.ReadUInt8()!=16) return false;
+		uchar hash[16]; data.ReadHash16(hash);
+		if(memcmp(hash,bound->userHash.data(),16)) return false;
+		data.ReadUInt32(); data.ReadUInt16();
+		const auto tags=data.ReadUInt32();
+		if(tags>128) return false; // bounded native HELLO preflight work
+		bool nodeSeen=false;
+		for(uint32 i=0;i<tags;++i) {
+			CTag tag(data,true);
+			if(data.GetPosition()>data.GetLength()) return false;
+			if(tag.GetNameID()==TAG_ESE_NODE_PUB) {
+				if(nodeSeen || !tag.IsBlob() || tag.GetBlobSize()!=32
+					|| memcmp(tag.GetBlob(),bound->node.data(),32)) return false;
+				nodeSeen=true;
+			}
+		}
+		return nodeSeen && data.GetLength()-data.GetPosition()>=6;
+	} catch(CException* error) { error->Delete(); } catch(...) {}
+	return false;
 }
 
 bool CClientReqSocket::ProcessPacket(const BYTE *packet, uint32 size, UINT opcode)
 {
+	if(m_legacyDirectRoute && client && client->HasIsolatedDirectRouteCredits() &&
+		opcode!=OP_HELLO && opcode!=OP_HELLOANSWER) {
+		ReportLegacyDirectRouteEvent(reach::DirectEventType::AuthenticationFailed,reach::DirectReason::PeerIncompatible);
+		return false; // pre-auth route cannot ask files, mutate queues or deliver ranges
+	}
+	if((opcode==OP_HELLO || opcode==OP_HELLOANSWER)
+		&& !ValidateDirectHelloIdentity(packet,size,opcode==OP_HELLO)) {
+		if(auto* transport=theApp.directreachability ? theApp.directreachability->FindNativeQuicLab(m_directPeerOwner) : nullptr)
+			transport->Close(reach::DirectReason::IdentityMismatch);
+		if(m_legacyDirectRoute)
+			ReportLegacyDirectRouteEvent(reach::DirectEventType::AuthenticationFailed,reach::DirectReason::IdentityMismatch);
+		return false; // no legacy identity/credits/ConnectionEstablished side effects
+	}
+	if(m_legacyDirectRoute && client && client->HasIsolatedDirectRouteCredits() && (opcode==OP_HELLO || opcode==OP_HELLOANSWER)) {
+		if(m_legacySecureIdentReported || size>64*1024) {
+			ReportLegacyDirectRouteEvent(reach::DirectEventType::AuthenticationFailed,reach::DirectReason::ResourceLimit);
+			return false;
+		}
+		m_legacyHelloPacket.assign(packet,packet+size); m_legacyHelloPrefix=opcode==OP_HELLO;
+	}
 	switch (opcode) {
 	case OP_HELLOANSWER:
 		theStats.AddDownDataOverheadOther(size);
@@ -278,6 +815,7 @@ bool CClientReqSocket::ProcessPacket(const BYTE *packet, uint32 size, UINT opcod
 		// BUG-009 FIX: client may be invalidated by ProcessHelloAnswer
 		if (!client)
 			break;
+		if(m_legacyDirectRoute) m_legacyHelloAccepted=true;
 		if (thePrefs.GetDebugClientTCPLevel() > 0) {
 			DebugRecv("OP_HelloAnswer", client);
 			Debug(_T("  %s\n"), (LPCTSTR)client->DbgGetClientInfo());
@@ -289,7 +827,7 @@ bool CClientReqSocket::ProcessPacket(const BYTE *packet, uint32 size, UINT opcod
 		if (client->GetInfoPacketsReceived() == IP_BOTH)
 			client->InfoPacketsReceived();
 
-		client->ConnectionEstablished();
+		if(!m_legacyDirectRoute) client->ConnectionEstablished();
 		theApp.emuledlg->transferwnd->GetClientList()->RefreshClient(client);
 		break;
 	case OP_HELLO:
@@ -304,6 +842,7 @@ bool CClientReqSocket::ProcessPacket(const BYTE *packet, uint32 size, UINT opcod
 			bool bIsMuleHello;
 			try {
 				bIsMuleHello = client->ProcessHelloPacket(packet, size);
+				if(m_legacyDirectRoute) m_legacyHelloAccepted=true;
 			} catch (...) {
 				if (bNewClient) {
 					// Don't let CUpDownClient::Disconnected process a client which is not in the list of clients.
@@ -322,10 +861,12 @@ bool CClientReqSocket::ProcessPacket(const BYTE *packet, uint32 size, UINT opcod
 			// be attached to the known client, the new client will be deleted
 			// and the var. "client" will point to the known client.
 			// if not we keep our new-constructed client ;)
-			if (theApp.clientlist->AttachToAlreadyKnown(&client, this))
+			// Registered DCO routes own a specific client lifetime. The classic
+			// merge may replace/delete that client and cannot transfer this owner.
+			if (!m_directPeerOwner && !m_legacyDirectRoute && theApp.clientlist->AttachToAlreadyKnown(&client, this))
 				// update the old client informations
 				bIsMuleHello = client->ProcessHelloPacket(packet, size);
-			else {
+			else if(!m_directPeerOwner && !m_legacyDirectRoute) {
 				theApp.clientlist->AddClient(client);
 				client->SetCommentDirty();
 			}
@@ -338,7 +879,7 @@ bool CClientReqSocket::ProcessPacket(const BYTE *packet, uint32 size, UINT opcod
 
 			client->SendHelloAnswer();
 
-			if (client)
+			if (client && !m_legacyDirectRoute)
 				client->ConnectionEstablished();
 
 			ASSERT(client);
@@ -546,9 +1087,13 @@ bool CClientReqSocket::ProcessPacket(const BYTE *packet, uint32 size, UINT opcod
 			if (reqfile) {
 				if (!md4equ(client->GetUploadFileID(), packet))
 					client->SetCommentDirty();
+				if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST parser: set upload file"));
 				client->SetUploadFileID(reqfile);
+				if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST parser: send comment"));
 				client->SendCommentInfo(reqfile);
+				if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST parser: add client to queue"));
 				theApp.uploadqueue->AddClientToQueue(client);
+				if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST parser: queue returned"));
 			} else
 				client->CheckFailedFileIdReqs(packet);
 		}
@@ -645,6 +1190,8 @@ bool CClientReqSocket::ProcessPacket(const BYTE *packet, uint32 size, UINT opcod
 			if (creqfile) {
 				if (!creqfile->IsStopped() && (creqfile->GetStatus() == PS_READY || creqfile->GetStatus() == PS_EMPTY)) {
 					client->ProcessBlockPacket(packet, size, false, false);
+					if(theApp.m_bReachBindingSelfTest && m_legacyDirectRoute && HasAuthenticatedDirectConnection())
+						++m_legacyLabParsedBlocks;
 					const ClientTransferPolicy::PostBlockAction action =
 						ClientTransferPolicy::ClassifyPostBlock(creqfile->IsStopped(),
 							creqfile->GetStatus() == PS_PAUSED || creqfile->GetStatus() == PS_ERROR);
@@ -1042,6 +1589,12 @@ namespace {
 
 bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT opcode, UINT uRawSize)
 {
+	if(m_legacyDirectRoute && client && client->HasIsolatedDirectRouteCredits() &&
+		opcode!=OP_EMULEINFO && opcode!=OP_EMULEINFOANSWER && opcode!=OP_SECIDENTSTATE &&
+		opcode!=OP_PUBLICKEY && opcode!=OP_SIGNATURE) {
+		ReportLegacyDirectRouteEvent(reach::DirectEventType::AuthenticationFailed,reach::DirectReason::PeerIncompatible);
+		return false;
+	}
 	try {
 		// v7.7.0 — range now includes 0xCC (OP_LIVE_CHUNK_V2). OP_LIVE_PEER_LIST=0xCA,
 		// PONG=0xCB, CHUNK_V2=0xCC; bump the upper bound accordingly.
@@ -1372,6 +1925,7 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 			client->ProcessPublicKeyPacket(packet, size);
 			break;
 		case OP_SIGNATURE:
+			if(theApp.m_bReachBindingSelfTest && !m_legacyDirectRoute) ++m_classicLabParsedSignatures;
 			if (thePrefs.GetDebugClientTCPLevel() > 0)
 				DebugRecv("OP_Signature", client);
 			theStats.AddDownDataOverheadOther(uRawSize);
@@ -1972,6 +2526,8 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				&& theApp.clientlist->IsKadFirewallCheckIP(client->GetIP())) {
 				if (Kademlia::CKademlia::IsKad2Running())
 					Kademlia::CKademlia::GetPrefs()->IncFirewalled();
+				if(size==0 && theApp.directreachability)
+					theApp.directreachability->ObserveClassicCallbackAck(client->GetIP());
 			} else
 				DebugLogWarning(_T("Unrequested OP_KAD_FWTCPCHECK_ACK packet from client %s"), (LPCTSTR)client->DbgGetClientInfo());
 			break;
@@ -2490,9 +3046,9 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 		}
 
 		// === F0 (unified plan) — remaining eSE Live Tunneled opcodes ==
-		// Stub handlers for opcodes whose data plane (F5 P3+) is not yet
-		// Channel ops (0xD0-0xD3, 0xDE) land here until F3 wires the channel
-		// store. v8.1 Sprint C (C4): the T_* wrappers (0xD6-0xDD) are SUPERSEDED
+		// Fail-closed handlers for channel opcodes whose peer-facing data path
+		// is not available. Their capability bits are deliberately absent from
+		// TAG_ESE_CAPS. v8.1 Sprint C (C4): T_* wrappers (0xD6-0xDD) are SUPERSEDED
 		// — the tunneled control/data plane rides inside OP_LIVE_TUNNEL_CELL
 		// (0xD5) as TUN_OP_* sub-commands, so a top-level T_* opcode must never
 		// appear on the wire. We drop it permanently (reserved, not "not yet").
@@ -2510,7 +3066,7 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 		case OP_LIVE_PEER_INVITE:
 		case OP_LIVE_RENDEZVOUS_PEERS:
 			theStats.AddDownDataOverheadOther(uRawSize);
-			DebugLog(_T("[STUB] OP_LIVE 0x%02x from %s — reserved/superseded, dropped (channels: F3; T_* wrappers: superseded by TUN_OP_* in 0xD5)"),
+			DebugLog(_T("[UNSUPPORTED] OP_LIVE 0x%02x from %s — reserved/superseded, dropped (channel caps are not advertised; T_* uses TUN_OP_* in 0xD5)"),
 				(unsigned)opcode,
 				client ? (LPCTSTR)ipstr(client->GetIP()) : _T("?"));
 			break;
@@ -2592,6 +3148,8 @@ void CClientReqSocket::DbgAppendClientInfo(CString &str)
 
 void CClientReqSocket::OnConnect(int nErrorCode)
 {
+	if(theApp.m_bReachBindingSelfTest && m_legacyDirectRoute && m_pUtpLayer)
+		Log(_T("OWNED_UTP_CONNECT_SELFTEST error=%d endpoint=%u"),nErrorCode,MatchesLegacyDirectEndpoint()?1:0);
 	if (nErrorCode != 0 && GetFamily() == AF_INET6 && client != NULL)
 		client->MarkIPv6DirectFailed();
 
@@ -2600,7 +3158,7 @@ void CClientReqSocket::OnConnect(int nErrorCode)
 	// before declaring the client unreachable.  IPv6-only and LowID peers do
 	// not have a valid direct-v4 fallback and therefore keep the normal error
 	// path (callbacks/hole-punch are selected before this socket is created).
-	if (nErrorCode != 0 && GetFamily() == AF_INET6 && client != NULL
+	if (nErrorCode != 0 && !m_legacyDirectRoute && GetFamily() == AF_INET6 && client != NULL
 		&& !client->HasLowID() && !client->IsIPv6OnlyEndpoint()
 		&& client->GetConnectIP() != 0)
 	{
@@ -2623,7 +3181,21 @@ void CClientReqSocket::OnConnect(int nErrorCode)
 		nErrorCode = nV6Error;
 	}
 	SetConState(SS_Complete);
+	// Reject a transport connected to a different destination before the base
+	// callback can flush queued protocol traffic. Route registration alone is
+	// not evidence of the endpoint actually reached by Connect/proxy/uTP.
+	if(!nErrorCode && m_legacyDirectRoute && !MatchesLegacyDirectEndpoint()) {
+		ReportLegacyDirectRouteEvent(reach::DirectEventType::Closed,reach::DirectReason::IdentityMismatch);
+		Disconnect(_T("Direct route endpoint mismatch"));
+		return;
+	}
 	CEMSocket::OnConnect(nErrorCode);
+	if(!nErrorCode) CaptureClassicDirectTcpEndpoint(); // outgoing callback only; accepted sockets cannot seed this evidence
+	if(!nErrorCode) ReportLegacyDirectRouteEvent(reach::DirectEventType::Connected,reach::DirectReason::None);
+	// libutp may not emit WRITABLE until after the first write. CEMSocket marks
+	// the stream connected in OnSend, so wake the queued HELLO only after the
+	// actual connection and (for DCO routes) endpoint validation above.
+	if(!nErrorCode && m_pUtpLayer) CEMSocket::OnSend(0);
 	if (nErrorCode) {
 		if (thePrefs.GetVerbose()) {
 			const CString &strTCPError(GetFullErrorMessage(nErrorCode));
@@ -2844,6 +3416,8 @@ bool CListenSocket::Rebind()
 
 bool CListenSocket::StartListening()
 {
+	m_port = 0;
+	if(theApp.directreachability) theApp.directreachability->SynchronizeLocalSocketBindings();
 	bListening = true;
 
 	// Creating the socket with SO_REUSEADDR may solve LowID issues if emule was restarted
@@ -2931,6 +3505,7 @@ bool CListenSocket::StartListening()
 		return false;
 
 	m_port = thePrefs.GetPort();
+	if(theApp.directreachability) theApp.directreachability->SynchronizeLocalSocketBindings();
 	return true;
 }
 
@@ -3053,6 +3628,10 @@ void CListenSocket::OnAccept(int nErrorCode)
 			// v4-mapped) are dropped here for now — the rest of eMule
 			// only understands v4 endpoints; full v6 peer support is
 			// future work.
+			const uint64 inboundReachGeneration=theApp.directreachability!=NULL
+				? theApp.directreachability->GetTopologyGeneration() : 0;
+            const auto inboundAcceptedAt=static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
 			SOCKADDR_STORAGE SockStorage = {};
 			SOCKADDR_IN SockAddr = {};
 			CAddress NativeV6;
@@ -3209,11 +3788,23 @@ void CListenSocket::OnAccept(int nErrorCode)
 					localV6.FromSA((SOCKADDR*)&localStorage, localLength);
 				CFirewallProberV6::Instance().ReportInboundV6Reachable(localV6);
 				DebugLog(_T("Accepted native IPv6 client [%s]"), (LPCTSTR)NativeV6.ToStringC());
-			} else if (IsGoodIP(SockAddr.sin_addr.s_addr, true)
+			} else if ((IsGoodIP(SockAddr.sin_addr.s_addr, true) ||
+                // Exact loopback exception only in the explicit isolated lab.
+                // Public-address filtering in ordinary operation is unchanged.
+                (theApp.m_bReachBindingSelfTest && SockAddr.sin_addr.s_addr==htonl(INADDR_LOOPBACK) &&
+                    thePrefs.GetBindAddr() && _tcscmp(thePrefs.GetBindAddr(),_T("127.0.0.1"))==0))
 				&& theApp.directreachability != NULL) {
 				const bool wasVerified =
 					theApp.directreachability->HasVerifiedEd2kReachability();
-				if (theApp.directreachability->ObserveInboundTcpAccept()
+				SOCKADDR_STORAGE localStorage={}; int localLength=sizeof localStorage;
+				uint16 localPort=0;
+				if(newclient->GetSockName((SOCKADDR*)&localStorage,&localLength)) {
+					if(localStorage.ss_family==AF_INET && localLength>=sizeof(SOCKADDR_IN))
+						localPort=ntohs(((SOCKADDR_IN*)&localStorage)->sin_port);
+					else if(localStorage.ss_family==AF_INET6 && localLength>=sizeof(SOCKADDR_IN6))
+						localPort=ntohs(((SOCKADDR_IN6*)&localStorage)->sin6_port);
+				}
+				if (theApp.directreachability->ObserveInboundTcpAccept(inboundReachGeneration,localPort,SockAddr.sin_addr.s_addr,inboundAcceptedAt)
 					&& !wasVerified
 					&& theApp.directreachability->HasVerifiedEd2kReachability())
 					theApp.emuledlg->ShowConnectionState();

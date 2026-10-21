@@ -2319,6 +2319,9 @@ void CPreferences::LoadPreferences()
 		// re-enabling the network the user explicitly disabled.
 		networkkademlia = KadNetworkPolicy::LegacyKad2Enabled(m_uKadNetworkMask);
 	}
+	// CIni's explicit section argument persists: subsequent legacy preferences
+	// (including HighresTimer) still belong to [eMule], not [Connection].
+	ini.SetSection(_T("eMule"));
 	networked2k = ini.GetBool(_T("NetworkED2K"), true);
 	m_bRemove2bin = ini.GetBool(_T("RemoveFilesToBin"), true);
 	m_bShowCopyEd2kLinkCmd = ini.GetBool(_T("ShowCopyEd2kLinkCmd"), false);
@@ -3247,7 +3250,8 @@ CString CPreferences::GetDefaultDirectory(EDefaultDirectory eDirectory, bool bCr
 			while (*value == _T('-') || *value == _T('/')) ++value;
 			bPortableCommandLine =
 				(_tcsicmp(value, _T("portable")) == 0)
-				|| (_tcsicmp(value, _T("selftest")) == 0);
+				|| (_tcsicmp(value, _T("selftest")) == 0)
+				|| (_tcsicmp(value, _T("reach-binding-selftest")) == 0);
 		}
 		if (bPortableCommandLine && bConfigAvailableExecutable)
 			nRegistrySetting = 2; // executable-directory mode for this process only

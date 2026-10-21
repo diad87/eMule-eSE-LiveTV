@@ -7,8 +7,12 @@
 #include "OtherFunctions.h"
 #include "eMuleAI/Address.h"
 #include "kademlia/kademlia/KadProtocolPolicy.h"
-
 #include <vector>
+#include <optional>
+#include <cstdint>
+#include <memory>
+#include <array>
+#include "reach/native_direct_reask.h"
 
 class CClientReqSocket;
 class CFriend;
@@ -23,6 +27,8 @@ class CSafeMemFile;
 class CEMSocket;
 class CAICHHash;
 enum EUTF8str : uint8;
+namespace reach { struct NativeDirectCandidateSnapshotV1; struct NativeDirectRequestResult; enum class DirectReason : std::uint8_t; }
+namespace ese { namespace discovery { struct ResolvedKad6Candidate; } }
 
 struct Pending_Block_Struct
 {
@@ -56,9 +62,35 @@ class CUpDownClient : public CObject
 {
 	DECLARE_DYNAMIC(CUpDownClient)
 	friend class CUploadQueue;
+	friend class CNativeDirectSelfTestAccess; // Defined only by the explicit native lab selftest.
 	void	Init();
+	uint64 m_directClientLifetime=0;
+	uint64 m_directDownloadSubscriber=0;
+	reach::NativeDirectReaskGate m_directDownloadReask;
+	std::unique_ptr<ese::discovery::ResolvedKad6Candidate> m_directDiscovery;
+	std::optional<std::array<std::uint8_t,32>> m_directDiscoveryIdentity;
 
 public:
+	uint64 GetDirectClientLifetime() const noexcept { return m_directClientLifetime; }
+	// Private SecureIdent state for a disposable pre-auth route client. Never
+	// publishes counters/challenges or a proof into the global credit record.
+	bool EnableDirectRouteCreditIsolation(const std::array<uint8,16>& expectedHash,CClientCredits* expectedCredits=nullptr);
+	bool HasIsolatedDirectRouteCredits() const noexcept { return m_directRouteCredits!=nullptr; }
+	bool PromoteDirectRouteIdentTo(CClientCredits& destination);
+	reach::NativeDirectCandidateSnapshotV1 NativeDirectCandidates(uint64 localGeneration,uint64 expiresMs) const;
+	bool AdoptNativeDirectDiscovery(const ese::discovery::ResolvedKad6Candidate& candidate);
+	bool InitialiseNativeDirectDiscovery(const ese::discovery::ResolvedKad6Candidate& candidate);
+	std::optional<std::array<std::uint8_t,32>> NativeDirectExpectedNode() const;
+	bool HasCurrentNativeDirectDiscovery(uint64 localGeneration,uint64 nowMs) const noexcept;
+	// Comparison only; caller must separately validate the authenticated channel owner.
+	bool MatchesNativeDirectBoundIdentity(const std::array<std::uint8_t,32>& node,
+		const std::array<std::uint8_t,16>& hash) const;
+	bool IsNativeDirectDiscoveryOnly() const noexcept { return m_directDiscoveryIdentity.has_value() && !HasEseNodePub(); }
+	void ClearNativeDirectDiscovery() noexcept;
+	reach::NativeDirectRequestResult RequestNativeDirectDownload(uint64 candidateExpiresMs);
+	bool ProcessNativeDirectDownload(); // true: direct scheduler owns this download
+	std::optional<reach::DirectReason> TakeNativeDirectDownloadTerminal();
+	uint64 GetNativeDirectDownloadSubscriber() const noexcept { return m_directDownloadSubscriber; }
     void QueueDeferredNatConnect(const class CAddress& ip, uint16 port, uint32 t) {}
     void MarkNatTRendezvous(int a, bool b) {}
     class CUtpSocket* InitUtpSupport();
@@ -586,6 +618,10 @@ public:
 
 	CClientReqSocket *socket;
 	CClientCredits	*credits;
+	std::unique_ptr<CClientCredits> m_directRouteCredits;
+	std::array<uint8,200> m_directRouteSignature{};
+	uint32 m_directRouteChallenge=0,m_directRouteSignatureIP=0;
+	uint8 m_directRouteSignatureSize=0,m_directRouteChallengeKind=0;
 	CFriend			*m_Friend;
 	uint8			*m_abyUpPartStatus;
 	CTypedPtrList<CPtrList, CPartFile*> m_OtherRequests_list;

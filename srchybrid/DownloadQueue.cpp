@@ -42,6 +42,9 @@
 #include "FirewallProberV6.h"
 #include "ReachabilityWire.h"
 #include "ClientUDPSocket.h"
+#include "DirectReachabilityManager.h"
+#include "NodeIdentity.h"
+#include <chrono>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -352,6 +355,9 @@ bool CDownloadQueue::IsFileExisting(const uchar *fileid, bool bLogWarnings) cons
 
 void CDownloadQueue::Process()
 {
+	RetireExpiredDirectKad6Sources();
+	if(theApp.directreachability) theApp.directreachability->RetireInactiveQueuedKad6Resolution(*this);
+	if(theApp.directreachability) theApp.directreachability->ConsumeDirectKad6DownloadSources(*this);
 	ProcessLocalRequests(); // send src requests to local server
 
 	uint32 downspeed;
@@ -393,9 +399,14 @@ void CDownloadQueue::Process()
 		if (cur_file->GetStatus() == PS_ERROR)
 			theStats.m_dwOverallStatus |= STATE_ERROROUS;
 
-		if (cur_file->GetStatus() == PS_READY || cur_file->GetStatus() == PS_EMPTY)
+		if (cur_file->GetStatus() == PS_READY || cur_file->GetStatus() == PS_EMPTY) {
+            if(theApp.directreachability && !theApp.m_bReachBindingSelfTest && !cur_file->IsStopped()) {
+                std::array<std::uint8_t,16> fileHash{};
+                std::copy(cur_file->GetFileHash(),cur_file->GetFileHash()+16,fileHash.begin());
+                theApp.directreachability->TryBeginQueuedKad6Resolution(fileHash,cur_file->GetFileSize());
+            }
 			datarateX += cur_file->Process(downspeed, m_udcounter);
-		else
+        } else
 			//This will ensure we don't keep old sources for paused and stopped files.
 			cur_file->StopPausedFile();
 	}
@@ -491,6 +502,60 @@ bool CDownloadQueue::IsPartFile(const CKnownFile *file) const
 {
 	CSingleLock lock(&m_csFilelistMainThrdWriteOtherThrdsRead, TRUE);
 	return filelist.Find((void*)file) != NULL;
+}
+
+unsigned CDownloadQueue::RetireExpiredDirectKad6Sources()
+{
+	if(!theApp.directreachability || !theApp.clientlist) return 0;
+	const auto topology=theApp.directreachability->GetTopologyGeneration();
+	const auto now=static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count());
+	unsigned retired=0;
+	for(POSITION files=filelist.GetHeadPosition();files;) {
+		auto* file=filelist.GetNext(files);
+		for(POSITION sources=file->srclist.GetHeadPosition();sources;) {
+			auto* client=file->srclist.GetNext(sources);
+			if(client && client->IsNativeDirectDiscoveryOnly() && !client->socket &&
+				!client->GetNativeDirectDownloadSubscriber() && theApp.clientlist->IsValidClient(client) &&
+				!client->HasCurrentNativeDirectDiscovery(topology,now)) {
+				delete client; ++retired; // Registered client destructor removes its queue/UI membership.
+			}
+		}
+	}
+	return retired;
+}
+
+bool CDownloadQueue::AdoptDirectKad6Discovery(const ese::discovery::ResolvedKad6Candidate& candidate,bool allowNewSource)
+{
+	if(!thePrefs.IsEseNetLabActive()) return false;
+	auto* file=GetFileByID(candidate.source.file.data());
+	if(!file || file->IsStopped() || file->GetFileSize()!=candidate.source.fileSize) return false;
+	// A signed key is an expectation, not authority to merge by IP/user_hash.
+	for(POSITION pos=file->srclist.GetHeadPosition();pos;) {
+		auto* client=file->srclist.GetNext(pos);
+		if(client && client->GetRequestFile()==file) {
+			const auto node=client->NativeDirectExpectedNode();
+			if(node && *node==candidate.source.node) return client->AdoptNativeDirectDiscovery(candidate);
+		}
+	}
+	if(!allowNewSource || !theApp.clientlist || file->GetSourceCount()>=file->GetMaxSources() ||
+		(eSELive::NodeIdentityPub() && !std::memcmp(eSELive::NodeIdentityPub(),candidate.source.node.data(),32))) return false;
+	if(!theApp.directreachability) return false;
+	const auto now=static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count());
+	reach::NativeDirectCandidateSnapshotV1 verified;
+	if(!ese::discovery::Kad6Resolution::NativeSnapshot(candidate,candidate.source.file,file->GetFileSize(),
+		theApp.directreachability->GetTopologyGeneration(),now,verified)) return false;
+	try {
+		auto client=std::make_unique<CUpDownClient>(file,0,0,0,0,false);
+		if(!client->InitialiseNativeDirectDiscovery(candidate)) return false; // Both signatures checked before insertion.
+		// Explicit node-only admission. No endpoint, credits or obfuscation
+		// capability is fabricated, and legacy TryToConnect is fenced off.
+		theApp.clientlist->AddClient(client.get(),true);
+		file->srclist.AddTail(client.get());
+		theApp.emuledlg->transferwnd->GetDownloadList()->AddSource(file,client.get(),false);
+		client.release(); return true;
+	} catch(...) { return false; }
 }
 
 bool CDownloadQueue::CheckAndAddSource(CPartFile *sender, CUpDownClient *source)

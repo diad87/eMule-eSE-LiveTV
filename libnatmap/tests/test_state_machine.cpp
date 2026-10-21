@@ -157,6 +157,29 @@ void TestSplitEvidenceAndFailedVerification() {
 } // namespace
 
 int main() {
+    CHECK(MatchesLocalMappingPorts(4662,4672,4662,4672));
+    CHECK(!MatchesLocalMappingPorts(0,4672,0,4672));
+    CHECK(!MatchesLocalMappingPorts(4662,4672,4663,4672));
+    CHECK(!MatchesLocalMappingPorts(4662,4672,4662,4673));
+    CHECK(MatchesLocalMappingPorts(4662,0,4662,0));
+    CHECK(!MatchesLocalMappingPorts(4662,0,4662,4672));
+    std::uint64_t next=99;
+    CHECK(NextTopologyGeneration(0,next) && next==1);
+    CHECK(NextTopologyGeneration(next,next) && next==2);
+    CHECK(NextTopologyGeneration(7,next) && next==8);
+    CHECK(NextTopologyGeneration((std::numeric_limits<std::uint64_t>::max)()-1,next) &&
+        next==(std::numeric_limits<std::uint64_t>::max)());
+    CHECK(!NextTopologyGeneration((std::numeric_limits<std::uint64_t>::max)(),next) && next==0);
+    CHECK(IsCurrentProofGeneration(7,7,7));
+    CHECK(!IsCurrentProofGeneration(0,0,0));
+    CHECK(!IsCurrentProofGeneration(6,7,7));
+    CHECK(!IsCurrentProofGeneration(7,6,7));
+    CHECK(!IsCurrentProofGeneration(7,7,8));
+    CHECK(IsCurrentInboundProof(7,7,7,4662,4662));
+    CHECK(!IsCurrentInboundProof(6,7,7,4662,4662));
+    CHECK(!IsCurrentInboundProof(7,7,8,4662,4662));
+    CHECK(!IsCurrentInboundProof(7,7,7,0,4662));
+    CHECK(!IsCurrentInboundProof(7,7,7,4663,4662));
     TestHappyPathAndStaleFencing();
     TestSplitEvidenceAndFailedVerification();
     TestHundredThousandAdversarialTransitions();

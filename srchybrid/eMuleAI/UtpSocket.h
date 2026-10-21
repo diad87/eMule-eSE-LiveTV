@@ -22,6 +22,8 @@ class CUtpSocket : public CAsyncSocketExLayer
 	static void OnContextDestroyed(utp_context* ctx); // Notify that a context is being destroyed to clear internal tracking.
 	static CCriticalSection& GetRuntimeLock();
 	static size_t GetConnectedSocketCount();
+	static bool RunExactAcceptSelfTest(uint16 port); // explicit --reach-binding-selftest, loopback only
+	uint64 GetEndpointOwnerGeneration() const { return m_uEndpointOwnerGeneration; }
 	bool ProcessUtpPacket(const byte *data, size_t len, const struct sockaddr *from, socklen_t fromlen);
 	// Static bridge: feed raw UDP data to libutp before eMule decryption.
 	// Returns true if the packet was consumed by libutp (caller should stop processing).
@@ -77,6 +79,7 @@ class CUtpSocket : public CAsyncSocketExLayer
 	friend static uint64 on_utp_get_read_buffer_size (utp_callback_arguments* a);
 
 	struct UTPSocket*	m_Socket;
+	uint64 m_uEndpointOwnerGeneration=0;
 	utp_context*		m_Context;
 	uint8				m_ShutDown;
 	CBuffer				m_ReadBuffer;

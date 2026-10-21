@@ -15,6 +15,11 @@
 //along with this program; if not, write to the Free Software
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #include "stdafx.h"
+#include "EsePeerTrustStore.h"
+#include <chrono>
+#include <algorithm>
+#include "reach/direct_client_lifetime.h"
+#include "DirectReachabilityManager.h"
 #ifdef _DEBUG
 #include "DebugHelpers.h"
 #endif
@@ -293,8 +298,238 @@ CUpDownClient::CUpDownClient(CPartFile *in_reqfile, uint16 in_port, uint32 in_us
 	m_nServerPort = in_serverport;
 }
 
+void CUpDownClient::ClearNativeDirectDiscovery() noexcept
+{
+	m_directDiscovery.reset();
+}
+
+bool CUpDownClient::AdoptNativeDirectDiscovery(const ese::discovery::ResolvedKad6Candidate& candidate)
+{
+	const auto expectedNode=NativeDirectExpectedNode();
+	if(!theApp.directreachability || !thePrefs.IsEseNetLabActive() || !m_reqfile || m_reqfile->IsStopped() ||
+		!m_directClientLifetime || m_directDownloadSubscriber || !expectedNode ||
+		(!IsNativeDirectDiscoveryOnly() && !SupportsEseNetLabV1Target())) return false;
+	std::array<std::uint8_t,16> file{}; std::copy(m_reqfile->GetFileHash(),m_reqfile->GetFileHash()+16,file.begin());
+	const auto now=static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count());
+	reach::NativeDirectCandidateSnapshotV1 snapshot;
+	if(!ese::discovery::Kad6Resolution::NativeSnapshot(candidate,file,m_reqfile->GetFileSize(),
+		theApp.directreachability->GetTopologyGeneration(),now,snapshot) ||
+		snapshot.peer.expected_node_pub!=expectedNode ||
+		(snapshot.peer.expected_user_hash && !isnulmd4(GetUserHash()) &&
+			std::memcmp(snapshot.peer.expected_user_hash->data(),GetUserHash(),16))) return false;
+	if(m_directDiscovery && m_directDiscovery->source.node==candidate.source.node &&
+		m_directDiscovery->source.file==candidate.source.file) {
+		const auto& previous=m_directDiscovery->source;
+		if(candidate.source.generation<previous.generation ||
+			(candidate.source.generation==previous.generation && candidate.source.serial<previous.serial)) return false;
+		if(candidate.source.generation==previous.generation && candidate.source.serial==previous.serial)
+			return candidate.source.digest==previous.digest; // Duplicate never renews the original lease.
+	}
+	// Copy only; never install descriptor identity into HELLO/SecureIdent/credits.
+	try { m_directDiscovery=std::make_unique<ese::discovery::ResolvedKad6Candidate>(candidate); }
+	catch(...) { return false; }
+	return true;
+}
+
+std::optional<std::array<std::uint8_t,32>> CUpDownClient::NativeDirectExpectedNode() const
+{
+	if(HasEseNodePub()) {
+		std::array<std::uint8_t,32> node{}; std::copy(GetEseNodePub(),GetEseNodePub()+32,node.begin()); return node;
+	}
+	return m_directDiscoveryIdentity; // An expectation, never a HELLO/authentication claim.
+}
+
+bool CUpDownClient::HasCurrentNativeDirectDiscovery(uint64 generation,uint64 now) const noexcept
+{
+	// Cheap expiry check over privately owned, already signature-verified input.
+	// This does NOT authorize a route or authenticate a live peer.
+	return thePrefs.IsEseNetLabActive() && m_directDiscovery && m_reqfile && !m_reqfile->IsStopped() &&
+		generation && m_directDiscovery->localGeneration==generation &&
+		m_directDiscovery->receivedMs<=now && m_directDiscovery->until>now &&
+		m_directDiscovery->source.fileSize==m_reqfile->GetFileSize() &&
+		!std::memcmp(m_directDiscovery->source.file.data(),m_reqfile->GetFileHash(),16);
+}
+
+bool CUpDownClient::InitialiseNativeDirectDiscovery(const ese::discovery::ResolvedKad6Candidate& candidate)
+{
+	if(m_directDiscoveryIdentity || m_directDiscovery || HasEseNodePub() || HasValidHash() || socket ||
+		GetIP() || GetConnectIP() || GetUserPort() || GetUserIDHybrid() || GetClientSoft()!=SO_UNKNOWN) return false;
+	m_directDiscoveryIdentity=candidate.source.node;
+	if(!AdoptNativeDirectDiscovery(candidate)) { m_directDiscoveryIdentity.reset(); return false; }
+	SetSourceFrom(SF_KADEMLIA); SetDownloadState(DS_ONQUEUE,_T("signed Kad6 discovery pending authentication"));
+	return true;
+}
+
+bool CUpDownClient::MatchesNativeDirectBoundIdentity(const std::array<std::uint8_t,32>& node,
+	const std::array<std::uint8_t,16>& hash) const
+{
+	const auto expected=NativeDirectExpectedNode();
+	if(!expected || *expected!=node || !reach::NonzeroIdentity(hash)) return false;
+	if(!IsNativeDirectDiscoveryOnly())
+		return HasEseNodePub() && !std::memcmp(GetUserHash(),hash.data(),hash.size());
+	if(!theApp.directreachability) return false;
+	const auto now=static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count());
+	if(!HasCurrentNativeDirectDiscovery(theApp.directreachability->GetTopologyGeneration(),now)) return false;
+	// Privately owned descriptor was fully verified before admission. Comparing
+	// its claimed hash does not install it into HELLO or grant SecureIdent credit.
+	const auto* claim=m_directDiscovery->descriptor.data()+61;
+	return isnulmd4(claim) || !std::memcmp(claim,hash.data(),hash.size());
+}
+
+reach::NativeDirectCandidateSnapshotV1 CUpDownClient::NativeDirectCandidates(uint64 generation,uint64 expiresMs) const
+{
+	reach::NativeDirectCandidateSnapshotV1 snapshot;
+	snapshot.local_generation=generation;
+	if(!isnulmd4(GetUserHash())) {
+		std::array<std::uint8_t,16> hash{};
+		std::copy(GetUserHash(),GetUserHash()+hash.size(),hash.begin());
+		snapshot.peer.expected_user_hash=hash;
+	}
+	snapshot.peer.expected_node_pub=NativeDirectExpectedNode();
+	if(theApp.directreachability && thePrefs.IsEseNetLabActive() && SupportsEseNetLabV1Target() &&
+		theApp.directreachability->AppendIsolatedLanQuicCandidate(snapshot)) return snapshot;
+	if(m_directDiscovery && thePrefs.IsEseNetLabActive() && (SupportsEseNetLabV1Target() || IsNativeDirectDiscoveryOnly()) &&
+		m_reqfile && !m_reqfile->IsStopped() && snapshot.peer.expected_node_pub) {
+		std::array<std::uint8_t,16> file{}; std::copy(m_reqfile->GetFileHash(),m_reqfile->GetFileHash()+16,file.begin());
+		const auto now=static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+		reach::NativeDirectCandidateSnapshotV1 discovered;
+		if(ese::discovery::Kad6Resolution::NativeSnapshot(*m_directDiscovery,file,m_reqfile->GetFileSize(),generation,now,discovered) &&
+			discovered.peer.expected_node_pub==snapshot.peer.expected_node_pub &&
+			(!discovered.peer.expected_user_hash || !snapshot.peer.expected_user_hash ||
+				discovered.peer.expected_user_hash==snapshot.peer.expected_user_hash)) {
+			if(!discovered.peer.expected_user_hash) discovered.peer.expected_user_hash=snapshot.peer.expected_user_hash;
+			for(std::size_t i=0;i<discovered.count;++i)
+				if(expiresMs<discovered.candidates[i].route.expires_monotonic_ms)
+					discovered.candidates[i].route.expires_monotonic_ms=expiresMs;
+			return discovered; // Neither evidence nor local generation is promoted.
+		}
+	}
+	auto append=[&](const CAddress& endpoint,reach::DirectKind kind,uint64 id) {
+		if(!GetUserPort() || !endpoint.IsUsablePublic()) return;
+		auto& candidate=snapshot.candidates[snapshot.count++];
+		candidate.route.id=id; candidate.route.kind=kind;
+		candidate.route.family=endpoint.GetType()==CAddress::IPv6 ? 6 : 4;
+		std::copy(endpoint.Data(),endpoint.Data()+endpoint.GetSize(),candidate.route.address.begin());
+		candidate.route.port=GetUserPort(); candidate.route.transport_mask=reach::DirectTcp;
+		candidate.route.topology_generation=generation; candidate.route.expires_monotonic_ms=expiresMs;
+		candidate.route.evidence=reach::DirectEvidence::Advertised;
+	};
+	if(GetIPv6Address().IsNativeIPv6()) append(GetIPv6Address(),reach::DirectKind::DirectV6,1);
+	// Synthetic IPv6 uint32 keys must never become actionable IPv4 endpoints.
+	if(!IsIPv6OnlyEndpoint() && !HasLowID()) {
+		const uint32 ip=GetIP() ? GetIP() : GetConnectIP();
+		if(ip) append(CAddress::FromIPv4NetworkOrder(ip),reach::DirectKind::DirectV4,2);
+	}
+	return snapshot; // No pin, remote generation, proof or QUIC capability invented.
+}
+
+reach::NativeDirectRequestResult CUpDownClient::RequestNativeDirectDownload(uint64 expiresMs)
+{
+	reach::NativeDirectRequestResult result;
+	if(!theApp.directreachability || !m_directClientLifetime || !thePrefs.IsEseNetLabActive()
+		|| (!SupportsEseNetLabV1Target() && !IsNativeDirectDiscoveryOnly())) return result;
+	auto& manager=*theApp.directreachability;
+	auto snapshot=NativeDirectCandidates(manager.GetTopologyGeneration(),expiresMs);
+	if(IsNativeDirectDiscoveryOnly()) {
+		// A signed QUIC offer admits gathering only: no HELLO capability,
+		// trusted pin, return-path proof or transport consent is installed.
+		const auto now=static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+		if(!HasCurrentNativeDirectDiscovery(manager.GetTopologyGeneration(),now)) return result;
+		std::size_t count=0;
+		for(std::size_t i=0;i<snapshot.count;++i) {
+			auto candidate=snapshot.candidates[i];
+			if(candidate.source!=reach::DirectCandidateSource::KadSource ||
+				!(candidate.route.transport_mask & reach::DirectQuic) ||
+				candidate.route.expires_monotonic_ms<=now) continue;
+			candidate.route.transport_mask=reach::DirectQuic;
+			snapshot.candidates[count++]=candidate;
+		}
+		snapshot.count=count;
+		if(!count) return result; // No subscriber allocated for an unusable offer.
+	}
+	if(m_directDownloadSubscriber) {
+		const auto record=manager.ResolveDirectSubscriber(m_directDownloadSubscriber);
+		if(!record || manager.ResetConsumedDirectSubscriber(m_directDownloadSubscriber,m_directClientLifetime))
+			m_directDownloadSubscriber=0;
+		else if(record->terminal_reason) return result; // cause must be consumed, attempt drained
+	}
+	if(!m_directDownloadSubscriber)
+		m_directDownloadSubscriber=manager.AcquireDirectSubscriber(m_directClientLifetime,reach::DirectConsumerKind::Download);
+	if(!m_directDownloadSubscriber) return result;
+	// Lifetime is an owned source record, never an endpoint-derived identity.
+	// Admission does not start a transport or upgrade advertised evidence.
+	result=manager.RequestDirectConnection(snapshot,m_directClientLifetime,1,m_directDownloadSubscriber);
+	return result;
+}
+
+std::optional<reach::DirectReason> CUpDownClient::TakeNativeDirectDownloadTerminal()
+{
+	return theApp.directreachability && m_directDownloadSubscriber
+		? theApp.directreachability->TakeDirectTerminal(m_directDownloadSubscriber,m_directClientLifetime)
+		: std::nullopt;
+}
+
+bool CUpDownClient::ProcessNativeDirectDownload()
+{
+	const bool discoveryOnly=IsNativeDirectDiscoveryOnly();
+	if((!discoveryOnly && !SupportsEseNetLabV1Target()) || socket || !theApp.directreachability || !thePrefs.IsEseNetLabActive()) return false;
+	if(!GetRequestFile() || GetRequestFile()->IsStopped() ||
+		(GetRequestFile()->GetStatus()!=PS_READY && GetRequestFile()->GetStatus()!=PS_EMPTY)) return false;
+	auto& manager=*theApp.directreachability;
+	const auto now=static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count());
+	const auto generation=manager.GetTopologyGeneration();
+	if(const auto terminal=TakeNativeDirectDownloadTerminal()) {
+		m_directDownloadReask.Ended(now,generation);
+		CString cause; cause.Format(_T("direct download ended (%u); retry cooldown"),static_cast<unsigned>(*terminal));
+		SetDownloadState(DS_ONQUEUE,cause);
+	}
+	if(m_directDownloadSubscriber) {
+		const auto record=manager.ResolveDirectSubscriber(m_directDownloadSubscriber);
+		if(!record || manager.ResetConsumedDirectSubscriber(m_directDownloadSubscriber,m_directClientLifetime)) {
+			m_directDownloadSubscriber=0; m_directDownloadReask.Negotiating(false);
+		}
+	}
+	if(!manager.DirectDownloadAvailable()) return false;
+	if(!m_directDownloadReask.Allow(now,generation) || (discoveryOnly && !HasCurrentNativeDirectDiscovery(generation,now))) return true;
+	m_directDownloadReask.Defer(now); // No repeated profile IO/admission on hot scheduler calls.
+	const auto node=NativeDirectExpectedNode();
+	ese::trust::Record trust;
+	// Automatic reasks never choose TOFU on the user's behalf.
+	// Known peers can select observed TCP without reading a QUIC trust profile.
+	// Discovery-only peers retain their existing pre-admission trust requirement.
+	bool trusted=discoveryOnly && node && manager.LoadDirectQuicPeerTrust(*node,trust)==ese::trust::LoadResult::Loaded;
+	if(discoveryOnly && !trusted) return true;
+	const auto requested=RequestNativeDirectDownload(now+15000);
+	if(requested.request.status!=reach::DirectRequestStatus::Created && requested.request.status!=reach::DirectRequestStatus::Joined) return true;
+	const auto tcp=manager.BeginOwnedObservedTcpDownload(requested.request.handle);
+	if(tcp!=CDirectReachabilityManager::DirectTcpStartResult::Unavailable) {
+		m_directDownloadReask.Negotiating(tcp==CDirectReachabilityManager::DirectTcpStartResult::Scheduled);
+		return true; // Scheduled TCP owns the attempt; consume terminal before retry.
+	}
+	if(!discoveryOnly) trusted=node && manager.LoadDirectQuicPeerTrust(*node,trust)==ese::trust::LoadResult::Loaded;
+	if(!trusted) {
+		manager.FailOwnedDirectDownload(requested.request.handle,reach::DirectReason::BootstrapRequired);
+		m_directDownloadReask.Negotiating(false); return true;
+	}
+	const auto owner=manager.BeginOwnedDirectQuicDownload(requested.request.handle,false);
+	if(theApp.m_bReachBindingSelfTest) Log(_T("ACK_START_SELFTEST scheduler: admitted=%u owner=%I64u"),
+		unsigned(requested.request.status),static_cast<ULONGLONG>(owner));
+	m_directDownloadReask.Negotiating(owner!=0);
+	// ConnectionEstablished must start the normal file request after HELLOANSWER.
+	// Gathering alone is not a connection; only an owned negotiation enters this state.
+	if(owner) SetDownloadState(DS_CONNECTING);
+	else if(!discoveryOnly) manager.FailOwnedDirectDownload(requested.request.handle,reach::DirectReason::NoRoute);
+	return true;
+}
+
 void CUpDownClient::Init()
 {
+	m_directClientLifetime=reach::NextDirectClientLifetime();
 	credits = NULL;
 	m_Friend = NULL;
 	m_abyUpPartStatus = NULL;
@@ -479,6 +714,7 @@ void CUpDownClient::Init()
 
 CUpDownClient::~CUpDownClient()
 {
+	if(theApp.directreachability) theApp.directreachability->RetireDirectClient(m_directClientLifetime);
 	if (IsAICHReqPending()) {
 		m_fAICHRequested = false;
 		CAICHRecoveryHashSet::ClientAICHRequestFailed(this);
@@ -571,6 +807,34 @@ void CUpDownClient::ClearHelloProperties()
 	m_fSupportsCaptcha = 0;
 	m_fDirectUDPCallback = 0;
 	m_fSupportsFileIdent = 0;
+}
+
+bool CUpDownClient::EnableDirectRouteCreditIsolation(const std::array<uint8,16>& expectedHash,CClientCredits* expectedCredits)
+{
+	if(!thePrefs.IsEseNetLabActive() || credits || m_directRouteCredits ||
+		(theApp.clientlist && theApp.clientlist->IsValidClient(this)) ||
+		socket || m_byInfopacketsReceived || m_bHelloAnswerPending || GetFriend() || GetRequestFile() ||
+		std::all_of(expectedHash.begin(),expectedHash.end(),[](uint8 byte) { return byte==0; })) return false;
+	CreditStruct seed{}; memcpy(seed.abyKey,expectedHash.data(),16);
+	if(expectedCredits) {
+		if(memcmp(expectedCredits->GetKey(),expectedHash.data(),16) || expectedCredits->GetSecIDKeyLen()>MAXPUBKEYSIZE) return false;
+		seed.nKeySize=expectedCredits->GetSecIDKeyLen();
+		memcpy(seed.abySecureIdent,expectedCredits->GetSecureIdent(),seed.nKeySize);
+	}
+	m_directRouteCredits=std::make_unique<CClientCredits>(seed);
+	credits=m_directRouteCredits.get();
+	SetUserHash(expectedHash.data());
+	return true;
+}
+
+bool CUpDownClient::PromoteDirectRouteIdentTo(CClientCredits& destination)
+{
+	if(!m_directRouteCredits || !m_directRouteSignatureSize || !socket || socket->client!=this ||
+		!socket->IsConnected() || GetIP()!=m_directRouteSignatureIP || !HasPassedSecureIdent(false) ||
+		memcmp(destination.GetKey(),m_directRouteCredits->GetKey(),16)) return false;
+	return theApp.clientcredits->PromoteDirectIdent(destination,m_directRouteCredits->GetSecureIdent(),
+		m_directRouteCredits->GetSecIDKeyLen(),m_directRouteSignature.data(),m_directRouteSignatureSize,
+		m_directRouteChallenge,m_directRouteSignatureIP,m_directRouteChallengeKind);
 }
 
 bool CUpDownClient::ProcessHelloPacket(const uchar *pachPacket, uint32 nSize)
@@ -904,7 +1168,7 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 	} else
 		SetIP(socket->GetPeerAddressV4());
 
-	if (thePrefs.GetAddServersFromClients() && m_dwServerIP && m_nServerPort) {
+	if (!m_directRouteCredits && thePrefs.GetAddServersFromClients() && m_dwServerIP && m_nServerPort) {
 		CServer *addsrv = new CServer(m_nServerPort, ipstr(m_dwServerIP));
 		addsrv->SetListName(addsrv->GetAddress());
 		addsrv->SetPreference(SRV_PR_LOW);
@@ -919,7 +1183,9 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 	if (!bNativeV6Endpoint && (!HasLowID() || m_nUserIDHybrid == 0 || m_nUserIDHybrid == m_dwUserIP))
 		m_nUserIDHybrid = ntohl(m_dwUserIP);
 
-	CClientCredits *pFoundCredits = theApp.clientcredits->GetCredit(m_achUserHash);
+	if(m_directRouteCredits && memcmp(m_directRouteCredits->GetDataStruct()->abyKey,m_achUserHash,16))
+		throw CString(_T("Isolated direct route HELLO changed expected userhash"));
+	CClientCredits *pFoundCredits = m_directRouteCredits ? m_directRouteCredits.get() : theApp.clientcredits->GetCredit(m_achUserHash);
 	if (credits == NULL) {
 		credits = pFoundCredits;
 		const bool bPriorHashMatches = IsIPv6OnlyEndpoint()
@@ -942,6 +1208,7 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 	}
 
 
+	if(!m_directRouteCredits) {
 	if (GetFriend() != NULL && GetFriend()->HasUserhash() && !md4equ(GetFriend()->m_abyUserhash, m_achUserHash))
 		// this isn't our friend any more and it will be removed/replaced, tell our friend object about it
 		if (GetFriend()->IsTryingToConnect())
@@ -968,6 +1235,7 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 	} else
 		// however, copy over our userhash in this case
 		md4cpy(GetFriend()->m_abyUserhash, m_achUserHash);
+	}
 
 	// check for known major gpl breaker
 	CString strBuffer(m_pszUsername);
@@ -1679,6 +1947,24 @@ static bool EsePickRdvForDownload(uint32 uTargetIpHost, uint32& uOutRipHost, uin
 //true means the client was not deleted!
 bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntimeClass *pClassSocket)
 {
+	if(!socket && theApp.directreachability && theApp.directreachability->HasPendingDirectUpload(m_directClientLifetime)) return true;
+	// Admission owns the logical connection even before a winning socket is
+	// attached. Do not start an independent classic cascade during gathering,
+	// authentication or recovery. Check the live lifetime binding, not a token
+	// alone, and leave terminal consumption to the normal reask path.
+	if(!socket && thePrefs.IsEseNetLabActive() && theApp.directreachability && m_directDownloadSubscriber) {
+		auto& manager=*theApp.directreachability;
+		const auto subscriber=manager.ResolveDirectSubscriber(m_directDownloadSubscriber);
+		if(subscriber && subscriber->attempt && !subscriber->terminal_reason &&
+			manager.HasDirectTransferSubscription(m_directClientLifetime,*subscriber->attempt)) {
+			const auto attempt=manager.DirectConnections().Snapshot(*subscriber->attempt);
+			if(attempt && attempt->state!=reach::DirectSessionState::Failed && attempt->state!=reach::DirectSessionState::Cancelled)
+				return true;
+		}
+	}
+	// A node-only source has no classical endpoint/HELLO authority. A future
+	// authenticated direct socket may use the ordinary already-connected path.
+	if(IsNativeDirectDiscoveryOnly() && !socket) return false;
 	// There are 7 possible ways how we are going to connect in this function, sorted by priority:
 	// 1) Already Connected/Connecting
 	//		We are already connected or try to connect right now. Abort, no additional Disconnect() call will be done
@@ -1724,6 +2010,8 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 		}
 		socket->Safe_Delete();
 	}
+
+	if(!HasK6TargetTicket() && ProcessNativeDirectDownload()) return true;
 
 	// K6-4 sources carry a single-use ticket emitted by the authenticated exit.
 	// Start the gateway DIAL before any LowID/direct-route branch can run. This
@@ -2544,12 +2832,12 @@ void CUpDownClient::ProcessPublicKeyPacket(const uchar *pachPacket, uint32 nSize
 {
 	if (IsIPv6OnlyEndpoint())
 		return;
-	theApp.clientlist->AddTrackClient(this);
-
-	if (socket == NULL || credits == NULL || pachPacket[0] != nSize - 1 || nSize < 10 || nSize > 250) {
+	// Validate the buffer before reading its length byte or changing tracking.
+	if (socket == NULL || credits == NULL || pachPacket == NULL || nSize < 10 || nSize > 250 || pachPacket[0] != nSize - 1) {
 		//ASSERT ( false ); on network malfunction eMule crashed while hanging in this assert's messagebox. Also 451 bytes packet were seen in the wild.
 		return;
 	}
+	theApp.clientlist->AddTrackClient(this);
 	if (!theApp.clientcredits->CryptoAvailable())
 		return;
 	// the function will handle everything (multiple key etc)
@@ -2612,12 +2900,19 @@ void CUpDownClient::ProcessSignaturePacket(const uchar *pachPacket, uint32 nSize
 	}
 
 	if (theApp.clientcredits->VerifyIdent(credits, pachPacket + 1, pachPacket[0], GetIP(), byChaIPKind)) {
+		if(m_directRouteCredits && pachPacket[0]<=m_directRouteSignature.size()) {
+			memcpy(m_directRouteSignature.data(),pachPacket+1,pachPacket[0]);
+			m_directRouteSignatureSize=pachPacket[0]; m_directRouteChallengeKind=byChaIPKind;
+			m_directRouteChallenge=credits->m_dwCryptRndChallengeFor; m_directRouteSignatureIP=GetIP();
+		}
+		if(socket) socket->NotifyLegacySecureIdentResult(true);
 		// the result was saved in the function above
 		if (GetFriend() != NULL && GetFriend()->IsTryingToConnect())
 			GetFriend()->UpdateFriendConnectionState(FCR_USERHASHVERIFIED);
 		//if (thePrefs.GetLogSecureIdent())
 		//	AddDebugLogLine(false, _T("'%s' has passed the secure identification, V2 State: %i"), GetUserName(), byChaIPKind);
 	} else {
+		if(socket) socket->NotifyLegacySecureIdentResult(false);
 		if (GetFriend() != NULL && GetFriend()->IsTryingToConnect())
 			GetFriend()->UpdateFriendConnectionState(FCR_SECUREIDENTFAILED);
 		if (thePrefs.GetLogSecureIdent())
@@ -2648,6 +2943,7 @@ void CUpDownClient::SendSecIdentStatePacket()
 		// crypt: send random data to sign
 		uint32 dwRandom = rand() + 1;
 		credits->m_dwCryptRndChallengeFor = dwRandom;
+		if(socket) socket->RememberClassicDirectChallenge(dwRandom);
 		Packet *packet = new Packet(OP_SECIDENTSTATE, 5, OP_EMULEPROT);
 		theStats.AddUpDataOverheadOther(packet->size);
 		packet->pBuffer[0] = nValue;
@@ -3585,7 +3881,8 @@ void CUpDownClient::SendFirewallCheckUDPRequest()
 		return;
 	}
 	CSafeMemFile data;
-	data.WriteUInt16(Kademlia::CKademlia::GetPrefs()->GetInternKadPort());
+	const bool mappedTest=theApp.directreachability && theApp.directreachability->BeginKad6PublicContactVerification(GetIP());
+	data.WriteUInt16(mappedTest ? theApp.directreachability->GetAdvertisedUdpPort() : Kademlia::CKademlia::GetPrefs()->GetInternKadPort());
 	data.WriteUInt16(Kademlia::CKademlia::GetPrefs()->GetExternalKadPort());
 	data.WriteUInt32(Kademlia::CKademlia::GetPrefs()->GetUDPVerifyKey(GetConnectIP()));
 	Packet *packet = new Packet(data, OP_EMULEPROT, OP_FWCHECKUDPREQ);

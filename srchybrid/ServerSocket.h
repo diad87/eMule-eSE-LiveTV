@@ -54,4 +54,5 @@ private:
 	bool m_bStartNewMessageLog;
 	bool m_bManualSingleConnect;
 	bool m_bRelayRouted;
+	uint64 m_nReachVerificationGeneration = 0;
 };

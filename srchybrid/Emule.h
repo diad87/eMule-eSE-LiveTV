@@ -275,6 +275,8 @@ public:
 	// --selftest                  -> testpattern prebuffer + signed chunk loopback
 	bool		m_bHeadless;
 	bool		m_bSelfTest;
+	bool		m_bReachBindingSelfTest;
+	CString m_strQuicPairSelfTestRole;
 	int			m_nSelfTestExitCode;
 	uint16		m_uHeadlessMetricsPort;
 	uint16		m_uHeadlessTcpPort;

@@ -17,6 +17,8 @@
 #include "stdafx.h"
 #include "emule.h"
 #include "UpDownClient.h"
+#include "EseFileReaskTime.h"
+#include "EseBlockPacketBounds.h"
 #include "URLClient.h"
 #include "PartFile.h"
 #include "ListenSocket.h"
@@ -123,6 +125,11 @@ void CUpDownClient::DrawStatusBar(CDC *dc, const CRect &rect, bool onlygreyrect,
 
 bool CUpDownClient::Compare(const CUpDownClient *tocomp, bool bIgnoreUserhash) const
 {
+	if(IsNativeDirectDiscoveryOnly() || tocomp->IsNativeDirectDiscoveryOnly()) {
+		if(!IsNativeDirectDiscoveryOnly() || !tocomp->IsNativeDirectDiscoveryOnly()) return false;
+		const auto own=NativeDirectExpectedNode(),other=tocomp->NativeDirectExpectedNode();
+		return own && other && own==other; // Two verified discovery expectations only; raw HELLO is not node proof.
+	}
 	//Compare only the user hash.
 	if (!bIgnoreUserhash && HasValidHash() && tocomp->HasValidHash())
 		return md4equ(this->GetUserHash(), tocomp->GetUserHash());
@@ -192,6 +199,11 @@ bool CUpDownClient::Compare(const CUpDownClient *tocomp, bool bIgnoreUserhash) c
 // true = client was not deleted!
 bool CUpDownClient::AskForDownload()
 {
+	if(IsNativeDirectDiscoveryOnly() && !socket) {
+		ProcessNativeDirectDownload();
+		return true; // Native scheduler owns this source; never fabricate a legacy endpoint.
+	}
+	if(!socket && !HasK6TargetTicket() && ProcessNativeDirectDownload()) return true;
 	if (m_bUDPPending) {
 		++m_nFailedUDPPackets;
 		theApp.downloadqueue->AddFailedUDPFileReasks();
@@ -952,6 +964,11 @@ void CUpDownClient::SendBlockRequests()
 */
 void CUpDownClient::ProcessBlockPacket(const uchar *packet, uint32 size, bool packed, bool bI64Offsets)
 {
+	// Validate before debug offset reads, state/statistics changes and unsigned
+	// payload-size subtraction. Packed I64 uses an eight-byte start + size32.
+	ese::BlockPacketBounds validatedBounds;
+	if(!ese::ReadBlockPacketBounds(packet,size,packed,bI64Offsets,validatedBounds))
+		throw GetResString(IDS_ERR_BADDATABLOCK) + _T(" (ProcessBlockPacket header)");
 	if (!bI64Offsets) {
 		uint32 nDbgStartPos = *(uint32*)&packet[16];
 		if (thePrefs.GetDebugClientTCPLevel() > 1) {
@@ -967,9 +984,6 @@ void CUpDownClient::ProcessBlockPacket(const uchar *packet, uint32 size, bool pa
 		TRACE("%s - Invalid download state\n", __FUNCTION__);
 		return;
 	}
-
-	// Update stats
-	m_dwLastBlockReceived = ::GetTickCount();
 
 	// Read data from packet
 	CSafeMemFile data(packet, size);
@@ -1007,6 +1021,9 @@ void CUpDownClient::ProcessBlockPacket(const uchar *packet, uint32 size, bool pa
 	// Check that packet size matches the declared data size + header size (24)
 	if (nEndPos <= nStartPos || size != ((nEndPos - nStartPos) + nHeaderSize))
 		throw GetResString(IDS_ERR_BADDATABLOCK) + _T(" (ProcessBlockPacket)");
+
+	// Malformed headers and wrong-file blocks must not renew the receive timer.
+	m_dwLastBlockReceived = ::GetTickCount();
 
 	// -khaos--+++>
 	// Extended statistics information based on which client and remote port sent this data.
@@ -1065,7 +1082,10 @@ void CUpDownClient::ProcessBlockPacket(const uchar *packet, uint32 size, bool pa
 			ASSERT((int)size > 0);
 			// Create space to store unzipped data, the size is only an initial guess, will be resized in unzip() if not big enough
 			// Don't get too big
-			uint32 lenUnzipped = min(size * 2, EMBLOCKSIZE + 300);
+			const uint64 reserved = cur_block->block->EndOffset - cur_block->block->StartOffset + 1;
+			const uint64 remaining = cur_block->totalUnzipped <= reserved ? reserved - cur_block->totalUnzipped : 0;
+			uint32 lenUnzipped = static_cast<uint32>((std::min)(uint64(size) * 2,
+				(std::min)(remaining + 1, uint64(EMBLOCKSIZE + 300))));
 			BYTE *unzipped = new BYTE[lenUnzipped];
 
 			// Try to unzip the packet
@@ -1130,6 +1150,7 @@ void CUpDownClient::ProcessBlockPacket(const uchar *packet, uint32 size, bool pa
 		// Also, asynchronous writing allows tricks such as disconnecting from client while
 		// file data is being in buffers.
 		// Hence additional checks.
+		if(lenWritten && socket) socket->RecordDirectUsefulBytes(lenWritten);
 		if (lenWritten > 0 && !m_PendingBlocks_list.IsEmpty() && cur_block->block) {
 			m_nTransferredDown += uTransferredFileDataSize;
 			m_nCurSessionPayloadDown += lenWritten;
@@ -1161,6 +1182,17 @@ int CUpDownClient::unzip(Pending_Block_Struct *block, const BYTE *zipped, uint32
 #define TRACE_UNZIP	__noop
 	TRACE_UNZIP("unzip: Zipd=%6u Unzd=%6u Rcrs=%d", lenZipped, *lenUnzipped, iRecursion);
 	int err = Z_DATA_ERROR;
+	// One probe byte detects expansion beyond the locally requested range.
+	// The limit applies to recursive growth as well as the initial allocation;
+	// remote compressed bytes must never determine an unbounded output buffer.
+	if (!block || !block->block || !unzipped || !*unzipped || !lenUnzipped ||
+		block->block->EndOffset < block->block->StartOffset ||
+		block->block->EndOffset - block->block->StartOffset >= uint64(3 * EMBLOCKSIZE))
+		return Z_DATA_ERROR;
+	const uint64 reserved = block->block->EndOffset - block->block->StartOffset + 1;
+	if (block->totalUnzipped > reserved) { *lenUnzipped = 0; return Z_DATA_ERROR; }
+	const uint32 maximumBuffer = static_cast<uint32>(reserved - block->totalUnzipped + 1);
+	if (*lenUnzipped > maximumBuffer) { *lenUnzipped = 0; return Z_DATA_ERROR; }
 	try {
 		// Save some typing
 		z_stream *zS = block->zStream;
@@ -1203,6 +1235,10 @@ int CUpDownClient::unzip(Pending_Block_Struct *block, const BYTE *zipped, uint32
 		// Try to unzip the data
 		TRACE_UNZIP("; inflate(ain=%6u tin=%6u aout=%6u tout=%6u)", zS->avail_in, zS->total_in, zS->avail_out, zS->total_out);
 		err = inflate(zS, Z_SYNC_FLUSH);
+		if (zS->total_out > reserved) { *lenUnzipped = 0; return Z_DATA_ERROR; }
+		// A block contains exactly one zlib stream. Trailing bytes must not be
+		// silently credited or accepted as part of a successfully decoded block.
+		if (err == Z_STREAM_END && zS->avail_in != 0) { *lenUnzipped = 0; return Z_DATA_ERROR; }
 
 		// Is zip finished reading all currently available input and writing all generated output
 		if (err == Z_STREAM_END) {
@@ -1222,10 +1258,8 @@ int CUpDownClient::unzip(Pending_Block_Struct *block, const BYTE *zipped, uint32
 			TRACE_UNZIP("; output array not big enough (ain=%u)\n", zS->avail_in);
 
 			// What size should we try next
-			*lenUnzipped *= 2;
-			uint32 newLength = *lenUnzipped;
-			if (newLength == 0)
-				newLength = lenZipped * 2;
+			const uint32 newLength = static_cast<uint32>((std::min)(uint64(*lenUnzipped) * 2, uint64(maximumBuffer)));
+			if (newLength <= *lenUnzipped) { *lenUnzipped = 0; return Z_DATA_ERROR; }
 
 			// Copy any data that was successfully unzipped to new array
 			BYTE *temp = new BYTE[newLength];
@@ -1914,8 +1948,7 @@ DWORD CUpDownClient::GetTimeUntilReask(const CPartFile *file, const bool allowSh
 			reaskTime = FILEREASKTIME;
 
 		const DWORD curTick = ::GetTickCount();
-		if (curTick < lastAskedTimeTick + reaskTime)
-			return reaskTime - (curTick - lastAskedTimeTick);
+		return ese::FileReaskRemaining(lastAskedTimeTick,curTick,reaskTime);
 	}
 	return 0;
 }
@@ -1973,6 +2006,7 @@ void CUpDownClient::SendCancelTransfer()
 
 void CUpDownClient::SetRequestFile(CPartFile *pReqFile)
 {
+	if(pReqFile!=m_reqfile) ClearNativeDirectDiscovery();
 	if (pReqFile != m_reqfile || m_reqfile == NULL)
 		ResetFileStatusInfo();
 	m_reqfile = pReqFile;

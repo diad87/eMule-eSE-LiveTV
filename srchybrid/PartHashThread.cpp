@@ -33,7 +33,10 @@ CPartHashThread::CPartHashThread()
 	, m_eventThreadEnded(FALSE, TRUE)	//manual-reset
 	, m_Run(1)
 {
-	AfxBeginThread(RunProc, (LPVOID)this, THREAD_PRIORITY_BELOW_NORMAL);
+	if(!AfxBeginThread(RunProc, (LPVOID)this, THREAD_PRIORITY_BELOW_NORMAL)) {
+		m_Run=0;
+		m_eventThreadEnded.SetEvent(); // EndThread must not wait for a nonexistent worker
+	}
 }
 
 CPartHashThread::~CPartHashThread()
@@ -88,21 +91,35 @@ UINT CPartHashThread::RunInternal()
 
 void CPartHashThread::ProcessJob(const PartHashJob_Struct *pJob)
 {
-	PartHashVerdict_Struct *pVerdict = new PartHashVerdict_Struct{};
+	auto verdict=ComputeJob(*pJob);
+	if(theApp.emuledlg && ::IsWindow(theApp.emuledlg->m_hWnd) &&
+		theApp.emuledlg->PostMessage(TM_PARTHASHED,(WPARAM)verdict.get(),(LPARAM)pJob->pFile))
+		verdict.release();
+}
+
+std::unique_ptr<PartHashVerdict_Struct> CPartHashThread::ComputeJob(const PartHashJob_Struct& job)
+{
+	const auto* pJob=&job;
+	std::unique_ptr<PartHashVerdict_Struct> pVerdict(new PartHashVerdict_Struct{});
 	pVerdict->uPart = pJob->uPart;
 	pVerdict->uGen = pJob->uGen;
+	pVerdict->fileLifetime = pJob->fileLifetime;
 	pVerdict->bNoAICH = pJob->bNoAICH;
 
-	CAICHHashTree *pAICHTree = NULL;
+	std::unique_ptr<CAICHHashTree> pAICHTree;
 	try {
 		CFile file;
 		CFileException fex;
 		//own read handle; the .part is opened with shareDenyNone everywhere else
 		if (file.Open(pJob->sFilePath, CFile::modeRead | CFile::shareDenyNone | CFile::osSequentialScan, &fex)) {
+			const auto size=file.GetLength();
+			if(!pJob->uLength || pJob->uStart>size || pJob->uLength>size-pJob->uStart) {
+				pVerdict->bReadError=true; return pVerdict;
+			}
 			if (pJob->bComputeAICH)
-				pAICHTree = new CAICHHashTree(pJob->uAICHDataSize, pJob->bAICHLeftBranch, pJob->uAICHBaseSize);
+				pAICHTree.reset(new CAICHHashTree(pJob->uAICHDataSize, pJob->bAICHLeftBranch, pJob->uAICHBaseSize));
 			file.Seek((LONGLONG)pJob->uStart, CFile::begin);
-			CKnownFile::CreateHash(&file, pJob->uLength, pVerdict->aMD4Hash, pAICHTree);
+			CKnownFile::CreateHash(&file, pJob->uLength, pVerdict->aMD4Hash, pAICHTree.get());
 			if (pAICHTree != NULL && pAICHTree->m_bHashValid) {
 				pVerdict->aichHash = pAICHTree->m_Hash;
 				pVerdict->bAICHValid = true;
@@ -115,21 +132,15 @@ void CPartHashThread::ProcessJob(const PartHashJob_Struct *pJob)
 		pVerdict->bReadError = true;
 		ex->Delete();
 	}
-	delete pAICHTree;
-
-	if (theApp.emuledlg == NULL
-		|| !::IsWindow(theApp.emuledlg->m_hWnd)
-		|| !theApp.emuledlg->PostMessage(TM_PARTHASHED, (WPARAM)pVerdict, (LPARAM)pJob->pFile))
-	{
-		delete pVerdict;
-	}
+	return pVerdict;
 }
 
 void CPartHashThread::QueueJob(PartHashJob_Struct *pJob)
 {
-	m_lockQueue.Lock();
-	m_Queue.AddTail(pJob);
-	m_lockQueue.Unlock();
+	{
+		CSingleLock queueLock(&m_lockQueue,TRUE);
+		m_Queue.AddTail(pJob); // allocation failure unlocks and leaves caller ownership
+	}
 	m_eventWakeUp.SetEvent();
 }
 

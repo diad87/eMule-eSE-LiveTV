@@ -24,6 +24,8 @@
 #include "emule.h"
 #include "PartFile.h"
 #include "PartFileIoPolicy.h"
+#include "DirectReachabilityManager.h"
+#include "reach/direct_client_lifetime.h"
 #include "UpDownClient.h"
 #include "UrlClient.h"
 #include "ED2KLink.h"
@@ -224,8 +226,15 @@ CPartFile::CPartFile(const CED2KFileLink &fileLink, UINT cat)
 	}
 }
 
+static UINT AdvancePartHashGeneration(UINT& last) noexcept
+{
+	if(last==(std::numeric_limits<UINT>::max)()) return 0;
+	return ++last;
+}
+
 void CPartFile::Init()
 {
+	m_directFileLifetime=reach::NextDirectFileLifetime();
 	m_uRating = 0;
 
 	m_tUtcLastModified = (time_t)-1;
@@ -297,14 +306,82 @@ void CPartFile::Init()
 	m_nStreamSeekPart = _UI16_MAX; // eSE: no streaming seek by default
 }
 
+bool CPartFile::RunHashVerdictFenceSelfTest()
+{
+	if(!theApp.m_bReachBindingSelfTest) return false;
+	CPartFile current,other;
+	current.m_mapPendingHashParts[0]=7;
+	DirectHashSnapshot snapshot; snapshot.generation=7;
+	current.m_directHashSnapshots[0]=std::move(snapshot);
+	PartHashVerdict_Struct verdict{};
+	verdict.uPart=0; verdict.uGen=7; verdict.fileLifetime=other.m_directFileLifetime;
+	current.ProcessPartHashVerdict(verdict);
+	UINT generation=0;
+	if(!current.m_mapPendingHashParts.Lookup(0,generation) || generation!=7 || current.m_directHashSnapshots.count(0)!=1) return false;
+	verdict.fileLifetime=current.m_directFileLifetime; verdict.uGen=6;
+	current.ProcessPartHashVerdict(verdict);
+	if(!current.m_mapPendingHashParts.Lookup(0,generation) || generation!=7 || current.m_directHashSnapshots.count(0)!=1) return false;
+	verdict.fileLifetime=0; verdict.uGen=7;
+	current.ProcessPartHashVerdict(verdict);
+	current.m_uPartHashGen=(std::numeric_limits<UINT>::max)()-1;
+	if(AdvancePartHashGeneration(current.m_uPartHashGen)!=(std::numeric_limits<UINT>::max)()
+		|| AdvancePartHashGeneration(current.m_uPartHashGen)!=0
+		|| current.m_uPartHashGen!=(std::numeric_limits<UINT>::max)()) return false;
+	return current.m_mapPendingHashParts.Lookup(0,generation) && generation==7 && current.m_directHashSnapshots.count(0)==1;
+}
+
+bool CPartFile::RunHashVerdictAcceptanceSelfTest(const PartHashVerdict_Struct& diskVerdict)
+{
+	if(!theApp.m_bReachBindingSelfTest || diskVerdict.bReadError) return false;
+	try {
+	const uchar expected[16]={0xa4,0x48,0x01,0x7a,0xaf,0x21,0xd8,0x52,0x5f,0xc1,0x0a,0xe8,0x7a,0xa6,0x72,0x9d};
+	CPartFile file;
+	file.SetFileSize(3); file._SetStatus(PS_READY); file.m_paused=true;
+	file.m_CorruptionBlackBox.Init(3);
+	file.m_FileIdentifier.SetMD4Hash(expected);
+	// Fixture-only pending marker prevents save/completion. No queued job claims
+	// to correspond to this marker; the production callback itself is unchanged.
+	file.m_mapPendingHashParts[(std::numeric_limits<UINT>::max)()]=1;
+	file.m_mapPendingHashParts[0]=7;
+	file.m_aChangedPart[0]=true; file.corrupted_list.AddTail(static_cast<uint16>(0));
+	auto verdict=diskVerdict; verdict.uPart=0; verdict.uGen=7;
+	verdict.fileLifetime=file.m_directFileLifetime; verdict.bNoAICH=true;
+	file.ProcessPartHashVerdict(verdict);
+	UINT generation=0;
+	if(file.m_mapPendingHashParts.Lookup(0,generation) || file.m_aChangedPart[0]
+		|| file.IsCorruptedPart(0) || !file.IsCompleteBD(0,2)) return false;
+	file.m_mapPendingHashParts[0]=8; file.m_aChangedPart[0]=true;
+	verdict.uGen=8; verdict.aMD4Hash[0]^=1;
+	file.ProcessPartHashVerdict(verdict);
+	return !file.m_mapPendingHashParts.Lookup(0,generation) && file.IsCorruptedPart(0)
+		&& !file.IsCompleteBD(0,2) && file.GetStatus()==PS_PAUSED;
+	} catch(CException* error) {
+		TCHAR message[512]={}; error->GetErrorMessage(message,_countof(message));
+		Log(_T("REACH_SELFTEST FAIL: verdict fixture exception: %s"),message);
+		error->Delete(); return false;
+	}
+}
+
+reach::DirectFileKey CPartFile::NativeDirectFileKey() const
+{
+	reach::DirectFileKey key;
+	key.lifetime=m_directFileLifetime;
+	memcpy(key.hash.data(),GetFileHash(),key.hash.size());
+	return key;
+}
+
 CPartFile::~CPartFile()
 {
+	if(theApp.directreachability)
+		theApp.directreachability->DiscardDirectFileContributions(NativeDirectFileKey());
+	m_directFileLifetime=0; // no receipt admission during destructor flush
 	// eSE H1: drop queued hash jobs; an in-flight verdict dies at the IsPartFile check.
 	// Leftover parts still marked in m_aChangedPart are re-verified synchronously by the
 	// FlushBuffer below (at shutdown the hash thread is already stopped - plan §2.6)
 	if (theApp.m_pPartHashThread)
 		theApp.m_pPartHashThread->CancelFile(this);
 	m_mapPendingHashParts.RemoveAll();
+	m_directHashSnapshots.clear();
 
 	// Barry - Ensure all buffered data is written
 	if ((HANDLE)m_hpartfile != INVALID_HANDLE_VALUE) {
@@ -1611,13 +1688,18 @@ void CPartFile::PartFileHashFinished(CKnownFile *result)
 
 void CPartFile::AddGap(uint64 start, uint64 end) //keep the list ordered!
 {
+	if(theApp.directreachability && end>=start)
+		theApp.directreachability->InvalidateDirectPartRange(NativeDirectFileKey(),
+			static_cast<uint32>(start/PARTSIZE),static_cast<uint32>(end/PARTSIZE),true);
 	ASSERT(end < (uint64)m_nFileSize && start <= end);
 	// eSE H1: data in these parts is changing; invalidate any in-flight hash verdicts
 	if (!m_mapPendingHashParts.IsEmpty())
 		for (UINT uPart = (UINT)(start / PARTSIZE); uPart <= (UINT)(end / PARTSIZE); ++uPart) {
 			UINT uGen;
-			if (m_mapPendingHashParts.Lookup(uPart, uGen))
-				m_mapPendingHashParts[uPart] = ++m_uPartHashGen;
+			if (m_mapPendingHashParts.Lookup(uPart, uGen)) {
+				m_mapPendingHashParts.RemoveKey(uPart);
+				m_directHashSnapshots.erase(uPart);
+			}
 		}
 	POSITION before = NULL;
 	for (POSITION pos = m_gaplist.GetHeadPosition(); pos != NULL;) {
@@ -2310,6 +2392,14 @@ uint32 CPartFile::Process(uint32 reducedownload, UINT icounter/*in percent*/)
 			if (thePrefs.m_iDbgHeap >= 2)
 				ASSERT_VALID(cur_src);
 
+			// Owned cold QUIC discovery does not depend on a classic server/Kad
+			// connection or the legacy 20-minute TCP callback retry gate. The
+			// caller enforces native consent, trust, lease, cooldown and single-flight.
+			if (cur_src->IsNativeDirectDiscoveryOnly() && !cur_src->socket
+				&& cur_src->GetDownloadState() != DS_BANNED && cur_src->GetUploadState() != US_BANNED) {
+				if (!cur_src->AskForDownload()) continue;
+			}
+
 			// BEGIN -rewritten- refreshing statistics (no need for temp vars since it is not multi-threaded)
 			UINT nCountForState = cur_src->GetDownloadState();
 			//special case which is not yet set as download state
@@ -2417,7 +2507,12 @@ uint32 CPartFile::Process(uint32 reducedownload, UINT icounter/*in percent*/)
 			case DS_NONE:
 			case DS_WAITCALLBACK:
 			case DS_WAITCALLBACKKAD:
-				if (theApp.IsConnected() && cur_src->GetTimeUntilReask() == 0) { // ZZ:DownloadManager (one re-ask timestamp for each file)
+				// An authenticated current native session is already connected;
+				// classic server/Kad connectivity must not gate its normal reask.
+				// Keep the existing per-file deadline and banned-peer checks.
+				if ((theApp.IsConnected() || (cur_src->socket && cur_src->socket->HasAuthenticatedDirectConnection()))
+					&& cur_src->GetUploadState() != US_BANNED
+					&& cur_src->GetTimeUntilReask() == 0) { // ZZ:DownloadManager (one re-ask timestamp for each file)
 					if (cur_src->socket && cur_src->socket->IsConnected() && cur_src->CheckHandshakeFinished() && cur_src->GetUploadState() != US_BANNED) {
 						// netfinity: Ask immediately if already connected and if allowed, or we may lose the source
 						cur_src->SetDownloadState(DS_CONNECTED);
@@ -2901,6 +2996,7 @@ void CPartFile::CompleteFile(bool bIsHashingDone)
 	if (theApp.m_pPartHashThread)
 		theApp.m_pPartHashThread->CancelFile(this);
 	m_mapPendingHashParts.RemoveAll();
+	m_directHashSnapshots.clear();
 	m_nFileFlushTime = 0;
 
 	theApp.downloadqueue->RemoveLocalServerRequest(this);
@@ -4289,6 +4385,12 @@ uint32 CPartFile::WriteToBuffer(uint64 transize, const BYTE *data, uint64 start,
 
 	// Mark this small section of the file as filled
 	FillGap(newitem->start, newitem->end);
+	if(theApp.directreachability)
+		theApp.directreachability->InvalidateDirectPartRange(NativeDirectFileKey(),
+			static_cast<uint32>(newitem->start/PARTSIZE),static_cast<uint32>(newitem->end/PARTSIZE));
+	// Capture accepted data before FlushBuffer can enqueue the part hash job.
+	if(client && client->socket)
+		client->socket->RecordDirectPartBytes(this,newitem->start,newitem->end,static_cast<uint32>(lenData));
 
 	// If client is known, the caller updates the flush mark on the requested block
 	// Otherwise, update here (for imported parts)
@@ -4459,7 +4561,7 @@ void CPartFile::FlushBuffer(bool bForceICH, bool bNoAICH, bool bSyncHash)
 				// eSE H1: verify off the main thread. The part stays marked in m_aChangedPart
 				// until its verdict is processed (TM_PARTHASHED), so with the hash thread
 				// stopped (shutdown) the leftovers are re-verified right here, synchronously.
-				if (bAsyncHash) {
+				if (bAsyncHash && m_uPartHashGen!=(std::numeric_limits<UINT>::max)()) {
 					UINT uGen;
 					if (!m_mapPendingHashParts.Lookup(uPartNumber, uGen))
 						EnqueuePartHash(uPartNumber, uStart, uEnd, bNoAICH);
@@ -4467,6 +4569,7 @@ void CPartFile::FlushBuffer(bool bForceICH, bool bNoAICH, bool bSyncHash)
 				}
 				m_aChangedPart[uPartNumber] = false;
 				m_mapPendingHashParts.RemoveKey(uPartNumber);
+				m_directHashSnapshots.erase(uPartNumber); // synchronous hash supersedes async snapshot
 				// Is part corrupt
 				bool bAICHAgreed;
 				const DWORD dwHashT0 = ::GetTickCount(); // eSE H0
@@ -4661,11 +4764,13 @@ void CPartFile::EnqueuePartHash(UINT uPartNumber, uint64 uStart, uint64 uEnd, bo
 		return;
 	}
 
-	PartHashJob_Struct *pJob = new PartHashJob_Struct{};
+	std::unique_ptr<PartHashJob_Struct> pJob(new PartHashJob_Struct{});
 	pJob->pFile = this;
+	pJob->fileLifetime = m_directFileLifetime;
 	pJob->sFilePath = RemoveFileExtension(GetFullName()); //path of the .part file
 	pJob->uPart = uPartNumber;
-	pJob->uGen = ++m_uPartHashGen;
+	pJob->uGen = AdvancePartHashGeneration(m_uPartHashGen);
+	if(!pJob->uGen) throw CString(_T("Part hash generation exhausted"));
 	pJob->uStart = uStart;
 	pJob->uLength = uEnd - uStart + 1;
 	pJob->bNoAICH = bNoAICH;
@@ -4679,8 +4784,22 @@ void CPartFile::EnqueuePartHash(UINT uPartNumber, uint64 uStart, uint64 uEnd, bo
 		} else
 			ASSERT(0);
 	}
-	m_mapPendingHashParts[uPartNumber] = pJob->uGen;
-	theApp.m_pPartHashThread->QueueJob(pJob);
+	try {
+		if(theApp.directreachability) {
+			DirectHashSnapshot snapshot;
+			snapshot.generation=pJob->uGen;
+			snapshot.receipts=theApp.directreachability->SnapshotDirectPartContributions(
+				NativeDirectFileKey(),uPartNumber,pJob->uGen);
+			m_directHashSnapshots[uPartNumber]=std::move(snapshot);
+		}
+		m_mapPendingHashParts[uPartNumber] = pJob->uGen;
+		theApp.m_pPartHashThread->QueueJob(pJob.get());
+		pJob.release(); // queue owns it only after successful insertion
+	} catch (...) {
+		m_mapPendingHashParts.RemoveKey(uPartNumber);
+		m_directHashSnapshots.erase(uPartNumber);
+		throw; // changed-part remains eligible for a later flush/retry
+	}
 }
 
 // eSE H1: consequences of a completed-part hash verdict (extracted from FlushBuffer).
@@ -4725,13 +4844,23 @@ void CPartFile::ProcessCompletePartVerdict(UINT uPartNumber, bool bHashOK, bool 
 // Decision logic mirrors HashSinglePart(), but compares against the CURRENT hashsets.
 void CPartFile::ProcessPartHashVerdict(const PartHashVerdict_Struct &verdict)
 {
+	if(!m_directFileLifetime || verdict.fileLifetime!=m_directFileLifetime)
+		return; // pointer reuse cannot make another file's worker result current
 	UINT uGen;
 	if (!m_mapPendingHashParts.Lookup(verdict.uPart, uGen))
 		return; //canceled meanwhile
-	m_mapPendingHashParts.RemoveKey(verdict.uPart);
 	if (uGen != verdict.uGen)
 		return; //stale: the part changed while hashing; m_aChangedPart is still set, so
 				//the next flush re-enqueues it once the part is complete again
+	m_mapPendingHashParts.RemoveKey(verdict.uPart);
+	// Retire only this generation's snapshot; a stale verdict must not erase
+	// the newer job's pending marker or its contributor identities.
+	auto directSnapshot=m_directHashSnapshots.find(verdict.uPart);
+	std::vector<reach::DirectPartReceipt> directReceipts;
+	if(directSnapshot!=m_directHashSnapshots.end() && directSnapshot->second.generation==verdict.uGen) {
+		directReceipts=std::move(directSnapshot->second.receipts);
+		m_directHashSnapshots.erase(directSnapshot);
+	}
 
 	if (verdict.uPart >= GetPartCount()) {
 		ASSERT(0);
@@ -4790,6 +4919,16 @@ void CPartFile::ProcessPartHashVerdict(const PartHashVerdict_Struct &verdict)
 		DebugLogError(_T("AICH and MD4 HashSet disagree on verifying part %u for file %s. MD4: %s - AICH: %s"), verdict.uPart
 			, (LPCTSTR)GetFileName(), bMD4Error ? _T("Corrupt") : _T("OK"), bAICHError ? _T("Corrupt") : _T("OK"));
 
+	// Availability alone is not proof: require the expected digest for THIS part
+	// to have actually participated in the comparisons above.
+	const bool directMD4Compared=bMD4Checked &&
+		((GetPartCount()==1 && m_nFileSize!=PARTSIZE) || m_FileIdentifier.GetAvailableMD4PartHashCount()>verdict.uPart);
+	const bool directAICHCompared=bAICHChecked &&
+		(GetPartCount()==1 || m_FileIdentifier.GetAvailableAICHPartHashCount()>verdict.uPart);
+	const auto directProof=reach::ClassifyPartVerification(directMD4Compared,bMD4Error,directAICHCompared,bAICHError);
+	if(theApp.directreachability && directProof==reach::PartVerification::Verified)
+		for(const auto& receipt:directReceipts)
+			theApp.directreachability->AcceptDirectPartVerification(receipt,verdict.uGen,directProof);
 	ProcessCompletePartVerdict(verdict.uPart, !bMD4Error && !bAICHError, bAICHChecked && !bAICHError, verdict.bNoAICH);
 
 	if (m_mapPendingHashParts.IsEmpty() && !theApp.IsClosing()) {

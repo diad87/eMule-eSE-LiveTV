@@ -17,6 +17,7 @@
 #include "stdafx.h"
 #include "emule.h"
 #include "ClientUDPSocket.h"
+#include "DirectReachabilityManager.h"
 #include "Packets.h"
 #include "UpDownClient.h"
 #include "DownloadQueue.h"
@@ -41,6 +42,8 @@
 #include "eMuleAI/UtpSocket.h" // eSE: uTP NAT traversal bridge
 #include "eMuleAI/Address.h"
 #include "Opcodes.h"
+#include "EseQuicUdpIngress.h"
+#include <chrono>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -84,6 +87,7 @@ static bool IsNativeKad6Opcode(BYTE opcode)
 
 CClientUDPSocket::CClientUDPSocket()
 {
+    m_quicOwnerThread = ::GetCurrentThreadId();
 	m_bWouldBlock = false;
 	m_bDualStack = false;
 	m_bIPv6BindRequested = false;
@@ -92,6 +96,7 @@ CClientUDPSocket::CClientUDPSocket()
 
 CClientUDPSocket::~CClientUDPSocket()
 {
+    ResetQuicIngress();
 	theApp.uploadBandwidthThrottler->RemoveFromAllQueuesLocked(this); // ZZ:UploadBandWithThrottler (UDP)
 	while (!controlpacket_queue.IsEmpty()) {
 		const UDPPack *p = controlpacket_queue.RemoveHead();
@@ -105,6 +110,137 @@ CClientUDPSocket::~CClientUDPSocket()
 		utp_destroy((utp_context*)m_pUtpContext);
 		m_pUtpContext = NULL;
 	}
+}
+
+bool CClientUDPSocket::AttachQuicIngress(ese::QuicUdpIngress* ingress)
+{
+    if (::GetCurrentThreadId() != m_quicOwnerThread || !ingress || m_quicIngress || m_quicResetting)
+        return false;
+    m_quicIngress = ingress;
+    return true;
+}
+
+bool CClientUDPSocket::DetachQuicIngress(ese::QuicUdpIngress* ingress)
+{
+    if (::GetCurrentThreadId() != m_quicOwnerThread || !ingress || m_quicIngress != ingress)
+        return false;
+    ResetQuicIngress();
+    return true;
+}
+
+void CClientUDPSocket::PollQuicIngress()
+{
+    if (::GetCurrentThreadId() != m_quicOwnerThread || !m_quicIngress || m_quicResetting)
+        return;
+    const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    m_quicIngress->Poll(now);
+}
+
+bool CClientUDPSocket::ArmPairUdpLoss(const std::array<std::uint8_t,32>& node,
+    const ese::udp::Endpoint& peer,uint32 durationMs)
+{
+    if(::GetCurrentThreadId()!=m_quicOwnerThread || !theApp.m_bReachBindingSelfTest ||
+        theApp.m_strQuicPairSelfTestRole.IsEmpty() || !m_quicIngress || m_pairLossUntil ||
+        durationMs<1000 || durationMs>45000 || !theApp.directreachability ||
+        !theApp.directreachability->IsIsolatedLanQuicPeer(node,peer)) return false;
+    m_pairLossPeer=peer;
+    const auto now=static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    m_pairLossUntil=now+durationMs; return true;
+}
+bool CClientUDPSocket::DropPairUdp(const ese::udp::Endpoint& peer,bool outgoing)
+{
+    if(!m_pairLossUntil || !theApp.m_bReachBindingSelfTest || theApp.m_strQuicPairSelfTestRole.IsEmpty() ||
+        !(peer==m_pairLossPeer)) return false;
+    const auto now=static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    if(now>=m_pairLossUntil) return false;
+    if(outgoing) ++m_pairLossTx; else ++m_pairLossRx;
+    return true;
+}
+
+ese::QuicUdpSendResult CClientUDPSocket::SendQuicDatagram(ese::QuicUdpIngress* owner,
+    const ese::udp::Endpoint& peer,const byte* bytes,size_t count)
+{
+    using ese::QuicUdpSendStatus;
+    if (::GetCurrentThreadId() != m_quicOwnerThread || !owner || owner != m_quicIngress ||
+        m_quicResetting || !bytes || !count || count > 1200 || !peer.port)
+        return {QuicUdpSendStatus::Invalid,0};
+    if (!m_port || m_hSocket == INVALID_SOCKET)
+        return {QuicUdpSendStatus::Closed,0};
+    if (peer.ipv6 && !m_bDualStack)
+        return {QuicUdpSendStatus::Failed,WSAEAFNOSUPPORT};
+    bool nonzero=false;
+    for (size_t i=0;i<(peer.ipv6 ? 16U : 4U);++i) nonzero |= peer.address[i] != 0;
+    if (!nonzero || (!peer.ipv6 && peer.scope)) return {QuicUdpSendStatus::Invalid,0};
+    if (!peer.ipv6) {
+        for (size_t i=4;i<peer.address.size();++i)
+            if (peer.address[i]) return {QuicUdpSendStatus::Invalid,0};
+    }
+    // A successful socket send does not guarantee network delivery. This
+    // one-shot lab blackhole emulates that loss, not WouldBlock or Close.
+    if(DropPairUdp(peer,true)) return {QuicUdpSendStatus::Sent,0};
+    SOCKADDR_STORAGE target = {};
+    int targetSize;
+    if (peer.ipv6 || m_bDualStack) {
+        auto* address = reinterpret_cast<SOCKADDR_IN6*>(&target);
+        address->sin6_family = AF_INET6;
+        address->sin6_port = htons(peer.port);
+        if (peer.ipv6) {
+            memcpy(&address->sin6_addr,peer.address.data(),16);
+            address->sin6_scope_id = peer.scope;
+        } else {
+            address->sin6_addr.u.Byte[10] = 0xFF;
+            address->sin6_addr.u.Byte[11] = 0xFF;
+            memcpy(&address->sin6_addr.u.Byte[12],peer.address.data(),4);
+        }
+        targetSize = sizeof(SOCKADDR_IN6);
+    } else {
+        auto* address = reinterpret_cast<SOCKADDR_IN*>(&target);
+        address->sin_family = AF_INET;
+        address->sin_port = htons(peer.port);
+        memcpy(&address->sin_addr,peer.address.data(),4);
+        targetSize = sizeof(SOCKADDR_IN);
+    }
+    // Share serialization with the existing UDP control/uTP send path. No
+    // eMule obfuscation, payload transformation or private packet queue here.
+    CSingleLock lock(&sendLocker,TRUE);
+    const int sent = CAsyncSocket::SendTo(bytes,static_cast<int>(count),
+        reinterpret_cast<const SOCKADDR*>(&target),targetSize);
+    if (sent == static_cast<int>(count)) return {QuicUdpSendStatus::Sent,0};
+    if (sent != SOCKET_ERROR) return {QuicUdpSendStatus::Failed,WSAEMSGSIZE};
+    const auto error = static_cast<uint32>(CAsyncSocket::GetLastError());
+    if (error == WSAEWOULDBLOCK) {
+        m_bWouldBlock = true;
+        return {QuicUdpSendStatus::WouldBlock,error};
+    }
+    return {QuicUdpSendStatus::Failed,error};
+}
+
+void CClientUDPSocket::ResetQuicIngress()
+{
+    ASSERT(::GetCurrentThreadId() == m_quicOwnerThread);
+    auto* ingress = m_quicIngress;
+    m_quicIngress = nullptr;
+    if (m_quicResetting) return;
+    m_quicResetting = true;
+    if (ingress) ingress->SocketReset();
+    m_quicResetting = false;
+}
+
+bool CClientUDPSocket::FeedQuicUdp(const byte* bytes,size_t count,
+    const CAddress& address,uint16 port,uint32 scope)
+{
+    if (!m_quicIngress || !count) return false;
+    ASSERT(::GetCurrentThreadId() == m_quicOwnerThread);
+    ese::udp::Endpoint peer;
+    peer.ipv6 = address.GetType() == CAddress::IPv6;
+    peer.port = port;
+    peer.scope = peer.ipv6 ? scope : 0;
+    memcpy(peer.address.data(),address.Data(),peer.ipv6 ? 16 : 4);
+    if(DropPairUdp(peer,false)) return true; // consume, never reclassify as legacy UDP
+    return m_quicIngress->Receive(peer,{bytes,count});
 }
 
 void CClientUDPSocket::OnReceive(int nErrorCode)
@@ -140,6 +276,9 @@ void CClientUDPSocket::OnReceive(int nErrorCode)
 	if (sourceAddress.GetType() == CAddress::IPv6) {
 		if (!sourceAddress.IsPublicIP())
 			return;
+        const auto scope = reinterpret_cast<const SOCKADDR_IN6*>(&rawSockAddr)->sin6_scope_id;
+        if (FeedQuicUdp(buffer,static_cast<size_t>(nRealLen),sourceAddress,sourcePort,scope))
+            return;
 		if (nRealLen > 0 && CUtpSocket::FeedRawUdp(buffer, nRealLen,
 				(const sockaddr*)&rawSockAddr, iRawSockAddrLen))
 			return;
@@ -167,6 +306,8 @@ void CClientUDPSocket::OnReceive(int nErrorCode)
 	int iSockAddrLen = sizeof sockAddr;
 	if (theApp.ipfilter->IsFiltered(sockAddr.sin_addr.s_addr) || theApp.clientlist->IsBannedClient(sockAddr.sin_addr.s_addr) || !sockAddr.sin_port)
 		return;
+    if (FeedQuicUdp(buffer,static_cast<size_t>(nRealLen),sourceAddress,sourcePort,0))
+        return;
 
 	// eSE: Feed raw UDP data to libutp BEFORE eMule protocol decryption.
 	// uTP packets have their own binary format (version byte, connection IDs, etc.)
@@ -714,6 +855,8 @@ bool CClientUDPSocket::SendPacketV6(Packet *packet, const uint8 v6Addr[16], uint
 
 bool CClientUDPSocket::Create()
 {
+	m_port = 0;
+	if(theApp.directreachability) theApp.directreachability->SynchronizeLocalSocketBindings();
 	m_bIPv6BindRequested = thePrefs.IsIPv6Enabled();
 	if (thePrefs.GetUDPPort()) {
 		m_bDualStack = false;
@@ -788,6 +931,7 @@ bool CClientUDPSocket::Create()
 		m_bDualStack = false;
 	}
 	UpdateHolePunchRuntimeCaps(IsUtpReady());
+	if(theApp.directreachability) theApp.directreachability->SynchronizeLocalSocketBindings();
 	return true;
 }
 
@@ -796,6 +940,7 @@ bool CClientUDPSocket::Rebind()
 	if (thePrefs.GetUDPPort() == m_port
 		&& thePrefs.IsIPv6Enabled() == m_bIPv6BindRequested)
 		return false;
+	ResetQuicIngress();
 	// Destroy old uTP context before recreating the socket on a new port
 	if (m_pUtpContext) {
 		CUtpSocket::OnContextDestroyed((utp_context*)m_pUtpContext);
@@ -852,8 +997,8 @@ void CClientUDPSocket::SeedNatTraversalExpectation(CUpDownClient* /*pClient*/, u
 	sa.sin_port = htons(nPort);
 
 	// Register the peer endpoint in g_expectedPeers via the static bridge.
-	// on_utp_accept consumes one incoming SYN from this exact endpoint, or from
-	// the uniquely-nearest endpoint inside its small NAT-remap port window.
+	// on_utp_accept consumes one incoming SYN from this exact endpoint only.
+	// A changed public port requires another validated traversal expectation.
 	CUtpSocket::RegisterExpectedPeer(reinterpret_cast<const sockaddr*>(&sa), sizeof(sa));
 
 	DebugLog(_T("eSE: SeedNatTraversalExpectation — registered peer %s:%u for uTP accept matching"),

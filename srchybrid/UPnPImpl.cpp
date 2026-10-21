@@ -16,6 +16,8 @@
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #include "StdAfx.h"
 #include "UPnPImpl.h"
+#include "MapperWindowsNotification.h"
+#include "Preferences.h"
 
 #include <chrono>
 
@@ -57,12 +59,51 @@ CUPnPImpl::CUPnPImpl()
 
 void CUPnPImpl::SetMessageOnResult(CWnd *cwnd, UINT nMessageID)
 {
+	auto previous=std::atomic_exchange(&m_ownedNotification,std::shared_ptr<OwnedNotification>{});
+	if(previous) previous->publisher.Cancel();
 	m_wndResultMessage = cwnd;
 	m_nResultMessageID = nMessageID;
 }
 
+bool CUPnPImpl::SetOwnedMessageOnResult(CWnd* window,UINT message,
+	std::shared_ptr<natmap::MapperResultMailbox> queue,uint64 operation)
+{
+	if(!window || !window->GetSafeHwnd() || !message || !queue || !operation || !IsReady()) return false;
+	auto notification=std::make_shared<OwnedNotification>(std::move(queue),operation,window->GetSafeHwnd(),message);
+	auto previous=std::atomic_exchange(&m_ownedNotification,std::move(notification));
+	if(previous) previous->publisher.Cancel();
+	return true;
+}
+
+uint64 CUPnPImpl::GetOwnedResultOperation() const
+{
+	auto notification=std::atomic_load(&m_ownedNotification);
+	return notification ? notification->operation : 0;
+}
+
 void CUPnPImpl::SendResultMessage()
 {
+	SendResultMessage(CaptureResultNotification());
+}
+
+std::shared_ptr<CUPnPImpl::OwnedNotification> CUPnPImpl::CaptureResultNotification() const
+{
+	return std::atomic_load(&m_ownedNotification);
+}
+
+void CUPnPImpl::SendResultMessage(const std::shared_ptr<OwnedNotification>& notification)
+{
+	if(notification) {
+		natmap::MapperResult result;
+		result.success=m_bUPnPPortsForwarded==TRIS_TRUE;
+		result.external_ipv4=m_dwMappingExternalIP; result.lifetime=m_dwMappingLeaseLifetime;
+		result.epoch=m_dwMapperEpoch; result.external_tcp=m_nExternalTCPPort; result.external_udp=m_nExternalUDPPort;
+		notification->publisher.Publish(result,[&](uint64 id) {
+			return natmap::PostMapperOperation(notification->window,notification->message,id);
+		});
+		return; // never downgrade failed owned publication to mutable legacy getters
+	}
+	if (CaptureResultNotification()) return; // legacy worker cannot publish into a later owned operation
 	if (m_wndResultMessage != NULL && m_nResultMessageID != 0)
 		m_wndResultMessage->PostMessage(m_nResultMessageID, (WPARAM)(m_bUPnPPortsForwarded == TRIS_TRUE ? UPNP_OK : UPNP_FAILED), (LPARAM)m_bCheckAndRefresh);
 	m_nResultMessageID = 0;
@@ -81,20 +122,38 @@ void CUPnPImpl::LateEnableWebServerPort(uint16 nPort)
 
 void CUPnPImpl::RecordLeaseSuccess()
 {
+	RecordLeaseSuccess(m_dwMappingLeaseLifetime);
+}
+
+void CUPnPImpl::RecordLeaseSuccess(uint32 lifetime)
+{
 	const uint64 now = MonotonicMilliseconds();
-	if (m_leaseRefreshSchedule.Activate(m_dwMappingLeaseLifetime, now))
+	if (m_leaseRefreshSchedule.Activate(lifetime, now))
 		m_permanentProbeSchedule.Clear();
 	else if (SupportsMappingHealthCheck())
 		m_permanentProbeSchedule.Activate(now);
 	else
 		m_permanentProbeSchedule.Clear();
+    if(thePrefs.IsEseNetLabActive() && SupportsMappingHealthCheck()) m_healthReadback.Activate(lifetime,now);
+    else m_healthReadback.Clear();
 }
 
 bool CUPnPImpl::IsLeaseRefreshDue() const
 {
 	const uint64 now = MonotonicMilliseconds();
 	return m_leaseRefreshSchedule.ShouldAttempt(now)
-		|| m_permanentProbeSchedule.ShouldAttempt(now);
+		|| m_permanentProbeSchedule.ShouldAttempt(now) || IsMappingHealthReadbackDue();
+}
+bool CUPnPImpl::IsMappingHealthReadbackDue() const
+{
+    return thePrefs.IsEseNetLabActive() && m_healthReadback.Due(MonotonicMilliseconds());
+}
+void CUPnPImpl::SynchronizeMappingHealthReadback()
+{
+    if(!thePrefs.IsEseNetLabActive() || !SupportsMappingHealthCheck() || ArePortsForwarded()!=TRIS_TRUE)
+        m_healthReadback.Clear();
+    else if(!m_healthReadback.Interval())
+        m_healthReadback.Activate(m_dwMappingLeaseLifetime,MonotonicMilliseconds());
 }
 
 bool CUPnPImpl::IsLeaseExpired() const
@@ -105,18 +164,21 @@ bool CUPnPImpl::IsLeaseExpired() const
 void CUPnPImpl::BeginLeaseRefreshAttempt()
 {
 	const uint64 now = MonotonicMilliseconds();
-	if (m_leaseRefreshSchedule.IsFinite())
+    if(IsMappingHealthReadbackDue()) m_healthReadback.Mark(now);
+	if (m_leaseRefreshSchedule.ShouldAttempt(now))
 		m_leaseRefreshSchedule.MarkAttempt(now);
-	else
+	else if(m_permanentProbeSchedule.ShouldAttempt(now))
 		m_permanentProbeSchedule.MarkAttempt(now);
 }
 
 uint64 CUPnPImpl::GetLeaseRefreshSecondsUntilDue() const
 {
 	const uint64 now = MonotonicMilliseconds();
-	const uint64 due = m_leaseRefreshSchedule.IsFinite()
+	uint64 due = m_leaseRefreshSchedule.IsFinite()
 		? m_leaseRefreshSchedule.next_attempt_ms()
 		: m_permanentProbeSchedule.next_attempt_ms();
+    if(thePrefs.IsEseNetLabActive() && m_healthReadback.Next() && (!due || m_healthReadback.Next()<due))
+        due=m_healthReadback.Next();
 	return due > now ? (due - now) / 1000 : 0;
 }
 

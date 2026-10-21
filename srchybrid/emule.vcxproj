@@ -31,7 +31,7 @@
     <ProjectGuid>{584EA69D-3443-4197-8994-364880FC1B9B}</ProjectGuid>
     <ProjectName>emule</ProjectName>
     <RootNamespace>emule</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Label="Configuration">
@@ -67,7 +67,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
-      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);</AdditionalIncludeDirectories>
       <AdditionalOptions>/Zc:throwingNew</AdditionalOptions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -93,7 +93,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);</AdditionalIncludeDirectories>
       <AdditionalOptions>/Zc:throwingNew</AdditionalOptions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -117,7 +117,8 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
-      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);</AdditionalIncludeDirectories>
       <AdditionalOptions>/Zc:throwingNew</AdditionalOptions>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -144,43 +145,42 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);</AdditionalIncludeDirectories>
       <AdditionalOptions>/Zc:throwingNew</AdditionalOptions>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <OmitFramePointers>true</OmitFramePointers>
       <PrecompiledHeader>Use</PrecompiledHeader>
-      <PreprocessorDefinitions>MBEDTLS_THREADING_C;MBEDTLS_THREADING_ALT;MBEDTLS_THREADING_C;MBEDTLS_THREADING_ALT;ID3LIB_LINKOPTION=1;MINIUPNP_STATICLIB;SUPPORT_LARGE_FILES;NDEBUG;XP_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>MBEDTLS_THREADING_C;MBEDTLS_THREADING_ALT;ID3LIB_LINKOPTION=1;MINIUPNP_STATICLIB;SUPPORT_LARGE_FILES;NDEBUG;XP_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <WarningLevel>EnableAllWarnings</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
+      <!-- The legacy MFC tree has a sizeable, measured warning backlog.
+           New isolated modules and standalone tests compile with /WX; the
+           application build stays at /W4 until that backlog is ratcheted down. -->
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <SDLCheck>false</SDLCheck>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ControlFlowGuard>Guard</ControlFlowGuard>
       <DebugInformationFormat>OldStyle</DebugInformationFormat>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>..\\libutp\\$(Platform)\\Release\\libutp.lib;bcrypt.lib;ADSIId.lib;crypt32.lib;iphlpapi.lib;version.lib;winmm.lib;ws2_32.lib;..\cryptopp\$(Platform)\Output\$(Configuration)\cryptlib.lib;$(Platform)\$(Configuration)\cximage.lib;..\id3lib\libprj\$(Platform)\$(Configuration)\id3lib.lib;$(Platform)\$(Configuration)\libpng16.lib;$(Platform)\$(Configuration)\mbedTLS.lib;$(Platform)\$(Configuration)\miniupnpc.lib;..\ResizableLib\ResizableLib\$(Platform)\Release Unicode\bin\ResizableLib.lib;..\zlib\contrib\vstudio\vc17\$(ZlibPlatform)\ZlibStat$(Configuration)\zlibstat.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(Platform)\$(Configuration)\libutp.lib;bcrypt.lib;ADSIId.lib;crypt32.lib;iphlpapi.lib;version.lib;winmm.lib;ws2_32.lib;..\cryptopp\$(Platform)\Output\$(Configuration)\cryptlib.lib;$(Platform)\$(Configuration)\cximage.lib;..\id3lib\libprj\$(Platform)\$(Configuration)\id3lib.lib;$(Platform)\$(Configuration)\libpng16.lib;$(Platform)\$(Configuration)\mbedTLS.lib;$(Platform)\$(Configuration)\miniupnpc.lib;..\ResizableLib\ResizableLib\$(Platform)\Release Unicode\bin\ResizableLib.lib;..\zlib\contrib\vstudio\vc17\$(ZlibPlatform)\ZlibStat$(Configuration)\zlibstat.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <DelayLoadDLLs>gdiplus.dll;msimg32.dll;oleacc.dll;ws2_32.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
       <IgnoreSpecificDefaultLibraries>mpr.lib;rasapi32.lib;secur32.lib;sensapi.lib;vfw32.lib;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <SubSystem>Windows</SubSystem>
-      <AdditionalOptions>/FORCE:MULTIPLE /MAP /MAPINFO:EXPORTS %(AdditionalOptions)</AdditionalOptions>
+      <ControlFlowGuard>Guard</ControlFlowGuard>
+      <AdditionalOptions>/MAP /MAPINFO:EXPORTS %(AdditionalOptions)</AdditionalOptions>
     </Link>
     <Manifest>
       <AdditionalManifestFiles>res/$(TargetName)$(Platform).manifest %(AdditionalManifestFiles)</AdditionalManifestFiles>
       <EnableDpiAwareness>false</EnableDpiAwareness>
     </Manifest>
-    <PreBuildEvent>
-      <!-- Auto-rebuild ese-server.exe when any srchybrid/eSE/*.js is newer.
-           Idempotent: skips silently if Node is not installed or sources
-           are already up to date. Never fails the C++ build on warnings;
-           only signals failure on a hard rebuild error after timestamp
-           said a rebuild was actually required. -->
-      <Command>powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)..\tools\build_ese_server.ps1"</Command>
-      <Message>Sync srchybrid/eSE JS -> ese-server.exe (idempotent)</Message>
-    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='_SpecialBootstrapNodes|Win32'">
     <ClCompile>
-      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);</AdditionalIncludeDirectories>
       <AdditionalOptions>/Zc:throwingNew</AdditionalOptions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -206,7 +206,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='_SpecialBootstrapNodes|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);</AdditionalIncludeDirectories>
       <AdditionalOptions>/Zc:throwingNew</AdditionalOptions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -270,6 +270,7 @@
     <ClCompile Include="CustomAutoComplete.cpp" />
     <ClCompile Include="DeadSourceList.cpp" />
 	<ClCompile Include="DirectReachabilityManager.cpp" />
+	<ClCompile Include="EseQuicDownloadConsumer.cpp" />
     <ClCompile Include="DialogMinTrayBtn.cpp" />
     <ClCompile Include="DirectDownloadDlg.cpp" />
     <ClCompile Include="DirectoryTreeCtrl.cpp" />
@@ -332,7 +333,9 @@
       <WarningLevel>Level4</WarningLevel>
     </ClCompile>
     <ClCompile Include="Emule.cpp" />
-    <ClCompile Include="EmuleDlg.cpp" />
+    <ClCompile Include="EmuleDlg.cpp">
+      <PreprocessorDefinitions Condition="'$(EseQuicDependencyRoot)'!=''">ESE_NATIVE_QUIC_LAB_AVAILABLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
     <ClCompile Include="eSEHelpers.cpp" />
     <ClCompile Include="EnBitmap.cpp" />
     <ClCompile Include="EncryptedDatagramSocket.cpp" />
@@ -441,6 +444,31 @@
     <ClCompile Include="..\libreach\src\reach_codec.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="..\libreach\src\direct_attempt.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="..\libreach\src\direct_session.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="..\libreach\src\direct_coordinator.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="..\libreach\src\direct_event_queue.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="..\libreach\src\direct_transport.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
     </ClCompile>
     <!-- Kad6 wire/core library. Keep these translation units independent of
          the MFC precompiled header and at the same /W4 level as standalone. -->
@@ -611,7 +639,9 @@
     <ClCompile Include="LiveMeshManager.cpp" />
     <ClCompile Include="LivePackets.cpp" />
     <ClCompile Include="LiveProtocol.cpp" />
-    <ClCompile Include="LiveCrypto.cpp" />
+    <ClCompile Include="LiveCrypto.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="LiveOnionCrypto.cpp" />
     <ClCompile Include="LiveChannel.cpp" />
     <ClCompile Include="LiveSubscriptionStore.cpp" />
@@ -628,10 +658,51 @@
       <PrecompiledHeader />
     </ClCompile>
     <ClCompile Include="NodeIdentity.cpp" />
+    <ClCompile Include="EseControlCookieCrypto.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="EseChannelBinding.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="EseUdpDemux.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="EseQuicTransport.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="EseQuicUdpRouter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="EseQuicHostFactory.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions Condition="'$(EseQuicDependencyRoot)'!=''">ESE_NATIVE_QUIC_LAB_AVAILABLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="EseNodeBindingCrypto.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
     <ClCompile Include="NodeIdentityStorage.cpp">
       <PrecompiledHeader />
     </ClCompile>
     <ClCompile Include="LiveCellQueue.cpp" />
+    <ClCompile Include="LiveTunnelFraming.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">/WX %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="LiveCoverTraffic.cpp" />
     <ClCompile Include="LiveMigrationV7.cpp" />
     <ClCompile Include="FirewallProberV6.cpp" />
@@ -982,6 +1053,7 @@
     <ClInclude Include="LiveFec.h" />
     <ClInclude Include="LiveBulk.h" />
     <ClInclude Include="LiveCellQueue.h" />
+    <ClInclude Include="LiveTunnelFraming.h" />
     <ClInclude Include="LiveCoverTraffic.h" />
     <ClInclude Include="LiveMigrationV7.h" />
     <ClInclude Include="FirewallProberV6.h" />
@@ -1073,6 +1145,7 @@
     <ClInclude Include="ShareableFile.h" />
     <ClInclude Include="SharedDirsTreeCtrl.h" />
     <ClInclude Include="SharedFileList.h" />
+    <ClInclude Include="SharedFileIntakePolicy.h" />
     <ClInclude Include="SharedFilesCtrl.h" />
     <ClInclude Include="SharedFilesWnd.h" />
     <ClInclude Include="SmileySelector.h" />
@@ -1403,6 +1476,7 @@
     <Text Include="..\docs\readme.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="EseNativeQuic.targets" />
   <ImportGroup Label="ExtensionTargets">
     <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.targets" />
   </ImportGroup>

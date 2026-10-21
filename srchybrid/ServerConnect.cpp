@@ -44,7 +44,9 @@ static char THIS_FILE[] = __FILE__;
 
 void CServerConnect::TryAnotherConnectionRequest()
 {
-	if (connectionattempts.GetCount() < 2 - static_cast<INT_PTR>(thePrefs.IsSafeServerConnectEnabled())) {
+	const INT_PTR limit = thePrefs.IsEseNetLabActive() ? 1 :
+		2 - static_cast<INT_PTR>(thePrefs.IsSafeServerConnectEnabled());
+	if (!m_callbackRetry.Pending() && connectionattempts.GetCount() < limit) {
 		CServer *next_server = theApp.serverlist->GetNextServer(m_bTryObfuscated);
 		if (next_server == NULL) {
 			if (connectionattempts.IsEmpty()) {
@@ -72,6 +74,7 @@ void CServerConnect::TryAnotherConnectionRequest()
 
 void CServerConnect::ConnectToAnyServer(INT_PTR startAt, bool prioSort, bool isAuto, bool bNoCrypt)
 {
+	m_callbackRetry.Reset();
 	StopConnectionTry();
 	Disconnect();
 	connecting = true;
@@ -130,6 +133,8 @@ void CServerConnect::ConnectToServer(CServer *server, bool multiconnect, bool bN
 		return;
 	}
 	if (!multiconnect) {
+		if (!m_dispatchingCallbackRetry)
+			m_callbackRetry.Reset();
 		StopConnectionTry();
 		Disconnect();
 	}
@@ -155,6 +160,7 @@ void CServerConnect::ConnectToServer(CServer *server, bool multiconnect, bool bN
 
 void CServerConnect::StopConnectionTry()
 {
+	m_callbackRetry.CancelPending();
 	connectionattempts.RemoveAll();
 	connecting = false;
 	singleconnecting = false;
@@ -398,6 +404,10 @@ void CServerConnect::ConnectionFailed(CServerSocket *sender)
 		if (!connecting)
 			break;
 		if (singleconnecting) {
+			if (m_callbackRetry.Used()) {
+				StopConnectionTry();
+				break; // no third login, crypt retry or reconnect loop
+			}
 			if (pServer != NULL && sender->IsServerCryptEnabledConnection() && !thePrefs.IsCryptLayerRequired()) {
 				// try reconnecting without obfuscation
 				ConnectToServer(pServer, false, true);
@@ -439,8 +449,53 @@ VOID CALLBACK CServerConnect::RetryConnectTimer(HWND /*hWnd*/, UINT /*nMsg*/, UI
 	CATCH_DFLT_EXCEPTIONS(_T("CServerConnect::RetryConnectTimer"))
 }
 
+bool CServerConnect::ScheduleCallbackFallback(CServerSocket* sender, uint64 generation)
+{
+	if (!sender || !sender->cur_server || sender->IsRelayRouted() ||
+		!connecting || singleconnecting || connected || !thePrefs.IsEseNetLabActive() ||
+		!theApp.directreachability ||
+		generation != theApp.directreachability->GetTopologyGeneration() ||
+		sender->GetConnectionState() != CS_WAITFORLOGIN || m_callbackRetry.Used())
+		return false;
+	bool ownsSender = false;
+	for (const CServerSocketMap::CPair* pair = connectionattempts.PGetFirstAssoc(); pair;
+		pair = connectionattempts.PGetNextAssoc(pair))
+		if (pair->value == sender) ownsSender = true;
+	if (!ownsSender) return false;
+	CServer* next = NULL;
+	for (INT_PTR i = 0; i < theApp.serverlist->GetServerCount(); ++i) {
+		CServer* candidate = theApp.serverlist->GetServerAt(i);
+		if (!candidate || !candidate->GetPort() ||
+			(thePrefs.GetAutoConnectToStaticServersOnly() && !candidate->IsStaticMember()) ||
+			(candidate->GetPort() == sender->cur_server->GetPort() &&
+			_tcsicmp(candidate->GetAddress(), sender->cur_server->GetAddress()) == 0))
+			continue;
+		next = candidate; break;
+	}
+	if (!next) return false;
+	// Keep a value key: the known server may be removed before the next tick.
+	m_callbackRetryAddress = next->GetAddress();
+	m_callbackRetryPort = next->GetPort();
+	return m_callbackRetry.Reserve(generation);
+}
+
 void CServerConnect::CheckForTimeout()
 {
+	if (m_callbackRetry.Pending()) {
+		const uint64 generation = thePrefs.IsEseNetLabActive() && theApp.directreachability
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+		const bool admitted = m_callbackRetry.Consume(generation);
+		StopConnectionTry(); // close every old login before opening the fallback
+		CServer* next = admitted ? theApp.serverlist->GetServerByAddress(
+			m_callbackRetryAddress, m_callbackRetryPort) : NULL;
+		if (next) {
+			m_dispatchingCallbackRetry = true;
+			try { ConnectToServer(next, false, !thePrefs.IsCryptLayerRequired()); }
+			catch (...) { m_dispatchingCallbackRetry = false; throw; }
+			m_dispatchingCallbackRetry = false;
+		}
+		return;
+	}
 	DWORD dwServerConnectTimeout = CONSERVTIMEOUT;
 	// If we are using a proxy, increase server connection timeout to default connection timeout
 	if (thePrefs.GetProxySettings().bUseProxy)

@@ -17,6 +17,8 @@
 #pragma once
 #include <exception>
 #include "natmap/natmap_policy.h"
+#include "natmap/mapper_result_mailbox.h"
+#include "EseMappingReadback.h"
 
 enum TRISTATE
 {
@@ -56,6 +58,15 @@ class CUPnPImpl
 {
 	CWnd* m_wndResultMessage;
 	UINT m_nResultMessageID;
+protected:
+	struct OwnedNotification {
+		natmap::MapperResultPublisher publisher;
+		HWND window; UINT message; uint64 operation;
+		OwnedNotification(std::shared_ptr<natmap::MapperResultMailbox> queue,uint64 id,HWND target,UINT msg)
+			: publisher(std::move(queue),id),window(target),message(msg),operation(id) {}
+	};
+private:
+	std::shared_ptr<OwnedNotification> m_ownedNotification;
 
 public:
 	CUPnPImpl();
@@ -70,6 +81,7 @@ public:
 
 	virtual void StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nTCPWebPort) = 0;
 	virtual bool CheckAndRefresh() = 0;
+	virtual bool CheckMappingHealth() { return CheckAndRefresh(); }
 	virtual void StopAsyncFind() = 0;
 	virtual void DeletePorts() = 0;
 	virtual bool IsReady() = 0;
@@ -79,6 +91,8 @@ public:
 	void LateEnableWebServerPort(uint16 nPort);	// Add Web Server port to already existing port mapping
 
 	void SetMessageOnResult(CWnd *cwnd, UINT nMessageID);
+	bool SetOwnedMessageOnResult(CWnd*,UINT,std::shared_ptr<natmap::MapperResultMailbox>,uint64 operation);
+	uint64 GetOwnedResultOperation() const;
 	TRISTATE ArePortsForwarded() const					{ return m_bUPnPPortsForwarded; }
 	uint16 GetUsedTCPPort() const						{ return m_nTCPPort; }
 	uint16 GetUsedUDPPort() const						{ return m_nUDPPort; }
@@ -92,15 +106,20 @@ public:
 	LONG GetDiagnosticStage() const						{ return m_nDiagnosticStage; }
 	LPCSTR GetDiagnosticStageName() const;
 	void RecordLeaseSuccess();
+	void RecordLeaseSuccess(uint32 lifetime);
 	bool IsLeaseRefreshDue() const;
 	bool IsLeaseExpired() const;
 	void BeginLeaseRefreshAttempt();
+	bool IsMappingHealthReadbackDue() const;
+	void SynchronizeMappingHealthReadback();
 	uint64 GetLeaseRefreshSecondsUntilDue() const;
 	uint32 GetLeaseRefreshAttemptCount() const;
 
 // Implementation
 protected:
 	void SendResultMessage();
+	std::shared_ptr<OwnedNotification> CaptureResultNotification() const;
+	void SendResultMessage(const std::shared_ptr<OwnedNotification>& notification);
 	volatile TRISTATE m_bUPnPPortsForwarded;
 	uint16 m_nOldTCPPort;
 	uint16 m_nOldTCPWebPort;
@@ -118,6 +137,7 @@ protected:
 	bool m_bCheckAndRefresh;
 	natmap::LeaseRefreshSchedule m_leaseRefreshSchedule;
 	natmap::PermanentMappingProbeSchedule m_permanentProbeSchedule;
+	ese::mapping::ReadbackSchedule m_healthReadback;
 };
 
 // Dummy Implementation to be used when no other implementation is available

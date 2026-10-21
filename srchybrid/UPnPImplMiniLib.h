@@ -29,6 +29,7 @@ public:
 
 	virtual void StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nTCPWebPort);
 	virtual bool CheckAndRefresh();
+	virtual bool CheckMappingHealth();
 	virtual void StopAsyncFind();
 	virtual void DeletePorts();
 	virtual bool IsReady();
@@ -44,10 +45,11 @@ public:
 	public:
 		virtual BOOL InitInstance();
 		virtual int Run();
-		void SetValues(CUPnPImplMiniLib *pOwner)	{ m_pOwner = pOwner; }
+		void SetValues(CUPnPImplMiniLib *pOwner)	{ m_pOwner = pOwner; m_notification = pOwner->CaptureResultNotification(); }
 
 	private:
 		CUPnPImplMiniLib *m_pOwner;
+		std::shared_ptr<OwnedNotification> m_notification;
 	};
 
 protected:
@@ -55,6 +57,8 @@ protected:
 
 private:
 	void Cleanup();
+	bool StartRefresh(bool readbackOnly);
+	bool m_bReadbackOnly=false;
 	void DeletePort(uint16 port, LPCTSTR prot);
 	void GetOldPorts();
 	void StartThread();

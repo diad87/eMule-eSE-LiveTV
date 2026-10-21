@@ -25,6 +25,8 @@
 #include "emuledlg.h"
 #include "opcodes.h"
 #include "clientlist.h"
+#include "DirectReachabilityManager.h"
+#include "ClientUDPSocket.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -126,6 +128,11 @@ void CUDPFirewallTester::SetUDPFWCheckResult(bool bSucceeded, bool bTestCancelle
 	if (!bTestCancelled) {
 		++m_byFWChecksFinishedUDP;
 		if (bSucceeded) {	//one positive result is enough
+            // Only the already admitted requested peer can satisfy the modern
+            // mapping proof. The socket binding and public tested port remain
+            // distinct; a historical Kad-open flag is not reused as evidence.
+            if(theApp.directreachability && theApp.clientudp)
+                theApp.directreachability->ObserveKad6PublicContactVerification(htonl(uFromIP),nIncomingPort,theApp.clientudp->GetConnectedPort());
 			m_dwTestStart = 0;
 			m_bFirewalledUDP = false;
 			m_bIsFWVerifiedUDP = true;

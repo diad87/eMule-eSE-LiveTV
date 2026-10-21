@@ -17,6 +17,8 @@
 #include "KnownFile.h"
 #include "DeadSourceList.h"
 #include "CorruptionBlackBox.h"
+#include "reach/part_contributions.h"
+#include <map>
 
 enum EPartFileStatus
 {
@@ -130,6 +132,9 @@ public:
 	explicit CPartFile(const CString &edonkeylink, UINT cat = 0);
 	explicit CPartFile(const CED2KFileLink &fileLink, UINT cat = 0);
 	virtual	~CPartFile();
+	reach::DirectFileKey NativeDirectFileKey() const;
+	static bool RunHashVerdictFenceSelfTest(); // explicit headless selftest only
+	static bool RunHashVerdictAcceptanceSelfTest(const struct PartHashVerdict_Struct&);
 
 	bool	IsPartFile() const							{ return (status != PS_COMPLETE); }
 
@@ -398,6 +403,7 @@ protected:
 	void	Init();
 
 private:
+	uint64 m_directFileLifetime=0;
 	BOOL	PerformFileComplete(); // Lord KiRon
 	static UINT CompleteThreadProc(LPVOID pvParams); // Lord KiRon - Used as separate thread to complete file
 	void	CharFillRange(CStringA &buffer, uint32 start, uint32 end, char color) const;
@@ -420,6 +426,8 @@ private:
 	// eSE H1: parts with an async hash verdict in flight -> generation; main thread only.
 	// AddGap on a pending part bumps its generation, invalidating the in-flight verdict.
 	CMap<UINT, UINT, UINT, UINT> m_mapPendingHashParts;
+	struct DirectHashSnapshot { UINT generation=0; std::vector<reach::DirectPartReceipt> receipts; };
+	std::map<UINT,DirectHashSnapshot> m_directHashSnapshots;
 	UINT	m_uPartHashGen;
 	CUpDownClientPtrList m_downloadingSourceList;
 	CString m_fullname;

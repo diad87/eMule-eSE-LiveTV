@@ -147,6 +147,11 @@ void CClientList::GetStatistics(uint32 &ruTotalClients
 
 void CClientList::AddClient(CUpDownClient *toadd, bool bSkipDupTest)
 {
+	if(toadd && toadd->HasIsolatedDirectRouteCredits()) {
+		if(thePrefs.IsEseNetLabActive() && m_directRouteClients.GetCount()<256 && !m_directRouteClients.Find(toadd))
+			m_directRouteClients.AddTail(toadd);
+		return;
+	}
 	// skipping the check for duplicate list entries is only to be done for optimization purposes, if the calling
 	// function has ensured that this client instance is not already within the list -> there are never duplicate
 	// client instances in this list.
@@ -166,6 +171,11 @@ bool CClientList::GiveClientsForTraceRoute()
 
 void CClientList::RemoveClient(CUpDownClient *toremove, LPCTSTR pszReason)
 {
+	if(const auto route=m_directRouteClients.Find(toremove)) {
+		m_directRouteClients.RemoveAt(route);
+		RemoveConnectingClient(toremove);
+		return;
+	}
 	POSITION pos = list.Find(toremove);
 	if (pos) {
 		theApp.uploadqueue->RemoveFromUploadQueue(toremove, CString(_T("CClientList::RemoveClient: ")) + pszReason);
@@ -184,6 +194,7 @@ void CClientList::DeleteAll()
 	theApp.downloadqueue->DeleteAll();
 	while (!list.IsEmpty())
 		delete list.RemoveHead(); // recursive: this will call RemoveClient
+	while(!m_directRouteClients.IsEmpty()) delete m_directRouteClients.RemoveHead();
 }
 
 // v0.71 P3.6 — snapshot of connected clients for the privacy test
@@ -301,6 +312,26 @@ CUpDownClient* CClientList::FindClientByUserHash(const uchar *clienthash, uint32
 		}
 	}
 	return pFound;
+}
+
+CUpDownClient* CClientList::FindClientByUserHashAndLifetime(const uchar* hash,uint64 lifetime) const
+{
+	auto* client=FindClientByLifetime(lifetime);
+	return hash && client && md4equ(client->GetUserHash(),hash) ? client : nullptr;
+}
+
+CUpDownClient* CClientList::FindClientByLifetime(uint64 lifetime) const
+{
+	if(!lifetime) return nullptr;
+	for(POSITION pos=list.GetHeadPosition();pos;) {
+		auto* client=list.GetNext(pos);
+		if(client->GetDirectClientLifetime()==lifetime) return client;
+	}
+	for(POSITION pos=m_directRouteClients.GetHeadPosition();pos;) {
+		auto* client=m_directRouteClients.GetNext(pos);
+		if(client->GetDirectClientLifetime()==lifetime) return client;
+	}
+	return nullptr;
 }
 
 CUpDownClient* CClientList::FindClientByIP(uint32 clientip) const
@@ -431,6 +462,7 @@ void CClientList::RemoveAllBannedClients()
 
 void CClientList::AddTrackClient(CUpDownClient *toadd)
 {
+	if(!toadd || toadd->HasIsolatedDirectRouteCredits()) return;
 	if (toadd->IsIPv6OnlyEndpoint()) {
 		const CAddress address = toadd->GetIPv6Address();
 		if (!address.IsUsablePublic())
@@ -817,7 +849,7 @@ bool CClientList::IsValidClient(CUpDownClient *tocheck) const
 {
 	if (thePrefs.m_iDbgHeap >= 2)
 		ASSERT_VALID(tocheck);
-	return list.Find(tocheck) != NULL;
+	return list.Find(tocheck) != NULL || m_directRouteClients.Find(tocheck) != NULL;
 }
 
 

@@ -20,6 +20,7 @@
 #include "emule.h"
 #include "KnownFileList.h"
 #include "SharedFileList.h"
+#include "DirectReachabilityManager.h"
 #include "Packets.h"
 #include "Kademlia/Kademlia/Kademlia.h"
 #include "kademlia/kademlia/search.h"
@@ -48,6 +49,7 @@
 #include "LiveTunnel.h"
 #include "Kad6CryptoHost.h"
 #include "SHAHashSet.h"
+#include "SharedFileIntakePolicy.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -818,7 +820,8 @@ bool CSharedFileList::RemoveFile(CKnownFile *pFile, bool bDeleted)
 	bool bResult = (m_Files_map.RemoveKey(CCKey(pFile->GetFileHash())) != FALSE);
 	listlock.Unlock();
 
-	output->RemoveFile(pFile, bDeleted);
+	if (output)
+		output->RemoveFile(pFile, bDeleted);
 	m_keywords->RemoveKeywords(pFile);
 	if (bResult) {
 		m_UnsharedFiles_map[CSKey(pFile->GetFileHash())] = true;
@@ -1274,7 +1277,10 @@ void CSharedFileList::HashFailed(UnknownFile_Struct *hashed)
 
 void CSharedFileList::UpdateFile(CKnownFile *toupdate)
 {
-	output->UpdateFile(toupdate);
+	// Sharing and request statistics are valid before the optional UI sink is
+	// attached (notably headless startup). Keep model updates independent of it.
+	if (output)
+		output->UpdateFile(toupdate);
 }
 
 void CSharedFileList::Process()
@@ -1298,6 +1304,13 @@ void CSharedFileList::Process()
 
 void CSharedFileList::Publish()
 {
+    // Independent direct index path; preserve the gateway and Kad2 publishers.
+    if(theApp.directreachability && !theApp.m_bReachBindingSelfTest && GetCount()) {
+        static INT_PTR directOrdinal=0;
+        if(directOrdinal>=GetCount()) directOrdinal=0;
+        if(auto* file=GetFileByIndex(directOrdinal))
+            if(theApp.directreachability->TryPublishQueuedKad6File(*file)) ++directOrdinal;
+    }
 	// K6 source publication is deliberately independent of classic HighID,
 	// buddy and direct UDP reachability. Its endpoint is the exit X, so using
 	// the old early-return conditions here would reintroduce the CGNAT problem
@@ -1547,10 +1560,22 @@ bool CSharedFileList::ExcludeFile(const CString &strFilePath)
 
 void CSharedFileList::CheckAndAddSingleFile(const CFileFind &ff)
 {
-	if (ff.IsDirectory() || ff.IsSystem() || ff.IsTemporary() || ff.GetLength() == 0 || ff.GetLength() > MAX_EMULE_FILE_SIZE)
+	const CString strInitialFileName(ff.GetFileName());
+	SharedFileIntakePolicy::FileFacts intakeFacts;
+	intakeFacts.isDirectory = ff.IsDirectory() != FALSE;
+	intakeFacts.isSystem = ff.IsSystem() != FALSE;
+	intakeFacts.isTemporary = ff.IsTemporary() != FALSE;
+	intakeFacts.size = static_cast<uint64>(ff.GetLength());
+	const SharedFileIntakePolicy::Rejection rejection =
+		SharedFileIntakePolicy::ClassifyFile(
+			static_cast<LPCWSTR>(strInitialFileName),
+			static_cast<size_t>(strInitialFileName.GetLength()),
+			intakeFacts,
+			MAX_EMULE_FILE_SIZE);
+	if (rejection != SharedFileIntakePolicy::Rejection::None)
 		return;
 
-	CString strFoundFileName(ff.GetFileName());
+	CString strFoundFileName(strInitialFileName);
 	CString strFoundFilePath(ff.GetFilePath());
 	CString strFoundDirectory(strFoundFilePath, ff.GetFilePath().ReverseFind(_T('\\')) + 1); //with backslash
 	CString strShellLinkDir;

@@ -277,6 +277,13 @@ void CClientCreditsList::SaveList()
 	delete[] pBuffer;
 }
 
+CClientCredits* CClientCreditsList::FindCredit(const uchar *key) const
+{
+	if(!key) return nullptr;
+	CCKey tkey(key); CClientCredits* result=nullptr;
+	return m_mapClients.Lookup(tkey,result) ? result : nullptr;
+}
+
 CClientCredits* CClientCreditsList::GetCredit(const uchar *key)
 {
 	CCKey tkey(key);
@@ -517,6 +524,32 @@ bool CClientCreditsList::VerifyIdent(CClientCredits *pTarget, const uchar *pachS
 		pTarget->Verified(dwForIP);
 
 	return bResult;
+}
+
+bool CClientCreditsList::PromoteDirectIdent(CClientCredits& destination,const uchar* publicKey,uint8 publicKeySize,
+	const uchar* signature,uint8 signatureSize,uint32 challenge,uint32 peerIP,uint8 challengeIPKind)
+{
+	if(!thePrefs.IsEseNetLabActive() || GetCurrentThreadId()!=theApp.m_nThreadID ||
+		!publicKey || !publicKeySize || publicKeySize>MAXPUBKEYSIZE || !signature ||
+		signatureSize<9 || signatureSize>200 || !challenge || !peerIP ||
+		(challengeIPKind!=0 && challengeIPKind!=CRYPT_CIP_LOCALCLIENT &&
+		 challengeIPKind!=CRYPT_CIP_REMOTECLIENT && challengeIPKind!=CRYPT_CIP_NONECLIENT)) return false;
+	// Include an uncommitted existing key too: another route cannot replace it
+	// merely because its persistent nKeySize has not yet been committed.
+	if(destination.GetSecIDKeyLen() && (destination.GetSecIDKeyLen()!=publicKeySize ||
+		memcmp(destination.GetSecureIdent(),publicKey,publicKeySize))) return false;
+	CreditStruct transcript=*destination.GetDataStruct();
+	transcript.nKeySize=publicKeySize;
+	memcpy(transcript.abySecureIdent,publicKey,publicKeySize);
+	CClientCredits verifier(transcript);
+	verifier.m_dwCryptRndChallengeFor=challenge;
+	if(!VerifyIdent(&verifier,signature,signatureSize,peerIP,challengeIPKind)) return false;
+	// No callback between verification and commit. Existing key/counters and
+	// outstanding destination challenges stay intact; first identity retains
+	// the classic Verified policy rather than inventing transport credit rules.
+	if(!destination.GetSecIDKeyLen() && !destination.SetSecureIdent(publicKey,publicKeySize)) return false;
+	destination.Verified(peerIP);
+	return true;
 }
 
 bool CClientCreditsList::CryptoAvailable() const

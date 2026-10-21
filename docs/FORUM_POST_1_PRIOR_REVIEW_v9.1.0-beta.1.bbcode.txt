@@ -1,0 +1,121 @@
+TOPIC TITLE:
+0.70b Community / eMule eSE 9.1.0-beta.1 - protocol and Kad review
+
+TOPIC DESCRIPTION:
+LiveTV, local streaming and experimental IPv6/Kad6
+
+POST BODY:
+
+[b][size=5]eMule eSE 9.1.0-beta.1 - request for protocol and Kademlia review[/size][/b]
+
+Hello eMule developers and moderators,
+
+eMule eSE is an experimental GPL fork of eMule 0.70b Community. I am posting here before opening any topic in eMule Mods because the project contains capability-gated protocol extensions and an experimental Kademlia plane.
+
+Protocol changes require prior consent and proposed Kad changes require review. This is therefore [b]not an announcement claiming approval or endorsement[/b]. I will adapt or disable incompatible or unfair parts.
+
+
+[b][size=4]What eSE adds[/size][/b]
+
+[b]Local eSE streaming[/b]
+
+The eSE toolbar button opens a dashboard on [code]127.0.0.1:8080[/code]. It controls normal downloads and can play completed or suitable sufficiently downloaded part files with byte ranges, seeking, tracks and subtitles. [code]emule.exe[/code] remains authoritative for transfers, Kad and Live streams. Remote access requires deliberate configuration and authentication.
+
+[b]Decentralized LiveTV[/b]
+
+An eSE user can broadcast a screen, media file, RTMP/OBS input or test source. FFmpeg creates independent two-second HLS segments; the native client signs and distributes them. There is no central video server and [b]Kad never transports video[/b]. Kad2, PEX, LAN, cache or a direct link locate a broadcaster; negotiated additive packets carry Live data between compatible peers. Signed chunks, several parents, pull recovery and separately gated FEC/Bulk/tunnel paths provide integrity and recovery.
+
+
+[b][size=4]Kad2 use and compatibility boundary[/size][/b]
+
+Basic LiveTV works over the existing Kad2 directory or through a known endpoint; Kad6 is not required.
+
+A broadcaster may publish up to five discovery keys (global, title, category, language and exact stream hash), followed by a 60-second steady interval. Records expire and stopped channels use bounded tombstones.
+
+These are small directory records with fork-owned additive tags. Vanilla nodes may store them without interpretation. The connected stream is authenticated by its self-certifying key and signed media; the Kad2 record itself is not claimed to be signed.
+
+The original Kad2 packet layouts are not enlarged, [code]SEARCHKEYWORD_TOTAL[/code] remains [code]300[/code], and no Kad6 contact is written to Kad2 [code]nodes.dat[/code]. Vanilla peers are never sent LiveTV or IPv6 extension packets unless they advertise the corresponding capability.
+
+
+[b][size=4]Why it is called Kad6[/size][/b]
+
+[b]Kad6 means Kad for IPv6.[/b] It is not presented as a sixth official Kademlia revision.
+
+We leave [b]Kad3[/b] unused for a possible genuine community successor to Kad2. Kad6 is conceptually this project's first IPv6-native plane; the name describes its address family, not a protocol generation.
+
+Kad2 has 32-bit IPv4 assumptions in contacts, routing and security. Expanding fields would break layouts; synthetic 32-bit mappings would create collisions and incorrect state.
+
+Kad6 therefore has:
+
+[list]
+[*]its own [code]OP_KAD6HEADER[/code], capability, routing table and [code]nodes_v6.dat[/code];
+[*]full IPv4/IPv6 endpoints and a persistent Ed25519 node identity;
+[*]signed expiring endpoint/source records and bounded RPCs;
+[*]probation, replay/expiry, endpoint-verification and diversity checks.
+[/list]
+
+Native Kad6 Live publication/search is [b]not complete[/b]: the working K6 gateway still searches Kad2 at its exit and materializes IPv4. Kad6 is the proposed home for IPv6-native typed discovery without changing Kad2.
+
+New/migrated Kad-enabled beta profiles currently select Kad2+Kad6. Relay, KRP, public exit and contribution remain separately gated and off. This review asks whether Kad6 should instead be opt-in.
+
+
+[b][size=4]Traffic, consent and current evidence[/size][/b]
+
+The project does not assume that capability negotiation makes extra public traffic acceptable.
+
+[list]
+[*]With Network Lab disabled, a 30-second control produced zero Punch2, Punch3 or keepalive counter movement.
+[*]Cumulative counters observed 2,838 pings and 2,823 correlated pongs: 99.47%.
+[*]The gated 25-second keepalive costs 331,776-442,368 IPv4 bytes/day per peer; an adaptive replacement is being considered.
+[*]Punch2 cookie overhead is 118-150 bytes/attempt; optional [code]spread=4[/code] adds 448-576 bytes; complete Punch3 signalling costs 390-518 bytes before uTP.
+[*]No CGNAT-success claim is made; an isolated physical attempt failed closed and emitted no punch datagrams.
+[/list]
+
+Network Lab has separate base, advanced and contribution decisions, all defaulting to No, plus a kill switch and no automatic telemetry upload. Relays, prediction, KRP and Kad6 public-exit roles remain off without consent.
+
+Verification includes clean VS2022 x64 builds, regression suites, resumed 12 GB transfer with identical SHA-256, a 12.7-hour LiveTV run with no missing chunks observed, and two hours of IPv6-only 12 Mbps LiveTV with zero IPv4 fallback.
+
+These controlled tests demonstrate implementation behaviour, not universal Internet reachability.
+
+
+[b][size=4]Known limitations[/size][/b]
+
+[list]
+[*]No universal HighID, CGNAT traversal or anonymity guarantee.
+[*]IPv6-only Live discovery and the strict tunnel IPv6 body are incomplete.
+[*]No stable public Kad6 exit or KRP infrastructure is operated.
+[*]IPv6-only credits remain neutral pending a reviewed persistent identity.
+[/list]
+
+
+[b][size=4]Source and reproducible beta[/size][/b]
+
+Repository and complete GPL source:
+https://github.com/diad87/eMule-eSE-LiveTV
+
+Exact 9.1.0-beta.1 release:
+https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.1.0-beta.1
+
+Release commit:
+[code]72a5a41ebeec1bd08bff7ed17df27782930d96e3[/code]
+
+Windows x64 ZIP SHA-256:
+[code]65939ACA6B99146DC79ED58BE450573897FE75EDAEE00208D52BA37425CDC904[/code]
+
+The tagged tree contains the protocol registry, complete source-level changelog, release notes, tests, build instructions and third-party notices. The condensed feature changelog is in the next message.
+
+
+[b][size=4]Requested decision[/size][/b]
+
+[list]
+[*]Is the bounded Kad2 publication/search described above acceptable, or must Live discovery leave the public Kad2 network?
+[*]May capability-gated LiveTV packets be used only between compatible eSE peers?
+[*]Are the proposed capability/opcode allocations and IPv6 records acceptable?
+[*]May the separate Kad6 plane remain in a public mod, and should it be opt-in rather than selected beside Kad2 in new beta profiles?
+[*]Are the explicit Network Lab consent levels and bounded reachability experiments acceptable?
+[*]If those boundaries are corrected as requested, may eMule eSE later be announced and supported in eMule Mods?
+[/list]
+
+I can provide exact wire layouts, captures, tests or source locations as requested.
+
+Thank you for reviewing it.

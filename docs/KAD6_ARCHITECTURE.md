@@ -1,9 +1,19 @@
-# Kad6: diseño, fronteras y política de promoción
+# Kad6: arquitectura, fronteras y política de promoción
 
 Estado: especificación viva del runtime presente en eSE 9.1.0-beta.1.
 
 Este documento describe el Kad6 que realmente existe en el árbol. No convierte
 una beta en una promesa de soporte y no autoriza infraestructura pública.
+
+> **Diseño posterior, pendiente de implementar — 30 de septiembre de 2026:**
+> la revisión 2 de [la especificación v9.3](V9.3_IMPLEMENTATION_SPECIFICATION.md),
+> N.6.1/N.13, añade un índice de fuentes **directas** y encuentro entre peers
+> Kad6 sustituibles, con clientes salientes que no tienen que ser routers.
+> No reutiliza los K6SourceRecord actuales basados en exits ni activa gateway,
+> túneles o salida pública. Mantiene Kad2/TCP para clientes clásicos; el camino
+> Kad6 se valida sin servidores fijos ni relay de datos. Los requisitos de
+> cabecera/router que siguen describen el runtime existente, no impiden diseñar
+> ese rol saliente separado y no acreditan que ya esté implementado.
 
 ## 1. Decisión de producto
 
@@ -173,9 +183,8 @@ compatible con eMule clásico.
 
 ## 10. Fuentes normativas y de implementación
 
-- [`V9_RELEASE_SPECIFICATION.md`](V9_RELEASE_SPECIFICATION.md)
 - [`KAD_NETWORK_SELECTION.md`](KAD_NETWORK_SELECTION.md)
-- [`IPV6_DUALSTACK_BETA2_RELEASE.md`](IPV6_DUALSTACK_BETA2_RELEASE.md)
+- [`JEMULESERVER_IPV6_PROTOCOL.md`](JEMULESERVER_IPV6_PROTOCOL.md)
 - [`protocol/PROTOCOL_REGISTRY.md`](protocol/PROTOCOL_REGISTRY.md)
 - [`protocol/OPCODES.csv`](protocol/OPCODES.csv)
 - [`../libkad6/README.md`](../libkad6/README.md)

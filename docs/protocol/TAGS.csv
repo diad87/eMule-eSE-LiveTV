@@ -1,4 +1,4 @@
-name,value,namespace,intro_version,status,capability_gate,format,compat,file,line
+name,value,namespace,intro_version,status,capability_gate,format,compat,file,line,value_kind
 TAG_SOURCEIP_V6,0x66,TAG-ED2K,v9,experimental,CAP_FORK_IPV6_WIRE,"HELLO uses raw IPv6 blob 16B; Kad source publication uses CAddress 18B; consumers require a valid TAG_ESE_REACH V6_IN route before dialing",additive-ignorable,srchybrid/Opcodes.h,508
 TAG_SERVERIP_V6,0x67,TAG-ED2K,v0.71,reserved,CAP_FORK_IPV6_WIRE,"<CAddress> alongside legacy uint32 server IP",additive-ignorable,srchybrid/Opcodes.h,495
 TAG_ESE_REACH,0x68,TAG-ED2K,v9,experimental,ESE_CAP_REACH_V2,"strict libreach v2 BSOB: version u8 + capflags u16le + nRdv u8 + reserved rendezvous entries/TLV tail; capflags bit10 is explicit ESE_NETLAB_V1 cohort participation and is absent without consent; source publication keeps classic tags",additive-ignorable,srchybrid/Opcodes.h,510
@@ -9,3 +9,6 @@ TAG_ESE_CAPS,0x6C,TAG-ED2K,v8.1,stable,none,"uint32 capabilities bitmap (see CAP
 TAG_ESE_NODE_PUB,0x6D,TAG-ED2K,v8.x,experimental,ESE_CAP_TUNNEL_AUTH,"32-byte Ed25519 node identity pubkey (TAGTYPE_BLOB); emitted and parsed next to TAG_ESE_CAPS in HELLO while the persistent identity is available.",additive-ignorable,srchybrid/Opcodes.h,536
 TAG_ESE_KADIP_V6,0x6E,TAG-ED2K,v9,experimental,CAP_FORK_IPV6_WIRE,"<BSOB 16> network-order IPv6 of contact, observed-by-peer; Kad HELLO; additive, unknown-tag-ignored upstream; TX gated behind EseKadV6Tag pref (default off)",additive-ignorable,srchybrid/Opcodes.h,535
 ST_IPV6,0xA0,SERVER-MET,v0.71,reserved,CAP_FORK_IPV6_WIRE,"<CAddress> server.met v2 tag (moved off 0x91 collision with ST_VERSION)",additive-ignorable,srchybrid/Opcodes.h,387
+kEseWireTagCtrl,ese.ctrl1,KAD2-STRING-TAG,v9.3,design,Control/1 receiver pending; no advertisement,UINT32 value1,additive-ignorable,srchybrid/EseWireProtocol.h,,string
+kEseWireTagNode,ese.node1,KAD2-STRING-TAG,v9.3,design,Control/1 receiver pending; no advertisement,BSOB 32 NodeIdentity public key,additive-ignorable,srchybrid/EseWireProtocol.h,,string
+kEseWireTagReach,ese.reach3,KAD2-STRING-TAG,v9.3,design,descriptor receiver pending; no emission,BSOB 77 locator,additive-ignorable,srchybrid/EseWireProtocol.h,,string

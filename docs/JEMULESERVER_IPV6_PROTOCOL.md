@@ -1,8 +1,17 @@
-# JEmuleServer ↔ eMule eSE IPv6 source discovery
+# JEmuleServer ↔ eMule eSE IPv6 source discovery (private dialect)
 
-This document defines the interoperable IPv6 source response implemented by
-eMule eSE. It replaces JEmuleServer's experimental `0xE3:0x9C` packet, whose
-opcode collides with the standard eD2K `OP_GLOBCALLBACKREQ`.
+Status: eSE-private compatibility contract; not an ecosystem allocation.
+
+This document defines the IPv6 source response implemented on the eMule eSE
+side for a JEmuleServer integration. It replaces JEmuleServer's experimental
+`0xE3:0x9C` packet, whose opcode collides with the standard eD2K
+`OP_GLOBCALLBACKREQ`.
+
+It is **not** wire-compatible with the frozen eMuleQt/eNode IPv6 dialect, which
+uses `CT_MOD_IP_V6 (0xAE)`, an inline source sentinel `0xFFFFFFFF` and callback
+`0x26`. Both profiles remain separate in `SERVER_CONFORMANCE_LAB.md` and
+`protocol/EXTERNAL_INTEROP_CATALOG.csv`; a receiver must never reinterpret one
+as the other.
 
 ## Capability negotiation
 
@@ -14,10 +23,24 @@ When IPv6 is enabled, eMule eSE adds this numeric tag to `OP_LOGINREQUEST`:
 | Tag type | unsigned integer |
 | Value bit | `CAP_FORK_IPV6_WIRE` (`0x00000001`) |
 
-An unmodified server may ignore the unknown additive tag. JEmuleServer should
-remember the capability on the logged-in client and send the IPv6 response only
-when the UDP requester can be associated with a session carrying that bit. If
-no capable session can be identified, it must send only the legacy response.
+`0xF0` numerically aliases the classic `CT_EMULE_RESERVED1` slot. An unmodified
+server may ignore it, but that does not make it a globally allocated capability
+tag. It is valid only inside the explicitly negotiated `ESE_PRIVATE_V1`
+profile. JEmuleServer should remember the capability on the logged-in client
+and send the IPv6 response only when the UDP requester can be associated with a
+session carrying that bit. If no capable session can be identified, it must
+send only the legacy response.
+
+No new implementation may advertise this tag as generic eMuleQt/eNode support.
+Any future migration to an ecosystem value requires receiver-first golden/fuzz
+tests, registry review and an explicit downgrade plan.
+
+This document specifies only the **server-login** use of bit `0x00000001`.
+eSE also emits numeric tag `0xF0` in peer HELLO with a separate private bitmap:
+`IPV6_WIRE 0x01`, `IPV6_KAD 0x02`, `IPV6_DUALSTACK 0x04` and `ED25519 0x08`.
+That peer dialect is not a JEmuleServer allocation and remains part of
+`REG-DEBT-001`; fixtures and any migration decision must keep the two contexts
+separate.
 
 ## UDP response
 

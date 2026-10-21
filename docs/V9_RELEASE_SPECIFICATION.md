@@ -1,8 +1,53 @@
 # eMule eSE 9.x: especificación de releases y plan de validación
 
+> **Enmienda vigente — 30 de septiembre de 2026.** Para la nueva **v9.3
+> unificada**, manda [V9.3_PLUS_RELEASE_TRAIN.md](V9.3_PLUS_RELEASE_TRAIN.md):
+> reúne el alcance anterior de 9.3–9.8 en los bloques A–F y su estado real se
+> registra en [V9.3_EXECUTION_STATE.md](V9.3_EXECUTION_STATE.md). Las antiguas
+> §§10–11 de este documento se conservan como diseño histórico; no imponen
+> releases separadas, gates de entrada ni un relay a la v9.3. Las reglas y
+> compromisos de **9.0–9.2 permanecen intactos**.
+>
+> La v9.3 adopta **DirectOnlyV1 sin relay**, prioriza QUIC tras el contrato
+> mínimo de identidad y selector de A, y permite que B avance en paralelo.
+> D arranca con el contrato de A y valida los receptores aplicables de C3 antes
+> de emitir sus extensiones; su parte QUIC reutiliza C1/C2. El carril E→F
+> avanza en paralelo al de red. La validación es proporcional al cambio y al
+> riesgo: integridad de descargas, autenticación, compatibilidad clásica,
+> recuperación de transportes y persistencia siguen siendo criterios de
+> aceptación; desaparecen los bloqueos por modelos concretos y cuotas
+> generales de cobertura/mutación del tren antiguo.
+>
+> La independencia de operadores y adopción externa queda aceptada (D18):
+> se implementan y prueban ambos extremos con una referencia propia. Una
+> función experimental implementada sin evidencia externa suficiente se
+> entrega desactivada y con la limitación descrita; esa excepción no convierte
+> código pendiente en trabajo terminado. D19, sobre hotfixes 9.2.x, sigue
+> siendo una propuesta. El ADR-0001 permanece como referencia histórica; su
+> aceptación y su política de modelos ya no bloquean este plan.
+>
+> El contrato técnico detallado de esa misma v9.3 está en
+> [V9.3_IMPLEMENTATION_SPECIFICATION.md](V9.3_IMPLEMENTATION_SPECIFICATION.md):
+> funcionamiento, resultados, límites y pruebas por requisito. Concreta este
+> plan y sustituye sus decisiones técnicas abiertas sin fingir implementación.
+>
+> **Afinado D20 de esa misma v9.3:** Kad6 descubre fuentes directas y coordina
+> encuentros mediante peers sustituibles; no depende de un servidor fijo,
+> Kad2, gateway o salida pública para ese recorrido. La retrocompatibilidad
+> conserva Kad2/TCP y los callbacks clásicos cuando existe ruta IPv4 verificada.
+> Las extensiones requieren capacidades comunes; no se promete atravesar
+> cualquier NAT ni actualizar remotamente un cliente antiguo. N.6.1 y N.13
+> del contrato técnico fijan índice directo, rol de cliente saliente y pruebas
+> sin servidores. D conserva su entrega de interoperabilidad, opcional en
+> ejecución para ese camino. Esta revisión no declara esas pruebas pasadas.
+
 Estado: borrador normativo para desarrollo y publicación
 
 Ámbito: eSE 9.0, 9.1, 9.2, 9.3 y 9.4
+
+Las referencias de autoridad que siguen describen el plan original, sujetas
+a la enmienda anterior para v9.3. No se reescriben las decisiones históricas
+de 9.0–9.2.
 
 Base inspeccionada: `35264bb` (candidato binario beta.2: `ab1ad6b`)
 
@@ -609,6 +654,17 @@ doméstico implemente PCP o NAT-PMP.
 
 ## 10. eSE 9.3: fin del LowID como estado binario entre peers eSE
 
+> **Referencia histórica.** El alcance aplicable, sus dependencias y su
+> validación están integrados en la [v9.3 única](V9.3_PLUS_RELEASE_TRAIN.md),
+> conforme a la enmienda al inicio de este documento.
+
+> **Esta sección conserva autoridad.** `ADR-0001` propone reconciliar la tesis
+> consolidada con esta especificación y declarar, requisito a requisito, qué
+> quedaría vigente, extendido o sustituido de `V93-F01`–`V93-F16`, del criterio
+> de campo 10.6 y del gate 10.7. Solo si el ADR pasa a `ACEPTADO` gobernará esas
+> discrepancias; mientras siga `PROPUESTO`, manda íntegramente esta sección. El
+> ADR no altera las secciones 1–9 ni la 11.
+
 ### 10.1 Objetivo
 
 9.3 sustituye la decisión única HighID/LowID por un conjunto de rutas
@@ -717,6 +773,10 @@ Se exige:
 - Los casos sin ruta terminan como `No alcanzable sin relay`.
 
 ## 11. eSE 9.4: ruta KRP para CGNAT difícil
+
+> **Referencia histórica, sustituida para el nuevo programa.** La v9.3 única
+> adopta DirectOnlyV1 y retira KRP/relay del build según su bloque B. Esta
+> sección no autoriza relay ni define la futura 9.4 de LiveTV y privacidad.
 
 ### 11.1 Objetivo
 

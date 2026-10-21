@@ -1,13 +1,13 @@
 <#
 .SYNOPSIS
-  GATE R.0 field harness — 2-PC hole-punch validation (Fase 0).
+  GATE R.0 field harness -- 2-PC hole-punch validation (Fase 0).
   Captures /api/status baseline, fires cross /api/holepunch/test on a shared
   wall-clock window, and prints the net counter deltas. Run ONE copy per node.
 
 .DESCRIPTION
   In a real 2-NAT test the two nodes live on different networks, so a single
   machine cannot reach the other node's loopback webserver (its /api/* is
-  loopback-trust by design — exposing it would re-open the BUG-061 class of
+  loopback-trust by design -- exposing it would re-open the BUG-061 class of
   network-exposure holes). So this script runs LOCALLY on each node against
   127.0.0.1 and synchronizes the cross-fire via a shared -FireAt instant.
 
@@ -26,7 +26,7 @@
   Kad/UDP port of the OTHER node (Preferences -> Connection, default 4672).
 
 .PARAMETER Role
-  "A" or "B" — label for the printout/paste-back only.
+  "A" or "B" -- label for the printout/paste-back only.
 
 .PARAMETER FireAt
   Shared "HH:mm:ss" wall-clock instant for round 0. BOTH operators set the same
@@ -42,7 +42,7 @@
       (PacketTracking.cpp: token = MIN2MS(1)/2) for the inbound REQ/ACK opcodes.
   The second one bites: firing faster than ~2/min at the same peer IP makes the
   REMOTE node throttle/ban the later REQs, which would show up as a false
-  "REQ never reached" (red) on rounds 3+ — self-inflicted, not the NAT. Keep
+  "REQ never reached" (red) on rounds 3+ -- self-inflicted, not the NAT. Keep
   IntervalSec >= 30 so each round stays inside the per-IP budget.
 
 .PARAMETER SettleSec
@@ -69,7 +69,7 @@
 
 .NOTES
   Negative control (proves the harness, not the network): set the hole-punch
-  kill-switch OFF in Preferences and run once — /api/holepunch/test must return
+  kill-switch OFF in Preferences and run once -- /api/holepunch/test must return
   "error":"holepunch_disabled" and NO counter moves. Then turn it back ON.
 #>
 [CmdletBinding(DefaultParameterSetName = 'Run')]
@@ -127,7 +127,7 @@ function Get-HpStatus {
   try {
     $r = Invoke-RestMethod -Uri "$Base/api/status" -TimeoutSec 10
   } catch {
-    throw "Cannot reach $Base/api/status — is the eMule webinterface enabled and the port correct? ($($_.Exception.Message))"
+    throw "Cannot reach $Base/api/status -- is the eMule webinterface enabled and the port correct? ($($_.Exception.Message))"
   }
   # Guard against an HTML login page / wrong endpoint masquerading as a 200:
   # a string body or a missing known counter means we did NOT get our JSON.
@@ -170,9 +170,9 @@ function Format-PasteBack {
     $Tot['hole_punch_challenge_sent'], $Tot['hole_punch_sym_nat_fail'], $Tot['hole_punch_encrypted'], $Tot['hole_punch_plaintext'])
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MERGE MODE — combine two node JSONs into the cross-node verdict, no firing.
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# MERGE MODE -- combine two node JSONs into the cross-node verdict, no firing.
+# -----------------------------------------------------------------------------
 if ($PSCmdlet.ParameterSetName -eq 'Merge') {
   $a = Get-Content -Raw -Path $MergeA | ConvertFrom-Json
   $b = Get-Content -Raw -Path $MergeB | ConvertFrom-Json
@@ -203,19 +203,19 @@ if ($PSCmdlet.ParameterSetName -eq 'Merge') {
   return
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# RUN MODE — baseline -> synchronized cross-fire rounds -> deltas.
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# RUN MODE -- baseline -> synchronized cross-fire rounds -> deltas.
+# -----------------------------------------------------------------------------
 Write-Host ""
-Write-Host "=== GATE R.0 hole-punch field test — node $Role ===" -ForegroundColor Cyan
+Write-Host "=== GATE R.0 hole-punch field test -- node $Role ===" -ForegroundColor Cyan
 Write-Host "local=$Local  peer=$PeerIp`:$PeerUdpPort  rounds=$Rounds  interval=${IntervalSec}s"
 
 $base = Get-HpStatus -Base $Local
 if (-not $base['utp_hole_punch_enabled']) {
-  Write-Warning "utp_hole_punch_enabled is FALSE — enable hole-punch in Preferences or every fire returns 'holepunch_disabled'."
+  Write-Warning "utp_hole_punch_enabled is FALSE -- enable hole-punch in Preferences or every fire returns 'holepunch_disabled'."
 }
 if (-not $base['kad_connected']) {
-  Write-Warning "kad_connected is FALSE — Kad must be connected for the punch to route. Connect Kad first."
+  Write-Warning "kad_connected is FALSE -- Kad must be connected for the punch to route. Connect Kad first."
 }
 
 # Resolve the synchronized round-0 instant.
@@ -260,7 +260,7 @@ for ($r = 0; $r -lt $Rounds; $r++) {
 }
 
 Write-Host ""
-Write-Host "── totals (this node) ─────────────────────────────" -ForegroundColor Cyan
+Write-Host "-- totals (this node) ---------------------------------------------" -ForegroundColor Cyan
 foreach ($k in $CounterKeys) {
   Write-Host ("  {0,-26} +{1}" -f $k, $totals[$k])
 }

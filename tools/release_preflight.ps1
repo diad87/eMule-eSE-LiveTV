@@ -23,6 +23,9 @@ $tagVersion = $Matches.version
 
 Require-File 'srchybrid\Version.h'
 Require-File 'srchybrid\eSE\package.json'
+Require-File 'srchybrid\eSE\server.js'
+Require-File 'installer.iss'
+Require-File 'GUIA-RAPIDA.md'
 Require-File 'srchybrid\config\nodes.dat.b64'
 Require-File 'srchybrid\config\nodes.dat.sha256'
 Require-File 'srchybrid\eMule.tmpl'
@@ -40,6 +43,19 @@ if ($Matches.version -ne $tagVersion) {
 $packageVersion = (Get-Content (Join-Path $RepoRoot 'srchybrid\eSE\package.json') -Raw | ConvertFrom-Json).version
 if ($packageVersion -ne $tagVersion) {
     Fail "package.json says '$packageVersion' but tag says '$tagVersion'"
+}
+$serverSource = Get-Content (Join-Path $RepoRoot 'srchybrid\eSE\server.js') -Raw
+if ($serverSource -notmatch [regex]::Escape("eSE v$tagVersion -")) {
+    Fail "server.js does not display eSE v$tagVersion"
+}
+$installerSource = Get-Content (Join-Path $RepoRoot 'installer.iss') -Raw
+if ($installerSource -notmatch "(?m)^AppVersion=$([regex]::Escape($tagVersion))\s*$") {
+    Fail "installer.iss does not declare AppVersion=$tagVersion"
+}
+$quickGuide = Get-Content (Join-Path $RepoRoot 'GUIA-RAPIDA.md') -Raw
+if ($quickGuide -notmatch [regex]::Escape("eMule eSE $tagVersion") -or
+    $quickGuide -notmatch [regex]::Escape("v0.70b-eSE$tagVersion")) {
+    Fail "GUIA-RAPIDA.md is not aligned with $tagVersion"
 }
 
 $packageScript = Get-Content (Join-Path $RepoRoot 'build_package.ps1') -Raw

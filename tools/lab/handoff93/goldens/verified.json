@@ -1,0 +1,72 @@
+{
+  "_golden": "verified",
+  "_intent": "Inbound reachability proven on the ed2k TCP plane: both primary and inbound evidence are current for the live generation, so classic_high_id_evidence is true. This is the SECOND state HG06 must observe. Note kad_udp_v4 is Renewing, which still maps to VERIFIED: renewal does not revoke proof.",
+  "schema": "ESE_REACH_STATUS_V1",
+  "available": true,
+  "topology_generation": 42,
+  "planes": {
+    "ed2k_tcp_v4": {
+      "state": "Reachable",
+      "gate_state": "VERIFIED",
+      "reason": "None",
+      "reason_code": 0,
+      "generation": 42,
+      "expired": false,
+      "stale": false,
+      "local": { "family": "IPv4", "address_class": "private", "port": 4662, "source": "LocalInterface", "usable": true },
+      "mapped": { "family": "IPv4", "address_class": "public", "port": 4662, "source": "PcpMap", "usable": true },
+      "advertised": { "family": "IPv4", "address_class": "public", "port": 4662, "source": "PcpMap", "usable": true },
+      "lease": {
+        "mapper": "Pcp", "transport": "Tcp",
+        "requested_external_port": 4662, "granted_external_port": 4662,
+        "lifetime_seconds": 3600, "mapper_epoch": 7,
+        "generation": 42, "owned_by_us": true, "structurally_valid": true
+      },
+      "primary_evidence": { "kind": "ServerHighId", "generation": 42, "current": true },
+      "inbound_evidence": { "kind": "InboundTcpAccept", "generation": 42, "current": true },
+      "classic_high_id_evidence": true
+    },
+    "kad_udp_v4": {
+      "state": "Renewing",
+      "gate_state": "VERIFIED",
+      "reason": "None",
+      "reason_code": 0,
+      "generation": 42,
+      "expired": false,
+      "stale": false,
+      "local": { "family": "IPv4", "address_class": "private", "port": 4672, "source": "LocalInterface", "usable": true },
+      "mapped": { "family": "IPv4", "address_class": "public", "port": 4672, "source": "PcpMap", "usable": true },
+      "advertised": { "family": "IPv4", "address_class": "public", "port": 4672, "source": "PcpMap", "usable": true },
+      "lease": {
+        "mapper": "Pcp", "transport": "Udp",
+        "requested_external_port": 4672, "granted_external_port": 4672,
+        "lifetime_seconds": 3600, "mapper_epoch": 8,
+        "generation": 42, "owned_by_us": true, "structurally_valid": true
+      },
+      "primary_evidence": { "kind": "MappingLease", "generation": 42, "current": true },
+      "inbound_evidence": { "kind": "DirectPeerHandshake", "generation": 42, "current": true },
+      "classic_high_id_evidence": false
+    },
+    "direct_v6": {
+      "state": "Reachable",
+      "gate_state": "VERIFIED",
+      "reason": "None",
+      "reason_code": 0,
+      "generation": 42,
+      "expired": false,
+      "stale": false,
+      "local": { "family": "IPv6", "address_class": "public", "port": 4662, "source": "LocalInterface", "usable": true },
+      "mapped": { "family": "IPv6", "address_class": "public", "port": 4662, "source": "LocalInterface", "usable": true },
+      "advertised": { "family": "IPv6", "address_class": "public", "port": 4662, "source": "LocalInterface", "usable": true },
+      "lease": {
+        "mapper": "FirewallPinhole", "transport": "Tcp",
+        "requested_external_port": 4662, "granted_external_port": 4662,
+        "lifetime_seconds": 7200, "mapper_epoch": 2,
+        "generation": 42, "owned_by_us": true, "structurally_valid": true
+      },
+      "primary_evidence": { "kind": "MappingLease", "generation": 42, "current": true },
+      "inbound_evidence": { "kind": "InboundTcpAccept", "generation": 42, "current": true },
+      "classic_high_id_evidence": false
+    }
+  }
+}

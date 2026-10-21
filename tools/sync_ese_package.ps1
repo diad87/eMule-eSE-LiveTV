@@ -1,5 +1,6 @@
 param(
-  [switch]$VerifyOnly
+  [switch]$VerifyOnly,
+  [switch]$WebOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,7 +41,9 @@ foreach ($directory in @("eSE-live", "pages", "routes", "shared")) {
 
 Add-Mapping (Join-Path $sourceRoot "ese-server.exe") (Join-Path $root "srchybrid\x64\Release\ese-server.exe")
 Add-Mapping (Join-Path $sourceRoot "ese-server.exe") (Join-Path $packageRoot "ese-server.exe")
-Add-Mapping (Join-Path $root "srchybrid\x64\Release\emule.exe") (Join-Path $packageRoot "emule.exe")
+if (-not $WebOnly) {
+  Add-Mapping (Join-Path $root "srchybrid\x64\Release\emule.exe") (Join-Path $packageRoot "emule.exe")
+}
 Add-Mapping (Join-Path $root "docs\USER_GUIDE.md") (Join-Path $packageRoot "USER_GUIDE.md")
 
 foreach ($mapping in $mappings) {

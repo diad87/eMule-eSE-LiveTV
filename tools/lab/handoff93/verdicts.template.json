@@ -1,0 +1,23 @@
+{
+  "_comment": "Template for gate_matrix.ps1. Copy to your run directory as verdicts.json and fill in. Artifact paths are relative to -RunDirectory. Verdicts: PASS FAIL BLOCKED SKIP PENDING. Set simulated:true on H93-15/H93-16 if the run was not physical; the gate will then refuse to pass them.",
+  "gate": "G92-93-DEV",
+  "commit": "",
+  "rows": [
+    { "id": "H93-01", "verdict": "PENDING", "note": "checkout limpio, commit y toolchain registrados; dirty=false", "artifacts": [] },
+    { "id": "H93-02", "verdict": "PENDING", "note": "dos pasadas verdes; la segunda desde checkout limpio", "artifacts": [] },
+    { "id": "H93-03", "verdict": "PENDING", "note": "cinco goldens del snapshot; hash de schema fijo", "artifacts": [] },
+    { "id": "H93-04", "verdict": "PENDING", "note": "schema anterior, campos futuros, enum desconocido seguro", "artifacts": [] },
+    { "id": "H93-05", "verdict": "PENDING", "note": "consumer fake compila y decide sin clases UPnP/PCP/NAT-PMP", "artifacts": [] },
+    { "id": "H93-06", "verdict": "PENDING", "note": "MAP/readback de los tres mappers, timeout y denegacion", "artifacts": [] },
+    { "id": "H93-07", "verdict": "PENDING", "note": "solo el proof vigente promociona, exactamente una vez", "artifacts": [] },
+    { "id": "H93-08", "verdict": "PENDING", "note": "TCP/UDP completo y fallo parcial; nunca par mezclado", "artifacts": [] },
+    { "id": "H93-09", "verdict": "PENDING", "note": "renovacion, expiracion, ownership perdido, gateway nuevo, shutdown", "artifacts": [] },
+    { "id": "H93-10", "verdict": "PENDING", "note": "NATIVE/OVERLAY/UNKNOWN; 100.64/10 solo concluye CGNAT sobre ruta nativa", "artifacts": [] },
+    { "id": "H93-11", "verdict": "PENDING", "note": "un incremento por cambio real; cero mutacion desde generacion stale", "artifacts": [] },
+    { "id": "H93-12", "verdict": "PENDING", "note": "IPv6 global con firewall cerrado, proof vigente y caducado", "artifacts": [] },
+    { "id": "H93-13", "verdict": "PENDING", "note": "una fuente de verdad; baseline clasico y wire 9.1 preservados", "artifacts": [] },
+    { "id": "H93-14", "verdict": "PENDING", "note": "corpus hostil; cero token/nonce/IP completa exportada", "artifacts": [] },
+    { "id": "H93-15", "verdict": "PENDING", "simulated": false, "note": "router real, tres ciclos CANDIDATE->VERIFIED->WITHDRAWN", "artifacts": [] },
+    { "id": "H93-16", "verdict": "PENDING", "simulated": false, "note": "ruta fisica H1<->H2 y LAN->hotspot->LAN", "artifacts": ["hg07/hg07-summary.json"] }
+  ]
+}

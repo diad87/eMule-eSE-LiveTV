@@ -1,5 +1,5 @@
-# Automatic JavaScript security analysis for pushes, pull requests and the
-# weekly scheduled scan.
+# Automatic JavaScript and native C++ security analysis for pushes, pull
+# requests and the weekly scheduled scan.
 
 name: CodeQL
 
@@ -13,19 +13,13 @@ on:
     - cron: '0 6 * * 1'
 
 jobs:
-  analyze:
-    name: Analyze ${{ matrix.language }}
+  javascript:
+    name: Analyze JavaScript
     runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
       security-events: write
-
-    strategy:
-      fail-fast: false
-      matrix:
-        # The native MFC build remains outside this Linux CodeQL job.
-        language: [ 'javascript' ]
 
     steps:
       - name: Checkout repository
@@ -34,10 +28,56 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
-          languages: ${{ matrix.language }}
+          languages: javascript
           queries: security-extended
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
-          category: "/language:${{ matrix.language }}"
+          category: "/language:javascript"
+
+  cpp:
+    name: Analyze C++ (Windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Install eSE dependencies
+        working-directory: srchybrid/eSE
+        run: npm ci --no-audit --no-fund
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-extended
+
+      - name: Build native solution
+        shell: pwsh
+        run: |
+          msbuild libutp/libutp.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:OutDir=..\srchybrid\x64\Release\ /p:IntDir=..\srchybrid\x64\Release\libutp-obj\ /m /verbosity:minimal /nologo
+          msbuild srchybrid/emule.sln /p:Configuration=Release /p:Platform=x64 /m /verbosity:minimal /nologo
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:c-cpp"

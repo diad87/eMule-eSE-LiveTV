@@ -1,11 +1,34 @@
-# Manual Windows build for emule.exe and ese-server.exe. The complete release
-# pipeline is run on a maintained Windows builder because the vendored native
-# dependencies require an established build order. Hardware and network checks
-# also require real peers and are not simulated by the hosted runner.
+# Required Windows build for emule.exe and ese-server.exe. Hardware and
+# physical-network release checks still run on a maintained Windows builder,
+# but compile, standalone tests and package self-test are merge gates.
 
 name: build
 
 on:
+  push:
+    branches: [ main, "release-*" ]
+    paths:
+      - '.github/workflows/build.yml'
+      - 'srchybrid/**'
+      - 'tools/**'
+      - 'tests/**'
+      - 'libkad6/**'
+      - 'libnatmap/**'
+      - 'libreach/**'
+      - 'librelaycore/**'
+      - 'librelayclient/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build.yml'
+      - 'srchybrid/**'
+      - 'tools/**'
+      - 'tests/**'
+      - 'libkad6/**'
+      - 'libnatmap/**'
+      - 'libreach/**'
+      - 'librelaycore/**'
+      - 'librelayclient/**'
   workflow_dispatch:
 
 permissions:
@@ -39,6 +62,17 @@ jobs:
         working-directory: srchybrid/eSE
         run: npm ci --no-audit --no-fund
 
+      - name: Test eSE Node server
+        working-directory: srchybrid/eSE
+        run: npm test
+
+      - name: Reject synchronous production child processes
+        run: python tools/check_node_sync_processes.py
+
+      - name: Audit eSE Node dependencies
+        working-directory: srchybrid/eSE
+        run: npm audit --audit-level=moderate
+
       - name: Build ese-server.exe (pkg)
         working-directory: srchybrid/eSE
         run: npm run build
@@ -53,13 +87,40 @@ jobs:
           $size = (Get-Item "srchybrid/eSE/ese-server.exe").Length / 1MB
           Write-Host "ese-server.exe = $([math]::Round($size,1)) MB"
 
-      # ── 2) emule.exe MFC build ────────────────────────────────────────
-      # PreBuildEvent in emule.vcxproj re-runs tools/build_ese_server.ps1
-      # but ese-server.exe is already fresh from the step above, so it's a
-      # fast mtime no-op.
+      - name: "Smoke: ese-server.exe self-test"
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "srchybrid/eSE/ese-server.exe" `
+                             -ArgumentList "--selftest" `
+                             -PassThru -NoNewWindow
+          if (-not $p.WaitForExit(15000)) {
+            Stop-Process -Id $p.Id -Force
+            throw "ese-server.exe self-test timed out after 15 seconds"
+          }
+          $p.WaitForExit()
+          if ($p.ExitCode -ne 0) {
+            throw "ese-server.exe self-test failed with exit code $($p.ExitCode)"
+          }
+
+      # ── 2) Standalone native policies/codecs ──────────────────────────
+      - name: Run standalone native tests
+        shell: cmd
+        run: srchybrid\tests\make.bat
+
+      # ── 3) emule.exe MFC build ────────────────────────────────────────
+      # Node packaging is an explicit CI step. The native project does not
+      # mutate or rebuild dashboard sources as a hidden pre-build side effect.
+      - name: Build libutp dependency (Release|x64)
+        run: |
+          msbuild libutp/libutp.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:OutDir=..\srchybrid\x64\Release\ /p:IntDir=..\srchybrid\x64\Release\libutp-obj\ /m /verbosity:minimal /nologo
+        shell: pwsh
+
       - name: Build emule.sln (Release|x64)
         run: |
-          msbuild srchybrid/emule.sln /p:Configuration=Release /p:Platform=x64 /m /verbosity:minimal /nologo
+          $nativeLog = Join-Path $env:RUNNER_TEMP "emule-native-build.log"
+          msbuild srchybrid/emule.sln /p:Configuration=Release /p:Platform=x64 /m /verbosity:minimal /nologo /fl /flp:"logfile=$nativeLog;verbosity=normal"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/check_native_warning_baseline.py $nativeLog
         shell: pwsh
 
       - name: Verify emule.exe was produced
@@ -73,24 +134,24 @@ jobs:
           $size = (Get-Item $exe).Length / 1MB
           Write-Host "emule.exe = $([math]::Round($size,1)) MB"
 
-      # ── 3) Minimal smoke: emule.exe --help should exit 0 without GUI ──
-      # If --help isn't recognised, the binary still loads — that's all
-      # we can verify without a real Kad mesh.
-      - name: "Smoke: emule.exe loads"
+      # ── 4) Self-test is a real gate ───────────────────────────────────
+      - name: "Smoke: emule.exe self-test"
         shell: pwsh
-        continue-on-error: true   # MFC apps may not exit cleanly on --help; tolerate non-0
         run: |
           $p = Start-Process -FilePath "srchybrid/x64/Release/emule.exe" `
                              -ArgumentList "--headless","--selftest","--timeout=10" `
                              -PassThru -NoNewWindow
           if (-not $p.WaitForExit(20000)) {
             Stop-Process -Id $p.Id -Force
-            Write-Host "emule.exe did not exit within 20s (expected for --selftest without mesh)"
-          } else {
-            Write-Host "emule.exe --selftest exited with code $($p.ExitCode)"
+            throw "emule.exe self-test timed out after 20 seconds"
           }
+          $p.WaitForExit()
+          if ($p.ExitCode -ne 0) {
+            throw "emule.exe self-test failed with exit code $($p.ExitCode)"
+          }
+          Write-Host "emule.exe self-test: PASS"
 
-      # ── 4) Bundle the build artefacts ─────────────────────────────────
+      # ── 5) Bundle the build artefacts ─────────────────────────────────
       - name: Stage artifacts
         shell: pwsh
         run: |

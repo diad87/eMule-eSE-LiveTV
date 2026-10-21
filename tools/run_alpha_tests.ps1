@@ -50,8 +50,12 @@ if ($Suite -eq 'Core' -or $Suite -eq 'All') {
         & (Join-Path $RepoRoot 'tools\lab\test_lab_tools.ps1') -RepoRoot $RepoRoot
     }
     Run 'language resources' { & (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot }
+    Run 'eMule AI superiority matrix' { & python (Join-Path $RepoRoot 'tests\test_emuleai_superiority_matrix.py') }
+    Run 'external interoperability catalog' { & python (Join-Path $RepoRoot 'tests\test_external_interop_catalog.py') }
     Run 'protocol registry' { & python (Join-Path $RepoRoot 'tools\check_protocol_registry.py') }
     Run 'direct port ownership linter' { & python (Join-Path $RepoRoot 'tools\check_direct_port_usage.py') }
+    Run 'LiveTunnel lock order' { & python (Join-Path $RepoRoot 'tools\check_live_tunnel_lock_order.py') }
+    Run 'Node synchronous process gate' { & python (Join-Path $RepoRoot 'tools\check_node_sync_processes.py') }
     Run 'address wire tests' { & python (Join-Path $RepoRoot 'tests\test_address_wire.py') }
     Run 'server IPv6 source wire tests' { & python (Join-Path $RepoRoot 'tests\test_foundsources_v6_wire.py') }
     Run 'IPv6 callback wire tests' { & python (Join-Path $RepoRoot 'tests\test_callback_v6_wire.py') }

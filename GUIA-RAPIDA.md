@@ -1,4 +1,4 @@
-# Guía rápida de eMule eSE 9.0.0-beta.1
+# Guía rápida de eMule eSE 9.1.0-beta.2
 
 Esta beta pública funciona como una aplicación portable para Windows 10/11
 x64. No hace falta compilar ni instalar nada.
@@ -7,9 +7,9 @@ x64. No hace falta compilar ni instalar nada.
 
 Descarga el paquete oficial:
 
-[eSE-LiveTV-v0.70b-eSE9.0.0-beta.1-x64.zip](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.0.0-beta.1/eSE-LiveTV-v0.70b-eSE9.0.0-beta.1-x64.zip)
+[eSE-LiveTV-v0.70b-eSE9.1.0-beta.2-x64.zip](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.1.0-beta.2/eSE-LiveTV-v0.70b-eSE9.1.0-beta.2-x64.zip)
 
-La [página de la versión](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.0.0-beta.1)
+La [página de la versión](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.1.0-beta.2)
 incluye también el fichero SHA-256 para comprobar la descarga.
 
 ## 2. Extraer

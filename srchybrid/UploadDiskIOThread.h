@@ -27,6 +27,7 @@ struct OverlappedRead_Struct
 	OVERLAPPED				oOverlap; // must be the first member
 	CKnownFile				*pFile;
 	UploadingToClient_Struct *pUploadClientStruct;
+	uint64 transportEpoch;
 	uint64					uStartOffset;
 	uint64					uEndOffset;
 	BYTE					*pBuffer;

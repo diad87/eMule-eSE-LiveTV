@@ -96,7 +96,8 @@ BOOL CSmileySelector::CreateWnd(CWnd *pWndParent, LPCRECT pRect, CEdit *pwndEdit
 	COLORREF crBackground = (g_xpStyle.IsAppThemed() && g_xpStyle.IsThemeActive()) ? COLOR_WINDOW : COLOR_BTNFACE;
 	static const CString &strClassName = AfxRegisterWndClass(
 			CS_CLASSDC | CS_SAVEBITS | CS_HREDRAW | CS_VREDRAW,
-			AfxGetApp()->LoadStandardCursor(IDC_ARROW), (HBRUSH)(crBackground + 1), 0);
+			AfxGetApp()->LoadStandardCursor(IDC_ARROW),
+			reinterpret_cast<HBRUSH>(static_cast<INT_PTR>(crBackground + 1)), 0);
 	if (!CWnd::CreateEx(0, strClassName, _T(""),
 						WS_POPUP
 						| WS_BORDER

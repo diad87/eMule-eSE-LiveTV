@@ -15,6 +15,7 @@
 //along with this program; if not, write to the Free Software
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #pragma once
+#include "EseServerCallbackRetry.h"
 
 #define CS_FATALERROR	-5
 #define CS_DISCONNECTED	-4
@@ -53,6 +54,9 @@ public:
 	static  VOID CALLBACK RetryConnectTimer(HWND hWnd, UINT nMsg, UINT_PTR nId, DWORD dwTime) noexcept;
 
 	void	CheckForTimeout();
+	bool ScheduleCallbackFallback(CServerSocket* sender, uint64 generation);
+	bool IsCallbackFallbackPending() const { return m_callbackRetry.Pending(); }
+	bool HasUsedCallbackFallback() const { return m_callbackRetry.Used(); }
 	void	DestroySocket(CServerSocket *pSock);	// safe socket closure and destruction
 	bool	SendPacket(Packet *packet, CServerSocket *to = NULL);
 	bool	IsUDPSocketAvailable() const	{ return udpsocket != NULL; }
@@ -93,4 +97,8 @@ private:
 	bool	singleconnecting;
 	bool	connected;
 	bool	m_bTryObfuscated;
+	ese::classic::ServerCallbackRetry m_callbackRetry;
+	CString m_callbackRetryAddress;
+	uint16 m_callbackRetryPort = 0;
+	bool m_dispatchingCallbackRetry = false;
 };

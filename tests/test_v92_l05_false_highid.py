@@ -194,8 +194,11 @@ class L05FalseHighIdHostContract(unittest.TestCase):
         self.assertIn(
             "ArmDirectReachabilityVerification(", self.listen_socket_h
         )
-        self.assertIn(
-            "m_ed2kVerificationAttempt)", self.listen_socket
+        # The accept callback must pass the captured attempt first; the
+        # 9.3 classic-callback proof may append observed port/peer/time.
+        self.assertRegex(
+            self.listen_socket,
+            r"ObserveInboundTcpAccept\(\s*m_ed2kVerificationAttempt\s*[,)]",
         )
 
     def test_ui_and_firewall_status_consume_verified_predicate(self) -> None:

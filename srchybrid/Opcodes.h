@@ -344,8 +344,8 @@
 #define OP_LIVE_CHUNK_FRAG		0xE0	// <StreamKey 16><SeqNum 4><FragIndex 2><FragCount 2><InnerOpcode 1><TotalLen 4><FragData>
 
 // === eSE Live Tunneled — reservado 0xD0-0xDF (F0 unified plan, tesis privacidad Cap 5 §5.7.1) ==
-// All these opcodes are dispatched in OP_EMULEPROT subspace. Receiving them at this stage of
-// implementation is a NO-OP (stub handler logs and returns). Real handlers land progressively:
+// All these opcodes are dispatched in OP_EMULEPROT subspace. Channel opcodes fail closed and
+// are not advertised until their complete handlers exist. Reserved wrappers remain drop-only:
 //   F3: 0xD0..0xD3 channel ops      F4: 0xD5 tunnel cell    F5: 0xD6..0xDD data plane + invites
 // 0xD4 deliberately SKIPPED: collides with OP_PACKEDPROT at header byte level (line 139).
 #define OP_LIVE_CHANNEL_GOSSIP   0xD0   // F3: <count uint16><list of channel_pubkey 32B>

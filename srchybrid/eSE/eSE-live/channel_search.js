@@ -145,7 +145,6 @@ function addRemoteChannel(info) {
  * @returns {Array} Matching channels with rating info
  */
 function search(filters) {
-  const f = filters || {};
   let results = Object.values(channels);
 
   // Prune stale channels (no update in 5 min for remote, check pipeline/external for local)
@@ -183,12 +182,21 @@ function search(filters) {
     return (now - ch.lastUpdate) < 300000;
   });
 
+  return filterChannels(results, filters, now);
+}
+
+// Apply the same filters and ordering to a merged local/Kad directory without
+// registering channels, pruning discovery state, or starting a media pipeline.
+function filterChannels(items, filters, now = Date.now()) {
+  const f = filters || {};
+  let results = (Array.isArray(items) ? items : []).filter(ch => ch && typeof ch === 'object');
+
   // Text search
   if (f.query) {
-    const q = f.query.toLowerCase();
+    const q = normalizedKey(f.query);
     results = results.filter(ch =>
-      (ch.title || '').toLowerCase().includes(q) ||
-      (ch.category || '').toLowerCase().includes(q)
+      normalizedKey(ch.title).includes(q) ||
+      normalizedKey(ch.category).includes(q)
     );
   }
 
@@ -212,10 +220,12 @@ function search(filters) {
 
   // Calculate ratings
   results = results.map(ch => {
+    const started = channelStartTime(ch);
+    const uptimeMinutes = started ? Math.max(0, Math.floor((now - started) / 60000)) : 0;
     const r = rating.calculateRating({
       viewers: ch.viewers || 0,
       bitrate: ch.bitrate || 0,
-      uptimeMinutes: Math.floor((now - new Date(ch.started).getTime()) / 60000),
+      uptimeMinutes,
       meshHealth: ch.meshHealth || 50,
       reports: ch.reports || 0,
       broadcasterReputation: ch.broadcasterReputation || 50
@@ -223,13 +233,15 @@ function search(filters) {
 
     return {
       ...ch,
+      category: canonicalCategory(ch.category),
+      language: canonicalLanguage(ch.language),
       rating: r.score,
       ratingBreakdown: r.breakdown,
       experience: r.experience,
       experienceEmoji: r.emoji,
       experienceBars: r.bars,
       qualityLabel: rating.qualityLabel(ch.bitrate || 0),
-      uptimeMinutes: Math.floor((now - new Date(ch.started).getTime()) / 60000)
+      uptimeMinutes
     };
   });
 
@@ -245,10 +257,15 @@ function search(filters) {
   } else if (sortBy === 'viewers') {
     results.sort((a, b) => (b.viewers || 0) - (a.viewers || 0));
   } else if (sortBy === 'newest') {
-    results.sort((a, b) => new Date(b.started) - new Date(a.started));
+    results.sort((a, b) => channelStartTime(b) - channelStartTime(a));
   }
 
   return results;
+}
+
+function channelStartTime(channel) {
+  const time = new Date(channel.started || (Number(channel.startedAt) * 1000) || 0).getTime();
+  return Number.isFinite(time) && time > 0 ? time : 0;
 }
 
 /**
@@ -269,6 +286,7 @@ module.exports = {
   addRemoteChannel,
   syncEmuleChannels,
   search,
+  filterChannels,
   getCount,
   canonicalStreamKey,
   canonicalCategory,

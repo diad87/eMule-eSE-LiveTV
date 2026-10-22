@@ -76,7 +76,8 @@ enum class WebRouteId : std::uint8_t {
 	ApiLiveEdgeSabotage,
 	ApiLiveDebug,
 	ApiLiveStream,
-	ApiReachStatus
+	ApiReachStatus,
+	ApiReachDirect
 };
 
 struct WebRouteMatch {

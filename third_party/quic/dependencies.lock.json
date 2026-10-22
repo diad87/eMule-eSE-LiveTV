@@ -1,0 +1,68 @@
+{
+  "schema": "ese.quic.dependencies/v1",
+  "delivery_status": "LAB_ONLY_PROVENANCE_PENDING",
+  "ngtcp2": {
+    "version": "1.25.0",
+    "tag": "v1.25.0",
+    "tag_object": "843aa72100b508e192f119439a943028b0c6f030",
+    "commit": "f9e9ff01ad2c8116bc09de4f644b0028a61486a6",
+    "url": "https://github.com/ngtcp2/ngtcp2/releases/download/v1.25.0/ngtcp2-1.25.0.tar.gz",
+    "sha256": "1C0843076528A87B65E9A9D455100941F4CB65D44F96C5DA6AE56DF146043955",
+    "signature_url": "https://github.com/ngtcp2/ngtcp2/releases/download/v1.25.0/ngtcp2-1.25.0.tar.gz.asc",
+    "signature_verification": "PENDING",
+    "license": "MIT"
+  },
+  "gnutls": {
+    "version": "3.8.13",
+    "license": "LGPL-2.1-or-later library; distribution notices pending",
+    "provenance": "Official automatic Windows CI archive; upstream explicitly describes these binaries as untrusted. Laboratory build only pending source/transitive/license audit.",
+    "x64": {
+      "url": "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.13-w64.zip",
+      "sha256": "68A42CE15737A3C640A719B0323E426DC36A51EED3906BF89DDA7965390CD969",
+      "archive_root": "win64-build"
+    },
+    "Win32": {
+      "url": "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.13-w32.zip",
+      "sha256": "B49915029408BBC5FFFF925A22652C9DDB80545172AD9D1F4BDBCBF508049BCF",
+      "archive_root": "win32-build"
+    },
+    "transitive_dependencies": {
+      "pinning": "Exact containing archive SHA256 plus per-DLL SHA256 in build manifest",
+      "source_versions_and_notices": "PENDING",
+      "required_families": ["nettle", "hogweed", "GMP", "libidn2", "p11-kit", "libffi", "zlib", "brotli", "zstd", "MinGW runtime"]
+    }
+  },
+  "libtasn1": {
+    "version": "4.21.0-1",
+    "license": "LGPL library; GPL utilities are not copied to the probe",
+    "signature_verification": "PENDING",
+    "x64": {
+      "url": "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-libtasn1-4.21.0-1-any.pkg.tar.zst",
+      "sha256": "9F7AA213D14135E5856CC7A1254D871CBED60DEE00B40DB87A6CA7A4E733D2B2",
+      "dll": "mingw64/bin/libtasn1-6.dll"
+    },
+    "Win32": {
+      "url": "https://mirror.msys2.org/mingw/mingw32/mingw-w64-i686-libtasn1-4.21.0-1-any.pkg.tar.zst",
+      "sha256": "B4B3309BFD40151D2B30AD3C86B2BC24E43494927A33626CAC691AEACF89F0E9",
+      "dll": "mingw32/bin/libtasn1-6.dll"
+    }
+  },
+  "toolchain": {
+    "generator": "Visual Studio 17 2022",
+    "toolset": "v143",
+    "msvc_tools_version": "14.44.35207",
+    "c_compiler_version_observed": "19.44.35224.0",
+    "cmake_version": "3.31.6-msvc6",
+    "windows_sdk": "10.0.26100.0",
+    "config": "Release",
+    "c_standard": "C11"
+  },
+  "flags": {
+    "ENABLE_LIB_ONLY": "ON",
+    "ENABLE_GNUTLS": "ON",
+    "ENABLE_OPENSSL": "OFF",
+    "ENABLE_SHARED_LIB": "ON",
+    "ENABLE_STATIC_LIB": "ON",
+    "BUILD_TESTING": "ON"
+  }
+}

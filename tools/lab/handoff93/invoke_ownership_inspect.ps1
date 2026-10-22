@@ -106,7 +106,14 @@ try {
     $start.RedirectStandardInput = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
-    $process = [Diagnostics.Process]::Start($start)
+    # .NET Framework (Windows PowerShell 5.1) encodes redirected stdin with the
+    # console input encoding; under code page 65001 that writer emits a UTF-8
+    # BOM, which the strict line parser rejects. Start the child with UTF-8
+    # without BOM and restore the console setting afterwards.
+    $previousInputEncoding = $null
+    try { $previousInputEncoding = [Console]::InputEncoding; [Console]::InputEncoding = New-Object Text.UTF8Encoding($false) } catch {}
+    try { $process = [Diagnostics.Process]::Start($start) }
+    finally { if ($null -ne $previousInputEncoding) { try { [Console]::InputEncoding = $previousInputEncoding } catch {} } }
     foreach ($line in $payload) { $process.StandardInput.WriteLine($line) }
     $process.StandardInput.Close()
     $stdout = $process.StandardOutput.ReadToEnd().Trim()

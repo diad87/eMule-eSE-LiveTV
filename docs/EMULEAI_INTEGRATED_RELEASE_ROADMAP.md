@@ -1,5 +1,29 @@
 # eSE — Encaje del programa eMule AI en las releases 9.x
 
+**Sustituido como roadmap operativo el 30 de septiembre de 2026.** El
+[`plan único v9.3`](V9.3_PLUS_RELEASE_TRAIN.md) reúne el alcance anterior
+9.3–9.8, adelanta QUIC tras el selector mínimo y aplica validación proporcional.
+El estado vivo está en [`V9.3_EXECUTION_STATE.md`](V9.3_EXECUTION_STATE.md).
+
+| Etiqueta histórica | Destino vigente |
+|---|---|
+| 9.3 Core / avanzado | bloques A / B |
+| 9.4 DirectOnlyV1 | B, reutilizando A |
+| V95-CORE, 21 casos | E, motor y persistencia |
+| V96-PRODUCT, 40 casos | F, producto y plataformas |
+| V97-NETWORK, 16 casos | C, QUIC temprano, privacidad peer e interop |
+| V98-SERVER-INTEROP | D, referencia propia e interop activa |
+| B0-BASE + V92-ALIGNED, 15 casos | base/regresión; A/C conservan arrastres |
+
+Se preservan abajo las 92 asignaciones, estados y referencias congelados para
+trazabilidad, junto con sus 19 deltas. Las antiguas fechas, secuencias,
+prohibiciones de empezar QUIC, autorizaciones pendientes y gates de proceso
+describen **el tren histórico**, no el plan vigente. Ningún PASS se obtiene al
+renumerar. La cobertura completa y el criterio de salida actuales están en
+§§17–20 del plan único. 9.0–9.2 conservan su alcance propio.
+
+## Documento histórico conservado — no operativo
+
 Estado: plan transversal activo; enmienda de coherencia del 15 de agosto de
 2026; no modifica por sí solo el alcance normativo de una release  
 Fecha base del inventario histórico: 26 de julio de 2026  

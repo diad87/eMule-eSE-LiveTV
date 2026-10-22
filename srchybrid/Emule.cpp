@@ -642,6 +642,10 @@ BOOL CemuleApp::InitInstance()
 
 	directreachability = new CDirectReachabilityManager();
 	directreachability->Initialize(thePrefs.GetLocalTcpPort(), thePrefs.GetLocalUdpPort());
+	// Signed contacts are cold-start hints only. Loading never restores control
+	// sessions, return-path verification or live discovery capability authority.
+	directreachability->LoadDirectKad6Contacts(
+		thePrefs.GetMuleDirectory(EMULE_CONFIGDIR, false) + _T("kad6_direct_contacts.dat"));
 	clientlist = new CClientList();
 	friendlist = new CFriendList();
 	searchlist = new CSearchList();
@@ -679,6 +683,8 @@ BOOL CemuleApp::InitInstance()
 		relayclient = NULL;
 	}
 	if (directreachability != NULL) {
+		directreachability->SaveChangedDirectKad6Contacts(
+			thePrefs.GetMuleDirectory(EMULE_CONFIGDIR, false) + _T("kad6_direct_contacts.dat"));
 		delete directreachability;
 		directreachability = NULL;
 	}
@@ -727,7 +733,7 @@ int CemuleApp::ExitInstance()
 		timeEndPeriod(m_wTimerRes);
 
 	const int baseExitCode = CWinApp::ExitInstance();
-	return m_bSelfTest ? m_nSelfTestExitCode : baseExitCode;
+	return (m_bSelfTest || m_bReachBindingSelfTest) ? m_nSelfTestExitCode : baseExitCode;
 }
 
 #ifdef _DEBUG
@@ -771,6 +777,8 @@ bool CemuleApp::ProcessCommandline()
 	// V2-S06/S07: defaults
 	m_bHeadless           = false;
 	m_bSelfTest           = false;
+	m_bReachBindingSelfTest = false;
+	m_strQuicPairSelfTestRole.Empty();
 	m_nSelfTestExitCode   = 0;
 	m_uHeadlessMetricsPort = 0;
 	m_uHeadlessTcpPort    = 0;
@@ -794,6 +802,13 @@ bool CemuleApp::ProcessCommandline()
 			// V2-S06: --headless / --selftest flags
 			m_bHeadless    |= (_tcsicmp(pszParam, _T("headless")) == 0);
 			m_bSelfTest    |= (_tcsicmp(pszParam, _T("selftest")) == 0);
+			if (_tcsicmp(pszParam, _T("reach-binding-selftest")) == 0) {
+				m_bReachBindingSelfTest = m_bSelfTest = m_bHeadless = true;
+			}
+			if (_tcsnicmp(pszParam, _T("quic-pair-selftest="), 19) == 0) {
+				m_strQuicPairSelfTestRole=pszParam+19;
+				m_bReachBindingSelfTest = m_bSelfTest = m_bHeadless = true;
+			}
 
 			// V2-S06: --viewer=<HEX32>
 			if (_tcsnicmp(pszParam, _T("viewer="), 7) == 0) {
@@ -1209,7 +1224,8 @@ int CemuleApp::GetFileTypeSystemImageIdx(LPCTSTR pszFilePath, int iLength /* = -
 			m_hBigSystemImageList = hResult;
 
 			// Store icon index in local cache
-			m_aBigExtToSysImgIdx[pszCacheExt] = (LPVOID)sfi.iIcon;
+			m_aBigExtToSysImgIdx[pszCacheExt] =
+				reinterpret_cast<LPVOID>(static_cast<INT_PTR>(sfi.iIcon));
 			return sfi.iIcon;
 		}
 	} else if (!m_aExtToSysImgIdx.Lookup(pszCacheExt, vData)) {
@@ -1223,12 +1239,13 @@ int CemuleApp::GetFileTypeSystemImageIdx(LPCTSTR pszFilePath, int iLength /* = -
 		m_hSystemImageList = hResult;
 
 		// Store icon index in local cache
-		m_aExtToSysImgIdx[pszCacheExt] = (LPVOID)sfi.iIcon;
+		m_aExtToSysImgIdx[pszCacheExt] =
+			reinterpret_cast<LPVOID>(static_cast<INT_PTR>(sfi.iIcon));
 		return sfi.iIcon;
 	}
 
 	// Return already cached value
-	return reinterpret_cast<int>(vData);
+	return static_cast<int>(reinterpret_cast<INT_PTR>(vData));
 }
 
 bool CemuleApp::IsConnected(bool bIgnoreEd2k, bool bIgnoreKad)
@@ -1354,7 +1371,9 @@ bool CemuleApp::CanDoCallback(CUpDownClient *client)
 		&& !directreachability->HasVerifiedEd2kReachability())
 		eLow = true;
 
-	if (!Kademlia::CKademlia::IsConnected() || Kademlia::CKademlia::IsFirewalled())
+    if ((directreachability ? directreachability->GetClassicCallbackAvailability() :
+        ese::classic::EvaluateCallback(thePrefs.IsEseNetLabActive(),false,
+            Kademlia::CKademlia::IsConnected(),!Kademlia::CKademlia::IsFirewalled()))!=ese::classic::CallbackAvailability::Available)
 		return ed2k && !eLow; //callback for high ID server connection
 
 	//KAD is connected and Open

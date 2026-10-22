@@ -131,7 +131,12 @@ ReassemblyResult ReassemblyIngest(ReassemblyEntry& e,
     }
 
     if (!e.got[fragIndex]) {
-        e.frags[fragIndex].assign(fragData, fragData + fragDataLen);
+        // An empty fragment may legitimately carry a NULL data pointer; do not
+        // form a NULL-based iterator range for it.
+        if (fragDataLen == 0)
+            e.frags[fragIndex].clear();
+        else
+            e.frags[fragIndex].assign(fragData, fragData + fragDataLen);
         e.got[fragIndex] = true;
         ++e.got_count;
     }

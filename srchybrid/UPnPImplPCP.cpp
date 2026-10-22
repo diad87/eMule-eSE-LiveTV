@@ -1633,5 +1633,15 @@ void CUPnPImplPCP::StartThread()
 	}
 	m_hThreadHandle = thread->m_hThread;
 	thread->SetValues(this);
-	thread->ResumeThread();
+	if (thread->ResumeThread() == static_cast<DWORD>(-1)) {
+		// The suspended worker never runs: release it and answer the
+		// operation with an honest failure instead of waiting for timeout.
+		delete thread;
+		m_hThreadHandle = NULL;
+		m_initialMappingInFlight.store(false, std::memory_order_release);
+		m_bUPnPPortsForwarded = TRIS_FALSE;
+		m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
+		DebugLogError(_T("PCP: Unable to start discovery thread"));
+		SendResultIfLifecycleLive(CaptureMappingOperation());
+	}
 }

@@ -1,5 +1,22 @@
 # eSE — Laboratorio de conformidad de servidores y mods
 
+**Aplicación vigente: v9.3 unificada, 30 de septiembre de 2026.** El
+[plan único](V9.3_PLUS_RELEASE_TRAIN.md) incorpora este laboratorio a los
+bloques **C** (QUIC peer y recepción) y **D** (servidores activos). Las
+referencias a 9.7 y 9.8 de §§1–7 identifican esos dos bloques del diseño
+original, no releases futuras ni una espera entre ellos. La aprobación del
+alcance permite planificar ambos dentro de v9.3; no representa un `PASS` de
+implementación o interoperabilidad.
+
+El laboratorio sigue siendo una herramienta sin emisión productiva propia.
+La promoción de cada emisor depende de recepción correcta, negociación y
+autenticación verificadas. El inventario adicional y las pruebas vigentes de
+§8 complementan los snapshots congelados de §2 sin reemplazarlos. La política
+ligera de release del plan único prevalece sobre el calendario de §6 y la
+campaña externa completa deja de ser una condición universal de publicación.
+
+## Referencia de diseño conservada del 15 de agosto de 2026
+
 Estado: carril transversal de herramientas y evidencia; cero emisión nueva  
 Fecha: 15 de agosto de 2026  
 Autoridad de identificadores eSE: `protocol/PROTOCOL_REGISTRY.md`
@@ -145,3 +162,97 @@ autoridad de ruta permanece donde la release normativa la haya definido.
 - hacer obligatorio TLS o QUIC;
 - declarar compatible un proyecto que no pueda fijarse por versión/commit;
 - introducir un segundo parser/emisor productivo antes de su gate receptor.
+
+## 8. Ampliación vigente para v9.3: foro 167228
+
+### 8.1 Inventario adicional, sin sustituir evidencia anterior
+
+El [hilo 167228](https://forum.emule-project.net/index.php?showtopic=167228&st=20)
+y su [post #36](https://forum.emule-project.net/index.php?showtopic=167228&view=findpost&p=1111137)
+aportan candidatos al laboratorio. Los siguientes HEAD se fijaron el 30 de
+septiembre de 2026 mediante consulta de los repositorios primarios. Son
+**observaciones de código pendiente de conformidad**: tener un commit no
+demuestra build, licencia adecuada de todas sus dependencias, corrección wire,
+seguridad o interoperabilidad con eSE.
+
+| Implementación | Snapshot adicional | Uso previsto en v9.3 |
+|---|---|---|
+| ed2k-server / ed2k-rust | [`78b1e4fde6a0e018975ab18e3d1d1f077e48c83a`](https://github.com/andrey23127/ed2k-server/tree/78b1e4fde6a0e018975ab18e3d1d1f077e48c83a) | extracción IPv6/NAT-T, contraste de parsers y negativos de namespace; NAT-T original no emisor |
+| goed2k-server | [`a6dc0d64d896eb405a2db05b744a2f82605e415e`](https://github.com/chenjia404/goed2k-server/tree/a6dc0d64d896eb405a2db05b744a2f82605e415e) | inventario del wire realmente implementado; no asumir IPv6/NAT-T por aparecer en el hilo |
+| eNode-go, observación nueva | [`d4ce0f04ee38cff1f67c286d07c4826bf09d77cb`](https://github.com/ModderMule/eNode-go/tree/d4ce0f04ee38cff1f67c286d07c4826bf09d77cb) | delta contra `e901b44bd0f17ca880828a52a9d7e39c4dde21d0`; fixtures independientes |
+
+El eNode de Node.js se mantiene como
+[referencia histórica](https://github.com/petermrg/eNode), sin convertir su
+presencia en requisito. Los 43 contratos congelados del catálogo conservan su
+proveniencia y sus targets históricos: `9.7` se aplica a C y `9.8` a D. Los
+nuevos candidatos requieren extracción y fixtures propios antes de ampliar
+el catálogo; no se declara que las filas existentes los hayan auditado.
+
+### 8.2 Pruebas útiles incorporadas
+
+| ID | Situación reproducible | Aceptación |
+|---|---|---|
+| `SCL93-Q01` | QUIC completa handshake, transfiere datos y después el bulk deja de avanzar mientras sigue vivo el control | watchdog de progreso útil confirmado, timeout acotado y fallback; el keepalive no oculta el atasco |
+| `SCL93-Q02` | se activa fallback y QUIC vuelve a parecer disponible | cancelar el intento perdedor, una sola sesión y contabilidad; cooldown por ruta/generación, sin bucle de reselección |
+| `SCL93-Q03` | cola sin datos disponibles, pausa del usuario o congestión transitoria | no confundir ausencia legítima de trabajo con transporte atascado; temporizador según trabajo pendiente y presupuesto documentado |
+| `SCL93-Q04` | bloqueo UDP, blackhole de paquetes grandes/PMTU, pérdida o reordenación | completar una descarga con hash correcto por QUIC o fallback; no atribuir una causa de red a un único log |
+| `SCL93-Q05` | NAT rebinding, cambio de red o suspensión/reanudación | validar criptográficamente la nueva ruta dentro de la conexión autenticada, invalidar la generación anterior y preservar una sola sesión; si falla, reconectar/fallback |
+| `SCL93-V601` | el cliente establece conexión IPv6 saliente pero el puerto anunciado no recibe conexiones nuevas | no promover la salida a prueba de entrada; connect-back independiente, correlacionado y con TTL, antes de declarar alcanzabilidad entrante |
+| `SCL93-N01` | llega un opcode peer Rust que coincide con una función local | no despachar bytes por coincidencia numérica; preservar protocolo, dirección, namespace y capability |
+| `SCL93-R01` | datagrama NAT-T/PR_NAT con user hash ajeno, repetido o cambiado de sesión | diagnóstico sin registrar endpoints ni emitir la variante insegura; solo RendezvousV2 autenticado puede mutar estado |
+
+El watchdog se aplica primero a QUIC peer del bloque C y se reutiliza en el
+selector cliente-servidor de D, cuyo fallback no puede duplicar login,
+publicación, búsqueda o callback. Las métricas distinguen handshake, bytes de
+aplicación confirmados, motivo de fallback y transporte final; una conexión
+abierta por sí sola no es éxito.
+
+### 8.3 Decisiones de wire y seguridad
+
+- Los opcodes peer propuestos por ed2k-rust bajo `OP_EMULEPROT` incluyen
+  `0xB3` y `0xD0–0xD7`. Localmente `0xB3` es `OP_PUBLICIP_ANSWER_V6` y el
+  intervalo D0–D7 pertenece a Live/túneles o reservas en
+  [`Opcodes.h`](../srchybrid/Opcodes.h). El dialecto NAT Rust queda
+  `wire-conflict / never-send`; no se reutilizan esas reservas aunque una
+  función local esté apagada. El receptor clásico de un opcode local no se
+  convierte automáticamente en receptor NAT Rust.
+- Los mensajes TCP **de servidor** `0x60–0x62` y UDP **de servidor** `0x9F`
+  tienen otro namespace: compartir un número con un mensaje peer no prueba
+  colisión. Se extraen envoltura, dirección, capability y formato antes de
+  compararlos. Ninguno se habilita por esta observación.
+- `PR_NAT v1` y el NAT-T original de Rust son diagnóstico/`never-send` en
+  v9.3. `user_hash`, puerto UDP o un flag NAT no autentican al cliente ni
+  expresan consentimiento; no sustituyen `RendezvousV2`, prueba de posesión,
+  binding de sesión/canal, anti-replay y límites de abuso.
+- El [RUDP con cabecera uTP del post #27](https://forum.emule-project.net/index.php?showtopic=167228&view=findpost&p=1110927)
+  no se incorpora: una cabecera BEP-29 no acredita interoperabilidad uTP y
+  nonces públicos por sí solos no establecen una clave secreta autenticada.
+  QUIC/uTP estándar y negociación explícita siguen siendo la base.
+- La prueba IPv6 entrante debe observar un flujo nuevo hacia el puerto
+  anunciado. Un login IPv6 saliente o una dirección reflejada no prueban esa
+  capacidad. Se conservan los filtros y semántica de `ST_IPV6_STATUS` de §5.1.
+
+### 8.4 Laboratorio propio y aceptación proporcionada
+
+El bloque D incluye un servidor de referencia local reproducible, con ambos
+extremos bajo control del proyecto. Permite probar login/fuentes, IPv6,
+callback, RendezvousV2, TLS y QUIC sin un operador externo. Un callback
+cross-server usa dos instancias de servidor y dos peers propios, correlaciona
+una sola transacción y entrega candidatos al DCO; no requiere una federación
+operada por terceros.
+
+Para publicar las funciones habilitadas son obligatorios la descarga con hash
+correcto, identidad y negociación, fallback post-handshake, ausencia de
+sesiones duplicadas, límites del parser y compatibilidad clásica. Se ejecutan
+las pruebas afectadas por cada cambio y se reutiliza evidencia vigente; un
+cambio documental no obliga a repetir campañas de red. Se agrupan sesiones
+reales y estabilidad según el plan único, sin trasladar aquí los antiguos
+umbrales 30/30 o 72 h como condiciones universales.
+
+La matriz adicional de mods, operadores, ISP y redes con filtrado amplía
+cobertura, pero su disponibilidad no bloquea v9.3. Se publica el resultado
+con su alcance: **validado con referencia propia**, **validado con snapshot
+externo**, o **sin probar externamente**. La ausencia de validación externa no
+se etiqueta `PASS` y un endpoint sin capability sigue el camino clásico sin
+emisión experimental. Las rutas con integridad/autenticación/fallback
+defectuosos siguen cerradas; declarar un hueco externo no subsana ese defecto.

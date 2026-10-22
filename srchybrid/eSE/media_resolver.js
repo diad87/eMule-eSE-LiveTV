@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { safeBasename, isPathWithin } = require('./utils');
+const { parsePartMetadata } = require('./part_metadata');
 
 const VIDEO_EXTENSIONS_RE = /\.(avi|mkv|mp4|wmv|mov|flv|webm|mpg|mpeg)$/i;
 const MET_FILENAME_RE = /[^\x00-\x1F\x7F-\x9F]{5,}\.(avi|mkv|mp4|wmv|mov|webm|flv)/i;
@@ -104,9 +105,18 @@ async function loadPartMetadata(tempDir, partFiles, signal) {
  */
 function extractHash(metBuf) {
   try {
-    return metBuf.slice(HASH_OFFSET, HASH_OFFSET + HASH_LENGTH).toString('hex').toUpperCase();
+    return parsePartMetadata(metBuf).hash;
   } catch(e) {
-    return '';
+    // Unparseable or bounded/truncated metadata: the header layout (version
+    // byte, date, file hash) is shared by every .part.met version, so keep the
+    // historical fixed-offset hash rather than losing the file identity.
+    try {
+      if (!metBuf || metBuf.length < HASH_OFFSET + HASH_LENGTH) return '';
+      const hash = metBuf.slice(HASH_OFFSET, HASH_OFFSET + HASH_LENGTH).toString('hex').toUpperCase();
+      return /^0{32}$/.test(hash) ? '' : hash;
+    } catch (_) {
+      return '';
+    }
   }
 }
 
@@ -116,6 +126,7 @@ function extractHash(metBuf) {
  * @returns {string|null} The filename or null
  */
 function extractFileName(metBuf) {
+  try { return parsePartMetadata(metBuf).fileName || null; } catch (_) {}
   const metText = metBuf.toString('latin1');
   const m = metText.match(MET_FILENAME_RE);
   return m ? m[0] : null;
@@ -248,7 +259,10 @@ async function listDownloads(tempDir, options = {}) {
         statOrNull(partPath, signal),
       ]);
       if (!metBuffer || !stat) return null;
-      const fileName = extractFileName(metBuffer) || partFile;
+      let metadata;
+      try { metadata = parsePartMetadata(metBuffer); }
+      catch (_) { metadata = { fileName: extractFileName(metBuffer) || partFile, hash: extractHash(metBuffer), totalSizeBytes: null, completedBytes: null, metadataSource: 'unavailable' }; }
+      const fileName = metadata.fileName || partFile;
       const isActive = (Date.now() - stat.mtimeMs) < 30000; // Modified in last 30s
       return {
         partFile,
@@ -259,11 +273,18 @@ async function listDownloads(tempDir, options = {}) {
         partPath,
         lastModified: stat.mtimeMs,
         active: isActive,
-        hash: extractHash(metBuffer)
+        hash: metadata.hash,
+        totalSizeBytes: metadata.totalSizeBytes,
+        completedBytes: metadata.completedBytes,
+        metadataSource: metadata.metadataSource
       };
     }, signal);
     return downloads.filter(Boolean);
-  } catch(e) { rethrowAbort(e); }
+  } catch(e) {
+    rethrowAbort(e);
+    // Strict callers distinguish an unavailable Temp folder from no downloads.
+    if (options.strict) throw e;
+  }
   return [];
 }
 
@@ -293,6 +314,8 @@ async function getCompletedFiles(incomingDir, options = {}) {
     return files.filter(Boolean);
   } catch(e) {
     rethrowAbort(e);
+    // Strict callers distinguish an unavailable library from an empty one.
+    if (options.strict) throw e;
     return [];
   }
 }

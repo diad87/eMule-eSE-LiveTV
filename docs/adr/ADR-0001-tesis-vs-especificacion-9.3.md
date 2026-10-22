@@ -1,5 +1,11 @@
 # ADR-0001 — Reconciliación tesis ↔ especificación para eSE 9.3
 
+> **Archivo lógico histórico — 30 de septiembre de 2026.** Borrador histórico conservado como referencia: no se declara aceptado. La enmienda de la SPEC y el plan único lo sustituyen como mecanismo de autoridad; su aprobación y su política de modelos ya no son requisitos de entrada.
+> El plan vigente es [V9.3_PLUS_RELEASE_TRAIN.md](../V9.3_PLUS_RELEASE_TRAIN.md)
+> y el único ledger activo es [V9.3_EXECUTION_STATE.md](../V9.3_EXECUTION_STATE.md).
+> Se conserva íntegro el contenido anterior para trazabilidad; las menciones
+> normativas, bloqueos y decisiones del cuerpo pertenecen a aquel plan.
+
 | Campo | Valor |
 |---|---|
 | Tarjeta | `93-0.2` (WP93-0, entrada) |

@@ -12,6 +12,10 @@ const dns = require('dns');
 const net = require('net');
 const { runProcess } = require('../bounded_process_runner');
 
+let cachedLoopbackDevice = null;
+let loopbackKnown = false;
+let loopbackRefresh = null;
+
 /**
  * @typedef {Object} SourceConfig
  * @property {'webcam'|'screen'|'file'|'url'|'capture'|'rtmp'} type
@@ -176,12 +180,29 @@ function validateSource(source) {
  * @returns {Promise<string|null>} Device name or null if not found.
  */
 async function findLoopbackDevice(ffmpegPath) {
-  try {
-    const result = await runProcess(ffmpegPath,
-      ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'],
-      { timeoutMs: 10000, maxOutputBytes: 1024 * 1024 },
-    );
-    const stderr = result.stderr || '';
+  // Startup primes the cache so a broadcast start does not wait for DirectShow
+  // enumeration; the cached answer is refreshed in the background.
+  if (loopbackKnown) {
+    if (!loopbackRefresh) void refreshLoopbackDevice(ffmpegPath);
+    return cachedLoopbackDevice;
+  }
+  return refreshLoopbackDevice(ffmpegPath);
+}
+
+async function refreshLoopbackDevice(ffmpegPath) {
+  if (loopbackRefresh) return loopbackRefresh;
+  loopbackRefresh = (async () => {
+    let stderr = '';
+    try {
+      // FFmpeg exits non-zero after listing DirectShow devices.
+      const result = await runProcess(ffmpegPath,
+        ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'],
+        { timeoutMs: 10000, maxOutputBytes: 1024 * 1024 },
+      );
+      stderr = result.stderr || '';
+    } catch (error) {
+      stderr = '';
+    }
     
     // Parse audio device names
     const lines = stderr.split('\n');
@@ -211,15 +232,18 @@ async function findLoopbackDevice(ffmpegPath) {
       const match = audioDevices.find(d => pattern.test(d));
       if (match) {
         console.log('[Audio] Loopback device found:', match);
-        return match;
+        cachedLoopbackDevice = match;
+        loopbackKnown = true;
+        return cachedLoopbackDevice;
       }
     }
     
     console.log('[Audio] No loopback device found. Available:', audioDevices.join(', ') || 'none');
+    cachedLoopbackDevice = null;
+    loopbackKnown = true;
     return null;
-  } catch (e) {
-    return null;
-  }
+  })().finally(() => { loopbackRefresh = null; });
+  return loopbackRefresh;
 }
 
 function quoteDshowName(name) {
@@ -425,6 +449,7 @@ module.exports = {
   buildInputArgs,
   validateSource,
   findLoopbackDevice,
+  refreshLoopbackDevice,
   isAllowedInputUrl,
   isPrivateOrLocalAddress,
   resolveAndPinInputUrl,

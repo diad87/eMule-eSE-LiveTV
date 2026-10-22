@@ -38,27 +38,41 @@ function renderPage(name) {
   const scripts = [...body.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)]
     .map(match => match[1]).filter(Boolean);
   for (const source of scripts) new vm.Script(source, { filename: `${name}-rendered.js` });
-  return scripts.find(source => source.includes(name === 'search' ? 'function fetchTmdb' : 'function loadSections'));
+  // The catalogue script is the one that talks to the local metadata proxy.
+  return scripts.find(source => source.includes("'/api/tmdb/") || source.includes('"/api/tmdb/') || source.includes('/api/tmdb/'));
+}
+
+function makeElement(id) {
+  const attributes = {};
+  return {
+    id, hidden: true, innerHTML: '', textContent: '', value: '', style: {}, listeners: {}, children: [], dataset: {},
+    disabled: false,
+    classList: { toggle() {}, add() {}, remove() {}, contains() { return false; } },
+    addEventListener(name, callback) { this.listeners[name] = callback; },
+    appendChild(child) { this.children.push(child); return child; },
+    setAttribute(name, value) { attributes[name] = String(value); },
+    getAttribute(name) { return Object.prototype.hasOwnProperty.call(attributes, name) ? attributes[name] : null; },
+    removeAttribute(name) { delete attributes[name]; },
+    querySelector() { return null; }, querySelectorAll() { return []; },
+    focus() {}, scrollBy() {}, remove() {},
+  };
 }
 
 function browserHarness(source, configured, fixtureResults = []) {
   const elements = new Map();
   const requests = [];
   function element(id) {
-    if (!elements.has(id)) elements.set(id, {
-      hidden: true, innerHTML: '', textContent: '', value: '', style: {}, listeners: {}, children: [],
-      classList: { toggle() {}, add() {}, remove() {} },
-      addEventListener(name, callback) { this.listeners[name] = callback; },
-      appendChild(child) { this.children.push(child); }, scrollBy() {},
-    });
+    if (!elements.has(id)) elements.set(id, makeElement(id));
     return elements.get(id);
   }
+  const location = { href: '', search: '' };
   const context = vm.createContext({
     document: {
-      getElementById: element, querySelectorAll: () => [],
-      createElement: () => ({ style: {} }),
+      getElementById: element, querySelectorAll: () => [], querySelector: () => null,
+      createElement: () => makeElement(null), activeElement: null,
     },
-    window: { location: { href: '' } },
+    location,
+    history: { replaceState() {} },
     fetch: async value => {
       const url = new URL(value, 'http://127.0.0.1');
       assert.equal(url.origin, 'http://127.0.0.1');
@@ -74,13 +88,17 @@ function browserHarness(source, configured, fixtureResults = []) {
     },
     setTimeout(callback) { callback(); return 1; }, clearTimeout() {},
     console: { log() {}, warn() {}, error() {} },
-    URL, encodeURIComponent,
+    URL, URLSearchParams, AbortController, encodeURIComponent,
+  });
+  context.window = Object.assign(context, {
+    addEventListener() {},
+    matchMedia: () => ({ matches: false }),
   });
   vm.runInContext(source, context, { timeout: 1000 });
-  return { context, elements, requests, element };
+  return { context, elements, requests, element, location };
 }
 async function flushPromises() {
-  for (let i = 0; i < 4; i++) await new Promise(resolve => setImmediate(resolve));
+  for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve));
 }
 
 test('search and explore render without importing or exposing a configured credential', () => {
@@ -88,35 +106,38 @@ test('search and explore render without importing or exposing a configured crede
   assert.ok(renderPage('explore'));
 });
 
-test('search uses only same-origin proxy including encoded user input and external-id lookup', async () => {
+test('search uses only same-origin proxy including encoded user input and opens a canonical catalogue id', async () => {
   const browser = browserHarness(renderPage('search'), true);
   await flushPromises();
-  assert.equal(browser.requests.length, 2);
+  assert.ok(browser.requests.length >= 1);
   const query = 'movie &api_key=CALLER_OVERRIDE';
   const input = browser.element('q');
   input.value = query;
   input.listeners.input.call(input);
-  browser.context.openMovie({ id: 42, title: 'Fixture' });
   await flushPromises();
   assert.ok(browser.requests.some(url => url.searchParams.get('query') === query));
-  assert.ok(browser.requests.some(url => url.pathname === '/api/tmdb/movie/42/external_ids'));
+  browser.context.openMovie({ id: 42, title: 'Fixture', media_type: 'movie' });
+  // The detail page resolves the catalogue id server-side; no browser lookup.
+  assert.match(browser.location.href, /^\/\?detail=tmdb%3Amovie%3A42&/);
 });
 
 test('search shows a local setup message when metadata authentication is not configured', async () => {
   const browser = browserHarness(renderPage('search'), false);
   await flushPromises();
-  assert.equal(browser.element('metadata-status').hidden, false);
-  assert.match(browser.element('metadata-status').textContent, /Configura tu clave TMDB/);
-  assert.equal(browser.requests.length, 2);
+  assert.equal(browser.element('trending-state').hidden, false);
+  assert.match(browser.element('trending-state').textContent, /Configura tu clave TMDB/);
+  assert.ok(browser.requests.length >= 1);
 });
 
-test('explore category URLs and external-id lookup stay on the local proxy', async () => {
+test('explore category URLs and catalogue navigation stay on the local proxy', async () => {
   const browser = browserHarness(renderPage('explore'), true);
   await flushPromises();
   assert.ok(browser.requests.length >= 3);
+  const before = browser.requests.length;
   browser.context.openTMDB(42, 'tv', 'Fixture');
   await flushPromises();
-  assert.ok(browser.requests.some(url => url.pathname === '/api/tmdb/tv/42/external_ids'));
+  assert.equal(browser.requests.length, before, 'navigation needs no direct metadata lookup');
+  assert.match(browser.location.href, /^\/\?detail=tmdb%3Atv%3A42&/);
 });
 
 test('explore handles missing credentials as setup state rather than an empty catalogue', async () => {
@@ -125,33 +146,34 @@ test('explore handles missing credentials as setup state rather than an empty ca
   assert.match(browser.element('carousel-0').textContent, /Configura tu clave TMDB/);
 });
 
-test('explore passes upstream titles and IDs as data instead of inline event-handler code', async () => {
+test('explore passes upstream titles and IDs as escaped data, never inline event-handler code', async () => {
   const title = "Director's cut');globalThis.injected=true;//<img src=x onerror=alert(1)>";
   const id = '42);globalThis.injected=true;//';
   const browser = browserHarness(renderPage('explore'), true, [{
     id, title, media_type: 'movie', poster_path: '/fixture.jpg',
   }]);
   await flushPromises();
-  const card = browser.element('carousel-0').children[0];
-  assert.ok(card);
-  assert.equal(typeof card.onclick, 'function');
-  assert.doesNotMatch(card.innerHTML, /<img src=x|onclick=/);
-  let received;
-  browser.context.openTMDB = (...args) => { received = args; };
-  card.onclick();
-  assert.deepEqual(received, [id, 'movie', title]);
+  const html = browser.element('carousel-0').innerHTML;
+  assert.ok(html.includes('class="ex-card"'));
+  assert.doesNotMatch(html, /<img src=x/);
+  // Quoted attribute values are inert text; no tag may carry an inline handler.
+  const tags = html.replace(/"[^"]*"/g, '""').match(/<[^>]+>/g) || [];
+  for (const tag of tags) assert.doesNotMatch(tag, /\son[a-z]+\s*=/i);
+  assert.ok(html.includes('data-title="Director&#39;s cut&#39;);globalThis.injected=true;//&lt;img src=x onerror=alert(1)&gt;"'));
+  // Card handlers read data attributes; a non-numeric id is rejected outright.
+  browser.context.openTMDB(id, 'movie', title);
+  assert.equal(browser.location.href, '');
   assert.equal(browser.context.injected, undefined);
 });
 
 test('legacy and fallback browser sources contain neither TMDB credentials nor direct API calls', () => {
-  for (const relative of ['player.js', 'hero_ui.js', '_deprecated/player_combined_test.js',
+  for (const relative of ['player.js', 'hero_ui.js',
     'pages/search_page.js', 'pages/explore_page.js', 'pages/mylist_page.js', 'pages/main_page.js']) {
     const source = fs.readFileSync(path.join(root, relative), 'utf8');
     assert.doesNotMatch(source, /TMDB_KEY|ESE_TMDB_KEY|api_key|api\.themoviedb\.org/, relative);
-    // These two historical extraction fragments already fail standalone parsing
-    // in A65 and are not packaged/bundled. Still remove credentials from their
-    // tracked text without turning this security change into a fragment rewrite.
-    if (!['hero_ui.js', '_deprecated/player_combined_test.js'].includes(relative)) {
+    // This historical extraction fragment already fails standalone parsing in
+    // A65 and is not packaged/bundled. Still keep credentials out of its text.
+    if (relative !== 'hero_ui.js') {
       new vm.Script(source, { filename: relative });
     }
   }

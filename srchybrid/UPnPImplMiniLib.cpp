@@ -2146,12 +2146,9 @@ void CUPnPImplMiniLib::StartThread()
 		m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
 		return;
 	}
-	CStartDiscoveryThread* pStartDiscoveryThread =
-		new (std::nothrow) CStartDiscoveryThread(this);
-	if (pStartDiscoveryThread == NULL) {
-		m_hThreadHandle = NULL;
-		m_bUPnPPortsForwarded = TRIS_FALSE;
-		m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
+	// A worker that never starts must answer its operation with an honest
+	// failure instead of leaving the caller to wait for the UI timeout.
+	const auto SendStartFailure = [this]() {
 		const MappingOperationContext operation =
 			CaptureMappingOperation();
 		natmap::UpnpPairResultInput input;
@@ -2162,6 +2159,14 @@ void CUPnPImplMiniLib::StartThread()
 			natmap::ReasonCode::NoMappingProtocol;
 		SendMapperResultMessage(
 			operation, natmap::BuildUpnpPairMapperResult(input));
+	};
+	CStartDiscoveryThread* pStartDiscoveryThread =
+		new (std::nothrow) CStartDiscoveryThread(this);
+	if (pStartDiscoveryThread == NULL) {
+		m_hThreadHandle = NULL;
+		m_bUPnPPortsForwarded = TRIS_FALSE;
+		m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
+		SendStartFailure();
 		return;
 	}
 	m_pWorkerThread = pStartDiscoveryThread;
@@ -2173,6 +2178,7 @@ void CUPnPImplMiniLib::StartThread()
 		m_pWorkerThread = NULL;
 		m_bUPnPPortsForwarded = TRIS_FALSE;
 		m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
+		SendStartFailure();
 		return;
 	}
 	// The heap context is owned before CreateThread; handle ownership is

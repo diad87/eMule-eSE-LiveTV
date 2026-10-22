@@ -38,6 +38,7 @@ namespace Kademlia
 };
 
 class CChatWnd;
+class CUPnPImpl;
 class CIrcWnd;
 class CKademliaWnd;
 class CKnownFileList;
@@ -85,6 +86,7 @@ public:
 
 	CImageList& GetClientIconList();
 	void ShowConnectionState();
+    void UpdateDirectStatusPane();
 	// v0.71 P3.8 — lightweight 1 Hz refresh of the SBarPrivacy pane.
 	// Called from CKademlia::Process (already runs at 1 Hz) so the
 	// pane shows real-time circuit counts without dragging

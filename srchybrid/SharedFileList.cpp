@@ -20,6 +20,7 @@
 #include "emule.h"
 #include "KnownFileList.h"
 #include "SharedFileList.h"
+#include "DirectReachabilityManager.h"
 #include "Packets.h"
 #include "Kademlia/Kademlia/Kademlia.h"
 #include "kademlia/kademlia/search.h"
@@ -819,7 +820,8 @@ bool CSharedFileList::RemoveFile(CKnownFile *pFile, bool bDeleted)
 	bool bResult = (m_Files_map.RemoveKey(CCKey(pFile->GetFileHash())) != FALSE);
 	listlock.Unlock();
 
-	output->RemoveFile(pFile, bDeleted);
+	if (output)
+		output->RemoveFile(pFile, bDeleted);
 	m_keywords->RemoveKeywords(pFile);
 	if (bResult) {
 		m_UnsharedFiles_map[CSKey(pFile->GetFileHash())] = true;
@@ -1276,7 +1278,10 @@ void CSharedFileList::HashFailed(UnknownFile_Struct *hashed)
 
 void CSharedFileList::UpdateFile(CKnownFile *toupdate)
 {
-	output->UpdateFile(toupdate);
+	// Sharing and request statistics are valid before the optional UI sink is
+	// attached (notably headless startup). Keep model updates independent of it.
+	if (output)
+		output->UpdateFile(toupdate);
 }
 
 void CSharedFileList::Process()
@@ -1300,6 +1305,13 @@ void CSharedFileList::Process()
 
 void CSharedFileList::Publish()
 {
+    // Independent direct index path; preserve the gateway and Kad2 publishers.
+    if(theApp.directreachability && !theApp.m_bReachBindingSelfTest && GetCount()) {
+        static INT_PTR directOrdinal=0;
+        if(directOrdinal>=GetCount()) directOrdinal=0;
+        if(auto* file=GetFileByIndex(directOrdinal))
+            if(theApp.directreachability->TryPublishQueuedKad6File(*file)) ++directOrdinal;
+    }
 	// K6 source publication is deliberately independent of classic HighID,
 	// buddy and direct UDP reachability. Its endpoint is the exit X, so using
 	// the old early-return conditions here would reintroduce the CGNAT problem

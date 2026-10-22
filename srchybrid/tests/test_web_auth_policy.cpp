@@ -112,6 +112,7 @@ void TestSessions()
 		"/api/keepalive/start",
 		"/api/krp/status",
 		"/api/reach/status",
+		"/api/reach/direct",
 		"/api/network/connect",
 		"/api/relay/accept?on=1",
 		"/api/live/broadcast/start",
@@ -151,6 +152,7 @@ void TestSessions()
 	for (const char* path : {
 		"/api/status",
 		"/api/reach/status",
+		"/api/reach/direct",
 		"/api/live/metrics",
 		"/api/live/channels",
 		"/api/live/mesh",

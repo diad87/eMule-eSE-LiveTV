@@ -14,33 +14,28 @@ from pathlib import Path
 
 
 EXPECTED = {
-    # D0 reviewed: a verified IPv6 direct-route observation must agree with
-    # the configured TCP listener before the v6 hello is emitted. The hello
-    # still serializes GetAdvertisedV6TcpPort(), never this local read.
     "BaseClient.cpp": 1,
     "ClientUDPSocket.cpp": 6,
     "DownloadClient.cpp": 1,
     "Emule.cpp": 7,
-    "EmuleDlg.cpp": 4,
-    # D0 reviewed: scope evidence and PCP lease setup use the local listener
-    # pair as mapper input. Candidate publication remains gated by verified
-    # route observations; these calls do not serialize a public endpoint.
+    # +2 in 9.3: dashboard WebServer port collision check (local config only).
+    "EmuleDlg.cpp": 6,
+    # 9.3 lab self-tests read the configured local ports to set up fixtures.
+    "EseKad2IndexPersistenceSelfTest.h": 2,
+    "EseKad6IndexHostSelfTest.h": 3,
+    "EseKad6PublisherHostSelfTest.h": 1,
+    "EseQuicSharedSocketSelfTest.h": 5,
     "FirewallProberV6.cpp": 5,
-    # D0 reviewed: LT4 ownership moved this reject-only target policy from
-    # LiveTunnel. It blocks requests to local eD2K/Web ports; it emits none.
     "Kad6GatewaySocket.cpp": 1,
     "ListenSocket.cpp": 5,
     "kademlia/kademlia/Prefs.cpp": 1,
     "NetworkInfoDlg.cpp": 5,
-    "PartFile.utf8.cpp": 2,
-    # D0 reviewed: UI enablement and Windows Firewall rule management only;
-    # these reads never advertise a public endpoint to a peer.
     "PPgConnection.cpp": 7,
     "PShtWiz1.cpp": 5,
     "RelayClient.cpp": 1,
-    # D0 reviewed: decides whether the selected Kad2/Kad6 instances may start
-    # when no local UDP socket is configured; it is not an advertised port.
     "kademlia/kademlia/Kademlia.cpp": 1,
+    # 9.3 Direct Core uTP endpoint binds the configured local UDP port.
+    "eMuleAI/UtpSocket.cpp": 1,
 }
 
 PATTERN = re.compile(r"thePrefs\.Get(?:UDP)?Port\(\)")
@@ -68,10 +63,10 @@ def main() -> int:
             failures.append(f"{key}: expected {EXPECTED.get(key, 0)}, found {found.get(key, 0)}")
 
     total = sum(found.values())
-    if total != 52:
-        failures.append(f"total: expected 52, found {total}")
-    if line_count != 51:
-        failures.append(f"lines: expected 51, found {line_count}")
+    if total != 64:
+        failures.append(f"total: expected 64, found {total}")
+    if line_count != 63:
+        failures.append(f"lines: expected 63, found {line_count}")
 
     if failures:
         print("Direct-port inventory drift detected:")

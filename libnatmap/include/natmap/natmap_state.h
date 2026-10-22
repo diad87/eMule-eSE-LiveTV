@@ -1,8 +1,27 @@
 #pragma once
 
 #include "natmap/natmap_types.h"
+#include <limits>
 
 namespace natmap {
+inline bool NextTopologyGeneration(std::uint64_t current,std::uint64_t& next) noexcept {
+    next=0;
+    if(current==(std::numeric_limits<std::uint64_t>::max)()) return false;
+    next=current+1; return true;
+}
+inline bool MatchesLocalMappingPorts(std::uint16_t expectedTcp,std::uint16_t expectedUdp,
+    std::uint16_t observedTcp,std::uint16_t observedUdp) noexcept {
+    return expectedTcp!=0 && observedTcp==expectedTcp && observedUdp==expectedUdp;
+}
+inline bool IsCurrentProofGeneration(std::uint64_t captured,std::uint64_t plane,std::uint64_t topology) noexcept {
+    return captured!=0 && captured==plane && captured==topology;
+}
+
+inline bool IsCurrentInboundProof(std::uint64_t captured,std::uint64_t plane,
+    std::uint64_t topology,std::uint16_t observedLocalPort,std::uint16_t currentLocalPort) noexcept {
+    return IsCurrentProofGeneration(captured,plane,topology) &&
+        observedLocalPort!=0 && observedLocalPort==currentLocalPort;
+}
 
 enum class EventType : std::uint8_t {
     BeginGeneration = 0,

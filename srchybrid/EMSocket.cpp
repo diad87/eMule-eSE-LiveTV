@@ -21,6 +21,7 @@
 #include "emule.h"
 #include <timeapi.h>
 #include "emsocket.h"
+#include "EseQuicEd2kWriter.h"
 #include "AsyncProxySocketLayer.h"
 #include "Packets.h"
 #include "OtherFunctions.h"
@@ -126,6 +127,8 @@ CEMSocket::~CEMSocket()
 	// won't be in the middle of things
 	sendLocker.Lock();
 	byConnected = EMS_DISCONNECTED;
+	if (m_directWriter) m_directWriter->Stop();
+	m_directWriter.reset();
 	CleanUpOverlappedSendOperation(true);
 	sendLocker.Unlock();
 
@@ -142,6 +145,7 @@ CEMSocket::~CEMSocket()
 // By Maverick: Connection initialization is done by class itself
 bool CEMSocket::Connect(const CString &sHostAddress, UINT nHostPort)
 {
+	{ CSingleLock lockSend(&sendLocker, TRUE); if (m_directMode) { WSASetLastError(WSAEINVAL); return false; } }
 	InitProxySupport();
 	return CEncryptedStreamSocket::Connect(sHostAddress, nHostPort);
 }
@@ -151,6 +155,7 @@ bool CEMSocket::Connect(const CString &sHostAddress, UINT nHostPort)
 // By Maverick: Connection initialization is done by class itself
 BOOL CEMSocket::Connect(const LPSOCKADDR pSockAddr, int iSockAddrLen)
 {
+	{ CSingleLock lockSend(&sendLocker, TRUE); if (m_directMode) { WSASetLastError(WSAEINVAL); return FALSE; } }
 	InitProxySupport();
 	return CEncryptedStreamSocket::Connect(pSockAddr, iSockAddrLen);
 }
@@ -452,6 +457,8 @@ void CEMSocket::SendPacket(Packet *packet, bool controlpacket, uint32 actualPayl
 	//	m_lastSendLatency = timeGetTime() - m_startSendTick;
 	//}
 	sendLocker.Lock();
+	// Stop may have raced the optimistic check above; never enqueue after close.
+	if (byConnected == EMS_DISCONNECTED) { sendLocker.Unlock(); delete packet; return; }
 	if (controlpacket) {
 		controlpacket_queue.AddTail(packet);
 
@@ -550,8 +557,43 @@ void CEMSocket::OnSend(int nErrorCode)
 		theApp.uploadBandwidthThrottler->SocketAvailable();
 }
 
+bool CEMSocket::PrepareLayeredSend()
+{
+	CSingleLock lockSend(&sendLocker, TRUE);
+	if (m_bPendingSendOv || m_directMode)
+		return false;
+	m_bUseOverlappedSend = false;
+	return true;
+}
+
+bool CEMSocket::BindDirectWriter(const std::shared_ptr<ese::QuicEd2kWriter>& writer)
+{
+	CSingleLock lockSend(&sendLocker, TRUE);
+	if (!writer || m_directMode || byConnected == EMS_CONNECTED ||
+		GetSocketHandle() != INVALID_SOCKET || sendbuffer || m_bPendingSendOv ||
+		!controlpacket_queue.IsEmpty() || !standardpacket_queue.IsEmpty()) return false;
+	m_directWriter = writer;
+	m_directMode = true;
+	m_bUseOverlappedSend = false;
+	byConnected = EMS_CONNECTED;
+	return true;
+}
+
+void CEMSocket::StopDirectWriter()
+{
+	CSingleLock lockSend(&sendLocker, TRUE);
+	if (!m_directMode) return; // legacy untouched
+	byConnected = EMS_DISCONNECTED;
+	if (m_directWriter) m_directWriter->Stop();
+	m_directWriter.reset();
+	// Keep direct mode sticky; do not let queued bytes fall back to TCP.
+	ClearQueues();
+	m_bBusy = false;
+}
+
 SocketSentBytes CEMSocket::SendEM(uint32 maxNumberOfBytesToSend, uint32 minFragSize, bool onlyAllowedToSendControlPacket)
 {
+	CSingleLock lockSend(&sendLocker, TRUE);
 	if (byConnected == EMS_DISCONNECTED)
 		return SocketSentBytes{};
 	if (m_bUseOverlappedSend)
@@ -585,7 +627,7 @@ SocketSentBytes CEMSocket::SendStd(uint32 maxNumberOfBytesToSend, uint32 minFrag
 	SocketSentBytes ret = { 0, 0, true };
 
 	sendLocker.Lock();
-	if (byConnected == EMS_CONNECTED && IsEncryptionLayerReady()) {
+	if (byConnected == EMS_CONNECTED && (m_directWriter || IsEncryptionLayerReady())) {
 		if (minFragSize < 1)
 			minFragSize = 1;
 
@@ -640,7 +682,7 @@ SocketSentBytes CEMSocket::SendStd(uint32 maxNumberOfBytesToSend, uint32 minFrag
 				delete curPacket;
 
 				// encrypting which cannot be done transparent by base class
-				CryptPrepareSendData((uchar*)sendbuffer, sendblen);
+				if (!m_directWriter) CryptPrepareSendData((uchar*)sendbuffer, sendblen);
 			}
 
 			// At this point we've got a packet to send in sendbuffer. Try to send it. Loop until entire packet
@@ -671,7 +713,18 @@ SocketSentBytes CEMSocket::SendStd(uint32 maxNumberOfBytesToSend, uint32 minFrag
 
 				lastSent = timeGetTime();
 
-				uint32 result = CEncryptedStreamSocket::Send(sendbuffer + sent, tosend); // deadlake PROXYSUPPORT - changed to AsyncSocketEx
+				uint32 result;
+				if (m_directWriter) {
+					const auto queued = m_directWriter->Queue({reinterpret_cast<const uint8*>(sendbuffer + sent), tosend});
+					if (queued.status == reach::DirectIoStatus::WouldBlock) {
+						// No TCP FD_WRITE will arrive: leave retry eligibility to the throttler.
+						m_bBusy = false; sendLocker.Unlock(); return ret;
+					}
+					if (queued.status != reach::DirectIoStatus::Accepted) {
+						ret.success = false; sendLocker.Unlock(); return ret;
+					}
+					result = static_cast<uint32>(queued.accepted);
+				} else result = CEncryptedStreamSocket::Send(sendbuffer + sent, tosend); // legacy unchanged
 				if (result == (uint32)SOCKET_ERROR) {
 					uint32 error = (uint32)CAsyncSocket::GetLastError();
 					if (error == WSAEWOULDBLOCK) {

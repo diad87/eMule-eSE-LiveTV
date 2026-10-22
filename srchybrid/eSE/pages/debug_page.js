@@ -1,5 +1,16 @@
 'use strict';
 
+// The native eMule WebUI port is configurable (ESE_EMULE_WEB_PORT or
+// preferences.ini). 4711 is the official default and keeps the viewer
+// byte-identical for default installations.
+const DEFAULT_EMULE_WEB_PORT = 4711;
+let emuleWebPort = DEFAULT_EMULE_WEB_PORT;
+
+function init(options = {}) {
+  const port = Number(options.emuleWebPort);
+  emuleWebPort = Number.isInteger(port) && port > 0 && port <= 65535 ? port : DEFAULT_EMULE_WEB_PORT;
+}
+
 function handle(url, _req, res) {
   if (url.pathname !== '/debug' && url.pathname !== '/debug/') return false;
 
@@ -61,11 +72,11 @@ async function fetchOne(url, label){
 async function load(){
   const st=document.getElementById('status'); st.textContent='loading...';
   let items=[];
-  if(src==='emu')  items = await fetchOne('http://localhost:4711/api/live/log?n=200');
+  if(src==='emu')  items = await fetchOne('http://localhost:${emuleWebPort}/api/live/log?n=200');
   else if(src==='ese') items = await fetchOne('/api/ese/log?n=200');
   else {
     const [e,s] = await Promise.all([
-      fetchOne('http://localhost:4711/api/live/log?n=200', '[emu]'),
+      fetchOne('http://localhost:${emuleWebPort}/api/live/log?n=200', '[emu]'),
       fetchOne('/api/ese/log?n=200', '[ese]')]);
     items = e.concat(s).sort();
   }
@@ -89,4 +100,4 @@ load(); startTimer();
   return true;
 }
 
-module.exports = { handle };
+module.exports = { init, handle };

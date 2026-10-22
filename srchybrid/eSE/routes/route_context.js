@@ -20,7 +20,6 @@
  * @property {(options?: object) => Promise<object[]>} getDownloads
  * @property {(options?: object) => Promise<object[]>} getCompletedFiles
  * @property {(fileName: string, options?: object) => Promise<object|null>} resolveMediaFile
- * @property {(filePath: string) => Promise<number>} getDuration
  */
 
 /**
@@ -31,15 +30,26 @@
  * @param {unknown} context
  * @param {string} routeName
  * @param {Record<string, "function"|"object"|"string"|"array"|"port"|"handler"|"handlers"|"liveApi"|"security"|"securityApply"|"emuleApi"|"cleanup"|"fileSystem"|"pathModule">} schema
+ * @param {Record<string, "function"|"object"|"string"|"array"|"port"|"handler"|"handlers"|"liveApi"|"security"|"securityApply"|"emuleApi"|"cleanup"|"fileSystem"|"pathModule">} [optionalSchema]
+ *   Dependencies that may be absent (or undefined). When present they must be
+ *   own properties of the expected type, exactly like required ones.
  * @returns {Record<string, unknown>}
  */
-function validateRouteContext(context, routeName, schema) {
+function validateRouteContext(context, routeName, schema, optionalSchema = {}) {
   if (!isObject(context) || Array.isArray(context)) fail(routeName);
   const validated = {};
   for (const [key, expected] of Object.entries(schema)) {
     if (!Object.prototype.hasOwnProperty.call(context, key) || !matches(context[key], expected)) {
       fail(routeName);
     }
+    validated[key] = context[key];
+  }
+  for (const [key, expected] of Object.entries(optionalSchema)) {
+    if (!Object.prototype.hasOwnProperty.call(context, key) || context[key] === undefined) {
+      if (key in context && !Object.prototype.hasOwnProperty.call(context, key)) fail(routeName);
+      continue;
+    }
+    if (!matches(context[key], expected)) fail(routeName);
     validated[key] = context[key];
   }
   return validated;

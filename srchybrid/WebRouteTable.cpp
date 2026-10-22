@@ -34,6 +34,7 @@ constexpr RouteDefinition kExactRoutes[] = {
 	{"/api/ese/netlab/report", WebRouteId::ApiEseNetlabReport},
 	{"/api/krp/status", WebRouteId::ApiKrpStatus},
 	{"/api/reach/status", WebRouteId::ApiReachStatus},
+	{"/api/reach/direct", WebRouteId::ApiReachDirect},
 	{"/api/relay/accept", WebRouteId::ApiRelayAccept},
 	{"/api/relay/egress", WebRouteId::ApiRelayEgress},
 	{"/api/relay/selector", WebRouteId::ApiRelaySelector},

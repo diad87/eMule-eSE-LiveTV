@@ -1,5 +1,20 @@
 # eSE — Programa de paridad y superioridad frente a eMule AI
 
+**Uso vigente desde el 30 de septiembre de 2026:** inventario de alcance y
+evidencia histórica del [`plan único v9.3`](V9.3_PLUS_RELEASE_TRAIN.md).
+Sus 49 funciones y 43 mejoras se conservan íntegros; el mapa de §19 del plan
+asigna cada caso a un bloque actual. Los estados de las filas no certifican
+implementación nueva. La privacidad peer está en C/F; LiveTV privado queda
+en la siguiente 9.4.
+
+Las reglas comparativas y el orden de ejecución de este documento son
+históricos. QUIC se prioriza tras el selector mínimo y los criterios de salida
+son los de §17 del plan único. A/B y la etiqueta `ESE-SUPERA` son opcionales
+para publicar; cualquier afirmación de superioridad sigue necesitando su
+evidencia. La función `AI-F24` conserva `NO-ADOPTAR`.
+
+## Baseline e inventario conservados
+
 Fecha del baseline histórico: 25 de julio de 2026  
 Fecha de registro del baseline público actual: 15 de agosto de 2026
 

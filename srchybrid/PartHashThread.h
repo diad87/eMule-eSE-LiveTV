@@ -18,6 +18,7 @@
 
 #include "SHAHashSet.h"
 #include "OtherFunctions.h" // MDX_DIGEST_SIZE
+#include <memory>
 
 class CPartFile;
 
@@ -36,6 +37,7 @@ struct PartHashJob_Struct
 	uint64 uAICHBaseSize;
 	UINT uPart;
 	UINT uGen;
+	uint64 fileLifetime;
 	bool bComputeAICH;
 	bool bAICHLeftBranch;
 	bool bNoAICH;
@@ -43,6 +45,7 @@ struct PartHashJob_Struct
 
 struct PartHashVerdict_Struct
 {
+	uint64 fileLifetime;
 	UINT uPart;
 	UINT uGen;
 	uchar aMD4Hash[MDX_DIGEST_SIZE];
@@ -64,6 +67,7 @@ public:
 	void	EndThread();		//lets the job in flight finish, discards the queue, joins
 	void	QueueJob(PartHashJob_Struct *pJob);			//main thread only
 	void	CancelFile(const CPartFile *pFile);			//main thread only; purges queued (not in-flight) jobs
+	static std::unique_ptr<PartHashVerdict_Struct> ComputeJob(const PartHashJob_Struct&);
 
 private:
 	static UINT AFX_CDECL RunProc(LPVOID pParam);

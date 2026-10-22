@@ -13,7 +13,7 @@
   "keywords": [],
   "author": "",
   "license": "GPL-2.0-only",
-  "description": "",
+  "description": "Local eSE dashboard and streaming companion for eMule eSE",
   "dependencies": {
     "hls.js": "^1.6.16"
   },

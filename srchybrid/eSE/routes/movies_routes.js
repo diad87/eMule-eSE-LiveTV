@@ -4,13 +4,20 @@ const https = require('https');
 const path  = require('path');
 const apiKeys = require('../api_keys');
 const { validateRouteContext } = require('./route_context');
+const { createMetadataService } = require('../movie_metadata');
+// Catalogue search/detail/season use the TMDB-backed metadata service. Its
+// credential is resolved server-side per request (see movie_metadata.js).
+const movieMetadata = createMetadataService();
 
 /** @type {Pick<import('./route_context').SharedRouteContext, 'CACHE_DIR'|'loadSettings'> & Record<string, Function|string>} */
 let _ctx = {};
 
 function init(ctx) {
   _ctx = validateRouteContext(ctx, 'movies', {
-    CACHE_DIR: 'string', loadSettings: 'function', fetchAndCacheMovie: 'function', proxyOMDB: 'function',
+    CACHE_DIR: 'string', loadSettings: 'function', fetchAndCacheMovie: 'function',
+  }, {
+    // Legacy OMDb proxy; catalogue search/detail now use the metadata service.
+    proxyOMDB: 'function',
   });
 }
 
@@ -208,20 +215,20 @@ function handle(url, req, res) {
     return true;
   }
 
-  if (url.pathname === '/api/movies/search') {
-    const q = url.searchParams.get('q') || '';
-    if (!q) { res.writeHead(400); res.end('{}'); return true; }
-    const omdbKey = _requireOmdbKey(res);
-    if (!omdbKey) return true;
-    _ctx.proxyOMDB('s=' + encodeURIComponent(q), res, omdbKey);
-    return true;
-  }
-
-  if (url.pathname === '/api/movies/detail') {
+  if (url.pathname === '/api/movies/search' || url.pathname === '/api/movies/detail' || url.pathname === '/api/movies/season') {
     const id = url.searchParams.get('id') || '';
-    const omdbKey = _requireOmdbKey(res);
-    if (!omdbKey) return true;
-    _ctx.proxyOMDB('i=' + encodeURIComponent(id) + '&plot=full', res, omdbKey);
+    const operation = url.pathname.endsWith('/season')
+      ? movieMetadata.season(id, /^\d{1,4}$/.test(url.searchParams.get('season') || '') ? Number(url.searchParams.get('season')) : NaN)
+      : url.pathname.endsWith('/search') ? movieMetadata.search(url.searchParams.get('q') || '') : movieMetadata.detail(id);
+    operation.then(data => {
+      if (res.destroyed || res.writableEnded) return;
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, max-age=300' });
+      res.end(JSON.stringify(data));
+    }).catch(error => {
+      if (res.destroyed || res.writableEnded) return;
+      res.writeHead(error.status || 502, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ Response: 'False', error: error.code || 'metadata_unavailable' }));
+    });
     return true;
   }
 

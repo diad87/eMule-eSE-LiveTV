@@ -8,6 +8,39 @@ const fs = require('fs');
 const path = require('path');
 const APP_VERSION = require('./package.json').version;
 
+// Package-level smoke test. Keep it before subsystem initialization so it
+// proves the executable can load its embedded modules and exits deterministically.
+if (process.argv.includes('--selftest')) {
+  // Self-test exceptions must fail the process instead of using the dashboard's
+  // long-running error logger, which intentionally keeps normal sessions alive.
+  process.removeAllListeners('uncaughtException');
+  const bindPolicy = require('./dashboard_bind');
+  const loopback = bindPolicy.normalizeBindHost(undefined);
+  const local = bindPolicy.validateBindConfiguration(loopback, false);
+  const unsafeRemote = bindPolicy.validateBindConfiguration('0.0.0.0', false);
+  if (require('./emule_web_port').resolveWebPort({ ESE_EMULE_WEB_PORT: '49383' }) !== 49383 ||
+      typeof require('./dashboard_endpoint').publishEndpoint !== 'function' ||
+      typeof require('./runtime_dir').get !== 'function') throw new Error('Packaged startup modules unavailable');
+  if (loopback !== '127.0.0.1' || !local.ok || unsafeRemote.ok) {
+    console.error('eSE dashboard self-test: FAIL');
+    process.exit(1);
+  }
+  // Verify the packaged UI assets and new backend dependencies without opening
+  // sockets, starting eMule or reading/changing the user's runtime state.
+  const metadata = require('./movie_metadata');
+  const partMetadata = require('./part_metadata');
+  if (typeof metadata.createMetadataService !== 'function' || typeof partMetadata.parsePartMetadata !== 'function') {
+    throw new Error('Packaged metadata modules are unavailable');
+  }
+  const bundle = fs.readFileSync(path.join(__dirname, '_player_bundle.js'), 'utf8');
+  new (require('vm').Script)(bundle, { filename: '_player_bundle.js' });
+  if (!bundle.includes('function stopCinemaPlayback()') || !bundle.includes('function stopSmartPlay()')) {
+    throw new Error('Packaged player bundle is incomplete');
+  }
+  console.log('eSE dashboard self-test: PASS');
+  process.exit(0);
+}
+
 // ━━━ REFACTORED MODULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 const mediaResolver = require('./media_resolver');
 const emuleApi = require('./emule_api');
@@ -18,12 +51,23 @@ const liveApi = require('./eSE-live/channel_api');
 const thumbExtractor = require('./eSE-live/thumbnail_extractor');
 const lanDiscovery = require('./eSE-live/lan_discovery');
 const security = require('./security');
+const dashboardBind = require('./dashboard_bind');
 
+const TEST_MODE = process.env.ESE_TEST_MODE === '1';
 const requestedPort = Number.parseInt(process.env.ESE_PORT || '8080', 10);
-const PORT = Number.isInteger(requestedPort) && requestedPort > 0 && requestedPort <= 65535
+const PORT = Number.isInteger(requestedPort)
+  && (requestedPort > 0 || (TEST_MODE && requestedPort === 0))
+  && requestedPort <= 65535
   ? requestedPort
   : 8080;
-const TEST_MODE = process.env.ESE_TEST_MODE === '1';
+const BIND_HOST = dashboardBind.normalizeBindHost(process.env.ESE_BIND_HOST);
+// Dashboard remote access is postponed: the dashboard/API only ever binds a
+// loopback address. ESE_BIND_HOST may select another loopback literal (e.g.
+// ::1); any LAN/overlay address is refused before a socket is opened.
+if (!dashboardBind.isLoopbackBindHost(BIND_HOST)) {
+  console.error('[security] Refusing dashboard startup: remote dashboard access is postponed; ESE_BIND_HOST must be a loopback address');
+  process.exit(78);
+}
 
 // ━━━ AUTO-DETECT EMULE PATHS (portable across users/PCs) ━━━━━━━━━━━━━━━━━━━
 function resolveEmulePaths() {
@@ -54,6 +98,7 @@ console.log('[config] EMULE_INCOMING:', EMULE_INCOMING);
 const FFMPEG_PATH = utils.findFfmpeg();
 const TEMP_DIR = process.env.TEMP || process.env.TMP || require('os').tmpdir();
 if (!TEST_MODE) {
+  void require('./eSE-live/source_selector').refreshLoopbackDevice(FFMPEG_PATH);
   thumbExtractor.start(FFMPEG_PATH);
   // P2P stream discovery only: this advertises the native eMule peer port,
   // never the loopback-only dashboard/API port.
@@ -77,7 +122,6 @@ function getDownloads(options) { return mediaResolver.listDownloads(EMULE_TEMP, 
 
 function loadSettings() { return utils.loadSettings(SETTINGS_FILE); }
 function saveSettings(s) { return utils.saveSettings(s, SETTINGS_FILE); }
-function getDuration(file) { return utils.getDuration(file, FFMPEG_PATH); }
 function escapeHtml(s) { return utils.escapeHtml(s); }
 function cleanTitle(f) { return utils.cleanTitle(f); }
 
@@ -137,6 +181,7 @@ const mainPage     = require('./pages/main_page');
 const explorePage  = require('./pages/explore_page');
 const mylistPage   = require('./pages/mylist_page');
 const debugPage    = require('./pages/debug_page');
+const notFoundPage = require('./pages/not_found_page');
 
 //     Routes (API handlers)                                                  
 const moviesRoutes   = require('./routes/movies_routes');
@@ -181,6 +226,7 @@ security.init({ tunnel });
 
 // Wire page modules with shared context
 const _pagesCtx = {
+  bindHost: BIND_HOST,
   PORT, tunnel, escapeHtml, cleanTitle, getDownloads, getCompletedFiles,
   HW_ENCODER,
   __dirname
@@ -194,16 +240,17 @@ explorePage.init(_pagesCtx);
 mylistPage.init(_pagesCtx);
 
 const _routesCtx = {
-  PORT, FFMPEG_PATH, EMULE_INCOMING, TEMP_DIR, HW_ENCODER, HW_ENCODER_OPTS,
+  PORT, FFMPEG_PATH, EMULE_INCOMING, EMULE_TEMP, TEMP_DIR, HW_ENCODER, HW_ENCODER_OPTS,
   CACHE_DIR,
   activeStreams,
   tunnel, cleanup,
   loadSettings, saveSettings,
-  getDownloads, getCompletedFiles, resolveMediaFile, getDuration,
+  getDownloads, getCompletedFiles, resolveMediaFile,
   emuleLogin: (p, cb) => emuleApi.emuleLogin(p, cb),
   emuleSearch, emuleDownload, emuleTransferAction, emuleAddEd2kLink,
   emuleRequest,
   getSession: () => emuleApi.getSession(),
+  getAuthStatus: () => emuleApi.getAuthStatus(),
   proxyOMDB, fetchAndCacheMovie,
   security,
   __dirname,
@@ -229,6 +276,8 @@ v1Routes.init({
   }
 });
 // Init tunnel (must be before server handles requests that use tunnel.*)
+// The debug viewer links to the configured native WebUI port.
+debugPage.init({ emuleWebPort: emuleApi.EMULE_WS_PORT });
 const routeHttpRequest = createHttpDomainRouter({
   port: PORT,
   security,
@@ -238,13 +287,21 @@ const routeHttpRequest = createHttpDomainRouter({
   liveRouteContext: { port: PORT, ffmpegPath: FFMPEG_PATH, hwEncoder: HW_ENCODER, hwEncoderOpts: HW_ENCODER_OPTS },
   apiRoutes: [v1Routes, moviesRoutes, emuleRoutes, streamCompleted, streamPart, systemRoutes],
   pageRoutes: [miscPages, connectPage, searchPage, appPage, explorePage, mylistPage, mainPage],
-  staticRoutes: createStaticRoutes({ rootDir: __dirname })
+  staticRoutes: createStaticRoutes({ rootDir: __dirname }),
+  notFoundPage
 });
 const server = http.createServer(routeHttpRequest);
 
-server.listen(PORT, '127.0.0.1', () => {
+// The default port falls back within 8080..8090 when occupied; the bound port
+// is published for the native parent through ESE_DASHBOARD_ENDPOINT_FILE.
+dashboardBind.listenDashboard(server, PORT, BIND_HOST, () => {
+  const listening = server.address();
+  const listeningPort = listening && listening.port ? listening.port : PORT;
+  if (process.env.ESE_DASHBOARD_ENDPOINT_FILE) {
+    require('./dashboard_endpoint').publishEndpoint(process.env.ESE_DASHBOARD_ENDPOINT_FILE, listeningPort);
+  }
   console.log('');
-  console.log('  eSE v' + APP_VERSION + ' - http://127.0.0.1:' + PORT);
+  console.log('  eSE v' + APP_VERSION + ' - http://' + (BIND_HOST.includes(':') ? '[' + BIND_HOST + ']' : BIND_HOST) + ':' + listeningPort);
   console.log('  ffmpeg: ' + FFMPEG_PATH);
   console.log('');
 

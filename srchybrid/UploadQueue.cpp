@@ -15,8 +15,11 @@
 //along with this program; if not, write to the Free Software
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #include "stdafx.h"
+#include "ClientUDPSocket.h"
+#include "DirectReachabilityManager.h"
 #include "emule.h"
 #include "UploadQueue.h"
+void EseRecordKad2SoakTimer(); // Diagnostic observer only; no production timer changes.
 #include "Packets.h"
 #include "KnownFile.h"
 #include "ListenSocket.h"
@@ -181,6 +184,7 @@ void CUploadQueue::InsertInUploadingList(UploadingToClient_Struct *pNewClientUpl
 
 bool CUploadQueue::AddUpNextClient(LPCTSTR pszReason, CUpDownClient *directadd)
 {
+	if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST slot: enter"));
 	CUpDownClient *newclient = directadd;
 	// select next client or use given client
 	if (newclient == NULL) {
@@ -188,7 +192,16 @@ bool CUploadQueue::AddUpNextClient(LPCTSTR pszReason, CUpDownClient *directadd)
 		if (newclient == NULL)
 			return false;
 	}
+	// An explicitly enrolled LAN peer waits for the bounded authorization scan;
+	// do not remove it from the queue and launch classic TCP in that window.
+	if(!newclient->socket && theApp.directreachability && newclient->NativeDirectExpectedNode()) {
+		ese::udp::Endpoint endpoint; const auto ip=newclient->GetIP();
+		std::memcpy(endpoint.address.data(),&ip,4); endpoint.port=newclient->GetUDPPort();
+		if(theApp.directreachability->IsIsolatedLanQuicPeer(*newclient->NativeDirectExpectedNode(),endpoint) &&
+			!theApp.directreachability->HasPendingDirectUpload(newclient->GetDirectClientLifetime())) return false;
+	}
 	RemoveFromWaitingQueue(newclient, true);
+	if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST slot: waiting removed"));
 	theApp.emuledlg->transferwnd->ShowQueueCount(waitinglist.GetCount());
 
 	if (!thePrefs.TransferFullChunks())
@@ -206,6 +219,7 @@ bool CUploadQueue::AddUpNextClient(LPCTSTR pszReason, CUpDownClient *directadd)
 	}
 
 	// tell the client that we are now ready to upload
+	if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST slot: send accept"));
 	if (!newclient->socket || !newclient->socket->IsConnected() || !newclient->CheckHandshakeFinished()) {
 		newclient->SetUploadState(US_CONNECTING);
 		if (!newclient->TryToConnect(true))
@@ -216,12 +230,15 @@ bool CUploadQueue::AddUpNextClient(LPCTSTR pszReason, CUpDownClient *directadd)
 		Packet *packet = new Packet(OP_ACCEPTUPLOADREQ, 0);
 		theStats.AddUpDataOverheadFileRequest(packet->size);
 		newclient->SendPacket(packet);
+		if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST slot: accept queued"));
 		newclient->SetUploadState(US_UPLOADING);
 	}
 	newclient->SetUpStartTime();
 	newclient->ResetSessionUp();
 
+	if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST slot: insert uploading list"));
 	InsertInUploadingList(newclient, false);
+	if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST slot: list inserted"));
 
 	m_nLastStartUpload = ::GetTickCount();
 
@@ -296,6 +313,25 @@ void CUploadQueue::UpdateActiveClientsInfo(DWORD curTick)
  *
  * This method is called approximately once every 100 milliseconds.
  */
+bool CUploadQueue::ResetDirectUploadStream(CUpDownClient* client,uint64 epoch)
+{
+	if(!client || epoch<2) return false;
+	if(!IsDownloading(client)) return true;
+	if(!theApp.directreachability ||
+		!theApp.directreachability->HasPendingDirectUpload(client->GetDirectClientLifetime())) return false;
+	// Same lock order as the disk worker; no socket/manager callbacks under locks.
+	CSingleLock uploadLock(&m_csUploadListMainThrdWriteOtherThrdsRead,TRUE);
+	auto* entry=GetUploadingClientStructByClient(client);
+	if(!entry) return true; // waiting source has no old disk/send reservations
+	CSingleLock blockLock(&entry->m_csBlockListsLock,TRUE);
+	if(epoch<=entry->m_transportEpoch) return false;
+	entry->m_transportEpoch=epoch;
+	while(!entry->m_BlockRequests_queue.IsEmpty()) delete entry->m_BlockRequests_queue.RemoveHead();
+	while(!entry->m_DoneBlocks_list.IsEmpty()) delete entry->m_DoneBlocks_list.RemoveHead();
+	client->SetQueueSessionUploadAdded(client->GetQueueSessionPayloadUp());
+	return true;
+}
+
 void CUploadQueue::Process()
 {
 	const DWORD curTick = ::GetTickCount();
@@ -314,6 +350,11 @@ void CUploadQueue::Process()
 			ASSERT_VALID(cur_client);
 		//It seems chatting or friend slots can get stuck at times in upload. This needs to be looked into.
 		if (cur_client->socket == NULL) {
+			// A live, consented DCO upload owns the logical slot while its failed
+			// route drains and authenticates a replacement. Classic socket absence
+			// must not delete that source/subscriber before recovery can run.
+			if(theApp.directreachability &&
+				theApp.directreachability->HasPendingDirectUpload(cur_client->GetDirectClientLifetime())) continue;
 			RemoveFromUploadQueue(cur_client, _T("Uploading to client without socket? (CUploadQueue::Process)"));
 			if (cur_client->Disconnected(_T("CUploadQueue::Process")))
 				delete cur_client;
@@ -548,12 +589,14 @@ void CUploadQueue::AddClientToQueue(CUpDownClient *client, bool bIgnoreTimelimit
 		return;
 	}
 	client->IncrementAskedCount();
+	if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST queue: request accounting"));
 	client->SetLastUpRequest();
 	if (!bIgnoreTimelimit)
 		client->AddRequestCount(client->GetUploadFileID());
 	if (client->IsBanned())
 		return;
 	const bool clientIPv6Only = client->IsIPv6OnlyEndpoint();
+	if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST queue: duplicate checks"));
 	uint16 cSameIP = 0;
 	// check for duplicates
 	for (POSITION pos = waitinglist.GetHeadPosition(); pos != NULL;) {
@@ -631,12 +674,15 @@ void CUploadQueue::AddClientToQueue(CUpDownClient *client, bool bIgnoreTimelimit
 		return;
 	}
 	// done
+	if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST queue: duplicate checks returned"));
 
 	// statistic values
 	// TODO: Maybe we should change this to count each request for a file only once and ignore re-asks
 	CKnownFile *reqfile = theApp.sharedfiles->GetFileByID((uchar*)client->GetUploadFileID());
+	if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST queue: file request statistics"));
 	if (reqfile)
 		reqfile->statistic.AddRequest();
+	if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST queue: file request statistics returned"));
 
 	// emule collection will bypass the queue
 	if (reqfile != NULL && CCollection::HasCollectionExtention(reqfile->GetFileName()) && reqfile->GetFileSize() < (uint64)MAXPRIORITYCOLL_SIZE
@@ -649,6 +695,7 @@ void CUploadQueue::AddClientToQueue(CUpDownClient *client, bool bIgnoreTimelimit
 	}
 
 	client->SetCollectionUploadSlot(false);
+	if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST queue: collection slot cleared"));
 
 	// cap the list
 	// the queue limit in prefs is only a soft limit. Hard limit is higher up to 25% to accept
@@ -668,6 +715,7 @@ void CUploadQueue::AddClientToQueue(CUpDownClient *client, bool bIgnoreTimelimit
 		return;
 	}
 	if (client->IsDownloading()) {
+		if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST queue: existing slot"));
 		// he's already downloading and probably only wants another file
 		if (thePrefs.GetDebugClientTCPLevel() > 0)
 			DebugSend("OP_AcceptUploadReq", client);
@@ -676,8 +724,14 @@ void CUploadQueue::AddClientToQueue(CUpDownClient *client, bool bIgnoreTimelimit
 		client->SendPacket(packet);
 		return;
 	}
-	if (waitinglist.IsEmpty() && ForceNewClient(true)) {
+	ese::udp::Endpoint isolatedEndpoint; isolatedEndpoint.port=client->GetUDPPort();
+	const uint32 isolatedIP=client->GetIP(); std::memcpy(isolatedEndpoint.address.data(),&isolatedIP,4);
+	const bool isolatedQuic=theApp.directreachability && client->NativeDirectExpectedNode() &&
+		theApp.directreachability->IsIsolatedLanQuicPeer(*client->NativeDirectExpectedNode(),isolatedEndpoint);
+	if (!isolatedQuic && waitinglist.IsEmpty() && ForceNewClient(true)) {
+		if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST queue: immediate slot wait time"));
 		client->SetWaitStartTime();
+		if(theApp.m_bReachBindingSelfTest) Log(_T("PRODUCT_UPLOAD_SELFTEST queue: immediate slot"));
 		AddUpNextClient(_T("Direct add with empty queue."), client);
 	} else {
 		m_bStatisticsWaitingListDirty = true;
@@ -909,6 +963,12 @@ VOID CALLBACK CUploadQueue::UploadTimer(HWND /*hwnd*/, UINT /*uMsg*/, UINT_PTR /
 
 		theApp.uploadqueue->Process();
 		theApp.downloadqueue->Process();
+        if (theApp.clientudp != NULL)
+            theApp.clientudp->PollQuicIngress();
+        if (theApp.directreachability != NULL) {
+            theApp.directreachability->TickDirectConnections();
+            if(theApp.emuledlg) theApp.emuledlg->UpdateDirectStatusPane();
+        }
 
 		// uTP timer: flush write buffers, check retransmission timeouts,
 		// and issue deferred ACKs. Must run at ~100ms for reliable transport.
@@ -931,6 +991,7 @@ VOID CALLBACK CUploadQueue::UploadTimer(HWND /*hwnd*/, UINT /*uMsg*/, UINT_PTR /
 			theApp.sharedfiles->Process();
 			if (Kademlia::CKademlia::IsRunning()) {
 				Kademlia::CKademlia::Process();
+				EseRecordKad2SoakTimer();
 				if (Kademlia::CKademlia::GetPrefs()->HasLostConnection()) {
 					Kademlia::CKademlia::Stop();
 					theApp.emuledlg->ShowConnectionState();

@@ -1,6 +1,6 @@
 [Setup]
 AppName=eSE Live TV
-AppVersion=1.0.0
+AppVersion=9.1.0-beta.2
 AppPublisher=eSE Project
 DefaultDirName={localappdata}\eSE-Live
 DefaultGroupName=eSE Live TV
@@ -33,9 +33,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; eMule C++ Engine (TCP/UDP)
 Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""eSE Live TV Engine"" dir=in action=allow program=""{app}\emule.exe"" enable=yes"; Flags: runhidden
 Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""eSE Live TV Engine"" dir=out action=allow program=""{app}\emule.exe"" enable=yes"; Flags: runhidden
-; Node.js Server
-Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""eSE Node Server"" dir=in action=allow program=""{app}\node\node.exe"" enable=yes"; Flags: runhidden
-Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""eSE Node Server"" dir=out action=allow program=""{app}\node\node.exe"" enable=yes"; Flags: runhidden
+; The dashboard binds to loopback by default. Do not create a broad firewall
+; exception for Node; remote access is an explicit authenticated opt-in.
 
 ; --- 2. LANZAR eMule AL TERMINAR DE INSTALAR (el usuario pulsa el botón eSE para el panel web) ---
 Filename: "{app}\emule.exe"; WorkingDir: "{app}"; Description: "Launch eSE Live TV Now"; Flags: nowait postinstall

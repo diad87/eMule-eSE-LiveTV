@@ -1,137 +1,70 @@
 // filepath: srchybrid/eSE/live_player_html.js
 // eSE Live Player HTML — exported as a function for use by server.js
+// Same frame as the remote watch page (eSE-live/live_watch_page.js).
+const navbar = require('./shared/navbar');
+
+const LOCAL_CSS = `
+body{padding-top:76px;background:#0a0a0f}
+.watch{max-width:1280px;margin:0 auto;padding:24px var(--ese-page-padding,40px) 56px}
+.player-wrap{position:relative;width:100%;aspect-ratio:16/9;max-height:calc(100vh - 150px);border-radius:14px;overflow:hidden;background:#000;box-shadow:0 20px 60px #0009}
+.player-wrap video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+.overlay{position:absolute;top:14px;left:14px;display:flex;gap:8px;align-items:center;pointer-events:none}
+.live-tag{display:inline-flex;align-items:center;gap:7px;padding:4px 10px;border-radius:6px;background:#e91916;color:#fff;font-size:12px;font-weight:800;letter-spacing:.4px;text-transform:uppercase}
+.live-dot{width:8px;height:8px;border-radius:50%;background:#fff;animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+.watch-title{margin:16px 0 6px;font-size:clamp(19px,1.6vw,23px);font-weight:750;letter-spacing:-.4px;color:#f4f4f7}
+#status{font-size:13px;color:#a9aab6;min-height:1.4em}
+#status.connected{color:#8ce1b0}#status.buffering{color:#f5c26b}#status.error{color:#ff9d8f}
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 4px}
+.controls button,.controls a{display:inline-flex;align-items:center;gap:8px;min-height:40px;padding:9px 16px;border-radius:999px;border:0;background:#ffffff14;color:#f4f4f7;font:inherit;font-size:13px;font-weight:650;cursor:pointer;text-decoration:none}
+.controls button:hover,.controls a:hover{background:#ffffff24}
+.controls .btn-primary{background:#ff875f;color:#1b100c}
+.controls .btn-primary:hover{background:#ffa07c}
+.stats-box{margin-top:16px;padding:14px 16px;border-radius:12px;background:#ffffff0d}
+.stats-box h2{font-size:12px;font-weight:650;color:#a9aab6;margin-bottom:8px}
+.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px 18px}
+.stats span{display:flex;flex-direction:column;gap:2px;font-size:10px;letter-spacing:1px;text-transform:uppercase;color:#8f909c}
+.stats .val{font-size:14px;font-weight:650;letter-spacing:0;text-transform:none;color:#f4f4f7;font-variant-numeric:tabular-nums}
+:focus-visible{outline:2px solid #ffac8c;outline-offset:3px}
+@media(max-width:760px){body{padding-top:120px!important}.watch{padding:0 0 40px}.player-wrap{border-radius:0;max-height:none}.watch-info{padding:0 16px}.controls>*{flex:1 1 140px;justify-content:center}}
+@media(prefers-reduced-motion:reduce){.live-dot{animation:none}}
+`;
+
 module.exports = function getLivePlayerHTML() {
-  return `<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>eSE Live — P2P Stream</title>
+  return navbar.getHead('Emisión local — eSE', LOCAL_CSS) + navbar.getHTML('live') + `
 <script src="/live/vendor/hls.min.js"><\/script>
-<style>
-  * { margin:0; padding:0; box-sizing:border-box; }
-  body {
-    font-family:'Inter',sans-serif;
-    background:#0a0a0f;
-    color:#e0e0e0;
-    min-height:100vh;
-    display:flex; flex-direction:column;
-    align-items:center; justify-content:center;
-  }
-  .container { width:min(960px,95vw); }
-  .header {
-    display:flex; align-items:center; gap:12px;
-    padding:16px 0; margin-bottom:8px;
-  }
-  .header .dot {
-    width:14px; height:14px; border-radius:50%;
-    background:#ff3b3b;
-    box-shadow: 0 0 8px #ff3b3b88, 0 0 20px #ff3b3b44;
-    animation: pulse 1.5s ease-in-out infinite;
-  }
-  @keyframes pulse {
-    0%,100% { opacity:1; transform:scale(1); }
-    50% { opacity:.6; transform:scale(.85); }
-  }
-  .header h1 { font-size:1.3rem; font-weight:700; color:#fff; }
-  .header .badge {
-    background:linear-gradient(135deg,#ff3b3b,#ff6b3b);
-    color:#fff; font-size:.7rem; font-weight:700;
-    padding:3px 10px; border-radius:20px;
-    text-transform:uppercase; letter-spacing:1px;
-  }
-  .player-wrap {
-    position:relative; width:100%;
-    border-radius:12px; overflow:hidden;
-    background:#000;
-    box-shadow: 0 4px 40px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.05);
-  }
-  video { width:100%; display:block; background:#000; }
-  .overlay {
-    position:absolute; top:12px; left:12px;
-    display:flex; gap:8px; align-items:center;
-    pointer-events:none;
-  }
-  .overlay .live-tag {
-    background:rgba(255,59,59,.9);
-    color:#fff; font-size:.65rem; font-weight:700;
-    padding:3px 8px; border-radius:4px;
-    text-transform:uppercase; letter-spacing:1px;
-    backdrop-filter:blur(4px);
-  }
-  .stats {
-    display:flex; gap:20px; padding:16px 0;
-    font-size:.85rem; color:#888;
-    flex-wrap:wrap;
-  }
-  .stats span { display:flex; align-items:center; gap:4px; }
-  .stats .val { color:#fff; font-weight:600; }
-  .controls { display:flex; gap:10px; padding:8px 0 24px; flex-wrap:wrap; }
-  .controls button {
-    padding:8px 18px; border:none; border-radius:8px;
-    font-family:inherit; font-size:.8rem; font-weight:600;
-    cursor:pointer; transition:all .2s;
-  }
-  .btn-primary {
-    background:linear-gradient(135deg,#6366f1,#8b5cf6);
-    color:#fff;
-  }
-  .btn-primary:hover { transform:translateY(-1px); box-shadow:0 4px 16px #6366f166; }
-  .btn-secondary {
-    background:rgba(255,255,255,.06);
-    color:#ccc; border:1px solid rgba(255,255,255,.1) !important;
-  }
-  .btn-secondary:hover { background:rgba(255,255,255,.1); color:#fff; }
-  #status { font-size:.75rem; color:#666; padding:4px 0; transition:color .3s; }
-  #status.connected { color:#22c55e; }
-  #status.buffering { color:#f59e0b; }
-  #status.error { color:#ef4444; }
-  .no-stream {
-    text-align:center; padding:80px 20px;
-    color:#555; font-size:.95rem;
-  }
-  .no-stream h2 { color:#888; margin-bottom:12px; font-size:1.2rem; }
-  .back-link {
-    display:inline-block; margin-top:16px;
-    color:#6366f1; text-decoration:none; font-weight:600;
-  }
-  .back-link:hover { text-decoration:underline; }
-</style>
-</head>
-<body>
-<div class="container">
-  <div class="header">
-    <div class="dot"></div>
-    <h1>eSE Live Stream</h1>
-    <span class="badge">P2P Broadcast</span>
-  </div>
+<main class="watch">
   <div class="player-wrap">
-    <video id="video" controls autoplay muted></video>
-    <div class="overlay">
-      <span class="live-tag">\u25cf LIVE</span>
+    <video id="video" controls autoplay muted playsinline></video>
+    <div class="overlay"><span class="live-tag"><span class="live-dot" aria-hidden="true"></span>En directo</span></div>
+  </div>
+  <div class="watch-info">
+    <h1 class="watch-title">Emisión local</h1>
+    <div id="status" role="status">Conectando con la emisión...</div>
+    <div class="controls">
+      <button class="btn-primary" id="muteBtn" onclick="toggleMute()">🔇 Activar sonido</button>
+      <button onclick="location.reload()">Reconectar</button>
+      <button onclick="document.getElementById('video').requestFullscreen()">Pantalla completa</button>
+      <a href="/live">Todos los directos</a>
+    </div>
+    <div class="stats-box">
+      <h2>Estadísticas de la emisión</h2>
+      <div class="stats">
+        <span>Bitrate <span class="val" id="bitrate">—</span></span>
+        <span>Búfer <span class="val" id="buffer">—</span></span>
+        <span>Segmento <span class="val" id="segments">—</span></span>
+        <span>Latencia <span class="val" id="latency">—</span></span>
+      </div>
     </div>
   </div>
-  <div class="stats">
-    <span>\ud83d\udcca Bitrate: <span class="val" id="bitrate">\u2014</span></span>
-    <span>\ud83c\udfac Buffer: <span class="val" id="buffer">\u2014</span></span>
-    <span>\ud83d\udce6 Segments: <span class="val" id="segments">\u2014</span></span>
-    <span>\u23f1\ufe0f Latency: <span class="val" id="latency">\u2014</span></span>
-  </div>
-  <div class="controls">
-    <button class="btn-primary" id="muteBtn" onclick="toggleMute()">\ud83d\udd07 Unmute</button>
-    <button class="btn-secondary" onclick="location.reload()">\ud83d\udd04 Reconnect</button>
-    <button class="btn-secondary" onclick="document.getElementById('video').requestFullscreen()">\u26f6 Fullscreen</button>
-    <a href="/" class="btn-secondary" style="text-decoration:none;display:inline-block">\u2190 Back to eSE</a>
-  </div>
-  <div id="status">Connecting...</div>
-</div>
+</main>
 <script>
   const video = document.getElementById('video');
   const statusEl = document.getElementById('status');
 
   function toggleMute() {
     video.muted = !video.muted;
-    document.getElementById('muteBtn').textContent = video.muted ? '\\ud83d\\udd07 Unmute' : '\\ud83d\\udd0a Muted';
+    document.getElementById('muteBtn').textContent = video.muted ? '\\ud83d\\udd07 Activar sonido' : '\\ud83d\\udd0a Silenciar';
   }
 
   function updateStats() {
@@ -202,7 +135,7 @@ module.exports = function getLivePlayerHTML() {
       hls = new Hls(HLS_CONFIG);
       window.hls = hls;
       hls.on(Hls.Events.MANIFEST_PARSED, function(){
-        statusEl.textContent = '\\ud83d\\udfe2 Connected \\u2014 Jumping to live...';
+        statusEl.textContent = '\\ud83d\\udfe2 Recibiendo la emisión...';
         statusEl.className = 'connected';
         // Force seek to live edge
         if (hls.liveSyncPosition) {
@@ -225,7 +158,7 @@ module.exports = function getLivePlayerHTML() {
             if (__mediaErrRun === 2) {
               try { hls.swapAudioCodec(); } catch(err) {}
             }
-            statusEl.textContent = '\\ud83d\\udfe1 Recovering media error...';
+            statusEl.textContent = '\\ud83d\\udfe1 Recuperando la reproducción...';
             try { hls.recoverMediaError(); } catch(err) { __scheduleReconnect('mediaError'); }
           } else {
             __scheduleReconnect(data.type || 'fatal error');
@@ -255,17 +188,17 @@ module.exports = function getLivePlayerHTML() {
         var drift = hls.liveSyncPosition - video.currentTime;
         if (drift > 30) {
           video.currentTime = hls.liveSyncPosition;
-          statusEl.textContent = '\\ud83d\\udfe2 Re-synced to live edge';
+          statusEl.textContent = '\\ud83d\\udfe2 Reproducción sincronizada';
         }
       }
       updateStats();
     }, 2000);
   } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
     video.src = '/hls/stream.m3u8';
-    statusEl.textContent = 'Native HLS playback';
+    statusEl.textContent = 'Reproduciendo emisión';
     statusEl.className = 'connected';
   } else {
-    statusEl.textContent = 'HLS player unavailable';
+    statusEl.textContent = 'El reproductor no está disponible';
     statusEl.className = 'error';
   }
 <\/script>

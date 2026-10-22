@@ -107,9 +107,11 @@ test('home waits for both asynchronous lists before sending success headers', as
   assert.equal(response.ends, 1);
   assert.match(response.body, /Downloading\.mkv/);
   assert.match(response.body, /Completed\.mp4/);
-  assert.match(response.body, /onclick="playCompleted\(this\.dataset\.filename\)"/);
-  assert.match(response.body, /onclick="playVideo\(this\.dataset\.partnum\)"/);
-  assert.doesNotMatch(response.body, /playVideo\('undefined'\)/);
+  // v9.3 cards dispatch through one data-driven handler; no card data is code.
+  assert.match(response.body, /onclick="playLibraryCard\(this\)"/);
+  assert.match(response.body, /data-completed="true"/);
+  assert.match(response.body, /data-part="001"/);
+  assert.doesNotMatch(response.body, /playVideo\('|playCompleted\('/);
 });
 
 test('index alias renders empty async lists without provider imports or browser credential globals', async () => {
@@ -170,6 +172,10 @@ test('card names and part identifiers are attribute data, never inline executabl
   assert.doesNotMatch(response.body, /<img src=x/);
   const cards = [...response.body.matchAll(/<div class="card"\s[^>]*>/g)].map(match => match[0]);
   assert.equal(cards.length, 2);
+  // Run the real client dispatcher against the rendered attributes.
+  const posterSource = fs.readFileSync(path.join(__dirname, '..', 'poster_hero.js'), 'utf8');
+  const start = posterSource.indexOf('function playLibraryCard(card)');
+  const dispatcher = posterSource.slice(start, posterSource.indexOf('\n}\n', start) + 2);
   for (const card of cards) {
     const attributes = Object.fromEntries([...card.matchAll(/([\w-]+)="([^"]*)"/g)]
       .map(match => [match[1], decodeAttribute(match[2])]));
@@ -177,11 +183,13 @@ test('card names and part identifiers are attribute data, never inline executabl
     const context = vm.createContext({
       playCompleted: value => { received = ['completed', value]; },
       playVideo: value => { received = ['download', value]; },
-      element: { dataset: { filename: attributes['data-filename'], partnum: attributes['data-partnum'] } },
+      showMovieDetail: () => { received = ['detail']; },
+      element: { getAttribute: name => (Object.prototype.hasOwnProperty.call(attributes, name) ? attributes[name] : null) },
     });
-    vm.runInContext(`(function(){${attributes.onclick}}).call(element)`, context, { timeout: 1000 });
+    vm.runInContext(dispatcher, context, { timeout: 1000 });
+    vm.runInContext(`(function(){${attributes.onclick}}).call(element)`.replace('this', 'element'), context, { timeout: 1000 });
     assert.equal(context.injected, undefined);
-    if (attributes['data-partnum'] !== undefined) {
+    if (attributes['data-completed'] === 'false') {
       assert.deepEqual(received, ['download', hostilePart]);
     } else {
       assert.deepEqual(received, ['completed', encodeURIComponent(hostileName)]);

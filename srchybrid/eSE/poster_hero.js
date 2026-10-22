@@ -8,14 +8,23 @@
 function fetchLocalPosters() {
   var cards = document.querySelectorAll('.card[data-title]');
   cards.forEach(function(card) {
-    var raw = card.getAttribute('data-title');
+    var raw = decodeURIComponent(card.getAttribute('data-filename') || '') || card.getAttribute('data-title');
     if (!raw) return;
 
+    // Keep episodic filenames intact until a series/episode matcher is available.
+    // A movie search must never turn a Breaking Bad episode into El Camino.
+    if (/\bS\d{1,2}E\d{1,3}\b|\b\d{1,2}x\d{2,3}\b/i.test(raw)) return;
+    var fileYear = raw.match(/\b((?:19|20)\d{2})\b/);
+    card._posterYear = fileYear ? fileYear[1] : '';
+
     // Check if filename has embedded TMDB ID (e.g., [tmdbid-1297842])
-    var tmdbId = (window._tmdbFromFilename && window._tmdbFromFilename[raw]) || null;
+    var embeddedId = raw.match(/\[tmdbid[- ]?(\d+)\]/i);
+    var tmdbId = embeddedId ? embeddedId[1] : null;
 
     // Smart filename cleaning for P2P files
     var candidates = extractMovieTitles(raw);
+    var displayTitle = card.getAttribute('data-title');
+    if (displayTitle && candidates.indexOf(displayTitle) === -1) candidates.unshift(displayTitle);
 
     if (tmdbId) {
       // Direct TMDB lookup — guaranteed accurate
@@ -40,16 +49,14 @@ function fetchLocalPosters() {
 }
 
 function tryTMDBCandidate(candidates, idx, card) {
-  if (idx >= candidates.length) {
-    tryOMDbFallback(candidates, card);
-    return;
-  }
-  var query = candidates[idx];
-  fetch('/api/tmdb/search/movie?language=es-ES&query=' + encodeURIComponent(query))
+  if (idx >= candidates.length) return;
+  var query = candidates[idx].replace(/\b(?:19|20)\d{2}\b/g, '').trim();
+  fetch('/api/tmdb/search/movie?language=es-ES&query=' + encodeURIComponent(query) +
+    (card._posterYear ? '&primary_release_year=' + card._posterYear : ''))
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      if (data.results && data.results.length > 0) {
-        var m = data.results[0];
+      var m = matchLibraryMovie(data.results, candidates, card._posterYear);
+      if (m) {
         // Get IMDB ID for detailed modal
         fetch('/api/tmdb/movie/' + encodeURIComponent(m.id) + '/external_ids')
           .then(function(r) { return r.json(); })
@@ -72,18 +79,45 @@ function tryTMDBCandidate(candidates, idx, card) {
     }).catch(function() { tryTMDBCandidate(candidates, idx + 1, card); });
 }
 
-function tryOMDbFallback(candidates, card) {
-  if (!candidates || candidates.length === 0) return;
-  fetch('/api/movies/fetchinfo?title=' + encodeURIComponent(candidates[0]))
-    .then(function(r) { return r.json(); })
-    .then(function(info) {
-      if (info && info.Poster && info.Poster !== 'N/A') {
-        applyPosterToCard(card, {
-          poster: info.Poster, title: info.Title,
-          year: info.Year, imdbId: info.imdbID
-        });
-      }
-    }).catch(function() {});
+function normalizeLibraryText(value) {
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function matchLibraryMovie(results, candidates, year) {
+  var normalizeTitle = function(value) {
+    return normalizeLibraryText(value).replace(/\b(?:19|20)\d{2}\b/g, '').replace(/[^a-z0-9]/g, '');
+  };
+  var names = candidates.map(normalizeTitle).filter(Boolean);
+  var matches = (Array.isArray(results) ? results : []).filter(function(movie) {
+    if (year && String(movie.release_date || '').slice(0, 4) !== year) return false;
+    return [movie.title, movie.original_title].some(function(title) {
+      return title && names.indexOf(normalizeTitle(title)) !== -1;
+    });
+  });
+  // Ambiguous titles stay attached to the original file, not the first result.
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function filterLibrary(query) {
+  var count = 0;
+  var cards = document.querySelectorAll('#library-grid .card');
+  var term = normalizeLibraryText(query).trim();
+  cards.forEach(function(card) {
+    var text = (card.getAttribute('data-title') || '') + ' ' +
+      (card.getAttribute('data-display-title') || '') + ' ' +
+      decodeURIComponent(card.getAttribute('data-filename') || '');
+    card.hidden = normalizeLibraryText(text).indexOf(term) === -1;
+    if (!card.hidden) count++;
+  });
+  var status = document.getElementById('library-count');
+  if (status) status.textContent = term ? count + ' de ' + cards.length + ' archivos' : cards.length + ' archivos disponibles';
+  var empty = document.getElementById('library-empty');
+  if (empty) empty.hidden = count > 0;
+}
+
+function clearLibraryFilter() {
+  var input = document.getElementById('library-query');
+  if (input) { input.value = ''; filterLibrary(''); input.focus(); }
 }
 
 function applyPosterToCard(card, info) {
@@ -95,56 +129,49 @@ function applyPosterToCard(card, info) {
         posterDiv.style.backgroundImage = 'url(' + posterUrl.replace(/[()]/g, '') + ')';
         posterDiv.style.backgroundSize = 'cover';
         posterDiv.style.backgroundPosition = 'center';
+        posterDiv.classList.add('has-poster');
         var playIcon = posterDiv.querySelector('.play-icon');
-        if (playIcon) playIcon.style.display = 'none';
+        if (playIcon) playIcon.style.display = '';
       }
     }
   }
-  if (info.imdbId) {
-    card.setAttribute('data-imdbid', info.imdbId);
-    var origOnclick = card.getAttribute('onclick') || '';
-    var fnMatch = origOnclick.match(/playCompleted\('([^']+)'\)/);
-    var safeTitle = escapeAttr(info.title || '');
-    var safeImdb = escapeAttr(info.imdbId || '');
-    if (fnMatch) {
-      var localFile = escapeAttr(decodeURIComponent(fnMatch[1]));
-      card.setAttribute('onclick', "showMovieDetail('" + safeImdb + "','" + localFile + "','" + safeTitle + "')");
-    } else {
-      card.setAttribute('onclick', "showMovieDetail('" + safeImdb + "',null,'" + safeTitle + "')");
-    }
-  }
+  if (info.imdbId) card.setAttribute('data-imdbid', info.imdbId);
+  if (info.title) card.setAttribute('data-display-title', info.title);
   var titleEl = card.querySelector('.card-title');
   if (titleEl && info.title) titleEl.textContent = info.title + (info.year ? ' (' + info.year + ')' : '');
+  var libraryQuery = document.getElementById('library-query');
+  if (libraryQuery && libraryQuery.value) filterLibrary(libraryQuery.value);
 }
 
-// ── Barra de progreso de visionado (Netflix-style) ────────────────────────────
+// Local file names are data, never executable inline JavaScript.
+function playLibraryCard(card) {
+  var encoded = card.getAttribute('data-filename') || '';
+  var completed = card.getAttribute('data-completed') === 'true';
+  var imdb = card.getAttribute('data-imdbid');
+  if (imdb) {
+    showMovieDetail(imdb, completed ? decodeURIComponent(encoded) : null,
+      card.getAttribute('data-display-title') || card.getAttribute('data-title'));
+  } else if (completed) {
+    playCompleted(encoded);
+  } else {
+    playVideo(card.getAttribute('data-part'));
+  }
+}
+
+// Resume positions are exact times; do not invent a percentage from a 2h film.
 function addWatchProgressBars() {
-  var resumeData = JSON.parse(localStorage.getItem('ese_resume') || '{}');
-  var cards = document.querySelectorAll('.card[data-title]');
-  cards.forEach(function(card) {
-    var onclick = card.getAttribute('onclick') || '';
-    var fnMatch = onclick.match(/playCompleted\('([^']+)'\)/) || onclick.match(/showMovieDetail\('[^']*','([^']+)'\)/);
-    if (!fnMatch) return;
-    var fileName = decodeURIComponent(fnMatch[1]);
-    var data = resumeData[fileName];
-    if (!data || data.time < 30) return;
-
-    var progress = Math.min(95, (data.time / 7200) * 100); // assume 2h movie
-
-    var existing = card.querySelector('.watch-progress');
-    if (!existing) {
-      var bar = document.createElement('div');
-      bar.className = 'watch-progress';
-      bar.style.cssText = 'position:absolute;bottom:0;left:0;right:0;height:4px;background:rgba(255,255,255,0.2);z-index:5';
-      var fill = document.createElement('div');
-      fill.style.cssText = 'height:100%;background:#e50914;border-radius:0 2px 2px 0;width:' + progress + '%';
-      bar.appendChild(fill);
-      card.style.position = 'relative';
-      card.appendChild(bar);
-    }
+  var resumeData;
+  try { resumeData = JSON.parse(localStorage.getItem('ese_resume') || '{}'); } catch (_) { return; }
+  if (!resumeData || typeof resumeData !== 'object') return;
+  document.querySelectorAll('.card[data-filename]').forEach(function(card) {
+    var data = resumeData[decodeURIComponent(card.getAttribute('data-filename'))];
+    if (!data || !Number.isFinite(data.time) || data.time < 30 || card.querySelector('.watch-progress')) return;
+    var note = document.createElement('span');
+    note.className = 'card-meta-item watch-progress';
+    note.textContent = 'Visto hasta ' + Math.floor(data.time / 60) + ' min';
+    card.querySelector('.card-meta-row').appendChild(note);
   });
 }
-
 setTimeout(addWatchProgressBars, 3000);
 
 // ── Limpieza de nombres de archivo P2P ────────────────────────────────────────
@@ -220,25 +247,30 @@ function toggleHeaderSearch() {
 
 function loadHero() {
   fetch('/api/tmdb/trending/movie/week?language=es-ES')
-    .then(function(r) { return r.json(); })
+    .then(function(r) { if (!r.ok) throw new Error('catalog unavailable'); return r.json(); })
     .then(function(data) {
-      if (!data.results || !data.results.length) return;
-      heroMovies = data.results.filter(function(m) { return m.backdrop_path; }).slice(0, 8);
-      if (heroMovies.length > 0) {
-        showHeroMovie(0);
-        heroInterval = setInterval(function() {
-          heroIndex = (heroIndex + 1) % heroMovies.length;
-          showHeroMovie(heroIndex);
-        }, 10000);
-      }
+      heroMovies = (Array.isArray(data.results) ? data.results : []).filter(function(m) { return m.backdrop_path; }).slice(0, 8);
+      if (heroMovies.length) showHeroMovie(0);
     })
-    .catch(function() {});
+    .catch(function() {
+      var meta = document.getElementById('hero-meta');
+      if (meta) meta.textContent = 'El catálogo no está disponible ahora. Tu biblioteca sigue aquí.';
+    });
+}
+
+// Manual navigation keeps reading and keyboard focus stable.
+function stepHero(direction) {
+  if (!heroMovies.length) return;
+  heroIndex = (heroIndex + direction + heroMovies.length) % heroMovies.length;
+  showHeroMovie(heroIndex);
 }
 
 function showHeroMovie(idx) {
   var m = heroMovies[idx];
   if (!m) return;
 
+  var hero = document.getElementById('hero');
+  if (hero) hero.classList.add('hero-ready');
   var backdrop = document.getElementById('hero-backdrop');
   var title = document.getElementById('hero-title');
   var desc = document.getElementById('hero-desc');
@@ -247,11 +279,21 @@ function showHeroMovie(idx) {
   var infoBtn = document.getElementById('hero-info-btn');
 
   if (backdrop && m.backdrop_path && /^\/[a-zA-Z0-9]+\.\w{3,4}$/.test(m.backdrop_path)) {
-    backdrop.style.backgroundImage = 'url(https://image.tmdb.org/t/p/original' + m.backdrop_path + ')';
+    backdrop.style.backgroundImage = 'url(https://image.tmdb.org/t/p/w1280' + m.backdrop_path + ')';
   }
   if (title) title.textContent = m.title || m.name;
+  var eyebrow = document.getElementById('hero-eyebrow');
+  if (eyebrow) eyebrow.textContent = 'EN TENDENCIA · ESTA SEMANA';
+  var fallback = document.getElementById('hero-explore-btn');
+  if (fallback) fallback.style.display = 'none';
+  var counter = document.getElementById('hero-counter');
+  if (counter) counter.textContent = (idx + 1) + ' / ' + heroMovies.length;
+  ['hero-prev', 'hero-next'].forEach(function(id) {
+    var control = document.getElementById(id);
+    if (control) control.disabled = heroMovies.length < 2;
+  });
   if (desc) desc.textContent = (m.overview || '').substring(0, 200) + (m.overview && m.overview.length > 200 ? '...' : '');
-  if (meta) meta.textContent = '⭐ ' + (m.vote_average || '').toString().substring(0, 3) + ' · ' + (m.release_date || '').substring(0, 4) + ' · Trending #' + (idx + 1);
+  if (meta) meta.textContent = [m.vote_average ? '★ ' + Number(m.vote_average).toFixed(1) : '', (m.release_date || '').substring(0, 4), 'Disponibilidad según fuentes'].filter(Boolean).join(' · ');
   if (playBtn) { playBtn.style.display = 'inline-block'; playBtn.setAttribute('data-title', m.title || m.name); playBtn.setAttribute('data-id', m.id); }
   if (infoBtn) { infoBtn.style.display = 'inline-block'; infoBtn.setAttribute('data-title', m.title || m.name); infoBtn.setAttribute('data-id', m.id); }
 
@@ -284,16 +326,9 @@ function heroInfo() {
   var m = window._heroCurrentMovie;
   if (!m) return;
   var title = m.title || m.name;
-  fetch('/api/tmdb/movie/' + encodeURIComponent(m.id) + '/external_ids')
-    .then(function(r) { return r.json(); })
-    .then(function(ids) {
-      if (ids.imdb_id) {
-        showMovieDetail(ids.imdb_id, null, title);
-      } else {
-        showNotification('No se encontró info para "' + title + '"');
-      }
-    })
-    .catch(function() { showNotification('Error buscando info'); });
+  var type = m.media_type || ((m.first_air_date || (!m.title && m.name)) ? 'tv' : 'movie');
+  if (!/^[1-9][0-9]{0,9}$/.test(String(m.id)) || (type !== 'movie' && type !== 'tv')) return;
+  showMovieDetail('tmdb:' + type + ':' + m.id, null, title);
 }
 
 setTimeout(loadHero, 500);

@@ -17,6 +17,7 @@
 #pragma once
 #include "UploadBandwidthThrottler.h" // ZZ:UploadBandWithThrottler (UDP)
 #include "EncryptedDatagramSocket.h"
+#include "EseQuicUdpIngress.h"
 
 class Packet;
 
@@ -39,9 +40,18 @@ struct UDPPack
 
 class CAddress;
 class CUpDownClient;
-class CClientUDPSocket : public CAsyncSocket, public CEncryptedDatagramSocket, public ThrottledControlSocket // ZZ:UploadBandWithThrottler (UDP)
+namespace ese { class QuicUdpIngress; }
+class CClientUDPSocket : public CAsyncSocket, public CEncryptedDatagramSocket, public ThrottledControlSocket, public ese::QuicSocketPort // ZZ:UploadBandWithThrottler (UDP)
 {
 public:
+    bool AttachQuicIngress(ese::QuicUdpIngress* ingress) override;
+    bool DetachQuicIngress(ese::QuicUdpIngress* ingress) override;
+    void PollQuicIngress();
+    // Explicit pair-lab silent loss, restricted to the enrolled exact endpoint.
+    bool ArmPairUdpLoss(const std::array<std::uint8_t,32>&,const ese::udp::Endpoint&,uint32 durationMs);
+    uint64 PairUdpLossDrops() const { return m_pairLossTx+m_pairLossRx; }
+    ese::QuicUdpSendResult SendQuicDatagram(ese::QuicUdpIngress* owner,
+        const ese::udp::Endpoint& peer,const byte* bytes,size_t count) override;
 	void* m_pUtpContext = NULL;
 	void* GetUtpContext() const { return m_pUtpContext; }
 	bool IsUtpReady() const { return m_port != 0 && m_pUtpContext != NULL; }
@@ -59,7 +69,7 @@ public:
 
 	bool	Create();
 	bool	Rebind();
-	uint16	GetConnectedPort()		{ return m_port; }
+	uint16	GetConnectedPort()		{ return m_hSocket == INVALID_SOCKET ? 0 : m_port; }
 	bool	IsDualStack() const		{ return m_bDualStack; }
 	bool	SendPacket(Packet *packet, uint32 dwIP, uint16 nPort, bool bEncrypt, const uchar *pachTargetClientHashORKadID, bool bKad, uint32 nReceiverVerifyKey);
 	bool	SendPacketV6(Packet *packet, const uint8 v6Addr[16], uint16 nPort);
@@ -72,6 +82,14 @@ protected:
 	virtual void	OnReceive(int nErrorCode);
 
 private:
+    void ResetQuicIngress();
+    bool FeedQuicUdp(const byte*,size_t,const CAddress&,uint16,uint32 scope);
+    ese::QuicUdpIngress* m_quicIngress = nullptr;
+    DWORD m_quicOwnerThread = 0;
+    bool m_quicResetting = false;
+    bool DropPairUdp(const ese::udp::Endpoint&,bool outgoing);
+    ese::udp::Endpoint m_pairLossPeer;
+    uint64 m_pairLossUntil=0,m_pairLossTx=0,m_pairLossRx=0;
 	int		SendTo(uchar *lpBuf, int nBufLen, uint32 dwIP, uint16 nPort);
 	int		SendToV6(uchar *lpBuf, int nBufLen, const uint8 v6Addr[16], uint16 nPort);
 	bool	IsBusy() const			{ return m_bWouldBlock; }

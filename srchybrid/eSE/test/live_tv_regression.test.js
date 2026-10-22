@@ -263,7 +263,8 @@ test('player lifecycle messages are scoped to the viewed stream key', () => {
   const dlg = read(repoRoot, 'srchybrid', 'EmuleDlg.cpp');
 
   assert.match(api, /player-alive' \+ suffix/);
-  assert.match(api, /api\/live\/leave\?key=\$\{hash\}/);
+  // The watch page renderer moved out of channel_api.js (v9.3 redesign).
+  assert.match(read(eseRoot, 'eSE-live', 'live_watch_page.js'), /api\/live\/leave\?key=\$\{hash\}/);
   assert.match(web, /ApiLiveLeave:[\s\S]{0,180}request\.key=W8Legacy\(_ParseURL/);
   assert.match(streamController, /W8LiveStreamOperation::PlayerAlive[\s\S]{0,280}W8DecodeKey16\(in\.key,\s*key\)[\s\S]{0,120}service\.CopyViewerKey\(current\)/);
   assert.match(dlg, /CopyViewerStreamKey\(viewerKey\)[\s\S]{0,150}!r->hasStreamKey/);
@@ -342,7 +343,13 @@ test('release dashboard is loopback-only and legacy updates fail closed', () => 
   assert.match(miscPages, /require\('\.\.\/package\.json'\)\.version/);
   assert.doesNotMatch(server, /eSE v6\.2/);
   assert.doesNotMatch(miscPages, /version:\s*'7\.5\.2'/);
-  assert.match(server, /server\.listen\(PORT,\s*'127\.0\.0\.1'/);
+  // The dashboard binds through the bounded 8080..8090 port-range helper; it
+  // defaults to 127.0.0.1 and refuses any non-loopback ESE_BIND_HOST.
+  const dashboardBind = require('../dashboard_bind');
+  assert.equal(dashboardBind.normalizeBindHost(''), '127.0.0.1');
+  assert.match(server, /if \(!dashboardBind\.isLoopbackBindHost\(BIND_HOST\)\)\s*\{[\s\S]{0,300}process\.exit\(78\)/);
+  assert.match(server, /dashboardBind\.listenDashboard\(server,\s*PORT,\s*BIND_HOST,/);
+  assert.doesNotMatch(server, /server\.listen\(PORT\s*[,)](?!\s*'127\.0\.0\.1')/);
   assert.match(domainRouter, /pathname === ["']\/api\/eSE\/update\/check["']/);
   assert.match(legacyPlayer, /server\.listen\(PORT,\s*'127\.0\.0\.1'/);
   assert.match(
@@ -1552,7 +1559,7 @@ test('--selftest verifies signed chunk ingest and returns failure to the caller'
   assert.match(dialog, /PostThreadMessage\(g_uMainThreadId, WM_QUIT/);
   assert.match(dialog, /m_nSelfTestExitCode = exitCode/);
   const app = read(repoRoot, 'srchybrid', 'Emule.cpp');
-  assert.match(app, /return m_bSelfTest \? m_nSelfTestExitCode : baseExitCode/);
+  assert.match(app, /return \(m_bSelfTest \|\| m_bReachBindingSelfTest\) \? m_nSelfTestExitCode : baseExitCode/);
   assert.match(dialog, /if \(!theApp\.m_bSelfTest && theApp\.m_uHeadlessMetricsPort == 0\)[\s\S]{0,80}LaunchEseServer/);
   assert.match(dialog, /Metrics isolation: dashboard auto-spawn skipped \(port=%u\)/);
   const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');

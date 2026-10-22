@@ -20,6 +20,8 @@ INDEX = ROOT / "docs" / "INDEX.md"
 V9_SPEC = ROOT / "docs" / "V9_RELEASE_SPECIFICATION.md"
 V94_PLAN = ROOT / "docs" / "V9.4_DEVELOPMENT_AND_TEST_PLAN.md"
 ADR93 = ROOT / "docs" / "adr" / "ADR-0001-tesis-vs-especificacion-9.3.md"
+UNIFIED_PLAN = ROOT / "docs" / "V9.3_PLUS_RELEASE_TRAIN.md"
+UNIFIED_STATE = ROOT / "docs" / "V9.3_EXECUTION_STATE.md"
 REGISTRY_CHECKER = ROOT / "tools" / "check_protocol_registry.py"
 OWNED_REGISTRIES = (
     ROOT / "docs" / "protocol" / "OPCODES.csv",
@@ -669,7 +671,7 @@ def main() -> int:
         r"^Estado: \*\*PROPOSED / NOT AUTHORIZED\*\*\s*$", v98, re.MULTILINE
     )
     if len(exact_status) != 1:
-        fail("v9.8 must have one exact PROPOSED / NOT AUTHORIZED status line")
+        fail("historical v9.8 proposal status must remain identifiable")
     status_lines = re.findall(r"^Estado:.*$", v98, re.MULTILINE)
     if len(status_lines) != 1:
         fail(f"v9.8 has ambiguous status lines: {status_lines}")
@@ -699,6 +701,8 @@ def main() -> int:
     v9_spec = V9_SPEC.read_text(encoding="utf-8")
     v94_plan = V94_PLAN.read_text(encoding="utf-8")
     adr93 = ADR93.read_text(encoding="utf-8")
+    unified_plan = UNIFIED_PLAN.read_text(encoding="utf-8")
+    unified_state = UNIFIED_STATE.read_text(encoding="utf-8")
     registry_checker = REGISTRY_CHECKER.read_text(encoding="utf-8")
     if "REG-DEBT-001" not in registry or "blocks every\nexternal emitter gate" not in registry:
         fail("REG-DEBT-001 is not an explicit registry-level emitter blocker")
@@ -717,59 +721,28 @@ def main() -> int:
         re.MULTILINE,
     )
     if len(roadmap_v98_rows) != 1:
-        fail("roadmap v9.8 status row is not exactly proposed/not authorized")
-    for document_name, document in (("roadmap", roadmap), ("index", index)):
-        if re.search(
-            r"9\.8[^\n]*(?:\bACTIVE\b|\bREADY\b|\bIN_PROGRESS\b|"
-            r"(?<!NOT )\bAUTHORIZED\b)",
-            document,
-            re.IGNORECASE,
-        ):
-            fail(f"{document_name} contains an operational v9.8 status")
-    for marker in ("9.8 remains unapproved", "explicitly `NOT AUTHORIZED`"):
-        if marker not in index:
-            fail(f"index lost the v9.8 non-authorization marker {marker!r}")
-    for marker in (
-        "after `G92-93-DEV`, only",
-        "until `G-N0=PASS` with an accepted reconciliation",
-        "proposes replacing the former KRP",
-    ):
-        if marker not in index:
-            fail(f"index lost release-authority invariant {marker!r}")
-    if "supersedes the former KRP" in index:
-        fail("index incorrectly elevates the blocked v9.4 plan over the root spec")
+        fail("historical roadmap v9.8 proposal row is missing or ambiguous")
 
-    authority_markers = (
-        "`G92-93-DEV=PASS` solo permite WP93-0 documental",
-        "No autoriza editar código funcional. Ese trabajo exige `G-N0=PASS`",
-        "`BLOCKED_BY_SPEC_RECONCILIATION`",
-    )
-    for marker in authority_markers:
-        if marker not in roadmap:
-            fail(f"roadmap lost authority invariant {marker!r}")
-    if "| Estado | **PROPUESTO** — no aprobado; no levanta N0 por sí solo |" not in adr93:
-        fail("ADR-0001 is no longer explicitly proposed/non-authoritative")
-    for marker in (
-        "La sección 10 conserva autoridad íntegra",
-        "mientras siga `PROPUESTO`, manda íntegramente esta sección",
+    # The pinned wire inventory retains its original 9.7/9.8 labels. Release
+    # authority now belongs to the unified plan, adopted by the root SPEC;
+    # historical N0/model/release sequencing must not become active blockers.
+    plan_link = re.compile(r"\]\((?:\.\./)?V9\.3_PLUS_RELEASE_TRAIN\.md(?:#[^)]*)?\)")
+    for document_name, document in (
+        ("root specification", v9_spec),
+        ("index", index),
+        ("historical roadmap", roadmap),
+        ("historical v9.4 design", v94_plan),
+        ("historical ADR", adr93),
+        ("server design envelope", v98),
+        ("conformance lab", lab),
+        ("execution ledger", unified_state),
     ):
-        if marker not in v9_spec:
-            fail(f"root v9 specification lost proposed-ADR precedence: {marker!r}")
-    for marker in (
-        "Estado: `BLOCKED_BY_SPEC_RECONCILIATION`",
-        "propone sustituir íntegramente el plan v9.4 anterior",
-        "pasaría a ser, si se acepta esa reconciliación",
-        "Las consecuencias propuestas son:",
-    ):
-        if marker not in v94_plan:
-            fail(f"v9.4 plan lost subordinate/proposed wording: {marker!r}")
-    for forbidden in (
-        "Este documento sustituye íntegramente el plan v9.4 anterior",
-        "La entrega v9.4 pasa a ser una plataforma",
-        "Las consecuencias normativas son:",
-    ):
-        if forbidden in v94_plan:
-            fail(f"v9.4 plan improperly claims root authority: {forbidden!r}")
+        if not plan_link.search(document):
+            fail(f"{document_name} does not identify the unified release authority")
+    for reference in (V9_SPEC.name, UNIFIED_STATE.name):
+        if reference not in unified_plan:
+            fail(f"unified plan has no authority/ledger reference to {reference}")
+
     if not re.search(
         r'"CT_FORK_CAPABILITIES":\s*\(\s*0xF0\s*,', registry_checker
     ) or "DEBT-DRIFT" not in registry_checker:
@@ -787,7 +760,7 @@ def main() -> int:
 
     print(
         "external interop catalog: PASS "
-        f"({len(rows)} pinned contracts, receiver-first lab, v9.8 not authorized)"
+        f"({len(rows)} pinned contracts, receiver-first lab, unified v9.3 authority)"
     )
     return 0
 

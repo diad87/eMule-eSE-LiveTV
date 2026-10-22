@@ -37,6 +37,8 @@ their client on the eMule forum.
 #include "clientlist.h"
 #include "ClientUDPSocket.h"
 #include "emule.h"
+#include "DirectReachabilityManager.h"
+#include "EseKad6ServiceCapabilities.h"
 #include "emuledlg.h"
 #include "ipfilter.h"
 #include "KadContactListCtrl.h"
@@ -461,6 +463,14 @@ namespace
 	}
 }
 
+#include <chrono>
+bool CKademliaUDPListener::GetKad6ServiceContact(std::vector<kad6::Byte>& out)
+{
+    out.clear(); kad6::K6RouteHeader header;
+    if(!theApp.directreachability || !theApp.directreachability->GetKad6ServiceCapabilities() ||
+        !BuildKad6Header(1,header,kad6::Kad6Address::Family::IPv4)) return false;
+    return kad6::EncodeK6RouterRecord(m_kad6LocalRecord,out)==kad6::Kad6Status::Ok;
+}
 bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 	kad6::K6RouteHeader& out, kad6::Kad6Address::Family preferredFamily)
 {
@@ -475,6 +485,9 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 	if (now == 0)
 		return false;
 	std::vector<kad6::K6Endpoint> endpoints;
+    const auto serviceCaps=theApp.directreachability ? theApp.directreachability->GetKad6ServiceCapabilities() : 0;
+    ese::discovery::PublicUdpContact verifiedContact;
+    const bool serviceContact=serviceCaps && theApp.directreachability->GetVerifiedKad6PublicContact(verifiedContact);
 	const uint16 internalKadPort = CPrefs::GetInternKadPort();
 	const uint64 topologyGeneration =
 		theApp.directreachability != NULL
@@ -547,18 +560,25 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 			}
 		}
 	}
-	if (publicV4 != 0) {
-		const CAddress addressV4(publicV4, false);
+	// A verified Kad6 public UDP contact (service-capability proof) is the
+	// authoritative IPv4 endpoint to publish when it exists.
+	uint32 publishedV4 = publicV4;
+	if (serviceContact)
+		memcpy(&publishedV4, verifiedContact.address.data(), 4);
+	if (publishedV4 != 0) {
+		const CAddress addressV4(publishedV4, false);
 		if (addressV4.GetType() == CAddress::IPv4 && addressV4.IsPublicIP()) {
-			const uint16 publicKadPort =
+			uint16 publicKadPort =
 				routeSelection.route
 					== natmap::PreferredDirectRoute::MappedV4
 						? theApp.GetAdvertisedUdpPort()
 						: theApp.GetLocalUdpPort();
+			if (serviceContact)
+				publicKadPort = verifiedContact.publicPort;
 			if (publicKadPort != 0) {
 				kad6::K6Endpoint endpoint;
 				endpoint.addr.family = kad6::Kad6Address::Family::IPv4;
-				std::memcpy(endpoint.addr.addr.data(), &publicV4, sizeof publicV4);
+				std::memcpy(endpoint.addr.addr.data(), &publishedV4, sizeof publishedV4);
 				endpoint.udp_port = publicKadPort;
 				endpoint.tcp_port =
 					routeSelection.route
@@ -589,9 +609,14 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 				endpointChanged = true;
 				break;
 			}
-	const bool expiring = !m_kad6LocalRecordReady
-		|| m_kad6LocalRecord.valid_until <= now + 10 * 60;
-	if (endpointChanged || expiring) {
+    const auto caps=static_cast<std::uint64_t>(CAP_FORK_IPV6_WIRE | CAP_FORK_IPV6_KAD) | serviceCaps;
+    const auto proofNow=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    const auto serviceRemaining=serviceContact && verifiedContact.until>proofNow ? (verifiedContact.until-proofNow)/1000 : 0;
+    if(serviceContact && !serviceRemaining) return false;
+    const bool expiring = !m_kad6LocalRecordReady || m_kad6LocalRecord.valid_until <= now+(serviceCaps?2:10*60);
+	if (endpointChanged || expiring || m_kad6LocalRecord.caps!=caps ||
+        (serviceContact && m_kad6LocalRecord.valid_until>now+serviceRemaining)) {
 		const std::uint64_t nextEpoch =
 			std::max<std::uint64_t>(m_kad6Epoch + 1, now);
 		if (nextEpoch <= m_kad6Epoch || !SaveKad6RouterEpoch(nextEpoch))
@@ -603,9 +628,9 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 		std::memcpy(m_kad6LocalRecord.node_pub.data(),
 			eSELive::NodeIdentityPub(), m_kad6LocalRecord.node_pub.size());
 		m_kad6LocalRecord.epoch = m_kad6Epoch;
-		m_kad6LocalRecord.caps = CAP_FORK_IPV6_WIRE | CAP_FORK_IPV6_KAD;
+		m_kad6LocalRecord.caps = caps;
 		m_kad6LocalRecord.valid_from = now > 60 ? now - 60 : 1;
-		m_kad6LocalRecord.valid_until = now + 2 * 60 * 60;
+		m_kad6LocalRecord.valid_until = now + (serviceContact ? serviceRemaining : 2*60*60);
 		for (kad6::K6Endpoint& endpoint : endpoints)
 			endpoint.valid_until = m_kad6LocalRecord.valid_until;
 		m_kad6LocalRecord.endpoints = endpoints;
@@ -1239,8 +1264,19 @@ void CKademliaUDPListener::RefreshKad6ConnectionState()
 		theApp.emuledlg->ShowConnectionState();
 }
 
-void CKademliaUDPListener::NoteKad6Authenticated()
+void CKademliaUDPListener::NoteKad6Authenticated(const kad6::K6RouterRecord& record)
 {
+	// MarkVerified has already checked the signed routing identity and exact
+	// transaction endpoint. Preserve the complete signed record as a hint;
+	// direct Control bootstrap is still required before index FIND/GET.
+	if(thePrefs.IsEseNetLabActive() && theApp.directreachability &&
+		(record.caps&ese::discovery::K6_CAP_DIRECT_INDEX_V1)) {
+		try {
+			std::vector<kad6::Byte> bytes;
+			if(kad6::EncodeK6RouterRecord(record,bytes)==kad6::Kad6Status::Ok)
+				theApp.directreachability->ImportDirectKad6Contact(record.node_pub,bytes.data(),bytes.size());
+		} catch(...) { /* cache pressure never breaks existing Kad6 routing */ }
+	}
 	m_lastKad6AuthenticatedTick = GetTickCount();
 	if (m_lastKad6AuthenticatedTick == 0)
 		m_lastKad6AuthenticatedTick = 1;
@@ -1354,6 +1390,7 @@ void CKademliaUDPListener::FirewalledCheck(uint32 uIP, uint16 uUDPPort, const CK
 {
 	if (!CKademlia::IsKad2Running())
 		return;
+	if(theApp.directreachability) theApp.directreachability->BeginClassicCallbackVerification(ntohl(uIP));
 	if (byKadVersion > KADEMLIA_VERSION6_49aBETA) {
 		// new Opcode since 0.49a with extended informations to support obfuscated connections properly
 		CSafeMemFile fileIO(19);
@@ -1558,7 +1595,7 @@ void CKademliaUDPListener::ProcessPacket(const byte *pbyData, uint32 uLenData, u
 	case KADEMLIA_FIREWALLED_ACK_RES:
 		if (thePrefs.GetDebugClientKadUDPLevel() > 0)
 			DebugRecv("KADEMLIA_FIREWALLED_ACK_RES", uIP, uUDPPort);
-		Process_KADEMLIA_FIREWALLED_ACK_RES(uLenData);
+		Process_KADEMLIA_FIREWALLED_ACK_RES(uLenData,uIP);
 		break;
 	case KADEMLIA_FINDBUDDY_REQ:
 		if (thePrefs.GetDebugClientKadUDPLevel() > 0)
@@ -3024,7 +3061,7 @@ void CKademliaUDPListener::Process_KADEMLIA_FIREWALLED_RES(const byte *pbyPacket
 }
 
 // Used by Kad1.0 and Kad2.0
-void CKademliaUDPListener::Process_KADEMLIA_FIREWALLED_ACK_RES(uint32 uLenPacket)
+void CKademliaUDPListener::Process_KADEMLIA_FIREWALLED_ACK_RES(uint32 uLenPacket,uint32 uIP)
 {
 	// deprecated since KadVersion 7+, the result is now sent per TCP instead of UDP, because this will fail if our intern UDP port is unreachable.
 	// But we want the TCP test result regardless if UDP is firewalled, the new UDP state and test takes care of the rest
@@ -3036,6 +3073,8 @@ void CKademliaUDPListener::Process_KADEMLIA_FIREWALLED_ACK_RES(uint32 uLenPacket
 	}
 
 	CKademlia::GetPrefs()->IncFirewalled();
+	if(theApp.directreachability && theApp.clientlist->IsKadFirewallCheckIP(ntohl(uIP)))
+		theApp.directreachability->ObserveClassicCallbackAck(ntohl(uIP));
 }
 
 // Used by Kad1.0 and Kad2.0
@@ -4252,7 +4291,7 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 				static_cast<unsigned>(pending.afterVerify));
 			if (!verified)
 				return;
-			NoteKad6Authenticated();
+			NoteKad6Authenticated(response.header.sender_record);
 			m_kad6Pending.erase(m_kad6Pending.begin() + index);
 			if (pending.afterVerify == K6_AFTER_BOOTSTRAP_RESPONSE)
 				SendKad6BootstrapResponse(pending.originalTxid, source, port);
@@ -4322,7 +4361,7 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 				static_cast<unsigned>(response.contacts.size()));
 			if (!verified)
 				return;
-			NoteKad6Authenticated();
+			NoteKad6Authenticated(response.header.sender_record);
 			m_kad6Pending.erase(m_kad6Pending.begin() + index);
 			std::size_t accepted = 0;
 			for (const kad6::K6RouteContact& contact : response.contacts) {
@@ -4369,7 +4408,7 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 				kad6::K6SourceRecordCheckFresh(request.record, now)
 					!= kad6::Kad6Status::Ok)
 				return;
-			NoteKad6Authenticated();
+			NoteKad6Authenticated(request.header.sender_record);
 
 			kad6::K6StoreStatus storeStatus = kad6::K6StoreStatus::Rejected;
 			std::uint64_t acceptedEpoch = 0;
@@ -4434,7 +4473,7 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 			if (!table->MarkVerified(Kad6ContactFromHeader(response.header),
 				response.header.sender_record, now))
 				return;
-			NoteKad6Authenticated();
+			NoteKad6Authenticated(response.header.sender_record);
 			m_kad6Pending.erase(m_kad6Pending.begin() + index);
 			uint16 accepted = 0;
 			for (const kad6::K6SourceRecord& record : response.records) {
@@ -4483,7 +4522,7 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 			if (!table->MarkVerified(Kad6ContactFromHeader(response.header),
 				response.header.sender_record, now))
 				return;
-			NoteKad6Authenticated();
+			NoteKad6Authenticated(response.header.sender_record);
 			m_kad6Pending.erase(m_kad6Pending.begin() + index);
 			eSELive::CLiveTunnel::Get().OnKad6NativePublishAck(
 				pending.publishLeaseId, response.status, response.load,

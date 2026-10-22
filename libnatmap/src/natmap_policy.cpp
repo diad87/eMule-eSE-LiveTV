@@ -302,7 +302,10 @@ bool LeaseController::Activate(const PortLease& lease,
 
 bool LeaseController::AcceptRenewal(const PortLease& lease,
                                     std::uint64_t now_ms) noexcept {
-    if (!has_lease_ || !lease.IsStructurallyValid() || !lease.owned_by_us ||
+    // A clock that runs backwards is rejected. A late renewal is accepted on
+    // purpose: the epoch check below is what detects a gateway reboot.
+    if (!has_lease_ || now_ms < timing_.acquired_monotonic_ms ||
+        !lease.IsStructurallyValid() || !lease.owned_by_us ||
         !SameIdentity(lease_, lease))
         return false;
     const std::uint64_t current_client_seconds = now_ms / 1000;

@@ -23,5 +23,29 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_reach_actuator.e
 if errorlevel 1 exit /b 1
 build\test_reach_actuator.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_direct_attempt.exe tests\test_direct_attempt.cpp src\direct_attempt.cpp
+if errorlevel 1 exit /b 1
+build\test_direct_attempt.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_direct_session.exe tests\test_direct_session.cpp src\direct_session.cpp
+if errorlevel 1 exit /b 1
+build\test_direct_session.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_direct_coordinator.exe tests\test_direct_coordinator.cpp src\direct_coordinator.cpp src\direct_session.cpp
+if errorlevel 1 exit /b 1
+build\test_direct_coordinator.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_direct_event_queue.exe tests\test_direct_event_queue.cpp src\direct_event_queue.cpp src\direct_coordinator.cpp src\direct_session.cpp
+if errorlevel 1 exit /b 1
+build\test_direct_event_queue.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_direct_transport.exe tests\test_direct_transport.cpp src\direct_transport.cpp
+if errorlevel 1 exit /b 1
+build\test_direct_transport.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_part_owner_domain.exe tests\test_part_owner_domain.cpp
+if errorlevel 1 exit /b 1
+build\test_part_owner_domain.exe
+if errorlevel 1 exit /b 1
 echo libreach complete gate: PASS
 exit /b 0

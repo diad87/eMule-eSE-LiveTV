@@ -5,7 +5,6 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const { runProcess, spawnDetached } = require('./bounded_process_runner');
 
 // ─── EMULE PROCESS WATCHDOG ────────────────────────────────────
@@ -17,13 +16,20 @@ function getEmuleExePath() {
   const localPath = path.join(__dirname, 'emule' + '.exe');
   if (fs.existsSync(localPath)) { _emuleExePath = localPath; return localPath; }
   // Fallback: known build path
-  const buildPath = path.join(__dirname, '..', '..', 'srchybrid', 'x64', 'Release', 'emule.exe');
+  const buildPath = path.join(
+    __dirname, '..', '..', 'srchybrid', 'x64', 'Release', 'emule' + '.exe');
   const abs = path.resolve(buildPath);
   if (fs.existsSync(abs)) { _emuleExePath = abs; return abs; }
   return null;
 }
 
+// Callers treat this as asynchronous. It reports the watchdog's last bounded
+// probe so status requests and search polls never enumerate processes.
 async function isEmuleRunning() {
+  return _emuleWasAlive;
+}
+
+async function probeEmuleRunning() {
   try {
     const result = await runProcess(
       'tasklist',
@@ -78,13 +84,11 @@ async function killEmuleFFmpegOrphans() {
     );
     if (!result.stdout) return;
     const lines = result.stdout.split('\n').filter(l => l.includes('ffmpeg.exe'));
-    for (const line of lines) {
+    await Promise.all(lines.map(async line => {
       const parts = line.trim().split(',');
-      // CSV format: Node,ExecutablePath,ProcessId
       const exePath = (parts[1] || '').toLowerCase();
       const pid = parseInt(parts[2] || parts[1], 10);
-      if (!pid || isNaN(pid)) continue;
-      // Only kill ffmpeg launched from eMule's install folder (not our own pipeline)
+      if (!pid || Number.isNaN(pid)) return;
       if (exePath.includes('emule') && exePath.includes('ffmpeg.exe')) {
         try {
           const killed = await runProcess(
@@ -97,22 +101,22 @@ async function killEmuleFFmpegOrphans() {
           }
         } catch(e) {}
       }
-    }
+    }));
   } catch(e) {}
 }
 
 // Watchdog: check every 10s. On dead→alive, bump epoch and notify handlers.
 // On alive→dead, kill orphan ffmpeg children.
-async function runEmuleLifecycleWatchdog() {
+async function runEmuleLifecycleWatchdog(emitTransitions = true) {
   if (_lifecycleWatchdogInFlight) return;
   _lifecycleWatchdogInFlight = true;
   try {
-    const alive = await isEmuleRunning();
-    if (_emuleWasAlive && !alive) {
+    const alive = await probeEmuleRunning();
+    if (emitTransitions && _emuleWasAlive && !alive) {
       console.log('[eMule] Process died — cleaning up orphan FFmpeg broadcasts...');
       await killEmuleFFmpegOrphans();
       emuleSession = null;
-    } else if (!_emuleWasAlive && alive) {
+    } else if (emitTransitions && !_emuleWasAlive && alive) {
       _emuleRestartedAt = Date.now();
       _emuleLibraryEpoch++;
       console.log('[eMule] Process back online (epoch=' + _emuleLibraryEpoch + ')');
@@ -129,16 +133,28 @@ async function runEmuleLifecycleWatchdog() {
     _lifecycleWatchdogInFlight = false;
   }
 }
-setInterval(() => { void runEmuleLifecycleWatchdog(); }, 10000);
-// Initialise state without triggering cleanup on first run
-isEmuleRunning().then(alive => { _emuleWasAlive = alive; });
+// Isolated dashboard tests must not enumerate or clean up user processes.
+// Ordinary dashboard lifecycle monitoring is unchanged.
+if (process.env.ESE_TEST_MODE !== '1') {
+  setInterval(() => { void runEmuleLifecycleWatchdog(true); }, 10000);
+  // Initialise state without triggering cleanup on first run
+  void runEmuleLifecycleWatchdog(false);
+}
 
 const zlib = require('zlib');
 
-const EMULE_WS_PORT = 4711;
+const EMULE_WS_PORT = require('./emule_web_port').resolveWebPort(process.env);
+if (process.env.ESE_TEST_MODE === '1') console.log('[eMule test] WebUI port=' + EMULE_WS_PORT);
 
 let emuleSession = null;
 let emulePassword = null;
+let loginFlight = null;
+let authStatus = { reason: 'not_connected', message: 'eSE aún no ha iniciado sesión en eMule.' };
+let autoLoginTimer = null;
+let autoLoginRetryAt = 0;
+let autoLoginRunning = false;
+let autoLoginGeneration = 0;
+let autoLoginStopped = null;
 
 // ─── SEARCH-RESULT METADATA CACHE ──────────────────────────────
 // Maps ed2k hash → { name, size } for every result eMule has ever returned to
@@ -179,10 +195,13 @@ function buildEd2kLink(name, size, hash) {
 // External dependency: settings (injected)
 let _loadSettings = () => ({});
 let _saveSettings = () => {};
+let configuredPasswordInitialized = false;
 
 function setSettingsFunctions(load, save) {
   _loadSettings = load;
   _saveSettings = save;
+  // Seed before routes accept Settings saves, not on a delayed first login.
+  getConfiguredPassword();
 }
 
 // ─── HTTP REQUEST ──────────────────────────────────────────────
@@ -203,96 +222,178 @@ function emuleRequest(urlPath, callback) {
     headers: { 'Accept-Encoding': 'gzip, deflate, identity' }
   };
   
-  http.get(options, (res) => {
+  let settled = false;
+  let request;
+  const finish = (error, html, metadata) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(deadline);
+    callback(error, html, metadata);
+  };
+  const deadline = setTimeout(() => {
+    const error = new Error('eMule WebServer agotó el tiempo de respuesta.');
+    error.code = 'ETIMEDOUT';
+    finish(error, null);
+    if (request) request.destroy();
+  }, 10000);
+  try { request = http.get(options, (res) => {
     const chunks = [];
     const encoding = res.headers['content-encoding'];
     let stream = res;
     if (encoding === 'gzip') stream = res.pipe(zlib.createGunzip());
     else if (encoding === 'deflate') stream = res.pipe(zlib.createInflate());
     
-    stream.on('data', d => chunks.push(d));
+    stream.on('data', d => { if (!settled) chunks.push(d); });
     stream.on('end', () => {
+      if (settled) return;
+      const metadata = { statusCode: res.statusCode || 200 };
+      if (metadata.statusCode >= 400) {
+        const error = new Error('eMule WebServer respondió HTTP ' + metadata.statusCode + '.');
+        error.code = 'EHTTPSTATUS'; error.statusCode = metadata.statusCode;
+        finish(error, null, metadata);
+        return;
+      }
       const buf = Buffer.concat(chunks);
-      callback(null, buf.toString('latin1'));
+      finish(null, buf.toString('latin1'), metadata);
     });
-    stream.on('error', (err) => callback(err, null));
-  }).on('error', (err) => callback(err, null));
+    stream.on('error', error => finish(error, null));
+    res.on('aborted', () => {
+      const error = new Error('eMule WebServer interrumpió la respuesta.');
+      error.code = 'ECONNRESET'; finish(error, null);
+    });
+  });
+    request.on('error', error => finish(error, null));
+  } catch (error) { finish(error, null); }
 }
 
 // ─── PASSWORD (unique per-installation, zero-config) ──────────
 //
-// Priority order:
+// Initial priority order:
 //   1. ESE_EMULE_PASSWORD env var — set by emule.exe when the user clicks the
 //      eSE toolbar button. emule.exe also calls SetWSPass with the same value
 //      in-memory, so login is guaranteed to work without restart.
 //   2. settings.json `emulePassword` — persisted from a previous run.
-//   3. Fresh random password — for standalone launches when neither of the
-//      above is available (user double-clicked ese-server.exe directly).
+// Seed from the environment once. Later settings changes must survive resync,
+// because a running process retains its original environment after a password
+// is explicitly corrected in Settings.
+// A standalone launch cannot change the running eMule password. If neither
+// source exists, report missing credentials instead of generating a mismatch.
 
-function getOrCreatePassword() {
-  const envPw = process.env.ESE_EMULE_PASSWORD;
-  if (envPw) {
-    const s = _loadSettings();
-    if (s.emulePassword !== envPw) {
-      s.emulePassword = envPw;
-      _saveSettings(s);
-    }
-    return envPw;
-  }
+function usablePassword(value) {
+  return typeof value === 'string' && value.length > 0 && value !== '********';
+}
+function getConfiguredPassword() {
   const s = _loadSettings();
-  if (s.emulePassword) return s.emulePassword;
-  const pw = crypto.randomBytes(16).toString('hex');
-  s.emulePassword = pw;
-  _saveSettings(s);
-  console.log('[eMule] Generated unique installation password (standalone mode)');
-  return pw;
+  if (!configuredPasswordInitialized) {
+    configuredPasswordInitialized = true;
+    const envPw = process.env.ESE_EMULE_PASSWORD;
+    if (usablePassword(envPw)) {
+      if (s.emulePassword !== envPw) {
+        s.emulePassword = envPw;
+        _saveSettings(s);
+      }
+      return envPw;
+    }
+  }
+  return usablePassword(s.emulePassword) ? s.emulePassword : null;
 }
 
 // ─── LOGIN ─────────────────────────────────────────────────────
 
+function authenticationError(reason, message, retryable = false) {
+  const error = new Error(message);
+  error.reason = reason; error.retryable = retryable;
+  return error;
+}
+function cancelAutoLoginRetry() {
+  if (autoLoginTimer !== null) clearTimeout(autoLoginTimer);
+  autoLoginTimer = null; autoLoginRetryAt = 0;
+  autoLoginGeneration++;
+}
 function emuleLogin(password, callback) {
-  emuleRequest('?w=password&p=' + encodeURIComponent(password), (err, html) => {
+  // Resolve the initial environment even for an explicit first login, so a
+  // subsequent Settings save cannot be overwritten by a delayed first resync.
+  const configuredPassword = getConfiguredPassword();
+  const pw = usablePassword(password) ? password : configuredPassword;
+  if (loginFlight) {
+    if (pw === loginFlight.password) loginFlight.callbacks.push(callback);
+    else callback(authenticationError('login_in_progress', 'Ya se está comprobando la conexión. Inténtalo de nuevo cuando termine.'));
+    return;
+  }
+  cancelAutoLoginRetry();
+  autoLoginStopped = null;
+  if (!pw) {
+    const error = authenticationError('password_missing', 'Falta la contraseña del WebServer de eMule. Configúrala en Ajustes o abre eSE desde eMule.');
+    emuleSession = null; emulePassword = null;
+    authStatus = { reason: error.reason, message: error.message };
+    callback(error);
+    return;
+  }
+  const flight = loginFlight = { password: pw, callbacks: [callback] };
+  authStatus = { reason: 'connecting', message: 'Comprobando la conexión con eMule…' };
+  emuleRequest('?w=password&p=' + encodeURIComponent(pw), (err, html) => {
+    let error = err, session = null;
     if (err) {
-      if (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT') {
-        const e = new Error('eMule WebServer no responde (¿eMule cerrado?)');
-        e.reason = 'webserver_down';
-        return callback(e);
-      }
-      return callback(err);
-    }
-    const sesMatch = html && html.match(/ses=(\d+)/);
-    if (sesMatch) {
-      emuleSession = sesMatch[1];
-      callback(null, emuleSession);
+      if (err.code === 'ETIMEDOUT') error = authenticationError('login_timeout', 'eMule no respondió a tiempo. Se volverá a comprobar la conexión.', true);
+      else if (['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH'].includes(err.code)) error = authenticationError('webserver_down', 'El WebServer de eMule no está disponible en el puerto 4711.', true);
+      else if (err.code === 'EHTTPSTATUS') error = authenticationError('webserver_http_error', 'eMule WebServer respondió HTTP ' + err.statusCode + '.', err.statusCode >= 500);
+      else error = authenticationError('webserver_response_error', 'No se pudo leer la respuesta del WebServer de eMule.');
     } else {
-      const e = new Error('eMule rechazó la password (settings.json desincronizado)');
-      e.reason = 'password_mismatch';
-      callback(e);
+      const sesMatch = html && html.match(/[?&]ses=(\d+)\b/);
+      if (sesMatch && Number(sesMatch[1]) > 0) session = sesMatch[1];
+      else if (/access\s+denied|acceso\s+denegado|zugriff\s+verweigert|accès\s+refusé/i.test(html || '')) error = authenticationError('access_denied', 'eMule ha bloqueado temporalmente el acceso. Espera antes de reintentar y comprueba la contraseña.');
+      else if (/w=password|name\s*=\s*["'](?:p|password)["']|name\s*=\s*["']w["'][^>]*value\s*=\s*["']password["']/i.test(html || '')) error = authenticationError('password_mismatch', 'eMule rechazó la contraseña. Corrígela en Ajustes; no se reintentará automáticamente.');
+      else error = authenticationError('invalid_login_response', 'eMule respondió sin una sesión válida. Comprueba el WebServer antes de reintentar.');
     }
+    loginFlight = null;
+    emuleSession = session;
+    emulePassword = session ? pw : null;
+    authStatus = { reason: error ? error.reason : null, message: error ? error.message : 'Conectado a eMule WebServer.' };
+    if (session) _autoLoginAttempts = 0;
+    for (const done of flight.callbacks) done(error, session);
   });
 }
 
 // BUG-051 FIX: retry limit + exponential backoff
 var _autoLoginAttempts = 0;
-var _autoLoginMaxRetries = 15;
+var _autoLoginMaxRetries = 5;
 var _autoLoginBaseDelay = 10000;
 
 function autoLoginEmule() {
-  const pw = getOrCreatePassword();
+  if (autoLoginRunning || autoLoginTimer !== null) return;
+  const pw = getConfiguredPassword();
+  if (autoLoginStopped && autoLoginStopped.password === pw && autoLoginStopped.epoch === _emuleLibraryEpoch) return;
+  _autoLoginAttempts = 0;
+  runAutoLoginAttempt();
+}
+function runAutoLoginAttempt() {
+  autoLoginRunning = true;
+  _autoLoginAttempts++;
+  const pw = getConfiguredPassword();
   emuleLogin(pw, (err, session) => {
+    autoLoginRunning = false;
     if (!err && session) {
-      emulePassword = pw;
       _autoLoginAttempts = 0;
-      console.log('[eMule] Logged in, session: ' + session);
+      console.log('[eMule] Logged in');
     } else {
-      _autoLoginAttempts++;
+      if (!err || !err.retryable) {
+        autoLoginStopped = { password: pw, epoch: _emuleLibraryEpoch };
+        console.warn('[eMule] Login stopped: ' + (err && err.reason || 'invalid_login_response'));
+        return;
+      }
       if (_autoLoginAttempts >= _autoLoginMaxRetries) {
-        console.error('[eMule] Login failed after ' + _autoLoginMaxRetries + ' attempts. Giving up.');
+        autoLoginStopped = { password: pw, epoch: _emuleLibraryEpoch };
+        console.error('[eMule] Login stopped after ' + _autoLoginMaxRetries + ' attempts: ' + err.reason);
         return;
       }
       var delay = Math.min(_autoLoginBaseDelay * Math.pow(2, _autoLoginAttempts - 1), 300000);
-      console.log('[eMule] Login failed (attempt ' + _autoLoginAttempts + '/' + _autoLoginMaxRetries + '). Retrying in ' + (delay/1000) + 's...');
-      setTimeout(autoLoginEmule, delay);
+      console.log('[eMule] Login unavailable (' + err.reason + ', attempt ' + _autoLoginAttempts + '/' + _autoLoginMaxRetries + '). Retrying in ' + (delay/1000) + 's...');
+      autoLoginRetryAt = Date.now() + delay;
+      const generation = autoLoginGeneration;
+      autoLoginTimer = setTimeout(() => {
+        if (generation !== autoLoginGeneration) return;
+        autoLoginTimer = null; autoLoginRetryAt = 0; runAutoLoginAttempt();
+      }, delay);
     }
   });
 }
@@ -315,14 +416,14 @@ function ensureEmuleSession(onReady, query, settings, callback) {
 }
 
 function autoLoginAndRetry(query, settings, callback) {
-  const pw = getOrCreatePassword();
+  const pw = getConfiguredPassword();
   emuleLogin(pw, (err, session) => {
     if (err) {
       console.log('[eMule] ❌ Auto-relogin failed');
       callback(new Error('eMule login failed'), []);
     } else {
       emulePassword = pw;
-      console.log('[eMule] ✅ Re-logged in, session: ' + session);
+      console.log('[eMule] Re-logged in');
       emuleSearch(query, settings, callback);
     }
   });
@@ -625,7 +726,7 @@ function emuleDownload(hash, callback, meta) {
 
 function withEmuleSession(callback) {
   if (emuleSession) return callback(null, emuleSession);
-  const pw = getOrCreatePassword();
+  const pw = getConfiguredPassword();
   emuleLogin(pw, (err, session) => {
     if (err) return callback(err);
     emulePassword = pw;
@@ -750,7 +851,7 @@ function emuleAddEd2kLink(ed2kLink, callback) {
   };
 
   if (!emuleSession) {
-    const pw = getOrCreatePassword();
+    const pw = getConfiguredPassword();
     emuleLogin(pw, (err, session) => {
       if (err) { return callback(new Error('eMule login fallido: ' + err.message)); }
       emulePassword = pw;
@@ -780,6 +881,9 @@ function startKeepalive() {
 
 function getSession() { return emuleSession; }
 function getPassword() { return emulePassword; }
+function getAuthStatus() {
+  return { ...authStatus, retrying: autoLoginTimer !== null, retryAfterMs: Math.max(0, autoLoginRetryAt - Date.now()) };
+}
 
 module.exports = {
   emuleRequest,
@@ -797,6 +901,7 @@ module.exports = {
   startKeepalive,
   getSession,
   getPassword,
+  getAuthStatus,
   isEmuleRunning,
   killEmuleFFmpegOrphans,
   onRevived,

@@ -130,7 +130,7 @@ function gracefulShutdown(signal) {
 
 /**
  * Kill ffmpeg.exe processes that are children of this Node.js process.
- * On Windows: uses `wmic` to find child processes by ParentProcessId.
+ * On Windows: uses Get-CimInstance to find children by ParentProcessId.
  * On POSIX: uses `pkill -P` for child process tree.
  */
 async function killOrphanedFFmpeg() {
@@ -142,7 +142,7 @@ async function killOrphanedFFmpeg() {
         + myPid + '" | Select-Object -ExpandProperty ProcessId';
       const result = await runProcess(
         'powershell',
-        ['-NoProfile', '-Command', query],
+        ['-NoProfile', '-NonInteractive', '-Command', query],
         { timeoutMs: 8000, maxOutputBytes: 256 * 1024 },
       );
       const pids = result.stdout.trim().split(/\r?\n/).filter(p => /^\d+$/.test(p.trim()));

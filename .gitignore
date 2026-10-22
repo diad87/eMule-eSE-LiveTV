@@ -88,3 +88,18 @@ tools/lab/*.cmd
 
 # Dist folder (binaries go in GitHub Releases, not in repo)
 dist/
+
+# Lab runs, captured media and agent scratch space (evidence stays on disk).
+# Small artifacts/*/summary.json files from the gates stay versioned.
+artifacts/ese-*/
+artifacts/livetv-captures/
+artifacts/roadmap-status-build/
+lab-runs/
+.codex_tmp/
+.codex-remote-attachments/
+/v92-*
+/.tmp*
+/.scratch*
+/.o01-*
+.claude/launch.json
+.claude/worktrees/

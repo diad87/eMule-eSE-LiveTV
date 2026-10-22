@@ -145,8 +145,11 @@ class L06DoubleEvidenceHostContract(unittest.TestCase):
         self.assertIn(
             "m_ed2kVerificationAttempt);", self.server_socket
         )
-        self.assertIn(
-            "m_ed2kVerificationAttempt)", self.listen_socket
+        # The accept callback must pass the captured attempt first; the
+        # 9.3 classic-callback proof may append observed port/peer/time.
+        self.assertRegex(
+            self.listen_socket,
+            r"ObserveInboundTcpAccept\(\s*m_ed2kVerificationAttempt\s*[,)]",
         )
         for marker in (
             "attempt.endpoint",

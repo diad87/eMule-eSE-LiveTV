@@ -36,6 +36,7 @@ struct UploadingToClient_Struct
 	CCriticalSection									m_csBlockListsLock; // don't acquire other locks while having this one in any thread other than UploadDiskIOThread or make sure deadlocks are impossible
 	bool												m_bIOError;
 	bool												m_bDisableCompression;
+	uint64 m_transportEpoch=0; // protected by upload-list/block-list locks
 };
 typedef CTypedPtrList<CPtrList, UploadingToClient_Struct*> CUploadingPtrList;
 
@@ -47,6 +48,7 @@ public:
 	~CUploadQueue();
 
 	void	Process();
+	bool ResetDirectUploadStream(CUpDownClient*,uint64 epoch);
 	void	AddClientToQueue(CUpDownClient *client, bool bIgnoreTimelimit = false);
 	bool	RemoveFromUploadQueue(CUpDownClient *client, LPCTSTR pszReason = NULL, bool updatewindow = true, bool earlyabort = false);
 	bool	RemoveFromWaitingQueue(CUpDownClient *client, bool updatewindow = true);

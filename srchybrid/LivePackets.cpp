@@ -226,7 +226,9 @@ Packet* CreatePeerListPacketV2(const uchar* streamKey,
         }
         totalBytes += addrBytes + 3;  // port + score
     }
-    CSafeMemFile data(totalBytes);
+    // count is uint16 and every encoded entry is at most 21 bytes, so this
+    // conversion is bounded to 1,376,274 bytes and is safe on every target.
+    CSafeMemFile data(static_cast<UINT>(totalBytes));
     data.WriteHash16(streamKey);
     data.WriteUInt16(count);
     for (uint16 i = 0; i < count; ++i) {

@@ -60,6 +60,7 @@ namespace Kademlia
 	{
 		friend class CSearch;
 	public:
+        bool GetKad6ServiceContact(std::vector<kad6::Byte>& out);
 		CKademliaUDPListener();
 		~CKademliaUDPListener();
 		void Bootstrap(LPCTSTR szHost, uint16 uUDPPort);
@@ -212,7 +213,7 @@ namespace Kademlia
 		DWORD m_lastKad6Lookup;
 		DWORD m_lastKad6AuthenticatedTick;
 		bool m_kad6ReportedConnected;
-		void NoteKad6Authenticated();
+		void NoteKad6Authenticated(const kad6::K6RouterRecord& record);
 		void RefreshKad6ConnectionState();
 
 		bool AddContact_KADEMLIA2(const byte *pbyData, uint32 uLenData, uint32 uIP, uint16 &uUDPPort, uint8 *pnOutVersion, const CKadUDPKey &cUDPKey, bool &rbIPVerified, bool bUpdate, bool bFromHelloReq, bool *pbOutRequestsACK, CUInt128 *puOutContactID);
@@ -240,7 +241,7 @@ namespace Kademlia
 		void Process_KADEMLIA_FIREWALLED_REQ(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
 		void Process_KADEMLIA_FIREWALLED2_REQ(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
 		static void Process_KADEMLIA_FIREWALLED_RES(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, const CKadUDPKey &senderUDPKey);
-		static void Process_KADEMLIA_FIREWALLED_ACK_RES(uint32 uLenPacket);
+		static void Process_KADEMLIA_FIREWALLED_ACK_RES(uint32 uLenPacket,uint32 uIP);
 		void Process_KADEMLIA_FINDBUDDY_REQ(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
 		void Process_KADEMLIA_FINDBUDDY_RES(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
 		static void Process_KADEMLIA_CALLBACK_REQ(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, const CKadUDPKey &senderUDPKey);

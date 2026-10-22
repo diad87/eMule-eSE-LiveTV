@@ -1,9 +1,20 @@
 # Kad6: arquitectura, fronteras y política de promoción
 
-Estado: especificación viva del runtime presente en eSE 9.1.0-beta.1.
+Estado: especificación viva del runtime presente en eSE 9.1.0.
 
-Este documento describe el Kad6 que realmente existe en el árbol. No convierte
-una beta en una promesa de soporte y no autoriza infraestructura pública.
+Este documento describe el Kad6 que realmente existe en el árbol. La release
+9.1.0 conserva los límites de calificación publicados y no autoriza
+infraestructura pública.
+
+> **Diseño posterior, pendiente de implementar — 30 de septiembre de 2026:**
+> la revisión 2 de [la especificación v9.3](V9.3_IMPLEMENTATION_SPECIFICATION.md),
+> N.6.1/N.13, añade un índice de fuentes **directas** y encuentro entre peers
+> Kad6 sustituibles, con clientes salientes que no tienen que ser routers.
+> No reutiliza los K6SourceRecord actuales basados en exits ni activa gateway,
+> túneles o salida pública. Mantiene Kad2/TCP para clientes clásicos; el camino
+> Kad6 se valida sin servidores fijos ni relay de datos. Los requisitos de
+> cabecera/router que siguen describen el runtime existente, no impiden diseñar
+> ese rol saliente separado y no acreditan que ya esté implementado.
 
 ## 1. Decisión de producto
 
@@ -17,8 +28,9 @@ family-neutral que aporta:
 
 eSE 9.0 distribuye el **cliente UDP Kad6 nativo como función experimental
 seleccionada por defecto** junto a Kad2. eSE 9.1 no lo introduce por primera
-vez: lo promociona a soportado después de completar las topologías y gates
-IPv6-only, dual-stack, seguridad, compatibilidad y churn.
+vez: lo incorpora a la release estable con 22 PASS, 0 FAIL y 5 BLOCKED
+acumulados. Las topologías físicas pendientes y los límites de soporte están
+declarados en `RELEASE_NOTES_v9.1.0.md`.
 
 ## 2. Selección y migración
 
@@ -115,6 +127,13 @@ Además:
 `V91-S03` convierte la protección anti-amplificación en un gate de red
 reproducible, no solo en una propiedad inspeccionada del código.
 
+La topología `T5` usa ULA RFC 4193 configuradas explícitamente. Esa excepción
+solo habilita transporte y routing Kad6 directo: no amplía la admisión de
+Kad2/uTP/UDP, no alimenta el prober de IPv6 pública y no cuenta como identidad
+ni diversidad de salida pública. El gate ejecuta cada petición no verificada
+contra un proceso fresco y exige un único challenge firmado y no mayor que la
+petición, sin respuesta amplificada.
+
 ## 7. Evolución del wire beta
 
 El wire Kad6 de las betas es experimental:
@@ -177,6 +196,6 @@ compatible con eMule clásico.
 - [`JEMULESERVER_IPV6_PROTOCOL.md`](JEMULESERVER_IPV6_PROTOCOL.md)
 - [`protocol/PROTOCOL_REGISTRY.md`](protocol/PROTOCOL_REGISTRY.md)
 - [`protocol/OPCODES.csv`](protocol/OPCODES.csv)
-- [`../libkad6/README.md`](../libkad6/README.md)
+- [`libkad6/README.md` in the source repository](https://github.com/diad87/eMule-eSE-LiveTV/blob/main/libkad6/README.md)
 - `srchybrid/kademlia/net/KademliaUDPListener.cpp`
 - `srchybrid/kademlia/routing/Kad6RoutingTable.cpp`

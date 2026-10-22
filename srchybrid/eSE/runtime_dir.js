@@ -23,7 +23,11 @@ let cached = null;
 
 function get() {
   if (cached) return cached;
-  if (process.pkg) {
+  if (process.env.ESE_RUNTIME_DIR) {
+    if (!path.isAbsolute(process.env.ESE_RUNTIME_DIR)) throw new Error('ESE_RUNTIME_DIR must be absolute');
+    cached = path.normalize(process.env.ESE_RUNTIME_DIR);
+    fs.mkdirSync(cached, { recursive: true });
+  } else if (process.pkg) {
     const appData = process.env.APPDATA
       || process.env.LOCALAPPDATA
       || path.join(os.homedir(), 'AppData', 'Roaming');

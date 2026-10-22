@@ -13,6 +13,7 @@ const { validateRouteContext } = require("./route_context");
  * @property {Array<{handle: Function}>} apiRoutes
  * @property {Array<{handle: Function}>} pageRoutes
  * @property {{handle: Function}} staticRoutes
+ * @property {{render: Function}} [notFoundPage] Optional HTML 404 for non-API paths.
  */
 
 /**
@@ -31,11 +32,17 @@ function createHttpDomainRouter(dependencies) {
     apiRoutes,
     pageRoutes,
     staticRoutes,
+    notFoundPage,
   } = validateRouteContext(dependencies, "HTTP dispatcher", {
     port: "port", security: "securityApply", debugLog: "handler", debugPage: "handler",
     liveApi: "liveApi", liveRouteContext: "object", apiRoutes: "handlers",
     pageRoutes: "handlers", staticRoutes: "handler",
+  }, {
+    notFoundPage: "object",
   });
+  if (notFoundPage && typeof notFoundPage.render !== "function") {
+    throw new Error("invalid HTTP dispatcher route context");
+  }
 
   const apiHandlers = apiRoutes;
   const pageHandlers = pageRoutes;
@@ -59,6 +66,12 @@ function createHttpDomainRouter(dependencies) {
     if (runHandlers(pageHandlers, url, req, res)) return;
     if (await staticRoutes.handle(url, req, res)) return;
 
+    // API clients keep the plain historical 404; browsers get a navigable page.
+    if (notFoundPage && !url.pathname.startsWith("/api/")) {
+      res.writeHead(404, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      res.end(notFoundPage.render());
+      return;
+    }
     res.writeHead(404);
     res.end("Not found");
   };

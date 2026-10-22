@@ -267,6 +267,7 @@ void CUploadDiskIOThread::StartCreateNextBlockPackage(UploadingToClient_Struct *
 			pOverlappedRead->oOverlap.hEvent = 0;
 			pOverlappedRead->pFile = pFile;
 			pOverlappedRead->pUploadClientStruct = pUploadClientStruct;
+			pOverlappedRead->transportEpoch = pUploadClientStruct->m_transportEpoch;
 			pOverlappedRead->uStartOffset = currentblock->StartOffset;
 			pOverlappedRead->uEndOffset = currentblock->EndOffset;
 			pOverlappedRead->pBuffer = new byte[(size_t)uTogo];
@@ -330,9 +331,10 @@ void CUploadDiskIOThread::ReadCompletionRoutine(DWORD dwRead, const OverlappedRe
 			CSingleLock lockUploadListRead(pcsUploadListRead, TRUE);
 			ASSERT(lockUploadListRead.IsLocked());
 			bool bFound = (rUploadList.Find(pStruct) != NULL);
+			const bool currentStream=bFound && pStruct->m_transportEpoch==pOvRead->transportEpoch;
 
 			// all important prechecks done, create the packets
-			if (bFound && !bReadError) {
+			if (currentStream && !bReadError) {
 				// Keep the uploadlist locked while working with the client object.
 				// Instead of sending the packets immediately, we store them
 				// and send after we have released the uploadlist lock -
@@ -362,7 +364,7 @@ void CUploadDiskIOThread::ReadCompletionRoutine(DWORD dwRead, const OverlappedRe
 					pSocket->SendPacket(packet, false, packet->uStatsPayLoad);
 				}
 			} else { // bReadError is true
-				if (bFound)
+				if (currentStream)
 					pStruct->m_bIOError = true;
 				else
 					theApp.QueueDebugLogLineEx(LOG_WARNING, _T("ReadCompletionRoutine: Client not found in uploadlist when reading finished; discarding block"));

@@ -541,12 +541,21 @@ test("a disconnected preparation cannot kill another request's completed stream"
     requestA,
     responseA,
   );
-  await waitFor(() => processResolvers.length === 2);
-  const codecResult = codec => ({ ok: true, stdout: codec, stderr: "" });
-  processResolvers.shift()(codecResult("h264\n"));
-  processResolvers.shift()(codecResult("aac\n"));
+  // One bounded ffprobe (JSON streams) serves codec selection.
+  await waitFor(() => processResolvers.length === 1);
+  processResolvers.shift()({
+    ok: true,
+    stdout: JSON.stringify({ streams: [
+      { index: 0, codec_type: "video", codec_name: "h264" },
+      { index: 1, codec_type: "audio", codec_name: "aac" },
+    ] }),
+    stderr: "",
+  });
   await waitFor(() => managedSpawnCount === 1);
   const ownedByA = managedChildren[0];
+  // The registry entry owns A's request (including delayed restarts).
+  const ownerA = activeStreams["completed_movie.mkv"];
+  assert.equal(typeof ownerA.kill, "function");
 
   const requestB = new EventEmitter();
   requestB.destroyed = false;
@@ -560,9 +569,10 @@ test("a disconnected preparation cannot kill another request's completed stream"
   await new Promise(resolve => setImmediate(resolve));
 
   assert.equal(ownedByA.killCount, 0);
-  assert.equal(activeStreams["completed_movie.mkv"], ownedByA);
+  assert.equal(activeStreams["completed_movie.mkv"], ownerA);
   responseA.emit("close");
   assert.equal(ownedByA.killCount, 1);
+  assert.equal(activeStreams["completed_movie.mkv"], undefined);
   await new Promise(resolve => setImmediate(resolve));
   await fs.promises.rm(tempRoot, { recursive: true, force: true });
 });

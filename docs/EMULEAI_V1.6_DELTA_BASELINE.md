@@ -1,5 +1,18 @@
 # eSE — Delta de baseline eMule AI 1.6
 
+**Aplicación vigente desde el 30 de septiembre de 2026:** los 19 deltas se
+integran en el [`plan único v9.3`](V9.3_PLUS_RELEASE_TRAIN.md), §19, bajo sus
+propietarios originales. Las ventanas V95/V96/V97 de la tabla conservada
+significan ahora E/F/C; V92 es la base y sus arrastres. D01, D16 y D18 conservan
+todos sus tramos y no se cuentan como funciones nuevas.
+
+La promoción de un baseline comparativo y el calendario siguientes se
+conservan como historia. No bloquean la implementación ni la release unificada;
+sus criterios vigentes son los del plan único. Los SHA y las filas del delta
+no se cambian al replanificar.
+
+## Registro histórico conservado
+
 Estado: delta registrado; no sustituye retrospectivamente el baseline 1.5.2  
 Fecha de registro: 15 de agosto de 2026  
 Momento de promoción: freeze Stable de eSE 9.2

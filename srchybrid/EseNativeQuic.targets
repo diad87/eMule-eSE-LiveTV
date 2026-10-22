@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Explicit laboratory opt-in only. No default network activation. -->
+  <ItemDefinitionGroup Condition="'$(EseQuicDependencyRoot)'!=''">
+    <Link>
+      <AdditionalDependencies>$(EseQuicDependencyRoot)\gnutls-$(Platform).lib;$(EseQuicDependencyRoot)\build-$(Platform)\lib\Release\ngtcp2.lib;$(EseQuicDependencyRoot)\build-$(Platform)\crypto\gnutls\Release\ngtcp2_crypto_gnutls.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup Condition="'$(EseQuicDependencyRoot)'!=''">
+    <ClCompile Include="EseNativeQuicRuntime.cpp;EseQuicHeaderProbe.cpp;EseQuicSocketOwner.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+      <AdditionalIncludeDirectories>$(EseQuicDependencyRoot)\ngtcp2-1.25.0\lib\includes;$(EseQuicDependencyRoot)\build-$(Platform)\lib\includes;$(EseQuicDependencyRoot)\ngtcp2-1.25.0\crypto\includes;$(EseQuicDependencyRoot)\include-$(Platform);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemGroup>
+  <Target Name="VerifyEseNativeQuicLabInputs" BeforeTargets="PrepareForBuild" Condition="'$(EseQuicDependencyRoot)'!=''">
+    <Error Condition="'$(EseQuicLabOnly)'!='true'" Text="Native QUIC requires explicit /p:EseQuicLabOnly=true; dependency provenance is not release-approved." />
+    <Error Condition="'$(Configuration)'!='Release'" Text="Pinned QUIC laboratory inputs support Release only." />
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\tools\verify_quic_host_dependencies.ps1&quot; -Root &quot;$(EseQuicDependencyRoot)&quot; -Architecture $(Platform)" />
+  </Target>
+</Project>

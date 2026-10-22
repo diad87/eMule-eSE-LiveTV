@@ -198,6 +198,9 @@ void CUPnPImplWinServ::ProcessAsyncFind(CComBSTR bsSearchType)
 		return DebugLogError(_T("Mapping operation context is not available."));
 	m_pDeviceFinderCallback =
 		new CDeviceFinderCallback(*this, operation);
+	// Each search owns its service-callback identity: COM may keep invoking
+	// callbacks registered by an earlier, cancelled search.
+	m_pServiceCallback = new CServiceCallback(*this);
 
 	HRESULT res = m_pDeviceFinder->CreateAsyncFind(bsSearchType, NULL, m_pDeviceFinderCallback, &m_nAsyncFindHandle);
 	if (FAILED(res))
@@ -1147,6 +1150,12 @@ HRESULT __stdcall CDeviceFinderCallback::SearchComplete(LONG nFindData)
 	// Otherwise, "Service died" message is shown, and it means
 	// that the service still was active.
 	bool bRetry = !m_instance.OnSearchComplete(m_operation);
+	// OnSearchComplete can pump COM/window messages. If that re-entrancy
+	// stopped this search or replaced it, never cancel or retry on its behalf.
+	if (!m_instance.m_bAsyncFindRunning
+		|| nFindData != m_instance.m_nAsyncFindHandle
+		|| m_instance.m_pDeviceFinderCallback.GetInterfacePtr() != this)
+		return S_OK;
 	m_instance.StopAsyncFind();
 	if (bRetry && m_instance.IsCurrentMappingOperation(m_operation))
 		m_instance.StartDiscovery(0, 0, 0, true);
@@ -1192,6 +1201,8 @@ ULONG __stdcall CDeviceFinderCallback::Release()
 HRESULT __stdcall CServiceCallback::StateVariableChanged(IUPnPService *pService,
 	LPCWSTR pszStateVarName, VARIANT varValue)
 {
+	if (!IsCurrentCallback())
+		return S_OK;
 	CComBSTR bsServiceId;
 	m_instance.m_tLastEvent = ::GetTickCount();
 
@@ -1224,6 +1235,8 @@ HRESULT __stdcall CServiceCallback::StateVariableChanged(IUPnPService *pService,
 //! Called when the service dies
 HRESULT __stdcall CServiceCallback::ServiceInstanceDied(IUPnPService *pService)
 {
+	if (!IsCurrentCallback())
+		return S_OK;
 	CComBSTR bsServiceId;
 
 	HRESULT hr = pService->get_Id(&bsServiceId);
@@ -1233,6 +1246,13 @@ HRESULT __stdcall CServiceCallback::ServiceInstanceDied(IUPnPService *pService)
 	}
 
 	return UPnPMessage(hr);
+}
+
+// Callbacks registered by an earlier search are stale; only the identity
+// installed by the current ProcessAsyncFind may update instance state.
+bool CServiceCallback::IsCurrentCallback() const
+{
+	return m_instance.m_pServiceCallback.GetInterfacePtr() == this;
 }
 
 HRESULT __stdcall CServiceCallback::QueryInterface(REFIID iid, LPVOID *ppvObject)

@@ -52,17 +52,20 @@ def main() -> int:
     failures: list[str] = []
 
     queue = code_only(function_body(source, "bool CLiveTunnel::QueueK6FairPayloadLocked"))
-    if "m_lock" in queue:
-        failures.append("QueueK6FairPayloadLocked must not acquire or reference m_lock")
-    if "EnsureK6ShapeTimer()" not in queue:
-        failures.append("fair queue must start the timer through its leaf-lock helper")
+    if "m_lock" in queue or "m_pendingLock" in queue:
+        failures.append("QueueK6FairPayloadLocked must not acquire tunnel or pending locks")
 
-    ensure = code_only(function_body(source, "bool CLiveTunnel::EnsureK6ShapeTimer"))
-    if "m_k6ShapeTimerLock" not in ensure or "m_lock" in ensure or "m_pendingLock" in ensure:
-        failures.append("EnsureK6ShapeTimer must be protected only by the timer leaf lock")
-
-    if "mutable CCriticalSection m_k6ShapeTimerLock;" not in header:
-        failures.append("dedicated timer leaf lock is missing from LiveTunnel.h")
+    # rc.2 design: the class-5 timer token lives in the fair scheduler and is
+    # armed by EnsureK6ShapeTimerLocked() while the caller already holds the
+    # tunnel lock and before any pending-rank section, so the helper itself
+    # must not take either lock and must publish the token to the scheduler.
+    ensure = code_only(function_body(source, "bool CLiveTunnel::EnsureK6ShapeTimerLocked"))
+    if "m_lock" in ensure or "m_pendingLock" in ensure:
+        failures.append("EnsureK6ShapeTimerLocked must not acquire tunnel or pending locks")
+    if "PublishClass5Timer(" not in ensure:
+        failures.append("class-5 timer token must be published to the scheduler")
+    if "bool EnsureK6ShapeTimerLocked();" not in header:
+        failures.append("EnsureK6ShapeTimerLocked declaration is missing from LiveTunnel.h")
 
     stale_order = re.compile(r"m_pendingLock\s*-+>\s*m_lock")
     if stale_order.search(source) or stale_order.search(header):
@@ -74,7 +77,7 @@ def main() -> int:
             print(f"  - {failure}")
         return 1
 
-    print("LiveTunnel lock-order gate PASS: tunnel -> pending -> timer/leaf")
+    print("LiveTunnel lock-order gate PASS: tunnel -> pending; timer armed under tunnel lock")
     return 0
 
 

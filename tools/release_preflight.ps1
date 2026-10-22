@@ -41,6 +41,8 @@ Require-File 'srchybrid\eSE\eSE-live\channel_api.js'
 Require-File 'srchybrid\eSE\eSE-live\live_tv_page.js'
 Require-File 'srchybrid\eSE\eSE-live\update_notifier.js'
 Require-File 'srchybrid\eSE\eSE-live\ws_tunnel.js'
+Require-File 'installer.iss'
+Require-File 'GUIA-RAPIDA.md'
 Require-File 'srchybrid\config\nodes.dat.b64'
 Require-File 'srchybrid\config\nodes.dat.sha256'
 Require-File 'srchybrid\eMule.tmpl'
@@ -255,6 +257,19 @@ if ($channelApiSource -match 'api\.github\.com|https\.get\s*\(' -or
 if ($livePageSource -match
     '/api/(?:eSE/update/check|live/update_(?:status|check|run))') {
     Fail 'LiveTV page still invokes a legacy updater route'
+}
+$serverSource = Get-Content (Join-Path $RepoRoot 'srchybrid\eSE\server.js') -Raw
+if ($serverSource -notmatch [regex]::Escape("eSE v$tagVersion -")) {
+    Fail "server.js does not display eSE v$tagVersion"
+}
+$installerSource = Get-Content (Join-Path $RepoRoot 'installer.iss') -Raw
+if ($installerSource -notmatch "(?m)^AppVersion=$([regex]::Escape($tagVersion))\s*$") {
+    Fail "installer.iss does not declare AppVersion=$tagVersion"
+}
+$quickGuide = Get-Content (Join-Path $RepoRoot 'GUIA-RAPIDA.md') -Raw
+if ($quickGuide -notmatch [regex]::Escape("eMule eSE $tagVersion") -or
+    $quickGuide -notmatch [regex]::Escape("v0.70b-eSE$tagVersion")) {
+    Fail "GUIA-RAPIDA.md is not aligned with $tagVersion"
 }
 
 $packageScript = Get-Content (Join-Path $RepoRoot 'build_package.ps1') -Raw

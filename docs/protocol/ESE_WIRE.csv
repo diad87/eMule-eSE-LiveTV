@@ -1,0 +1,74 @@
+name,value_kind,value,namespace,status,format,capability_gate,file
+K6_CAP_DIRECT_INDEX_V1,number,0x0000000100000000,KAD6-SIGNED-CAP64,design,bit32 direct index with Control/1 and contact refresh24/25,local consent+persistent identity+verified public contact+active index and refresh receivers; not advertised yet,srchybrid/EseKad6ServiceCapabilities.h
+K6_CAP_PEER_RDV_V1,number,0x0000000200000000,KAD6-SIGNED-CAP64,design,bit33 peer rendezvous signalling only,local consent+persistent identity+verified public contact+active rendezvous receiver; not advertised yet,srchybrid/EseKad6ServiceCapabilities.h
+kEseWireKad6DirectIndexDomain,string,ESE-KAD6-DIRECT/1,ESE-KAD6-DIRECT-INDEX-DOMAIN,design,NUL terminated index key derivation domain,derivation only; no capability announcement,srchybrid/EseWireProtocol.h
+kEseWireK6DirectSourceDomain,string,ESE-K6-DIRECT/1,ESE-K6-DIRECT-SOURCE-DOMAIN,design,NUL terminated source record signature domain,codec only; authenticated index admission pending,srchybrid/EseWireProtocol.h
+kEseWireK6DirectSourceVersion,number,1,ESE-K6-DIRECT-SOURCE-VERSION,design,K6DirectSource1 version,codec only; no index announcement,srchybrid/EseWireProtocol.h
+kEseWireReachAuthDomain,string,ESE-REACH/3,ESE-REACH-AUTH-DOMAIN,design,NUL terminated descriptor signature domain,codec only; verification/replay/ticket validation pending,srchybrid/EseWireProtocol.h
+kEseWireDescriptorVersion,number,3,ESE-DESCRIPTOR-VERSION,design,ReachDescriptor3 version,codec only; no discovery announcement,srchybrid/EseWireProtocol.h
+kEseWireCookieDomain,string,ESE-COOKIE/1,ESE-COOKIE-DOMAIN,design,NUL terminated HMAC domain,HMAC+endpoint+epoch verification pending; no authority,srchybrid/EseWireProtocol.h
+kEseWireUdpAuthDomain,string,ESE-CTRL/1,ESE-UDP-AUTH-DOMAIN,design,NUL terminated signature domain,type codecs+crypto+fresh correlated control pending; no announcement,srchybrid/EseWireProtocol.h
+kEseWireUdpVersion,number,1,ESE-UDP-VERSION,design,Control/1 envelope version,structural codec only; no authorized receiver,srchybrid/EseWireProtocol.h
+kEseWireUdpProbe,number,1,ESE-UDP-CONTROL-TYPE,design,Control/1 Probe,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpChallenge,number,2,ESE-UDP-CONTROL-TYPE,design,Control/1 Challenge,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpProve,number,3,ESE-UDP-CONTROL-TYPE,design,Control/1 Prove,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpAck,number,4,ESE-UDP-CONTROL-TYPE,design,Control/1 Ack,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpRdvReserve,number,5,ESE-UDP-CONTROL-TYPE,design,Control/1 RdvReserve,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpRdvTicket,number,6,ESE-UDP-CONTROL-TYPE,design,Control/1 RdvTicket,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpRdvIntro,number,7,ESE-UDP-CONTROL-TYPE,design,Control/1 RdvIntro,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpRdvForward,number,8,ESE-UDP-CONTROL-TYPE,design,Control/1 RdvForward,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpRdvAccept,number,9,ESE-UDP-CONTROL-TYPE,design,Control/1 RdvAccept,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpWitnessRequest,number,10,ESE-UDP-CONTROL-TYPE,design,Control/1 WitnessRequest,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpWitnessReceipt,number,11,ESE-UDP-CONTROL-TYPE,design,Control/1 WitnessReceipt,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpBhpProbe,number,12,ESE-UDP-CONTROL-TYPE,design,Control/1 BhpProbe,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpBhpHit,number,13,ESE-UDP-CONTROL-TYPE,design,Control/1 BhpHit,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpCancel,number,14,ESE-UDP-CONTROL-TYPE,design,Control/1 Cancel,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpDescriptorPut,number,15,ESE-UDP-CONTROL-TYPE,design,Control/1 DescriptorPut,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpDescriptorGet,number,16,ESE-UDP-CONTROL-TYPE,design,Control/1 DescriptorGet,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpDescriptorResult,number,17,ESE-UDP-CONTROL-TYPE,design,Control/1 DescriptorResult,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpBhpOffer,number,18,ESE-UDP-CONTROL-TYPE,design,Control/1 BhpOffer,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpBhpAccept,number,19,ESE-UDP-CONTROL-TYPE,design,Control/1 BhpAccept,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpK6DirectPut,number,20,ESE-UDP-CONTROL-TYPE,design,Control/1 K6DirectPut,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpK6DirectPutResult,number,21,ESE-UDP-CONTROL-TYPE,design,Control/1 K6DirectPutResult,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpK6DirectFind,number,22,ESE-UDP-CONTROL-TYPE,design,Control/1 K6DirectFind,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpK6DirectFindResult,number,23,ESE-UDP-CONTROL-TYPE,design,Control/1 K6DirectFindResult,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpK6ContactGet,number,24,ESE-UDP-CONTROL-TYPE,design,Control/1 K6ContactGet,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireUdpK6ContactResult,number,25,ESE-UDP-CONTROL-TYPE,design,Control/1 K6ContactResult,envelope only; typed body+binding+freshness pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireCloseNoCandidate,number,1,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be NoCandidate,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseNoRoute,number,2,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be NoRoute,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseDirectUnreachable,number,3,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be DirectUnreachable,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireClosePeerIncompatible,number,4,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be PeerIncompatible,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseCapabilityMissing,number,5,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be CapabilityMissing,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseDeadline,number,6,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be Deadline,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseStaleTopology,number,7,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be StaleTopology,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseIdentityMismatch,number,8,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be IdentityMismatch,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireClosePinChanged,number,9,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be PinChanged,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseAuthTimeout,number,10,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be AuthTimeout,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseUdpBlocked,number,11,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be UdpBlocked,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseQuicNoProgress,number,12,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be QuicNoProgress,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseMtuTooSmall,number,13,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be MtuTooSmall,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseResourceLimit,number,14,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be ResourceLimit,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseDisabled,number,15,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be Disabled,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireClosePeerGone,number,16,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be PeerGone,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseBootstrapRequired,number,17,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be BootstrapRequired,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseDiscoveryUnavailable,number,18,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be DiscoveryUnavailable,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseStaleDescriptor,number,19,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be StaleDescriptor,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseRendezvousUnavailable,number,20,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be RendezvousUnavailable,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWireCloseLegacyCallbackUnavailable,number,21,ESE-PEER1-CLOSE-REASON,experimental,CLOSE reason u16be LegacyCallbackUnavailable,LAB_ONLY+authenticated receiver; emitter pending,srchybrid/EseWireProtocol.h
+kEseWirePeerAlpn,string,ese-peer/1,TLS-ALPN,experimental,QUIC v1 peer ALPN,LAB_ONLY+explicit opt-in+native receiver,srchybrid/EseWireProtocol.h
+kEseWirePeerAuthDomain,string,ESE-PEER-AUTH/1,ESE-AUTH-DOMAIN,experimental,NUL terminated signature domain,authenticated channel binding,srchybrid/EseWireProtocol.h
+kEseWireControlMagic,string,\x00ESECTL1,UDP-MAGIC,design,8 bytes without C terminator,Control/1 receiver pending; no advertisement,srchybrid/EseWireProtocol.h
+kEseWireDescriptorMagic,string,ESD3,ESE-DESCRIPTOR-MAGIC,design,4 bytes without C terminator,descriptor receiver pending; no emission,srchybrid/EseWireProtocol.h
+kEseWireCapQuicStream,number,1,ESE-PEER1-HELLO-CAPS,experimental,bit0 QUIC_STREAM,LAB_ONLY+native receiver+binding,srchybrid/EseWireProtocol.h
+kEseWireCapDvlProfile,number,2,ESE-PEER1-HELLO-CAPS,design,bit1 DVL_PROFILE,DVL receiver pending; do not advertise,srchybrid/EseWireProtocol.h
+kEseWireCapRemoteCredit,number,4,ESE-PEER1-HELLO-CAPS,design,bit2 REMOTE_CREDIT,credit receiver pending; do not advertise,srchybrid/EseWireProtocol.h
+kEseWireControlHello,number,1,ESE-PEER1-CONTROL,experimental,HELLO payload110,LAB_ONLY+provisional channel,srchybrid/EseWireProtocol.h
+kEseWireControlAuth,number,2,ESE-PEER1-CONTROL,experimental,AUTH payload65,LAB_ONLY+HELLO transcript,srchybrid/EseWireProtocol.h
+kEseWireControlClose,number,3,ESE-PEER1-CONTROL,experimental,CLOSE payload2; reason semantics pending,LAB_ONLY+NODE_BOUND; receiver only,srchybrid/EseWireProtocol.h
+kEseWireControlCreditRequest,number,4,ESE-PEER1-CONTROL,design,CREDIT_REQUEST,READY+REMOTE_CREDIT; receiver pending,srchybrid/EseWireProtocol.h
+kEseWireControlCreditReport,number,5,ESE-PEER1-CONTROL,design,CREDIT_REPORT,READY+REMOTE_CREDIT; receiver pending,srchybrid/EseWireProtocol.h
+kEseWireControlPing,number,6,ESE-PEER1-CONTROL,design,PING,READY; receiver pending,srchybrid/EseWireProtocol.h
+kEseWireControlPong,number,7,ESE-PEER1-CONTROL,design,PONG,READY; receiver pending,srchybrid/EseWireProtocol.h
+kEseWireControlDvlEnable,number,8,ESE-PEER1-CONTROL,design,DVL_ENABLE,READY+DVL_PROFILE; receiver pending,srchybrid/EseWireProtocol.h
+kEseWireControlDvlAck,number,9,ESE-PEER1-CONTROL,design,DVL_ACK,READY+DVL_PROFILE; receiver pending,srchybrid/EseWireProtocol.h
+kEseWireControlDvlDisable,number,10,ESE-PEER1-CONTROL,design,DVL_DISABLE,READY+DVL_PROFILE; receiver pending,srchybrid/EseWireProtocol.h

@@ -353,7 +353,22 @@ bool CServerSocket::ProcessPacket(const BYTE *packet, uint32 size, uint8 opcode)
 					}
 					break;
 				}
-				if (thePrefs.GetSmartIdCheck())
+				if (serverconnect->IsCallbackFallbackPending())
+					break; // duplicate/late ID packets do not establish an old login
+				// Lab-only callback retry: when this login's verification attempt
+				// is still current and another server can be tried, record the
+				// failed callback once and dispatch outside this packet parser.
+				if (::IsLowID(la->clientid) && !m_bRelayRouted &&
+					theApp.directreachability &&
+					m_ed2kVerificationAttempt.IsValid() &&
+					serverconnect->ScheduleCallbackFallback(this,
+						m_ed2kVerificationAttempt.topology_generation)) {
+					theApp.directreachability->ObserveServerIdChange(false,
+						m_ed2kVerificationAttempt);
+					break;
+				}
+				if (thePrefs.GetSmartIdCheck() && (!thePrefs.IsEseNetLabActive() ||
+					!serverconnect->HasUsedCallbackFallback()))
 					if (!::IsLowID(la->clientid))
 						thePrefs.SetSmartIdState(1);
 					else {

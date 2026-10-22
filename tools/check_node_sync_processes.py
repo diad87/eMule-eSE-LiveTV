@@ -35,9 +35,11 @@ def main() -> int:
             violations.append(
                 f"{source.relative_to(ROOT).as_posix()}:{line_no}: {line.strip()}")
 
-    if exception_calls != 1:
+    # rc.2 replaced the startup probe with the async process runner, so the
+    # documented exception is now optional; more than one is still a failure.
+    if exception_calls > 1:
         violations.append(
-            "srchybrid/eSE/hw_encoder.js must contain exactly one documented "
+            "srchybrid/eSE/hw_encoder.js may contain at most one documented "
             f"startup-only spawnSync call (found {exception_calls})")
 
     if violations:

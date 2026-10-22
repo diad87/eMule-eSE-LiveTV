@@ -749,6 +749,7 @@ bool WebAuthPolicy::IsLivePathStateChanging(const std::string& path)
 	static const char* const readOnlyPaths[] = {
 		"/api/status",
 		"/api/reach/status",
+		"/api/reach/direct",
 		"/api/live/metrics",
 		"/api/live/channels",
 		"/api/live/mesh",

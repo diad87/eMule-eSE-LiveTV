@@ -56,13 +56,23 @@ function Invoke-SafeCaller([string[]] $lines, [bool] $exerciseLocks = $false) {
     return [pscustomobject]@{ ExitCode=$process.ExitCode; Stdout=$stdout; Stderr=$stderr }
 }
 
+function Invoke-InspectorWithInput([object[]] $lines, [string] $journal) {
+    # Feed stdin from a file (UTF-8 without BOM, LF). Windows PowerShell 5.1
+    # pipes text to native programs through its own encoder, which the strict
+    # line parser rejects; the file keeps the input byte-exact on 5.1 and 7.
+    $inputFile = Join-Path (Get-Location) ('inspector-input-' + [guid]::NewGuid().ToString('N') + '.txt')
+    $body = (@($lines) | ForEach-Object { "$_" }) -join "`n"
+    [IO.File]::WriteAllText($inputFile, $body + "`n", (New-Object Text.UTF8Encoding($false)))
+    return & cmd /d /c "`"$inspectorPath`" --expect-pair `"$journal`" < `"$inputFile`""
+}
+
 function Invoke-Case([string] $variant, [string[]] $inputLines, [int] $expectedExit, [string] $expectedOutput) {
     Push-Location -LiteralPath $scratch
     try {
         & $fixturePath 'natmap-ownership.dat' $variant
         if ($LASTEXITCODE -ne 0) { throw 'fixture failed' }
         $fixtureHash = (Get-FileHash -LiteralPath 'natmap-ownership.dat' -Algorithm SHA256).Hash.ToLowerInvariant()
-        $actual = (@($inputLines) + "journal_sha256=$fixtureHash") | & $inspectorPath --expect-pair 'natmap-ownership.dat'
+        $actual = Invoke-InspectorWithInput ((@($inputLines) + "journal_sha256=$fixtureHash")) 'natmap-ownership.dat'
         $exitCode = $LASTEXITCODE
     } finally { Pop-Location }
     if ($exitCode -ne $expectedExit -or ($actual -join "`n") -ne $expectedOutput) { throw "case failed: $variant" }
@@ -82,14 +92,14 @@ try {
         & $fixturePath 'natmap-ownership.dat' 'valid'
         if ($LASTEXITCODE -ne 0) { throw 'direct fixture failed' }
         $currentHash = (Get-FileHash -LiteralPath 'natmap-ownership.dat' -Algorithm SHA256).Hash.ToLowerInvariant()
-        $invalid = @('generation=+9','tcp_local=41001','tcp_external=42001','udp_local=41002','udp_external=42002',"journal_sha256=$currentHash") | & $inspectorPath --expect-pair 'natmap-ownership.dat'
+        $invalid = Invoke-InspectorWithInput (@('generation=+9','tcp_local=41001','tcp_external=42001','udp_local=41002','udp_external=42002',"journal_sha256=$currentHash")) 'natmap-ownership.dat'
         $invalidExit = $LASTEXITCODE
-        $hashMismatch = (@($valid) + ('journal_sha256=' + ('0' * 64))) | & $inspectorPath --expect-pair 'natmap-ownership.dat'
+        $hashMismatch = Invoke-InspectorWithInput ((@($valid) + ('journal_sha256=' + ('0' * 64)))) 'natmap-ownership.dat'
         $hashMismatchExit = $LASTEXITCODE
-        $missing = (@($valid) + "journal_sha256=$currentHash") | & $inspectorPath --expect-pair 'missing.dat'
+        $missing = Invoke-InspectorWithInput ((@($valid) + "journal_sha256=$currentHash")) 'missing.dat'
         $missingExit = $LASTEXITCODE
         [IO.Directory]::CreateDirectory((Join-Path $scratch 'unreadable.dat')) | Out-Null
-        $unreadable = (@($valid) + "journal_sha256=$currentHash") | & $inspectorPath --expect-pair 'unreadable.dat'
+        $unreadable = Invoke-InspectorWithInput ((@($valid) + "journal_sha256=$currentHash")) 'unreadable.dat'
         $unreadableExit = $LASTEXITCODE
         $savedPreference = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'

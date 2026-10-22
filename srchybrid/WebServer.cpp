@@ -7,6 +7,7 @@
 #include <cmath>
 #include <vector>
 #include "emule.h"
+#include "DirectReachabilityManager.h"
 #include "StringConversion.h"
 #include "OtherFunctions.h"
 #include "WebApiSerializer.h"
@@ -2001,6 +2002,18 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 #endif
 	default:break;}if(hasSettings){const W10SettingsPort port=W10SettingsContext::Port();W10SettingsResponse response;if(RunW10LiveSettingsApi(settings,port,response)){W8StatusContext::Send(Data.pSocket,response.header,response.body);return;}}
 	ese::web::W10DiagnosticsRequest diagnostics;bool hasDiagnostics=false;switch(Data.webRoute){case ese::web::WebRouteId::ApiKrpStatus:diagnostics.operation=ese::web::W10DiagnosticsOperation::KrpStatus;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiReachStatus:diagnostics.operation=ese::web::W10DiagnosticsOperation::ReachStatus;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLivePreflight:diagnostics.operation=ese::web::W10DiagnosticsOperation::Preflight;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLiveMetrics:diagnostics.operation=ese::web::W10DiagnosticsOperation::Metrics;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLiveLog:diagnostics.operation=ese::web::W10DiagnosticsOperation::Log;diagnostics.log_n=_ttoi(_ParseURL(Data.sURL,_T("n")));hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLiveDebug:diagnostics.operation=ese::web::W10DiagnosticsOperation::Debug;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiEseNetlabIpv6Echo:diagnostics.operation=ese::web::W10DiagnosticsOperation::Ipv6Echo;diagnostics.target=W8Utf8(_ParseURL(Data.sURL,_T("target")));diagnostics.tcp_port=_ttoi(_ParseURL(Data.sURL,_T("tcp_port")));diagnostics.udp_port=_ttoi(_ParseURL(Data.sURL,_T("udp_port")));diagnostics.nonce=W8Legacy(_ParseURL(Data.sURL,_T("nonce")));diagnostics.timeout_ms=_ttoi(_ParseURL(Data.sURL,_T("timeout_ms")));if(diagnostics.timeout_ms==0)diagnostics.timeout_ms=5000;hasDiagnostics=true;break;default:break;}
+	// Direct Core (9.3) per-session diagnostics. /api/reach/status keeps the
+	// 9.2 reachability contract; this route serves the immutable DCO cache,
+	// which is safe to read from WebServer worker threads.
+	if(Data.webRoute==ese::web::WebRouteId::ApiReachDirect){
+		const std::string cached=theApp.directreachability ? theApp.directreachability->GetDirectStatusJson() :
+			std::string("{\"schema_version\":2,\"snapshot_sequence\":\"0\",\"available\":false,\"sessions\":[]}");
+		CStringA json(cached.c_str()),hdr;
+		hdr.Format("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\nContent-Length: %d\r\n\r\n",json.GetLength());
+		Data.pSocket->SendData(hdr,hdr.GetLength());
+		Data.pSocket->SendData(json,json.GetLength());
+		return;
+	}
 	if(hasDiagnostics){W10DiagnosticsContext context;const ese::web::W10DiagnosticsPort port{&context,W10DiagnosticsContext::Krp,W10DiagnosticsContext::Preflight,W10DiagnosticsContext::Metrics,W10DiagnosticsContext::Percentiles,W10DiagnosticsContext::Mean,W10DiagnosticsContext::Samples,W10DiagnosticsContext::Kad6,W10DiagnosticsContext::Log,W10DiagnosticsContext::Debug,W10DiagnosticsContext::Ipv6Echo,W10DiagnosticsContext::Reach};ese::web::W10DiagnosticsResponse response;if(ese::web::RunW10LiveDiagnosticsApi(diagnostics,port,response)){W8StatusContext::Send(Data.pSocket,response.header,response.body);return;}}
 	// W11 owns the remaining compatibility pages, media files and privacy operations.
 	ese::web::W11LegacyRequest legacy;legacy.loopback=Data.inadr.S_un.S_addr==htonl(INADDR_LOOPBACK);bool hasLegacy=false;

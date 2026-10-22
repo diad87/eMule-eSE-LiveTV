@@ -324,7 +324,7 @@ test('proxy wall-clock abort is wired independently of socket activity', { concu
   }
 });
 
-test('OMDb-backed routes return local 503 and invoke no dependency when unconfigured', { concurrency: false }, async () => {
+test('OMDb-backed fetchinfo returns local 503 and invokes no dependency when unconfigured', { concurrency: false }, async () => {
   const originalGetOmdbKey = apiKeys.getOmdbKey;
   let proxyCalls = 0;
   let fetchCalls = 0;
@@ -336,17 +336,10 @@ test('OMDb-backed routes return local 503 and invoke no dependency when unconfig
     fetchAndCacheMovie: () => { fetchCalls += 1; }
   });
   try {
-    for (const urlText of [
-      'http://127.0.0.1/api/movies/search?q=Matrix%26apikey%3Dcaller',
-      'http://127.0.0.1/api/movies/detail?id=tt0133093%26apikey%3Dcaller',
-      'http://127.0.0.1/api/movies/fetchinfo?title=Matrix'
-    ]) {
-      const response = proxy(urlText);
-      await response.done;
-      assert.equal(response.statusCode, 503);
-      assert.deepEqual(response.json(), { error: 'omdb_not_configured' });
-      assert.equal(response.body.includes(Buffer.from('caller')), false);
-    }
+    const response = proxy('http://127.0.0.1/api/movies/fetchinfo?title=Matrix');
+    await response.done;
+    assert.equal(response.statusCode, 503);
+    assert.deepEqual(response.json(), { error: 'omdb_not_configured' });
     assert.equal(proxyCalls, 0);
     assert.equal(fetchCalls, 0);
   } finally {
@@ -354,37 +347,77 @@ test('OMDb-backed routes return local 503 and invoke no dependency when unconfig
   }
 });
 
-test('OMDb-backed routes pass the configured credential separately from caller data', { concurrency: false }, async () => {
+// v9.3: catalogue search/detail use the TMDB-backed metadata service, which
+// resolves its credential server-side and never contacts TMDB without one.
+test('catalogue search and detail return local 503 without any outbound call when TMDB is unconfigured', { concurrency: false }, async () => {
+  let outbound = 0;
+  await withProxyStubs(
+    () => null,
+    () => { outbound += 1; return fakeRequest(); },
+    async () => {
+      for (const urlText of [
+        'http://127.0.0.1/api/movies/search?q=Matrix%26api_key%3Dcaller',
+        'http://127.0.0.1/api/movies/detail?id=tmdb%3Amovie%3A603',
+        'http://127.0.0.1/api/movies/season?id=tmdb%3Atv%3A1399&season=1'
+      ]) {
+        const response = proxy(urlText);
+        await response.done;
+        assert.equal(response.statusCode, 503);
+        assert.deepEqual(response.json(), { Response: 'False', error: 'tmdb_not_configured' });
+        assert.equal(response.body.includes(Buffer.from('caller')), false);
+      }
+      assert.equal(outbound, 0);
+    }
+  );
+});
+
+test('catalogue search injects only the configured TMDB key and keeps caller text as data', { concurrency: false }, async () => {
+  const configuredKey = 'fixture-configured-tmdb-key';
+  const targets = [];
+  await withProxyStubs(
+    () => configuredKey,
+    (target, _options, callback) => {
+      targets.push(new URL(String(target)));
+      const request = fakeRequest();
+      queueMicrotask(() => {
+        const upstream = Readable.from([Buffer.from('{"results":[]}')]);
+        upstream.statusCode = 200;
+        callback(upstream);
+      });
+      return request;
+    },
+    async () => {
+      const response = proxy('http://127.0.0.1/api/movies/search?q=Matrix%26api_key%3Dcaller');
+      await response.done;
+      assert.equal(response.statusCode, 200);
+      assert.equal(response.body.includes(Buffer.from(configuredKey)), false);
+      const invalid = proxy('http://127.0.0.1/api/movies/detail?id=tt0133093%26apikey%3Dcaller');
+      await invalid.done;
+      assert.equal(invalid.statusCode, 400);
+    }
+  );
+  assert.equal(targets.length, 1, 'an invalid catalogue id never reaches the provider');
+  assert.deepEqual(targets[0].searchParams.getAll('api_key'), [configuredKey]);
+  assert.equal(targets[0].searchParams.get('query'), 'Matrix&api_key=caller');
+});
+
+test('OMDb-backed fetchinfo passes the configured credential separately from caller data', { concurrency: false }, async () => {
   const originalGetOmdbKey = apiKeys.getOmdbKey;
   const configuredKey = 'fixture-configured-omdb-key';
-  const proxyCalls = [];
   const fetchCalls = [];
   apiKeys.getOmdbKey = () => configuredKey;
   moviesRoutes.init({
     CACHE_DIR: 'fixture-cache',
     loadSettings: () => ({ fixture: true }),
-    proxyOMDB: (params, response, key) => {
-      proxyCalls.push({ params, key });
-      response.writeHead(200, { 'Content-Type': 'application/json' });
-      response.end('{}');
-    },
+    proxyOMDB: () => assert.fail('catalogue routes no longer use the OMDb proxy'),
     fetchAndCacheMovie: (...args) => {
       fetchCalls.push(args);
       args[2]({ Response: 'False' });
     }
   });
   try {
-    const search = proxy('http://127.0.0.1/api/movies/search?q=Matrix%26apikey%3Dcaller');
-    await search.done;
-    const detail = proxy('http://127.0.0.1/api/movies/detail?id=tt0133093%26apikey%3Dcaller');
-    await detail.done;
     const fetchInfo = proxy('http://127.0.0.1/api/movies/fetchinfo?title=Matrix&raw=fixture.mkv');
     await fetchInfo.done;
-
-    assert.deepEqual(proxyCalls, [
-      { params: 's=Matrix%26apikey%3Dcaller', key: configuredKey },
-      { params: 'i=tt0133093%26apikey%3Dcaller&plot=full', key: configuredKey }
-    ]);
     assert.equal(fetchCalls.length, 1);
     assert.equal(fetchCalls[0][0], 'Matrix');
     assert.equal(fetchCalls[0][4].fixture, true);
@@ -393,7 +426,6 @@ test('OMDb-backed routes pass the configured credential separately from caller d
     apiKeys.getOmdbKey = originalGetOmdbKey;
   }
 });
-
 test('fetchinfo preserves a downstream fail-closed OMDb configuration result', { concurrency: false }, async () => {
   const originalGetOmdbKey = apiKeys.getOmdbKey;
   const configuredKey = 'fixture-route-key';

@@ -153,6 +153,10 @@ void TestSplitAndReassemblyGoldens()
     Check(result == ReassemblyResult::Complete,
           "out-of-order reassembly completes");
     Check(entry.message == message, "reassembled message is byte-exact");
+    Check(ReassemblyIngest(
+              entry, 0, 4, parsed[0].total, nullptr, 0)
+              == ReassemblyResult::Error,
+          "completed entry rejects inconsistent fragment count");
 
     ReassemblyEntry duplicate;
     result = ReassemblyIngest(
@@ -186,6 +190,11 @@ void TestSplitAndReassemblyGoldens()
               empty.data_len) == ReassemblyResult::Complete
               && empty_entry.message.empty(),
           "zero-byte message reassembles safely");
+    ReassemblyEntry null_empty_entry;
+    Check(ReassemblyIngest(null_empty_entry, 0, 1, 0, nullptr, 0)
+              == ReassemblyResult::Complete
+              && null_empty_entry.message.empty(),
+          "empty fragment with null data reassembles safely");
 }
 
 void TestBoundsAndMalformedInputs()

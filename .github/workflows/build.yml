@@ -62,14 +62,6 @@ jobs:
         working-directory: srchybrid/eSE
         run: npm ci --no-audit --no-fund
 
-      # Diagnostic: resolve a patched transitive dependency in the runner.
-      # The committed lockfile must be updated before this can be a release gate.
-      - name: Resolve patched undici for diagnosis
-        working-directory: srchybrid/eSE
-        run: |
-          npm update undici --no-audit --no-fund
-          node -e "console.log('UNDICI_LOCK=' + JSON.stringify(require('./package-lock.json').packages['node_modules/undici']))"
-
       - name: Test eSE Node server
         working-directory: srchybrid/eSE
         run: npm test

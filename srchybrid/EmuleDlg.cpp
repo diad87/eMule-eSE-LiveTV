@@ -1067,6 +1067,7 @@ LRESULT CemuleDlg::OnProcessKnownMetSave(WPARAM, LPARAM)
 	return 0;
 }
 
+#ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
 static bool RunReachBindingSelfTest()
 {
 	CNativeDirectSelfTestAccess::TestWindowIsolation();

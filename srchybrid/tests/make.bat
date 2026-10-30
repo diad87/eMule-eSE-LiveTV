@@ -2,9 +2,12 @@
 setlocal
 set "HERE=%~dp0"
 set "ROOT=%HERE%.."
-set "VCVARS=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+set "VCVARS="
+for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VCVARS=%%i\VC\Auxiliary\Build\vcvars64.bat"
+if not defined VCVARS (echo ERROR: Visual C++ tools not found & exit /b 3)
 if not exist "%VCVARS%" (echo ERROR: vcvars64 not found & exit /b 3)
 call "%VCVARS%" >nul 2>&1
+if errorlevel 1 exit /b 3
 cd /d "%ROOT%"
 if not exist tests\build mkdir tests\build
 

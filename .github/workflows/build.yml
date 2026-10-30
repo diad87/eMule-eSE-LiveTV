@@ -102,11 +102,6 @@ jobs:
             throw "ese-server.exe self-test failed with exit code $($p.ExitCode)"
           }
 
-      # ── 2) Standalone native policies/codecs ──────────────────────────
-      - name: Run standalone native tests
-        shell: cmd
-        run: srchybrid\tests\make.bat
-
       # ── 3) emule.exe MFC build ────────────────────────────────────────
       # Node packaging is an explicit CI step. The native project does not
       # mutate or rebuild dashboard sources as a hidden pre-build side effect.
@@ -133,6 +128,11 @@ jobs:
           }
           $size = (Get-Item $exe).Length / 1MB
           Write-Host "emule.exe = $([math]::Round($size,1)) MB"
+
+      # ── 2) Standalone native policies/codecs ──────────────────────────
+      - name: Run standalone native tests
+        shell: cmd
+        run: srchybrid\tests\make.bat
 
       # ── 4) Self-test is a real gate ───────────────────────────────────
       - name: "Smoke: emule.exe self-test"

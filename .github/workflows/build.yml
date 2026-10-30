@@ -51,6 +51,8 @@ jobs:
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
+        with:
+          vs-version: '[17.0,18.0)'
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v5

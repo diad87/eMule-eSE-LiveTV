@@ -1765,8 +1765,8 @@ void CemuleDlg::RunHeadlessAction() noexcept
 						ScheduleSelfTestExit(1); return;
 					}
 					LaunchEseServer(false); // Actual launcher, owned child, no browser.
-					const auto deadline=GetTickCount64()+20000;
-					while (!GetOwnedEseDashboardPort(m_hEseProcess) && GetTickCount64()<deadline) {
+					const DWORD started=GetTickCount();
+					while (!GetOwnedEseDashboardPort(m_hEseProcess) && static_cast<DWORD>(GetTickCount()-started)<20000) {
 						MSG message;
 						while(PeekMessage(&message,nullptr,0,0,PM_REMOVE)) {
 							TranslateMessage(&message); DispatchMessage(&message);

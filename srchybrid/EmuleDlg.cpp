@@ -1748,6 +1748,8 @@ static bool RunReachBindingSelfTest()
 	return true;
 }
 
+#endif // ESE_NATIVE_QUIC_LAB_AVAILABLE
+
 void CemuleDlg::RunHeadlessAction() noexcept
 {
 	try {
@@ -1762,8 +1764,8 @@ void CemuleDlg::RunHeadlessAction() noexcept
 						ScheduleSelfTestExit(1); return;
 					}
 					LaunchEseServer(false); // Actual launcher, owned child, no browser.
-					const auto deadline=ese::shared_socket_selftest::Now()+20000;
-					while (!GetOwnedEseDashboardPort(m_hEseProcess) && ese::shared_socket_selftest::Now()<deadline) {
+					const auto deadline=GetTickCount64()+20000;
+					while (!GetOwnedEseDashboardPort(m_hEseProcess) && GetTickCount64()<deadline) {
 						MSG message;
 						while(PeekMessage(&message,nullptr,0,0,PM_REMOVE)) {
 							TranslateMessage(&message); DispatchMessage(&message);
@@ -1795,7 +1797,13 @@ void CemuleDlg::RunHeadlessAction() noexcept
                 theApp.webserver->StartServer();
             }
 			bool passed=false;
-			try { passed=theApp.m_strQuicPairSelfTestRole.IsEmpty() ? RunReachBindingSelfTest() : ese::pair_selftest::Run(); }
+			try {
+#ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
+                passed=theApp.m_strQuicPairSelfTestRole.IsEmpty() ? RunReachBindingSelfTest() : ese::pair_selftest::Run();
+#else
+                LogError(LOG_STATUSBAR, _T("REACH_SELFTEST unavailable: native QUIC laboratory is not included in this build"));
+#endif
+            }
 			catch(CException* error) {
 				TCHAR message[1024]={}; GetExceptionMessage(*error,message,_countof(message));
 				LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: MFC exception: %s"),message);

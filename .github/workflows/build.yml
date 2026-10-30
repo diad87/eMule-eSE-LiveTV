@@ -6,7 +6,7 @@ name: build
 
 on:
   push:
-    branches: [ main, "release-*" ]
+    branches: [ main, "release-*", "codex/v93-ci-validation" ]
     paths:
       - '.github/workflows/build.yml'
       - 'srchybrid/**'

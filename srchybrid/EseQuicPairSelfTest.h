@@ -2,6 +2,18 @@
 // Two real products, explicit isolated same-host LAN enrollment. No peer socket
 // fixture, manual route scheduling, seeded block reservations or forged ACK.
 namespace ese { namespace pair_selftest {
+inline void FillEntropyFixture(BYTE* output, UINT count, uint32& state) {
+    // Fixed-seed xorshift32 in little-endian order; only the final word of
+    // the file can be partial because the I/O chunk size is divisible by 4.
+    for (UINT offset = 0; offset < count; offset += 4) {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        for (UINT byteIndex = 0; byteIndex < 4 && byteIndex < count - offset; ++byteIndex)
+            output[offset + byteIndex] = static_cast<BYTE>(state >> (8 * byteIndex));
+    }
+}
+
 inline bool Run() {
     using shared_socket_selftest::Require;
     using shared_socket_selftest::Now;
@@ -22,6 +34,7 @@ inline bool Run() {
     const CString root=rootText,address=addressText;
     const bool interrupt=GetPrivateProfileInt(_T("Pair"),_T("Interrupt"),0,ini)!=0;
     const UINT networkLossMs=GetPrivateProfileInt(_T("Pair"),_T("NetworkLossMs"),0,ini);
+    const bool productCadence=GetPrivateProfileInt(_T("Pair"),_T("ProductCadence"),0,ini)!=0;
     const bool recovery=interrupt || networkLossMs!=0;
     Require(!networkLossMs || (!interrupt && networkLossMs>=1000 && networkLossMs<=45000),"pair bounded exclusive silent network loss");
     Require((root.Left(7).CompareNoCase(_T("D:\\tmp\\"))==0 || root.Left(7).CompareNoCase(_T("C:\\tmp\\"))==0) && address==thePrefs.GetBindAddr(),"pair fresh tmp private bind");
@@ -38,6 +51,8 @@ inline bool Run() {
     Require(theApp.listensocket->StartListening() && theApp.clientudp->Create(),"pair binds real MFC sockets");
     manager.SynchronizeLocalSocketBindings();
     Require(manager.EnableNativeQuicLab(),"pair production native shared UDP host");
+    theApp.clientudp->EnablePairQuicPollSample();
+    Log(_T("QUIC_PAIR CADENCE product=%u"),static_cast<UINT>(productCadence));
     auto publish=[&](const CString& name,const BYTE* bytes,UINT count) {
         const CString path=root+_T("\\")+name,temp=path+_T(".tmp");
         Require(GetFileAttributes(path)==INVALID_FILE_ATTRIBUTES && GetFileAttributes(temp)==INVALID_FILE_ATTRIBUTES,"pair fresh publication");
@@ -51,6 +66,13 @@ inline bool Run() {
     uint64 uploadToken=0;
     // Pair-only observations of real scheduling; never scale clocks or budgets.
     uint64 sampleStart=Now(),lastPump=sampleStart,pumpCount=0,sleepTotal=0,workTotal=0,maxGap=0;
+    auto logPollSample=[&] {
+        const auto sample=theApp.clientudp->TakePairQuicPollSample();
+        if(!sample.polls) return;
+        Log(_T("QUIC_PAIR POLL polls=%I64u gap_samples=%I64u gap_total_ms=%I64u gap_max_ms=%I64u work_total_us=%I64u work_max_us=%I64u tx_packets=%I64u tx_bytes=%I64u tx_polls=%I64u tx_max_packets=%I64u"),
+            sample.polls,sample.gapSamples,sample.totalGapMs,sample.maxGapMs,sample.workUs,sample.maxWorkUs,
+            sample.txPackets,sample.txBytes,sample.txPolls,sample.maxTxPackets);
+    };
     theApp.HandleDebugLogQueue();
     auto pump=[&] {
         const auto pumpStart=Now();
@@ -81,8 +103,12 @@ inline bool Run() {
             uploadInterrupted=true; const BYTE marker=1; publish(_T("interrupt.ack"),&marker,1);
             if(!networkLossMs) Log(_T("QUIC_PAIR INTERRUPT upload epoch1 transport closed"));
         }
-        manager.TickDirectConnections();
-        theApp.uploadqueue->Process();
+        // DispatchMessage above runs the normal 100 ms UploadTimer in either
+        // mode. In product mode it is the sole driver of the active transfer.
+        if(!productCadence) {
+            manager.TickDirectConnections();
+            theApp.uploadqueue->Process();
+        }
         if(pairClient && theApp.clientlist->IsValidClient(pairClient)) observedUpload=(std::max)(observedUpload,pairClient->GetQueueSessionPayloadUp());
         if(pairLifetime && Now()>=nextTrace) { CNativeDirectSelfTestAccess::TracePair(manager,pairLifetime); nextTrace=Now()+1000; }
         const auto beforeSleep=Now(); workTotal+=beforeSleep-pumpStart;
@@ -96,6 +122,7 @@ inline bool Run() {
             Log(_T("QUIC_PAIR SCHEDULING role=%s window_ms=%I64u loops=%I64u wait_ms=%I64u work_ms=%I64u max_gap_ms=%I64u highres_requested=%u wait=message_or_timeout"),
                 upload?_T("upload"):_T("download"),afterSleep-sampleStart,pumpCount,sleepTotal,workTotal,maxGap,
                 static_cast<UINT>(thePrefs.GetHighresTimer()));
+            logPollSample();
             theApp.HandleDebugLogQueue();
             sampleStart=afterSleep; pumpCount=sleepTotal=workTotal=maxGap=0;
         }
@@ -139,7 +166,10 @@ inline bool Run() {
     const uint64 transferBudget=large?900000:60000;
     const CString fixtureName=fixtureBytes==65537?_T("pair-small.bin"):(large?_T("pair-f1.bin"):_T("pair-f2.bin"));
     const unsigned modulus=fixtureBytes==65537?251:256;
+    const bool highEntropy=GetPrivateProfileInt(_T("Pair"),_T("HighEntropy"),0,ini)!=0;
+    Log(_T("QUIC_PAIR FIXTURE high_entropy=%u"), static_cast<UINT>(highEntropy));
     std::vector<BYTE> chunk(65536);
+    uint32 entropyState = 0x9e3779b9u;
     std::array<BYTE,16> md4{};
     auto* client=new CUpDownClient(static_cast<CPartFile*>(nullptr),peerTcp,ntohl(ip),0,0,false);
     pairClient=client;
@@ -166,7 +196,10 @@ inline bool Run() {
         { CFile disk(directory+_T("\\")+name,CFile::modeCreate|CFile::modeWrite|CFile::shareExclusive);
           for(uint64 offset=0;offset<fixtureBytes;) {
               const UINT count=static_cast<UINT>((std::min)(static_cast<uint64>(chunk.size()),static_cast<uint64>(fixtureBytes)-offset));
-              for(UINT i=0;i<count;++i) chunk[i]=static_cast<BYTE>((offset+i)%modulus);
+              if (highEntropy)
+                  FillEntropyFixture(chunk.data(), count, entropyState);
+              else
+                  for(UINT i=0;i<count;++i) chunk[i]=static_cast<BYTE>((offset+i)%modulus);
               disk.Write(chunk.data(),count); offset+=count;
           }
           disk.Flush(); }
@@ -197,7 +230,13 @@ inline bool Run() {
                 Log(_T("QUIC_PAIR NETWORK_LOSS_UPLOAD PASS milliseconds=%u drops=%I64u epoch=%I64u slots=1"),networkLossMs,theApp.clientudp->PairUdpLossDrops(),state->epoch);
             } else Log(_T("QUIC_PAIR RECOVERY_UPLOAD PASS epoch=2 slots=1 same_attempt=1 same_subscriber=1"));
         }
-        theApp.sharedfiles->RemoveFile(source.get()); manager.TickDirectConnections();
+        theApp.sharedfiles->RemoveFile(source.get());
+        if(productCadence) {
+            const auto revokeUntil=Now()+1000;
+            while(manager.HasPendingDirectUpload(clientLifetime) && Now()<revokeUntil) pump();
+        } else {
+            manager.TickDirectConnections();
+        }
         Require(!manager.HasPendingDirectUpload(clientLifetime),"pair unshared file revokes upload authorization");
         publish(_T("upload.complete"),md4.data(),static_cast<UINT>(md4.size()));
     } else {
@@ -221,11 +260,18 @@ inline bool Run() {
             pump();
             if(Now()>=nextFlush && (download->GetStatus()==PS_READY || download->GetStatus()==PS_EMPTY)) { download->FlushBuffer(); nextFlush=Now()+200; }
             if(recovery && !interrupted && download->GetCompletedSize()>=67108864) {
+                const auto record=manager.ResolveDirectSubscriber(subscriber);
+                before=record && record->attempt ? manager.DirectConnections().Snapshot(*record->attempt) : std::nullopt;
+                Require(before && before->epoch==1 && before->winner && client->socket,
+                    "pair interruption actual epoch1 transfer");
+                // The file consumer may already have accepted bytes whose
+                // progress event has not reached the coordinator this tick.
+                if(before->useful_bytes<67108864) continue;
                 download->FlushBuffer(); const auto flushUntil=Now()+8000;
                 while(download->m_iWrites>0 && Now()<flushUntil) pump();
                 Require(download->m_iWrites==0,"pair interruption IOCP drained");
-                const auto record=manager.ResolveDirectSubscriber(subscriber);
-                before=record && record->attempt ? manager.DirectConnections().Snapshot(*record->attempt) : std::nullopt;
+                const auto flushedRecord=manager.ResolveDirectSubscriber(subscriber);
+                before=flushedRecord && flushedRecord->attempt ? manager.DirectConnections().Snapshot(*flushedRecord->attempt) : std::nullopt;
                 Require(before && before->epoch==1 && before->winner && before->useful_bytes>=67108864 && client->socket,
                     "pair interruption actual epoch1 progress");
                 CNativeDirectSelfTestAccess::CheckNativeTimeoutDelegation(*client->socket);
@@ -283,16 +329,23 @@ inline bool Run() {
         Require(download->GetStatus()==PS_COMPLETE,"pair product MD4 worker completed file");
         CFile disk(download->GetFilePath(),CFile::modeRead|CFile::shareDenyNone);
         Require(disk.GetLength()==fixtureBytes,"pair completed exact disk length");
+        std::vector<BYTE> expectedChunk(highEntropy ? chunk.size() : 0);
         for(uint64 offset=0;offset<fixtureBytes;) {
             const UINT count=static_cast<UINT>((std::min)(static_cast<uint64>(chunk.size()),static_cast<uint64>(fixtureBytes)-offset));
             Require(disk.Read(chunk.data(),count)==count,"pair completed chunk read");
-            for(UINT i=0;i<count;++i) Require(chunk[i]==static_cast<BYTE>((offset+i)%modulus),"pair completed disk byte for byte");
+            if (highEntropy) {
+                FillEntropyFixture(expectedChunk.data(), count, entropyState);
+                Require(memcmp(chunk.data(), expectedChunk.data(), count)==0,"pair completed disk byte for byte");
+            } else {
+                for(UINT i=0;i<count;++i) Require(chunk[i]==static_cast<BYTE>((offset+i)%modulus),"pair completed disk byte for byte");
+            }
             offset+=count;
         }
         Require(!memcmp(download->GetFileHash(),md4.data(),md4.size()),"pair completed multipart ed2k root correct");
         publish(_T("download.complete"),md4.data(),static_cast<UINT>(md4.size()));
         wait(_T("upload.complete")); // sender accounting/revocation completes before either process exits
     }
+    logPollSample();
     CString hash; for(const auto byte:md4) hash.AppendFormat(_T("%02X"),byte);
     Log(_T("QUIC_PAIR PASS role=%s bytes=%u MD4=%s two independent product processes exact SameLan pinned enrollment normal queue bootstrap AUTH HELLO file negotiation disk completion"),
         (LPCTSTR)theApp.m_strQuicPairSelfTestRole,fixtureBytes,(LPCTSTR)hash);

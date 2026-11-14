@@ -370,6 +370,8 @@ void CUPnPImpl::LateEnableWebServerPort(uint16 nPort)
 void CUPnPImpl::RecordLeaseSuccess()
 {
 	const uint64 now = MonotonicMilliseconds();
+	if (SupportsMappingReadback())
+		m_readbackSchedule.Activate(m_dwMappingLeaseLifetime, now);
 	if (m_leaseRefreshSchedule.Activate(m_dwMappingLeaseLifetime, now))
 		m_permanentProbeSchedule.Clear();
 	else if (SupportsMappingHealthCheck())
@@ -383,6 +385,17 @@ bool CUPnPImpl::IsLeaseRefreshDue() const
 	const uint64 now = MonotonicMilliseconds();
 	return m_leaseRefreshSchedule.ShouldAttempt(now)
 		|| m_permanentProbeSchedule.ShouldAttempt(now);
+}
+
+bool CUPnPImpl::BeginMappingReadbackIfDue()
+{
+	return m_readbackSchedule.Mark(MonotonicMilliseconds());
+}
+
+void CUPnPImpl::RecordMappingReadbackLoss()
+{
+	m_bUPnPPortsForwarded = TRIS_FALSE;
+	m_readbackSchedule.Clear();
 }
 
 bool CUPnPImpl::IsLeaseExpired() const

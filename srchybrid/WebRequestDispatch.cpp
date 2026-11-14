@@ -398,9 +398,8 @@ std::uint64_t WebRequestAuthNowMs() noexcept
 	// GetTickCount64 declaration is hidden. Resolve the real 64-bit monotonic
 	// clock on supported systems and retain a locked wrap-extension fallback.
 	typedef ULONGLONG (WINAPI *GetTickCount64Fn)();
-	static GetTickCount64Fn getTickCount64 =
-		reinterpret_cast<GetTickCount64Fn>(GetProcAddress(
-			GetModuleHandleW(L"kernel32.dll"), "GetTickCount64"));
+	static const auto getTickCount64 = reinterpret_cast<GetTickCount64Fn>(
+		reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetTickCount64")));
 	if (getTickCount64 != NULL)
 		return static_cast<std::uint64_t>(getTickCount64());
 	static CCriticalSection legacyClockLock;

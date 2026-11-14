@@ -155,7 +155,7 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_upnp_recovery_po
 if errorlevel 1 exit /b 1
 build\test_upnp_recovery_policy.exe
 if errorlevel 1 exit /b 1
-cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Febuild\test_miniupnpc_checked_copy.exe tests\test_miniupnpc_checked_copy.cpp
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /DMINIUPNP_STATICLIB /D_CRT_SECURE_NO_WARNINGS /I..\miniupnpc\include /Febuild\test_miniupnpc_checked_copy.exe tests\test_miniupnpc_checked_copy.cpp ..\miniupnpc\src\upnpcommands.c ..\miniupnpc\src\upnpreplyparse.c ..\miniupnpc\src\minixml.c ..\miniupnpc\src\portlistingparse.c
 if errorlevel 1 exit /b 1
 build\test_miniupnpc_checked_copy.exe
 if errorlevel 1 exit /b 1

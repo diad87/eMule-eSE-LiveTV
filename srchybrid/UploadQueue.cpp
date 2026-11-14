@@ -963,7 +963,7 @@ VOID CALLBACK CUploadQueue::UploadTimer(HWND /*hwnd*/, UINT /*uMsg*/, UINT_PTR /
 
 		theApp.uploadqueue->Process();
 		theApp.downloadqueue->Process();
-        if (theApp.clientudp != NULL)
+        if (theApp.clientudp != NULL && !theApp.clientudp->HasQuicTransferTimer())
             theApp.clientudp->PollQuicIngress();
         if (theApp.directreachability != NULL) {
             theApp.directreachability->TickDirectConnections();

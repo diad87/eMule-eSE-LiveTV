@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory=$true)][string]$Executable,
     [Parameter(Mandatory=$true)][string]$NativeDependencyRoot,
     [ValidateSet('x64','Win32')][string]$Architecture='x64',
+    [switch]$SignedQuic,
     [Parameter(Mandatory=$true)][string]$OutputRoot,
     [Parameter(Mandatory=$true)][string]$Address,
     [Parameter(Mandatory=$true)][int]$InterfaceId,
@@ -10,29 +11,42 @@ param(
     [switch]$Interrupt,
     [ValidateSet(0,1000,5000,15000,30000,45000)][int]$NetworkLossMs=0,
     [switch]$HighresTimer,
+    [switch]$ProductCadence,
+    [switch]$HighEntropy,
     [switch]$DiagnosticVerbose
 )
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'start_v93_detached_process.ps1')
 if($Interrupt -and $FileBytes -ne 1073741824){throw 'Interruption requires the 1 GiB fixture.'}
 if($NetworkLossMs -and ($Interrupt -or $FileBytes -ne 1073741824)){throw 'Silent network loss requires F1 and cannot request transport Close.'}
 $fixtureName=if($FileBytes -eq 65537){'pair-small.bin'}elseif($FileBytes -eq 1048576){'pair-f2.bin'}else{'pair-f1.bin'}
 if($FileBytes -eq 1073741824 -and !$PSBoundParameters.ContainsKey('TimeoutSeconds')) { $TimeoutSeconds=1100 }
-$oracleBytes=New-Object byte[] ([Math]::Min($FileBytes,65536))
-$patternModulus=if($FileBytes -eq 65537){251}else{256}
-$oracleHasher=[Security.Cryptography.SHA256]::Create()
-try {
-    for($offset=0L;$offset -lt $FileBytes;) {
-        $count=[int][Math]::Min($oracleBytes.Length,$FileBytes-$offset)
-        if($offset -eq 0 -or $patternModulus -ne 256) {
-            for($i=0;$i -lt $count;$i++){ $oracleBytes[$i]=[byte](($offset+$i) % $patternModulus) }
-        }
-        $null=$oracleHasher.TransformBlock($oracleBytes,0,$count,$oracleBytes,0)
-        $offset+=$count
+$patternModulus=$null
+if ($HighEntropy) {
+    # SHA-256 of the xorshift32 little-endian byte stream seeded with 0x9e3779b9.
+    $expectedSha=switch ($FileBytes) {
+        65537 { '0F854C67CB0F1D989949207E015424C779A02ED7481262CA2FCE5B8E24CC9F1E' }
+        1048576 { '3E75EC671075E4115FC876C4C55D5ABBAC3BFE487A67FF4CA2DB38386A014F27' }
+        1073741824 { '6728F0CBB20D5794050D5D752FCBC0EDF6ED8B87E9E66F9E4BA9EEA70C826837' }
     }
-    $null=$oracleHasher.TransformFinalBlock([byte[]]@(),0,0)
-    $expectedSha=([BitConverter]::ToString($oracleHasher.Hash)).Replace('-','')
+} else {
+    $oracleBytes=New-Object byte[] ([Math]::Min($FileBytes,65536))
+    $patternModulus=if($FileBytes -eq 65537){251}else{256}
+    $oracleHasher=[Security.Cryptography.SHA256]::Create()
+    try {
+        for($offset=0L;$offset -lt $FileBytes;) {
+            $count=[int][Math]::Min($oracleBytes.Length,$FileBytes-$offset)
+            if($offset -eq 0 -or $patternModulus -ne 256) {
+                for($i=0;$i -lt $count;$i++){ $oracleBytes[$i]=[byte](($offset+$i) % $patternModulus) }
+            }
+            $null=$oracleHasher.TransformBlock($oracleBytes,0,$count,$oracleBytes,0)
+            $offset+=$count
+        }
+        $null=$oracleHasher.TransformFinalBlock([byte[]]@(),0,0)
+        $expectedSha=([BitConverter]::ToString($oracleHasher.Hash)).Replace('-','')
+    }
+    finally { $oracleHasher.Dispose() }
 }
-finally { $oracleHasher.Dispose() }
 $root=[IO.Path]::GetFullPath($OutputRoot)
 if((!$root.StartsWith('D:\tmp\',[StringComparison]::OrdinalIgnoreCase) -and !$root.StartsWith('C:\tmp\',[StringComparison]::OrdinalIgnoreCase)) -or (Test-Path -LiteralPath $root)) { throw 'A fresh C:\tmp or D:\tmp pair root is required.' }
 $driveInfo=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($root))
@@ -49,7 +63,7 @@ $profiles=@(); $prepared=@()
 for($n=0;$n -lt 2;$n++) {
     $role=if($n -eq 0){'upload'}else{'download'}
     $profile=Join-Path $root $role
-    & (Join-Path $PSScriptRoot 'prepare_reach_binding_selftest.ps1') -Executable $Executable -ProfileRoot $profile -NativeDependencyRoot $NativeDependencyRoot -NativeArchitecture $Architecture -TcpPort $tcpPorts[$n] -UdpPort $udpPorts[$n]
+    & (Join-Path $PSScriptRoot 'prepare_reach_binding_selftest.ps1') -Executable $Executable -ProfileRoot $profile -NativeDependencyRoot $NativeDependencyRoot -NativeArchitecture $Architecture -SignedQuic:$SignedQuic -TcpPort $tcpPorts[$n] -UdpPort $udpPorts[$n]
     $preferences=Join-Path $profile 'config/preferences.ini'
     $content=[IO.File]::ReadAllText($preferences).Replace('BindAddr=127.0.0.1',"BindAddr=$Address")
     # Explicit isolated LAN test rate; do not inherit the fresh-profile 80/90 KiB/s defaults.
@@ -61,19 +75,28 @@ for($n=0;$n -lt 2;$n++) {
     $pairPath=Join-Path $profile 'config/quic-pair.ini'
     $pairIni+="Interrupt=$([int]$Interrupt.IsPresent)`r`n"
     $pairIni+="NetworkLossMs=$NetworkLossMs`r`n"
+    $pairIni+="ProductCadence=$([int]$ProductCadence.IsPresent)`r`n"
+    $pairIni+="HighEntropy=$([int]$HighEntropy.IsPresent)`r`n"
     [IO.File]::WriteAllText($pairPath,$pairIni,[Text.Encoding]::ASCII)
     $profiles+=$profile
     $prepared+=@{role=$role;profile=$profile;executable_sha256=(Get-FileHash -LiteralPath (Join-Path $profile 'emule.exe')).Hash;preferences_sha256=(Get-FileHash -LiteralPath $preferences).Hash;pair_ini_sha256=(Get-FileHash -LiteralPath $pairPath).Hash}
 }
 if($prepared[0].executable_sha256 -ne $prepared[1].executable_sha256) { throw 'Pair executable mismatch.' }
 $processes=@()
-for($n=0;$n -lt 2;$n++) {
-    $role=if($n -eq 0){'upload'}else{'download'}
-    $processes+=Start-Process -FilePath (Join-Path $profiles[$n] 'emule.exe') -WorkingDirectory $profiles[$n] -ArgumentList @('--portable',"--quic-pair-selftest=$role",'--ignoreinstances') -WindowStyle Hidden -PassThru
+try {
+    for($n=0;$n -lt 2;$n++) {
+        $role=if($n -eq 0){'upload'}else{'download'}
+        $processes+=Start-V93DetachedProcess -FilePath (Join-Path $profiles[$n] 'emule.exe') -WorkingDirectory $profiles[$n] -ArgumentList @('--portable',"--quic-pair-selftest=$role",'--ignoreinstances')
+    }
+} catch {
+    foreach($process in $processes) {
+        try { $process.StopIncompleteLaunch() }
+        finally { $process.Dispose() }
+    }
+    throw
 }
 $deadline=[DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 do {
-    foreach($process in $processes) { $process.Refresh() }
     if(@($processes | Where-Object { !$_.HasExited }).Count -eq 0) { break }
     Start-Sleep -Milliseconds 250
 } while([DateTime]::UtcNow -lt $deadline)
@@ -85,6 +108,11 @@ for($n=0;$n -lt 2;$n++) {
     $role=if($n -eq 0){'upload'}else{'download'}
     $exitCode=if($processes[$n].HasExited){$processes[$n].ExitCode}else{$null}
     $marker=$text.Contains("QUIC_PAIR PASS role=$role bytes=$FileBytes MD4=")
+    if ($HighEntropy) { $marker=$marker -and $text.Contains('QUIC_PAIR FIXTURE high_entropy=1') }
+    if($ProductCadence) {
+        $marker=$marker -and $text.Contains('QUIC_PAIR CADENCE product=1') -and
+            $text -match 'QUIC_PAIR POLL polls=[1-9]\d* '
+    }
     if($Interrupt) {
         $recoveryMarker=if($n -eq 0){'QUIC_PAIR RECOVERY_UPLOAD PASS epoch=2'}else{'QUIC_PAIR RECOVERY_DOWNLOAD PASS epoch=2'}
         $marker=$marker -and $text.Contains($recoveryMarker)
@@ -98,7 +126,7 @@ for($n=0;$n -lt 2;$n++) {
         if($dropMatches.Count -eq 1){$roleDrops=[UInt64]::Parse($dropMatches[0].Groups[1].Value);$lossDrops+=$roleDrops}
     }
     $pass=$pass -and ($exitCode -eq 0) -and $marker
-    $runs+=@{pid=$processes[$n].Id;role=$role;terminal=$processes[$n].HasExited;exit_code=$exitCode;pass_marker=$marker;silent_udp_drops=$roleDrops;log_sha256=if(Test-Path -LiteralPath $log){(Get-FileHash -LiteralPath $log).Hash}else{$null}}
+    $runs+=@{pid=$processes[$n].Id;desktop=$processes[$n].Desktop;role=$role;terminal=$processes[$n].HasExited;exit_code=$exitCode;pass_marker=$marker;silent_udp_drops=$roleDrops;log_sha256=if(Test-Path -LiteralPath $log){(Get-FileHash -LiteralPath $log).Hash}else{$null}}
 }
 if($NetworkLossMs){$pass=$pass -and $lossDrops -gt 0} # Either endpoint may discard all ACKs before its peer sends; zero total never passes.
 $incoming=Join-Path $profiles[1] "Incoming/$fixtureName"
@@ -108,11 +136,14 @@ $receivedSha=if(Test-Path -LiteralPath $incoming){(Get-FileHash -LiteralPath $in
 $pass=$pass -and $sourceSha -and $receivedSha -and ($sourceSha -eq $expectedSha) -and ($receivedSha -eq $expectedSha) -and ((Get-Item -LiteralPath $incoming).Length -eq $FileBytes)
 $result=[ordered]@{schema='ese.v93.quic-product-pair/1';scope='Two real product processes on an explicitly enrolled exact RFC1918 same-host /32; not WAN/NAT or zero-trust discovery acceptance';terminal=$terminal;verdict=if(!$terminal){'RUNNING'}elseif($pass){'PASS'}else{'FAIL'};architecture=$Architecture;address=$Address;interface=$InterfaceId;prepared=$prepared;runs=$runs;bytes=65537;source_sha256=$sourceSha;received_sha256=$receivedSha;md4=if(Test-Path -LiteralPath (Join-Path $root 'download.complete')){([BitConverter]::ToString([IO.File]::ReadAllBytes((Join-Path $root 'download.complete')))).Replace('-','')}else{$null}}
 $result.bytes=$FileBytes
+$result.signed_quic_dependencies=$SignedQuic.IsPresent
 $result.fixture_name=$fixtureName
+$result.fixture_pattern=if ($HighEntropy) { 'xorshift32-le-9e3779b9' } else { 'offset-modulus' }
 $result.pattern_modulus=$patternModulus
 $result.expected_sha256=$expectedSha
 $result.profile_rate_limit_kib_s=16384
 $result.profile_highres_timer_requested=$HighresTimer.IsPresent
+$result.product_cadence_requested=$ProductCadence.IsPresent
 $result.profile_debug_to_disk_requested=$DiagnosticVerbose.IsPresent
 $result.timer_scope='Existing application preference in a fresh portable lab profile; no clock scaling or transfer/recovery deadline changes'
 $result.interruption_requested=$Interrupt.IsPresent
@@ -122,5 +153,6 @@ $result.silent_udp_loss_scope='Pair-only exact endpoint outbound/inbound datagra
 $result.interruption_scope='Explicit close of both actual QUIC transports after at least64MiB; not OS/network packet loss or process restart'
 [IO.File]::WriteAllText((Join-Path $root 'pair-evidence.json'),($result|ConvertTo-Json -Depth 6),[Text.Encoding]::UTF8)
 Write-Output ($result|ConvertTo-Json -Depth 6)
+foreach($process in $processes) { $process.Dispose() }
 if(!$terminal) { throw 'Observation deadline; processes left alive. Observe before editing inputs or starting another pair.' }
 if(!$pass) { throw 'Product pair failed; evidence retained.' }

@@ -476,6 +476,11 @@ BOOL CemuleApp::InitInstance()
 
 	if (ProcessCommandline())
 		return FALSE;
+	if (m_bHeadless) {
+		::SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+		if (theCrashDumper.uCreateCrashDump == 1)
+			theCrashDumper.uCreateCrashDump = 2;
+	}
 
 	///////////////////////////////////////////////////////////////////////////
 	// Common Controls initialization
@@ -674,7 +679,17 @@ BOOL CemuleApp::InitInstance()
 	m_pPartHashThread = new CPartHashThread(); // eSE H1
 
 	thePerfLog.Startup();
-	emuledlg->DoModal();
+	if (m_bHeadless) {
+		// The normal modal loop automatically shows the dialog on idle. The
+		// hidden dialog still needs a HWND for socket, timer and worker messages.
+		if (emuledlg->Create(IDD_EMULE_DIALOG)) {
+			emuledlg->RunModalLoop(MLF_NOIDLEMSG);
+			emuledlg->DestroyWindow();
+		}
+		m_pMainWnd = NULL;
+	} else {
+		emuledlg->DoModal();
+	}
 	// Normal OnCancel tears this down before WebServer/TLS. Keep a fallback for
 	// early modal termination paths so no relay worker survives the main window.
 	if (relayclient != NULL) {
@@ -734,6 +749,21 @@ int CemuleApp::ExitInstance()
 
 	const int baseExitCode = CWinApp::ExitInstance();
 	return (m_bSelfTest || m_bReachBindingSelfTest) ? m_nSelfTestExitCode : baseExitCode;
+}
+
+int CemuleApp::DoMessageBox(LPCTSTR prompt, UINT type, UINT promptId)
+{
+	if (!m_bHeadless)
+		return CWinApp::DoMessageBox(prompt, type, promptId);
+	::OutputDebugString(prompt);
+	::OutputDebugString(_T("\n"));
+	switch (type & MB_TYPEMASK) {
+	case MB_OK: return IDOK;
+	case MB_YESNO:
+	case MB_YESNOCANCEL: return IDNO;
+	case MB_ABORTRETRYIGNORE: return IDABORT;
+	default: return IDCANCEL;
+	}
 }
 
 #ifdef _DEBUG
@@ -829,6 +859,11 @@ bool CemuleApp::ProcessCommandline()
 				m_uHeadlessUdpPort = (uint16)_ttoi(pszParam + 9);
 			}
 		}
+	}
+
+	if (m_bSelfTest) {
+		m_bHeadless = true;
+		m_nSelfTestExitCode = 1;
 	}
 
 	CCommandLineInfo cmdInfo;

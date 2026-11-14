@@ -409,7 +409,8 @@ test('release dashboard is loopback-only and legacy updates fail closed', () => 
   assert.match(updateCheck, /Automatic installation is disabled/);
   assert.match(preflight, /package-lock\.json/);
   assert.match(preflight, /GPL-2\.0-only/);
-  assert.equal(pkg.version, '9.2.0-rc.2');
+  const nativeVersion = fs.readFileSync(path.join(__dirname, '..', '..', 'Version.h'), 'utf8');
+  assert.equal(pkg.version, nativeVersion.match(/#define ESE_RELEASE_VERSION _T\("([^"]+)"\)/)?.[1]);
 });
 
 test('postponed dashboard remote access is inert and leaks no pairing state', () => {

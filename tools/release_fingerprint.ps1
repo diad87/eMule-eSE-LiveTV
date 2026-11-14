@@ -1,8 +1,46 @@
+function Test-ReleaseRequiresQuic {
+    param([Parameter(Mandatory = $true)][string]$ReleaseTag)
+
+    if ($ReleaseTag -notmatch '^v0\.70b-eSE(?<version>\d+\.\d+\.\d+)(?:-(?:alpha|beta|rc)\.\d+)?$') {
+        throw "Invalid release tag: $ReleaseTag"
+    }
+    return [version]$Matches.version -ge [version]'9.3.0'
+}
+
+function Get-ReleaseQuicManifestHash {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$QuicReleaseRoot
+    )
+
+    $manifest = Join-Path $QuicReleaseRoot 'manifest-x64.json'
+    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifest).Hash
+    & (Join-Path $RepoRoot 'tools\verify_quic_release_dependencies.ps1') `
+        -Root $QuicReleaseRoot -Architecture x64 -ExpectedManifestSha256 $hash | Out-Null
+    return $hash
+}
+
+function Assert-ReleaseQuicBinary {
+    param(
+        [Parameter(Mandatory = $true)][string]$BinaryPath,
+        [Parameter(Mandatory = $true)][string]$QuicManifestSha256
+    )
+
+    if ($QuicManifestSha256 -notmatch '^[0-9A-Fa-f]{64}$') {
+        throw 'Signed QUIC build requires a manifest SHA-256'
+    }
+    $versionInfo = (Get-Item -LiteralPath $BinaryPath).VersionInfo
+    if ($versionInfo.Comments -ne "eSE QUIC manifest SHA-256 $QuicManifestSha256") {
+        throw 'emule.exe was not linked with the verified signed QUIC manifest'
+    }
+}
+
 function Get-ReleaseSourceFingerprint {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)]
-        [ValidateSet('emule', 'ese')][string]$Component
+        [ValidateSet('emule', 'ese')][string]$Component,
+        [switch]$IncludeQuic
     )
 
     $roots = if ($Component -eq 'ese') {
@@ -39,6 +77,17 @@ function Get-ReleaseSourceFingerprint {
         '^(?:srchybrid/(?!eSE/|tests/)|libkad6/|libnatmap/|libreach/|' +
         'librelayclient/|librelaycore/|relayedge/|cryptopp/|CxImage/|' +
         'id3lib/|libpng/|mbedtls/|miniupnpc/|ResizableLib/|zlib/).+'
+    }
+    if ($IncludeQuic) {
+        $quicInputs = @(
+            'third_party/quic',
+            'tools/quic',
+            'tools/build_quic_msys2_candidate.ps1',
+            'tools/verify_quic_release_dependencies.ps1'
+        )
+        $tracked += @(& git -C $RepoRoot -c core.quotepath=false ls-files -- $quicInputs)
+        if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate tracked QUIC release inputs' }
+        $include += '|^(?:third_party/quic/|tools/quic/|tools/(?:build_quic_msys2_candidate|verify_quic_release_dependencies)\.ps1$)'
     }
 
     $manifest = [Text.StringBuilder]::new()
@@ -104,11 +153,16 @@ function Write-ReleaseBinaryStamp {
         [Parameter(Mandatory = $true)]
         [ValidateSet('emule', 'ese')][string]$Component,
         [Parameter(Mandatory = $true)][string]$BinaryPath,
-        [Parameter(Mandatory = $true)][string]$StampPath
+        [Parameter(Mandatory = $true)][string]$StampPath,
+        [string]$QuicManifestSha256
     )
 
     if (-not (Test-Path -LiteralPath $BinaryPath -PathType Leaf)) {
         throw "Release binary is missing: $BinaryPath"
+    }
+    $requiresQuic = $Component -eq 'emule' -and (Test-ReleaseRequiresQuic $ReleaseTag)
+    if ($requiresQuic) {
+        Assert-ReleaseQuicBinary -BinaryPath $BinaryPath -QuicManifestSha256 $QuicManifestSha256
     }
     $stampParent = Split-Path -Parent $StampPath
     New-Item -ItemType Directory -Path $stampParent -Force | Out-Null
@@ -119,13 +173,14 @@ function Write-ReleaseBinaryStamp {
         releaseTag = $ReleaseTag
         commit = (& git -C $RepoRoot rev-parse HEAD).Trim()
         sourceFingerprint = Get-ReleaseSourceFingerprint `
-            -RepoRoot $RepoRoot -Component $Component
+            -RepoRoot $RepoRoot -Component $Component -IncludeQuic:$requiresQuic
         binarySha256 = (
             Get-FileHash -Algorithm SHA256 -LiteralPath $BinaryPath
         ).Hash.ToUpperInvariant()
         binaryLength = [long]$binary.Length
         builtAtUtc = [DateTime]::UtcNow.ToString('o')
     }
+    if ($requiresQuic) { $stamp.quicManifestSha256 = $QuicManifestSha256.ToUpperInvariant() }
     $stamp | ConvertTo-Json -Depth 3 |
         Set-Content -LiteralPath $StampPath -Encoding UTF8
 }
@@ -137,7 +192,8 @@ function Assert-ReleaseBinaryStamp {
         [Parameter(Mandatory = $true)]
         [ValidateSet('emule', 'ese')][string]$Component,
         [Parameter(Mandatory = $true)][string]$BinaryPath,
-        [Parameter(Mandatory = $true)][string]$StampPath
+        [Parameter(Mandatory = $true)][string]$StampPath,
+        [string]$QuicManifestSha256
     )
 
     if (-not (Test-Path -LiteralPath $BinaryPath -PathType Leaf)) {
@@ -156,12 +212,19 @@ function Assert-ReleaseBinaryStamp {
         [string]$stamp.releaseTag -ne $ReleaseTag) {
         throw "Release binary provenance identity mismatch for $Component"
     }
+    $requiresQuic = $Component -eq 'emule' -and (Test-ReleaseRequiresQuic $ReleaseTag)
+    if ($requiresQuic) {
+        Assert-ReleaseQuicBinary -BinaryPath $BinaryPath -QuicManifestSha256 $QuicManifestSha256
+        if ($stamp.quicManifestSha256 -ne $QuicManifestSha256) {
+            throw 'emule.exe build stamp was recorded for different QUIC dependencies'
+        }
+    }
     $head = (& git -C $RepoRoot rev-parse HEAD).Trim()
     if ([string]$stamp.commit -ne $head) {
         throw "Release binary was built from another commit: $Component"
     }
     $sourceFingerprint = Get-ReleaseSourceFingerprint `
-        -RepoRoot $RepoRoot -Component $Component
+        -RepoRoot $RepoRoot -Component $Component -IncludeQuic:$requiresQuic
     if ([string]$stamp.sourceFingerprint -ne $sourceFingerprint) {
         throw "Release binary is older than its source inputs: $Component"
     }

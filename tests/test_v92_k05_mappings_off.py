@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """K05 regression contract for the mappings-disabled baseline."""
 
+import re
 from pathlib import Path
 
 
@@ -23,7 +24,11 @@ def require(condition: bool, message: str) -> None:
 
 dialog = source("srchybrid/EmuleDlg.cpp")
 require(
-    "if (thePrefs.IsUPnPEnabled())\n\t\tStartUPnP();" in dialog,
+    re.search(
+        r"if \(thePrefs\.IsUPnPEnabled\(\)\)\s+"
+        r"(?:theApp\.emuledlg->)?StartUPnP\(\);",
+        dialog,
+    ) is not None,
     "startup must not enter mapper discovery while mappings are disabled",
 )
 require(

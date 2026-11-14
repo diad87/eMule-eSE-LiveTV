@@ -1571,7 +1571,11 @@ int CDownloadQueue::GetDownloadFilesStats(uint64 &rui64TotalFileSize
 #define WM_HOSTNAMERESOLVED		(WM_USER+0x105)	// does not need to be placed in "UserMsgs.h"
 
 BEGIN_MESSAGE_MAP(CSourceHostnameResolveWnd, CWnd)
+// ON_MESSAGE type-erases the LRESULT(WPARAM, LPARAM) member pointer.
+#pragma warning(push)
+#pragma warning(disable: 4191)
 	ON_MESSAGE(WM_HOSTNAMERESOLVED, OnHostnameResolved)
+#pragma warning(pop)
 END_MESSAGE_MAP()
 
 static void AppendResolvedSourceAddress(std::vector<CAddress>& addresses, const CAddress& address)

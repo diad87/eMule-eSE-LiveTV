@@ -34,6 +34,7 @@ enum class MappingOperation : std::uint8_t {
     Initial = 0,
     Refresh = 1,
     Delete = 2,
+    Readback = 3,
 };
 
 enum class MappingStatus : std::uint8_t {
@@ -43,6 +44,7 @@ enum class MappingStatus : std::uint8_t {
     Deleted = 3,
     Partial = 4,
     Failed = 5,
+    Observed = 6,
 };
 
 struct TransportMappingResult {

@@ -17,6 +17,10 @@ LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 // Version
 //
 
+#ifdef ESE_QUIC_SIGNED_RELEASE
+#include "EseQuicReleaseManifest.h"
+#endif
+
 VS_VERSION_INFO VERSIONINFO
         FILEVERSION         VERSION_MJR,VERSION_MIN,VERSION_UPDATE,VERSION_BUILD
         PRODUCTVERSION      VERSION_MJR,VERSION_MIN,VERSION_UPDATE,VERSION_BUILD
@@ -36,6 +40,9 @@ BEGIN
     BEGIN
         BLOCK "040904B0" // Lang=US English, CharSet=Unicode
         BEGIN
+#ifdef ESE_QUIC_SIGNED_RELEASE
+            VALUE "Comments", "eSE QUIC manifest SHA-256 " ESE_QUIC_RELEASE_MANIFEST_SHA256
+#endif
             VALUE "CompanyName", "https://www.emule-project.net"
             VALUE "FileDescription", "eMule eSE"
             VALUE "FileVersion", SZ_ESE_PRODUCT_VERSION " Unicode"

@@ -229,7 +229,8 @@ KrpRelayEnabled=1
     Assert-LabTest -Condition ($report.evidence_count -ge 6) -Message 'canonical evidence index'
     Assert-LabTest -Condition ([string]$report.notes -eq 'redaction fixture <redacted-ipv4>') `
         -Message 'canonical report did not redact note address'
-    Assert-LabTest -Condition ([string]$report.generated_at_utc -match '^\d{4}-\d{2}-\d{2}T.+Z$') `
+    # PowerShell 7.5 and later parse ISO 8601 strings into DateTime values.
+    Assert-LabTest -Condition ($reportText -match '"generated_at_utc"\s*:\s*"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z"') `
         -Message 'canonical report mistook timestamps for IPv6'
 
     & (Join-Path $labTools 'write_v91_campaign_ledger.ps1') `

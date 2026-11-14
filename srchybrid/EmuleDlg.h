@@ -283,6 +283,7 @@ protected:
 	static void CALLBACK UPnPLeaseTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
 	static void CALLBACK IPv6HealthTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
 	bool CheckUPnPLease();
+	void RefreshUPnP(bool bRequestAnswer, natmap::MappingOperation operation);
 	bool HandleUPnPNetworkChange(
 		const natmap::NetworkSignature& observedSignature);
 	bool ArmUPnPTimeout(UINT nMilliseconds);
@@ -346,6 +347,7 @@ protected:
 	afx_msg LRESULT OnUserChanged(WPARAM, LPARAM);
 	afx_msg LRESULT OnKickIdle(WPARAM, LPARAM lIdleCount);
 	afx_msg void OnShowWindow(BOOL bShow, UINT nStatus);
+	afx_msg void OnWindowPosChanging(WINDOWPOS *position);
 	afx_msg BOOL OnChevronPushed(UINT id, LPNMHDR pNMHDR, LRESULT *plResult);
 	afx_msg LRESULT OnPowerBroadcast(WPARAM wParam, LPARAM lParam);
 	afx_msg LRESULT OnDisplayChange(WPARAM, LPARAM);

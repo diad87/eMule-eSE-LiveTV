@@ -1,4 +1,4 @@
-# Third-party notices for eMule eSE 9.2.0-rc.2
+# Third-party notices for eMule eSE
 
 This inventory describes the content of the Windows x64 portable release,
 not every development tool installed on a build machine. eMule eSE and its
@@ -48,6 +48,23 @@ for readers of the portable binary package.
 Windows system libraries supplied by the operating system and the Visual C++
 toolchain are not redistributed as standalone files by this package.
 
+## Native QUIC runtime in eSE 9.3 and later
+
+`emule.exe` dynamically loads the x64 QUIC runtime from the DLLs beside the
+executable. These include ngtcp2 1.25.0, its GnuTLS adapter, and the signed
+MSYS2 GnuTLS 3.8.13-3 dependency set. The package includes the exact DLL
+inventory, build lock and upstream package identifiers under `third_party/quic`.
+[ngtcp2 release source](https://github.com/ngtcp2/ngtcp2/releases/tag/v1.25.0)
+· [MSYS2 GnuTLS x64 package](https://packages.msys2.org/packages/mingw-w64-x86_64-gnutls)
+
+The MIT notice for ngtcp2 and the GnuTLS and transitive library notices are
+included in `third_party/quic/notices-x64/`. The matching upstream tarball,
+MSYS2 source packages and detached signatures are in
+`third_party/quic/sources-x64/`. `third_party/quic/manifest-x64.json` records
+the staged source, notice and runtime file hashes. `BUILD_INFO.txt` identifies
+the manifest bound to this build. Retain these directories and the notices
+when redistributing the ZIP.
+
 ## Corresponding source
 
 - eMule eSE source, including the native libraries above and the first-party
@@ -63,6 +80,5 @@ toolchain are not redistributed as standalone files by this package.
 Data/configuration files are not presented here as separately licensed
 executable dependencies.
 
-_Inventory revalidated against the 9.2.0-rc.2 source and package-smoke requirements on
-2026-08-16. The release pipeline verifies the listed notices and runtime files
-inside the final package._
+The release pipeline verifies the runtime files, notices and source archives
+included in the final ZIP.

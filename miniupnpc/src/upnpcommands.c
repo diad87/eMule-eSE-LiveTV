@@ -772,6 +772,7 @@ UPNP_GetSpecificPortMappingEntryChecked(const char * controlURL,
 	char * p;
 	int ret = UPNPCOMMAND_UNKNOWN_ERROR;
 	int malformed = 0;
+	int hasMappingFields = 0;
 
 	if(!intPort || intPortLen == 0 ||
 	   !intClient || intClientLen == 0 ||
@@ -792,28 +793,33 @@ UPNP_GetSpecificPortMappingEntryChecked(const char * controlURL,
 	free(buffer);
 
 	p = GetValueFromNameValueList(&pdata, "NewInternalClient");
+	hasMappingFields |= p != NULL;
 	if(copyCheckedValue(intClient, intClientLen, p))
 		ret = UPNPCOMMAND_SUCCESS;
 	else
 		malformed = 1;
 
 	p = GetValueFromNameValueList(&pdata, "NewInternalPort");
+	hasMappingFields |= p != NULL;
 	if(!copyCheckedValue(intPort, intPortLen, p))
 		malformed = 1;
 
 	p = GetValueFromNameValueList(&pdata, "NewEnabled");
+	hasMappingFields |= p != NULL;
 	if(p && enabled) {
 		if(!copyCheckedValue(enabled, enabledLen, p))
 			malformed = 1;
 	}
 
 	p = GetValueFromNameValueList(&pdata, "NewPortMappingDescription");
+	hasMappingFields |= p != NULL;
 	if(desc) {
 		if(!copyCheckedValue(desc, descLen, p))
 			malformed = 1;
 	}
 
 	p = GetValueFromNameValueList(&pdata, "NewLeaseDuration");
+	hasMappingFields |= p != NULL;
 	if(p && leaseDuration)
 	{
 		if(!copyCheckedValue(
@@ -822,11 +828,18 @@ UPNP_GetSpecificPortMappingEntryChecked(const char * controlURL,
 	}
 
 	p = GetValueFromNameValueList(&pdata, "errorCode");
-	if(p) {
-		if(sscanf(p, "%d", &ret) != 1)
-			ret = UPNPCOMMAND_UNKNOWN_ERROR;
+	if(p && sscanf(p, "%d", &ret) != 1)
+		ret = UPNPCOMMAND_UNKNOWN_ERROR;
+	/* A pure NoSuchEntry fault has no mapping fields. Preserve the exact
+	 * fault as evidence of absence. Mixed or malformed replies must not
+	 * be mistaken for a removed mapping. */
+	if(ret == 714) {
+		const char * fault = GetValueFromNameValueList(&pdata, "faultcode");
+		ret = strcmp(p, "714") == 0 && !hasMappingFields && fault && *fault
+			? 714 : UPNPCOMMAND_INVALID_RESPONSE;
+	} else {
+		ret = checkedResponseResult(ret, malformed);
 	}
-	ret = checkedResponseResult(ret, malformed);
 
 	ClearNameValueList(&pdata);
 	return ret;

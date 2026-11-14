@@ -114,9 +114,10 @@ function Test-ExactTrueProperty {
 try {
     $coverage = Get-Content -LiteralPath $coveragePath -Raw |
         ConvertFrom-Json
+    $minimumNodeTests = $coverage.minimum_node_tests
     if ([string]$coverage.schema -ne 'ese.v92.t8-wp0-coverage/v1' -or
-        $coverage.minimum_node_tests -isnot [int] -or
-        [int]$coverage.minimum_node_tests -ne $requiredMinimumNodeTests -or
+        ($minimumNodeTests -isnot [int] -and $minimumNodeTests -isnot [long]) -or
+        $minimumNodeTests -ne $requiredMinimumNodeTests -or
         @($coverage.checks).Count -ne $requiredCoverageIds.Count) {
         throw 'Invalid T8 WP0 coverage manifest'
     }

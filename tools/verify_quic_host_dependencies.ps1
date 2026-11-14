@@ -23,7 +23,8 @@ if($manifest.architecture -ne $Architecture -or $manifest.local_inputs_changed -
 $requiredHostInputs=@('srchybrid/DirectReachabilityManager.h','srchybrid/DirectReachabilityManager.cpp',
     'srchybrid/Kad6CryptoHost.h','srchybrid/Kad6CryptoHost.cpp',
     'srchybrid/EseQuicSharedSocketSelfTest.h','srchybrid/EmuleDlg.cpp',
-    'tools/run_reach_binding_selftest.ps1')
+    'tools/run_reach_binding_selftest.ps1','tools/run_quic_product_pair.ps1','tools/prepare_reach_binding_selftest.ps1',
+    'tools/start_v93_detached_process.ps1')
 foreach($requiredInput in $requiredHostInputs) {
     $records=@($manifest.local_inputs | Where-Object { $_.path -eq $requiredInput })
     if($records.Count -ne 1) {

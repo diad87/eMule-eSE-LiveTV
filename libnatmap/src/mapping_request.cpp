@@ -10,6 +10,7 @@ bool IsKnownOperation(MappingOperation operation) noexcept {
     case MappingOperation::Initial:
     case MappingOperation::Refresh:
     case MappingOperation::Delete:
+    case MappingOperation::Readback:
         return true;
     }
     return false;

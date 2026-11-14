@@ -32,6 +32,9 @@ public:
 
 	virtual void StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nTCPWebPort);
 	virtual bool CheckAndRefresh();
+	bool SupportsMappingReadback() const override { return true; }
+	bool CheckMappingReadback() override;
+	void RecordMappingReadbackLoss() override;
 	virtual void StopAsyncFind();
 	virtual bool DeferDestructionIfWorkerActive();
 	virtual void DeletePorts();
@@ -61,6 +64,7 @@ public:
 			bool *pCreatedByOperation = NULL);
 
 		void SendFailure(natmap::ReasonCode reason);
+		void ReadMappingHealth();
 		CUPnPImplMiniLib *m_pOwner;
 		MappingOperationContext m_operation;
 	};
@@ -81,7 +85,8 @@ private:
 	natmap::OwnershipDecision PreflightOwnedMapping(
 		const natmap::UpnpOwnershipRecord& record) const;
 	natmap::OwnershipDecision ObserveOwnedMapping(
-		const natmap::UpnpOwnershipRecord& record, bool& absent) const;
+		const natmap::UpnpOwnershipRecord& record, bool& absent,
+		bool* disabled = nullptr) const;
 	bool CleanupOwnedRecordAttempt(
 		const natmap::UpnpOwnershipRecord& record,
 		bool& deleteSucceeded, bool& absenceVerified);

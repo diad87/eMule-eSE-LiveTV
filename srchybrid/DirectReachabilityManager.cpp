@@ -534,6 +534,18 @@ void CDirectReachabilityManager::TickDirectConnections()
     PublishDirectDiagnostics();
 }
 
+bool CDirectReachabilityManager::HasActiveQuicTransfers() const noexcept
+{
+	return m_quicHost && !m_quicHost->Empty();
+}
+
+void CDirectReachabilityManager::PumpQuicTransfers()
+{
+	AssertMainThread();
+	if (HasActiveQuicTransfers())
+		m_directPump.Tick(m_directConsumer.get(), [this] { return PumpDirectEvents(); });
+}
+
 std::string CDirectReachabilityManager::GetDirectStatusJson() const
 {
     std::lock_guard<std::mutex> lock(m_diagnosticMutex); return m_diagnosticJson;
@@ -1966,6 +1978,12 @@ uint64 CDirectReachabilityManager::BeginNativeQuicLab(const ese::NativeQuicConfi
 	if (!owner) { m_quicOwners.CancelReservation(handle, route.id); return 0; }
 	if (!m_quicOwners.Bind(handle, route.id, owner)) std::terminate(); // broken owner identity contract
 	if (auto* transport = m_quicHost->Find(owner)) transport->SetReceiveBudget(64 * 1024);
+	// The UDP callback only queues datagrams. Active QUIC sessions need a
+	// separate main-thread cadence for ACKs and paced sends; leave legacy
+	// queues, topology, control retries and diagnostics on the upload timer.
+	if ((!theApp.m_bReachBindingSelfTest || !theApp.m_strQuicPairSelfTestRole.IsEmpty())
+		&& !theApp.clientudp->StartQuicTransferTimer())
+		DebugLogWarning(_T("Native QUIC transfer timer unavailable; using upload timer"));
 	return owner;
 }
 
@@ -2318,8 +2336,7 @@ reach::NativeDirectRequestResult CDirectReachabilityManager::RequestDirectConnec
 	result=reach::RequestNativeDirect(m_directConnections,snapshot,generation,
 		sourceRecordId,sourceEpoch,subscriber,attempt,MonotonicMilliseconds());
 	if(result.request.status==reach::DirectRequestStatus::Created || result.request.status==reach::DirectRequestStatus::Joined) {
-		const bool bound=m_directSubscribers->Bind(subscriber,result.request.handle);
-		ASSERT(bound); // main-thread preflight above prevents a conflicting binding
+		VERIFY(m_directSubscribers->Bind(subscriber,result.request.handle)); // main-thread preflight excludes conflicting bindings
 	}
 	return result;
 }
@@ -2349,8 +2366,7 @@ reach::NativeDirectRequestResult CDirectReachabilityManager::RequestSharedDirect
 	const auto result=reach::RequestNativeDirectShared(m_directConnections,snapshot,generation,
 		subscriber,context.attempt,now);
 	if(result.request.status==reach::DirectRequestStatus::Created || result.request.status==reach::DirectRequestStatus::Joined) {
-		const bool bound=m_directSubscribers->Bind(subscriber,result.request.handle);
-		ASSERT(bound);
+		VERIFY(m_directSubscribers->Bind(subscriber,result.request.handle));
 	}
 	return result;
 }
@@ -3983,8 +3999,8 @@ bool CDirectReachabilityManager::ObserveDirectV4ServerState(
 }
 
 bool CDirectReachabilityManager::ObserveInboundTcpAccept(
-	const natmap::VerificationAttempt& attempt, uint16 observedLocalPort,
-	uint32 peerIp, uint64 acceptedAt)
+	const natmap::VerificationAttempt& attempt, uint64 listenerGeneration,
+	uint16 observedLocalPort, uint32 peerIp, uint64 acceptedAt)
 {
 	StatusCacheRefreshGuard guard{*this};
 	AssertMainThread();
@@ -3994,11 +4010,11 @@ bool CDirectReachabilityManager::ObserveInboundTcpAccept(
 	// current topology and for the listener port actually observed.
 	if (IsEnabled() && peerIp && acceptedAt
 		&& acceptedAt <= MonotonicMilliseconds()
-		&& attempt.topology_generation == m_snapshot.topology_generation
-		&& observedLocalPort != 0
-		&& observedLocalPort == m_snapshot.ed2k_tcp_v4.local.port)
+		&& natmap::IsCurrentInboundProof(listenerGeneration,
+			m_snapshot.ed2k_tcp_v4.generation, m_snapshot.topology_generation,
+			observedLocalPort, m_snapshot.ed2k_tcp_v4.local.port))
 		m_classicCallbackProof.RememberInbound(peerIp,
-			attempt.topology_generation, observedLocalPort, acceptedAt);
+			listenerGeneration, observedLocalPort, acceptedAt);
 	if (IsCurrentDirectV4Attempt(attempt)) {
 		m_directV4InboundEvidence = natmap::Evidence{
 			natmap::EvidenceKind::InboundTcpAccept,
@@ -4064,13 +4080,13 @@ bool CDirectReachabilityManager::MappingRediscoveryNeeded() const
 }
 
 bool CDirectReachabilityManager::ObserveMappedPortsForSelfTest(
-	natmap::MapperKind mapper, uint32 nExternalIP,
+	uint32 nExternalIP,
 	uint16 nLocalTcpPort, uint16 nExternalTcpPort,
 	uint16 nLocalUdpPort, uint16 nExternalUdpPort,
-	uint32 nLifetimeSeconds, uint32 nMapperEpoch, bool bRefresh)
+	uint32 nLifetimeSeconds, uint32 nMapperEpoch)
 {
 	AssertMainThread();
-	if (!theApp.m_bSelfTest)
+	if (!theApp.m_bReachBindingSelfTest)
 		return false;
 	natmap::RouteBindingIdentity binding;
 	binding.local_address = natmap::IpAddress::V4(192, 168, 1, 2);
@@ -4078,17 +4094,30 @@ bool CDirectReachabilityManager::ObserveMappedPortsForSelfTest(
 	binding.family = natmap::AddressFamily::IPv4;
 	binding.origin = natmap::NetworkOrigin::Native;
 	binding.interface_present = true;
-	natmap::Endpoint gateway;
-	gateway.address = natmap::IpAddress::V4(192, 168, 1, 1);
-	gateway.port = 5351;
-	const natmap::MapperSource source =
-		mapper == natmap::MapperKind::Pcp ? natmap::MapperSource::PcpCpe
-		: mapper == natmap::MapperKind::NatPmp ? natmap::MapperSource::NatPmp
-		: natmap::MapperSource::UpnpIgd;
-	return ObserveMappedPorts(mapper, source, nExternalIP,
-		nLocalTcpPort, nExternalTcpPort, nLocalUdpPort, nExternalUdpPort,
-		nLifetimeSeconds, nMapperEpoch, gateway,
-		m_snapshot.topology_generation, false, bRefresh, false, binding);
+	natmap::MapperResultData result;
+	result.mapper = natmap::MapperKind::Pcp;
+	result.source = natmap::MapperSource::PcpCpe;
+	result.gateway = {natmap::IpAddress::V4(192, 168, 1, 1), 5351,
+		natmap::EndpointSource::LocalInterface};
+	result.request_interface_index = binding.interface_index;
+	result.request_local_address = binding.local_address;
+	result.mapping_count = 2;
+	result.mapper_epoch = nMapperEpoch;
+	result.ownership_nonce[0] = 1; // Fixed synthetic ownership evidence.
+	result.ownership = natmap::OwnershipState::OwnedByUs;
+	result.request_id = nMapperEpoch;
+	result.topology_generation = GetTopologyGeneration();
+	result.status = natmap::MappingStatus::Created;
+	const uint64 expiry = MonotonicMilliseconds() + static_cast<uint64>(nLifetimeSeconds) * 1000;
+	const auto makeMapping = [&](natmap::Transport transport, uint16 localPort, uint16 externalPort) {
+		return natmap::TransportMappingResult{transport,
+			{binding.local_address, localPort, natmap::EndpointSource::LocalInterface},
+			localPort, MakePublicV4(nExternalIP, externalPort, natmap::EndpointSource::PcpMap),
+			nLifetimeSeconds, expiry};
+	};
+	result.mappings[0] = makeMapping(natmap::Transport::Tcp, nLocalTcpPort, nExternalTcpPort);
+	result.mappings[1] = makeMapping(natmap::Transport::Udp, nLocalUdpPort, nExternalUdpPort);
+	return ObserveMapperResult(natmap::MapperResult{result}, binding);
 }
 
 bool CDirectReachabilityManager::ObserveMappedPorts(

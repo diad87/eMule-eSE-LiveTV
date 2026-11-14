@@ -110,6 +110,8 @@ public:
 		uint8 enabledTransports=reach::DirectTcp|reach::DirectQuic);
 	std::optional<reach::DirectReason> TakeDirectTerminal(uint64 token,uint64 clientLifetime);
 	void TickDirectConnections();
+	bool HasActiveQuicTransfers() const noexcept;
+	void PumpQuicTransfers();
 	bool EnableNativeQuicLab();
 	uint64 BeginNativeQuicLab(const ese::NativeQuicConfig&, const ese::QuicPeerConfig&,
 		reach::DirectHandle, const reach::DirectSessionRoute&);
@@ -209,12 +211,12 @@ public:
 		natmap::VerificationAttempt& attempt);
 	bool ObserveServerIdChange(
 		bool bHighId, const natmap::VerificationAttempt& attempt);
-	// Optional values feed the classic callback proof (local port actually
-	// accepted on, peer IPv4 and monotonic accept time); zero means unknown.
+	// Classic callback proof uses the generation of the accepting listener.
+	// Server reachability evidence uses the captured eD2K verification attempt.
 	bool ObserveInboundTcpAccept(
 		const natmap::VerificationAttempt& attempt,
-		uint16 observedLocalPort = 0, uint32 peerIp = 0,
-		uint64 acceptedAt = 0);
+		uint64 listenerGeneration, uint16 observedLocalPort,
+		uint32 peerIp, uint64 acceptedAt);
 	bool ObserveDirectV4ServerState(
 		bool bHighId, uint32 nPublicIP,
 		const natmap::VerificationAttempt& attempt);
@@ -263,12 +265,11 @@ public:
 	// Unlike finite expiry, this is intentionally independent of lease
 	// lifetime because health probes are authoritative for permanent leases.
 	bool ObserveMappingLoss();
-	// Self-test seam (theApp.m_bSelfTest only): admit an injected mapping
-	// through the normal projection with a synthetic RFC1918 route binding.
-	bool ObserveMappedPortsForSelfTest(natmap::MapperKind mapper,
-		uint32 nExternalIP, uint16 nLocalTcpPort, uint16 nExternalTcpPort,
+	// Reach self-test seam: admit a synthetic PCP pair through the normal mapper path.
+	bool ObserveMappedPortsForSelfTest(uint32 nExternalIP,
+		uint16 nLocalTcpPort, uint16 nExternalTcpPort,
 		uint16 nLocalUdpPort, uint16 nExternalUdpPort,
-		uint32 nLifetimeSeconds, uint32 nMapperEpoch, bool bRefresh);
+		uint32 nLifetimeSeconds, uint32 nMapperEpoch);
 	bool ShutdownMappedCandidates();
 	natmap::DirectRouteSelection SelectPreferredRoute(
 		const natmap::CandidateObservation& directV6,

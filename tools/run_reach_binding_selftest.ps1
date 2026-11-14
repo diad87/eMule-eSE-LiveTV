@@ -1,6 +1,7 @@
 param([Parameter(Mandatory=$true)][string]$ProfileRoot,
       [ValidateRange(1,180)][int]$TimeoutSeconds=150)
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'start_v93_detached_process.ps1')
 $root=(Resolve-Path -LiteralPath $ProfileRoot).Path
 if(!$root.StartsWith('D:\tmp\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Only a prepared D:\tmp profile is permitted.' }
 $ancestor=Get-Item -LiteralPath $root
@@ -16,17 +17,21 @@ foreach($relative in @('started.json','runtime-evidence.json','process-id.txt','
 }
 $manifest=Get-Content -LiteralPath (Join-Path $root 'prepared.json') -Raw | ConvertFrom-Json
 if($manifest.schema -ne 'ese.v93.reach-binding-lab/1' -or $manifest.profile -ne $root) { throw 'Wrong preparation manifest.' }
+$nativeRuntimeInputs=@()
+if ($manifest.PSObject.Properties.Name -contains 'native_runtime_inputs') {
+    $nativeRuntimeInputs=@($manifest.native_runtime_inputs)
+}
+$nativeQuicLab=$nativeRuntimeInputs.Count -gt 0
 $diagnosticPort=if($manifest.PSObject.Properties.Name -contains 'diagnostic_web_port'){[int]$manifest.diagnostic_web_port}else{0}
+if ($diagnosticPort -and !$nativeQuicLab) { throw 'The HTTP winner and terminal checks require a native QUIC laboratory profile.' }
 if($diagnosticPort -and ($diagnosticPort -lt 1024 -or $diagnosticPort -gt 65535 -or $diagnosticPort -in @($manifest.tcp,$manifest.udp))) { throw 'Unsafe diagnostic port.' }
 if($diagnosticPort -and (Get-FileHash -LiteralPath (Join-Path $root 'eMule.tmpl')).Hash -ne $manifest.diagnostic_template_sha256) { throw 'Diagnostic template changed.' }
 $exe=Join-Path $root 'emule.exe'
 $ini=Join-Path $root 'config\preferences.ini'
-if($manifest.PSObject.Properties.Name -contains 'native_runtime_inputs') {
-    foreach($record in $manifest.native_runtime_inputs) {
-        if($record.name -ne [IO.Path]::GetFileName($record.name) -or !$record.name.EndsWith('.dll',[StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe native runtime input.' }
-        $dll=Get-Item -LiteralPath (Join-Path $root $record.name)
-        if($dll.Attributes -band [IO.FileAttributes]::ReparsePoint -or (Get-FileHash -LiteralPath $dll.FullName).Hash -ne $record.sha256) { throw 'Native runtime input changed.' }
-    }
+foreach($record in $nativeRuntimeInputs) {
+    if($record.name -ne [IO.Path]::GetFileName($record.name) -or !$record.name.EndsWith('.dll',[StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe native runtime input.' }
+    $dll=Get-Item -LiteralPath (Join-Path $root $record.name)
+    if($dll.Attributes -band [IO.FileAttributes]::ReparsePoint -or (Get-FileHash -LiteralPath $dll.FullName).Hash -ne $record.sha256) { throw 'Native runtime input changed.' }
 }
 if((Get-FileHash -LiteralPath $exe).Hash -ne $manifest.executable_sha256 -or
    (Get-FileHash -LiteralPath $ini).Hash -ne $manifest.preferences_sha256) { throw 'Prepared input hashes changed.' }
@@ -65,10 +70,9 @@ $started=[ordered]@{schema='ese.v93.reach-binding-started/1';started_utc=[DateTi
     executable_sha256=$manifest.executable_sha256;preferences_sha256=$manifest.preferences_sha256;arguments=$arguments;
     observation_timeout_seconds=$TimeoutSeconds}
 [IO.File]::WriteAllText((Join-Path $root 'started.json'),($started|ConvertTo-Json -Depth 4),[Text.Encoding]::UTF8)
-$process=Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory $root -WindowStyle Hidden -PassThru
-# Retain the exact process handle before waiting: a PID can disappear or be
-# reused. This is only an observation window, never a fixture deadline or kill.
-$null=$process.Handle
+$process=Start-V93DetachedProcess -FilePath $exe -ArgumentList $arguments -WorkingDirectory $root
+# The launcher retains the exact process handle. This is only an observation
+# window, never a fixture deadline or kill.
 [IO.File]::WriteAllText((Join-Path $root 'process-id.txt'),[string]$process.Id,[Text.Encoding]::UTF8)
 $diagnosticSamples=0; $diagnosticFailures=0; $diagnosticWinner=$false; $diagnosticTerminal=$false
 $diagnosticSequences=[Collections.Generic.HashSet[string]]::new()
@@ -112,7 +116,8 @@ else {
         } while([DateTime]::UtcNow -lt $until)
     } finally { $http.Dispose(); $handler.Dispose() }
 }
-$result=[ordered]@{schema='ese.v93.reach-binding-runtime/174';profile=$root;pid=$process.Id;terminal=$terminal;
+$result=[ordered]@{schema='ese.v93.reach-binding-runtime/174';profile=$root;pid=$process.Id;desktop=$process.Desktop;terminal=$terminal;
+    native_quic_lab=$nativeQuicLab;
     kad2_index_persistence_scope='V174 actual legacy CIndexed10000 sources normal Kad stop/write owned diagnostic profile real loader restart count10000 exact duplicate stable drain under30s; not GUI responsiveness 2h20 soak or exit20 diagnosis';
     classic_callback_feature_off_scope='V173 actual normal classic SmartID handling restored after feature disabled on owned second loopback server; no extra login or HighID';
     server_callback_fallback_scope='V172 real normal client login to two loopback classic protocol fixtures; one fallback duplicate LowID no third login old socket closed; no external server interoperability or HighID proof';
@@ -252,10 +257,8 @@ if($terminal) {
         $hasAcceptanceMarker=$logText.Contains('REACH_SELFTEST V15 PASS: PartFile accepts disk digest and rejects changed digest, fixture pending marker prevents completion')
         $hasNativeHostMarker=$true
         $hasBlockHeaderMarker=$logText.Contains('REACH_SELFTEST V26 PASS: block parser rejects truncated empty and null headers for packed plain and I64 before offset reads')
-        if(($manifest.PSObject.Properties.Name -contains 'native_runtime_inputs') -and @($manifest.native_runtime_inputs).Count -gt 0) {
+        if ($nativeQuicLab) {
             $hasNativeHostMarker=$logText.Contains('REACH_SELFTEST V16 PASS: native shared UDP host attach, exclusive ingress, detach and reattach, no sessions') -and $logText.Contains('REACH_SELFTEST V17 PASS: invalid native session admission leaves shared socket bound and host empty') -and $logText.Contains('REACH_SELFTEST V18 PASS: real MFC shared UDP authenticated peer, DCO winners, bidirectional 4096 bytes and drained resources') -and $logText.Contains('REACH_SELFTEST V20 PASS: received native bytes disk MD4, owned session receipt and single-use DCO VerifiedPart, not PartFile consumer')
-        }
-        if(($manifest.PSObject.Properties.Name -contains 'native_runtime_inputs') -and @($manifest.native_runtime_inputs).Count -gt 0) {
             $hasNativeHostMarker=$hasNativeHostMarker -and $logText.Contains('REACH_SELFTEST V19 PASS: real MFC shared UDP rejects peer bad signature, typed DCO failure, zero useful bytes and drained resources') -and $logText.Contains('REACH_SELFTEST V22 PASS: manager QUIC consumer authenticated client attachment, real outgoing HELLO, logical peer address and subscriber retirement, no incoming PartFile')
             $hasNativeHostMarker=$hasNativeHostMarker -and $logText.Contains('REACH_SELFTEST V23 PASS: peer serialized HELLOANSWER through native consumer and production parser, handshake finished, bound identity and endpoint preserved, zero file progress')
             $hasNativeHostMarker=$hasNativeHostMarker -and $logText.Contains('REACH_SELFTEST V24 PASS: native consumer rejects changed HELLO hash before legacy identity mutation, terminal IdentityMismatch and drained resources')
@@ -371,43 +374,45 @@ if($terminal) {
         if(!$hasBlockHeaderMarker) { $result.verdict='FAIL' }
         if(!$logText.Contains('REACH_SELFTEST V35 PASS: real shared UDP libutp rejects nearby port, accepts exact ownerless endpoint and retires wrapper')) { $result.verdict='FAIL' }
         if(!$logText.Contains('REACH_SELFTEST V135 PASS: actual accepted uTP GetPeerName exact full IPv4 short buffer reports required size unchanged null negative rejected; no authenticated DCO uTP transfer')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V136 PASS: DCO authorized uTP Start real shared UDP connect HELLO exact IPv4 endpoint isolated client retirement; no SecureIdent winner file transfer or physical drain proof')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V137 PASS: real shared UDP uTP wire HELLOANSWER capabilities challenge PUBLICKEY SIGNATURE fresh RSA DCO adopts original client no TCP observation useful bytes or file proof; no two products public fallback')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V138 PASS: real shared UDP uTP corrupt wire SIGNATURE rejects IdentityMismatch terminal once drains route original hash lifetime credits socket untouched; no file public fallback or physical drain proof')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V139 PASS: authenticated DCO uTP wire FILESTATUS slot REQUESTPARTS partial4096 duplicate stable final byte real IOCP hash callback VerifiedPart completed4097 disk exact; no F1 public fallback two products')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V140 PASS: actual DCO uTP pending session Close twice detaches before ACK owner cancel drains attempt reservation subscription preserves original; no physical libutp drain proof')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V141 PASS: known capable client normal TryToConnect recognizes live owned DCO admission no parallel classic socket token state epoch preserved; not initial automatic admission or public fallback')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V142 PASS: capable download normal TryToConnect automatic DCO admission missing QUIC trust BootstrapRequired once no advertised TCP upgrade classic socket or cooldown cascade; no positive public route fallback')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V143 PASS: TCP actual partial4096 socket loss retains owned recovery intent epoch highwater useful bytes no unproven automatic route; subsequent explicit route repair not public fallback')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V144 PASS: actual QUIC loss preserves prepared pinned recovery policy bounded probe cadence rejects changed pin node attempt topology TOFU persistence stale handle without route mutation; no public QUIC recovery or uTP consent')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V145 PASS: simulated public endpoint QUIC Ready loss normal recovery pump fresh PROBE CHALLENGE PROVE signed ACK selector new native handshake HELLOANSWER original adopted epoch2 same attempt file credits token lifetime; no manual local routes file payload physical network or two products')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V146 PASS: control recovery fresh verified higher sequence exact active session old replay wrong endpoint generation attempt peer digest rejected duplicate no TTL renewal expired tombstone rejected alias safe and overflow closed; trusted ledger fixture not wire authentication')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V147 PASS: automatic QUIC Ready loss epoch2 normal filename slot REQUESTPARTS no seeded reservation partial4096 IOCP disk exact duplicate consumed no inflation final real hash completed4097 same attempt; simulated endpoint not Transferring loss F1 two products or physical network')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V148 PASS: automatic QUIC Transferring loss epoch1 useful4096 IOCP disk preserved fresh bootstrap selector AUTH epoch2 same attempt filename slot REQUESTPARTS only4096..4097 old provenance unchanged final byte real hash completed4097 exact; simulated endpoints no F1 two products physical network or expired control session')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V149 PASS: real65s control idle retained high-water fresh automatic bootstrap QUIC AUTH epoch2 requests gap1 hash completed4097 exact; simulated endpoints one host no F1 two products or physical network')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V150 PASS: both original control ledgers expired real65s retained fresh correlated signed renewal old PROVE cookie rejected same download gap1 hash exact4097; remote fixture not second product')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V151 PASS: product server recovery preparation next route above original highwater same attempt epoch1 duplicate no restart; seeded trusted control ledger no wire proof second product or recovered handshake')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V152 PASS: real server consent retained while live retirement removes manager owner and copied ledger reclaims after64s; no live clock advance or new wire permission')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V153 PASS: product server control remote generation differs local topology retained exact remote ledger local lifecycle fence; seeded trusted context not wire peer generation interoperability')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V154 PASS: production block parser 121 malformed headers and bounds reject without timer renewal or download state mutation including I64 overflow; no valid large file write proof')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V155 PASS: real I64 ProcessBlockPacket accepts offsets4294967294..4294967296 PartFile IOCP sparse disk2542550 exact3 no low range alias; seeded reservation direct parser no transport full F3 or integrity proof')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V158 PASS: actual TCP HELLO fresh RSA promotes provisional DCO identity before single attach; expected hash alone did not promote')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V159 PASS: actual TCP HELLO fresh RSA provisional identity merges subscribers into known gathering peer source closes before attach zero payload and drained; target has no transport not dual connected session proof')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V160 PASS: host selects separately evidenced TCP and QUIC rejects stale lifetime hash topology TTL and unrelated UDP pin no Start identity adoption or attempt mutation; seeded observation and UDP proof not physical TCP return-path evidence')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V161 PASS: real1600ms policy preparation before fresh1500ms control deadline then signed ACK4 queued no socket no Core deadline extension; historical zero-PROBE failure class reproduced separately')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V162 PASS: actual Ready DCO winner diagnostic opaque session decimal epoch published immutable cache no endpoint key or authority mutation; GUI and API share cache no HTTP wire assertion')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V163 PASS: terminal Disabled diagnostic retained after actual DCO release zero owner resources opaque id stable no reason rewrite; explicit no route fixture')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V164 PASS: normal per-file Kad6 scheduler signed registered-cap contact bootstrap FIND GET timer source single delivery; simulated witness no physical NAT claim')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V165 PASS: expired signed contact bootstrap CONTACT_GET same-key fresh CONTACT_RESULT before normal FIND GET; simulated witness no physical NAT claim')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V166 PASS: receiver-first activation control bootstrap descriptor/source STORED over real shared loopback UDP; consent withdrawal no reply no RDV; mapping and public UDP verdict injected not physical NAT')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V167 PASS: classic UDP ACK before inbound rejected then real new loopback TCP accept and classic UDP ACK verify mapped external port distinct from bind; router injected not external client or HighID proof')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V168 PASS: normal manager publishes actual shared file persistent signed serial descriptor/source; lost descriptor one restage lost STORED ACK exact retry one completion; simulated W no physical NAT claim')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V169 PASS: normal index missing source returns complete signed CLOSER over real shared UDP; signed capability withdrawal yields EMPTY; no peer session or route granted')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V170 PASS: current owned mapping readback failure consumed once withdraws grant classic callback and receiver before rediscovery; injected worker result not physical router deletion')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V171 PASS: normal manager and immutable API report BOOTSTRAP_REQUIRED NO_ROUTE and silent W DISCOVERY_UNAVAILABLE; bounded bootstrap sends global lookup deadline cooldown retained; simulated silent W no queue transfer claim')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V172 PASS: normal automatic classic login failure selects second known server once after closing first; duplicate LowID no third login and no HighID; two loopback protocol fixtures not external servers')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V173 PASS: disabling bounded callback fallback restores normal classic SmartID handling on duplicate LowID without another login; loopback fixture no HighID proof')) { $result.verdict='FAIL' }
-        if(!$logText.Contains('REACH_SELFTEST V174 PASS: actual legacy Kad2 index inserts10000 sources normal stop writes owned profile real restart loader recovers10000 exact duplicate stable drain under30s; no GUI responsiveness 2h20 soak or exit20 cause claim')) { $result.verdict='FAIL' }
+        if ($nativeQuicLab) {
+            if(!$logText.Contains('REACH_SELFTEST V136 PASS: DCO authorized uTP Start real shared UDP connect HELLO exact IPv4 endpoint isolated client retirement; no SecureIdent winner file transfer or physical drain proof')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V137 PASS: real shared UDP uTP wire HELLOANSWER capabilities challenge PUBLICKEY SIGNATURE fresh RSA DCO adopts original client no TCP observation useful bytes or file proof; no two products public fallback')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V138 PASS: real shared UDP uTP corrupt wire SIGNATURE rejects IdentityMismatch terminal once drains route original hash lifetime credits socket untouched; no file public fallback or physical drain proof')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V139 PASS: authenticated DCO uTP wire FILESTATUS slot REQUESTPARTS partial4096 duplicate stable final byte real IOCP hash callback VerifiedPart completed4097 disk exact; no F1 public fallback two products')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V140 PASS: actual DCO uTP pending session Close twice detaches before ACK owner cancel drains attempt reservation subscription preserves original; no physical libutp drain proof')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V141 PASS: known capable client normal TryToConnect recognizes live owned DCO admission no parallel classic socket token state epoch preserved; not initial automatic admission or public fallback')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V142 PASS: capable download normal TryToConnect automatic DCO admission missing QUIC trust BootstrapRequired once no advertised TCP upgrade classic socket or cooldown cascade; no positive public route fallback')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V143 PASS: TCP actual partial4096 socket loss retains owned recovery intent epoch highwater useful bytes no unproven automatic route; subsequent explicit route repair not public fallback')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V144 PASS: actual QUIC loss preserves prepared pinned recovery policy bounded probe cadence rejects changed pin node attempt topology TOFU persistence stale handle without route mutation; no public QUIC recovery or uTP consent')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V145 PASS: simulated public endpoint QUIC Ready loss normal recovery pump fresh PROBE CHALLENGE PROVE signed ACK selector new native handshake HELLOANSWER original adopted epoch2 same attempt file credits token lifetime; no manual local routes file payload physical network or two products')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V146 PASS: control recovery fresh verified higher sequence exact active session old replay wrong endpoint generation attempt peer digest rejected duplicate no TTL renewal expired tombstone rejected alias safe and overflow closed; trusted ledger fixture not wire authentication')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V147 PASS: automatic QUIC Ready loss epoch2 normal filename slot REQUESTPARTS no seeded reservation partial4096 IOCP disk exact duplicate consumed no inflation final real hash completed4097 same attempt; simulated endpoint not Transferring loss F1 two products or physical network')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V148 PASS: automatic QUIC Transferring loss epoch1 useful4096 IOCP disk preserved fresh bootstrap selector AUTH epoch2 same attempt filename slot REQUESTPARTS only4096..4097 old provenance unchanged final byte real hash completed4097 exact; simulated endpoints no F1 two products physical network or expired control session')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V149 PASS: real65s control idle retained high-water fresh automatic bootstrap QUIC AUTH epoch2 requests gap1 hash completed4097 exact; simulated endpoints one host no F1 two products or physical network')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V150 PASS: both original control ledgers expired real65s retained fresh correlated signed renewal old PROVE cookie rejected same download gap1 hash exact4097; remote fixture not second product')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V151 PASS: product server recovery preparation next route above original highwater same attempt epoch1 duplicate no restart; seeded trusted control ledger no wire proof second product or recovered handshake')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V152 PASS: real server consent retained while live retirement removes manager owner and copied ledger reclaims after64s; no live clock advance or new wire permission')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V153 PASS: product server control remote generation differs local topology retained exact remote ledger local lifecycle fence; seeded trusted context not wire peer generation interoperability')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V154 PASS: production block parser 121 malformed headers and bounds reject without timer renewal or download state mutation including I64 overflow; no valid large file write proof')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V155 PASS: real I64 ProcessBlockPacket accepts offsets4294967294..4294967296 PartFile IOCP sparse disk2542550 exact3 no low range alias; seeded reservation direct parser no transport full F3 or integrity proof')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V158 PASS: actual TCP HELLO fresh RSA promotes provisional DCO identity before single attach; expected hash alone did not promote')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V159 PASS: actual TCP HELLO fresh RSA provisional identity merges subscribers into known gathering peer source closes before attach zero payload and drained; target has no transport not dual connected session proof')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V160 PASS: host selects separately evidenced TCP and QUIC rejects stale lifetime hash topology TTL and unrelated UDP pin no Start identity adoption or attempt mutation; seeded observation and UDP proof not physical TCP return-path evidence')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V161 PASS: real1600ms policy preparation before fresh1500ms control deadline then signed ACK4 queued no socket no Core deadline extension; historical zero-PROBE failure class reproduced separately')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V162 PASS: actual Ready DCO winner diagnostic opaque session decimal epoch published immutable cache no endpoint key or authority mutation; GUI and API share cache no HTTP wire assertion')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V163 PASS: terminal Disabled diagnostic retained after actual DCO release zero owner resources opaque id stable no reason rewrite; explicit no route fixture')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V164 PASS: normal per-file Kad6 scheduler signed registered-cap contact bootstrap FIND GET timer source single delivery; simulated witness no physical NAT claim')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V165 PASS: expired signed contact bootstrap CONTACT_GET same-key fresh CONTACT_RESULT before normal FIND GET; simulated witness no physical NAT claim')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V166 PASS: receiver-first activation control bootstrap descriptor/source STORED over real shared loopback UDP; consent withdrawal no reply no RDV; mapping and public UDP verdict injected not physical NAT')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V167 PASS: classic UDP ACK before inbound rejected then real new loopback TCP accept and classic UDP ACK verify mapped external port distinct from bind; router injected not external client or HighID proof')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V168 PASS: normal manager publishes actual shared file persistent signed serial descriptor/source; lost descriptor one restage lost STORED ACK exact retry one completion; simulated W no physical NAT claim')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V169 PASS: normal index missing source returns complete signed CLOSER over real shared UDP; signed capability withdrawal yields EMPTY; no peer session or route granted')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V170 PASS: local topology invalidation withdraws grant classic callback and receiver before rediscovery;')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V171 PASS: normal manager and immutable API report BOOTSTRAP_REQUIRED NO_ROUTE and silent W DISCOVERY_UNAVAILABLE; bounded bootstrap sends global lookup deadline cooldown retained; simulated silent W no queue transfer claim')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V172 PASS: normal automatic classic login failure selects second known server once after closing first; duplicate LowID no third login and no HighID; two loopback protocol fixtures not external servers')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V173 PASS: disabling bounded callback fallback restores normal classic SmartID handling on duplicate LowID without another login; loopback fixture no HighID proof')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V174 PASS: actual legacy Kad2 index inserts10000 sources normal stop writes owned profile real restart loader recovers10000 exact duplicate stable drain under30s; no GUI responsiveness 2h20 soak or exit20 cause claim')) { $result.verdict='FAIL' }
+        }
         if(!$logText.Contains('REACH_SELFTEST V36 PASS: real shared UDP libutp rejects stale owner generation and unregister removes expectations')) { $result.verdict='FAIL' }
     }
 }
@@ -415,5 +420,6 @@ if($diagnosticPort -and ($diagnosticSamples -eq 0 -or $diagnosticFailures -ne 0 
     $diagnosticSequences.Count -lt 2 -or !$diagnosticWinner -or !$diagnosticTerminal)) { $result.verdict='FAIL' }
 [IO.File]::WriteAllText((Join-Path $root 'runtime-evidence.json'),($result|ConvertTo-Json -Depth 4),[Text.Encoding]::UTF8)
 Write-Output ($result|ConvertTo-Json -Depth 4)
+$process.Dispose()
 if($terminal -and $result.verdict -ne 'PASS') { throw 'Runtime selftest failed; evidence retained.' }
 if(!$terminal) { throw 'Observation window expired; process not killed and RUNNING evidence retained. Observe this process before starting another test.' }

@@ -121,9 +121,9 @@ public:
     }
 
 private:
-    void setBit(uint64_t s)   { uint64_t p = s % WINDOW_BITS; m_bits[p >> 6] |=  (1ull << (p & 63)); }
-    void clearBit(uint64_t s) { uint64_t p = s % WINDOW_BITS; m_bits[p >> 6] &= ~(1ull << (p & 63)); }
-    bool getBit(uint64_t s) const { uint64_t p = s % WINDOW_BITS; return (m_bits[p >> 6] >> (p & 63)) & 1ull; }
+    void setBit(uint64_t s)   { const auto p = static_cast<size_t>(s % WINDOW_BITS); m_bits[p >> 6] |=  (1ull << (p & 63)); }
+    void clearBit(uint64_t s) { const auto p = static_cast<size_t>(s % WINDOW_BITS); m_bits[p >> 6] &= ~(1ull << (p & 63)); }
+    bool getBit(uint64_t s) const { const auto p = static_cast<size_t>(s % WINDOW_BITS); return (m_bits[p >> 6] >> (p & 63)) & 1ull; }
 
     uint64_t              m_highest;
     bool                  m_started;

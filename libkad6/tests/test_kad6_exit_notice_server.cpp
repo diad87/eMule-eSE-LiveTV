@@ -21,6 +21,29 @@ void Check(bool condition, const char* label) {
     }
 }
 
+std::uint16_t FindDualStackPort() {
+    WSADATA data{};
+    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return 0;
+
+    std::uint16_t port = 0;
+    const SOCKET probe = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+    if (probe != INVALID_SOCKET) {
+        int v6only = 0;
+        sockaddr_in6 endpoint{};
+        endpoint.sin6_family = AF_INET6;
+        endpoint.sin6_addr = in6addr_any;
+        int endpoint_size = sizeof endpoint;
+        if (setsockopt(probe, IPPROTO_IPV6, IPV6_V6ONLY,
+                       reinterpret_cast<const char*>(&v6only), sizeof v6only) == 0 &&
+            bind(probe, reinterpret_cast<const sockaddr*>(&endpoint), sizeof endpoint) == 0 &&
+            getsockname(probe, reinterpret_cast<sockaddr*>(&endpoint), &endpoint_size) == 0)
+            port = ntohs(endpoint.sin6_port);
+        closesocket(probe);
+    }
+    WSACleanup();
+    return port;
+}
+
 std::string Request(std::uint16_t port, const std::string& request, bool ipv4) {
     const int family = ipv4 ? AF_INET : AF_INET6;
     SOCKET socket_value = socket(family, SOCK_STREAM, IPPROTO_TCP);
@@ -65,8 +88,11 @@ int main() {
     Check(!server.Start(39100, "not-json"), "non-object document rejected");
 
     std::uint16_t port = 0;
-    for (std::uint16_t candidate = 39100; candidate < 39132; ++candidate) {
-        if (server.Start(candidate, "{\"version\":1}")) {
+    // Start deliberately rejects zero. Let Winsock select an available port
+    // for the same dual-stack bind and retry if another process takes it.
+    for (unsigned attempt = 0; attempt < 8; ++attempt) {
+        const std::uint16_t candidate = FindDualStackPort();
+        if (candidate && server.Start(candidate, "{\"version\":1}")) {
             port = candidate;
             break;
         }

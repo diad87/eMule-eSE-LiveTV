@@ -142,7 +142,7 @@ LONG WINAPI CMiniDumper::TopLevelFilter(struct _EXCEPTION_POINTERS *pExceptionIn
 						, szDumpPath, ::GetLastError());
 					szResult[_countof(szResult) - 1] = _T('\0');
 				}
-				if (*szResult != _T('\0'))
+				if (*szResult != _T('\0') && theCrashDumper.uCreateCrashDump != 2)
 					MessageBox(NULL, szResult, m_szAppName, MB_ICONINFORMATION | MB_OK);
 			}
 		}

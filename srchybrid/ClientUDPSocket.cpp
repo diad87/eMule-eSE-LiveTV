@@ -28,6 +28,7 @@
 #include "Preferences.h"
 #include "ClientList.h"
 #include "EncryptedDatagramSocket.h"
+#include "Exceptions.h"
 #include "IPFilter.h"
 #include "Listensocket.h"
 #include "Log.h"
@@ -139,13 +140,80 @@ bool CClientUDPSocket::DetachQuicIngress(ese::QuicUdpIngress* ingress)
     return true;
 }
 
+bool CClientUDPSocket::StartQuicTransferTimer()
+{
+    ASSERT(::GetCurrentThreadId() == m_quicOwnerThread);
+    if (!m_quicTransferTimer)
+        m_quicTransferTimer = ::SetTimer(NULL, 0, USER_TIMER_MINIMUM, QuicTransferTimer);
+    return m_quicTransferTimer != 0;
+}
+
+void CClientUDPSocket::StopQuicTransferTimer()
+{
+    if (m_quicTransferTimer) {
+        ::KillTimer(NULL, m_quicTransferTimer);
+        m_quicTransferTimer = 0;
+    }
+}
+
+void CALLBACK CClientUDPSocket::QuicTransferTimer(HWND, UINT, UINT_PTR token, DWORD) noexcept
+{
+    try {
+        auto* socket = theApp.clientudp;
+        if (!socket || socket->m_quicTransferTimer != token)
+            return;
+        auto* manager = theApp.directreachability;
+        if (theApp.IsClosing() || !manager || !manager->HasActiveQuicTransfers()) {
+            socket->StopQuicTransferTimer();
+            return;
+        }
+        socket->PollQuicIngress();
+        manager->PumpQuicTransfers();
+    }
+    CATCH_DFLT_EXCEPTIONS(_T("CClientUDPSocket::QuicTransferTimer"))
+}
+
 void CClientUDPSocket::PollQuicIngress()
 {
     if (::GetCurrentThreadId() != m_quicOwnerThread || !m_quicIngress || m_quicResetting)
         return;
-    const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count());
+    using Clock = std::chrono::steady_clock;
+    const auto started = Clock::now();
+    const auto now = static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        started.time_since_epoch()).count());
+    if (!m_pairQuicPollEnabled) {
+        m_quicIngress->Poll(now);
+        return;
+    }
+
+    const auto txPacketsBefore = m_pairQuicTxPackets;
+    const auto txBytesBefore = m_pairQuicTxBytes;
     m_quicIngress->Poll(now);
+    const auto work = static_cast<uint64>(std::chrono::duration_cast<std::chrono::microseconds>(
+        Clock::now() - started).count());
+    const auto txPackets = m_pairQuicTxPackets - txPacketsBefore;
+    auto& sample = m_pairQuicPollSample;
+    ++sample.polls;
+    if (m_pairQuicLastPollMs) {
+        const auto gap = now - m_pairQuicLastPollMs;
+        ++sample.gapSamples;
+        sample.totalGapMs += gap;
+        sample.maxGapMs = (std::max)(sample.maxGapMs, gap);
+    }
+    m_pairQuicLastPollMs = now;
+    sample.workUs += work;
+    sample.maxWorkUs = (std::max)(sample.maxWorkUs, work);
+    sample.txPackets += txPackets;
+    sample.txBytes += m_pairQuicTxBytes - txBytesBefore;
+    if (txPackets) ++sample.txPolls;
+    sample.maxTxPackets = (std::max)(sample.maxTxPackets, txPackets);
+}
+
+CClientUDPSocket::PairQuicPollSample CClientUDPSocket::TakePairQuicPollSample()
+{
+    const auto sample = m_pairQuicPollSample;
+    m_pairQuicPollSample = {};
+    return sample;
 }
 
 bool CClientUDPSocket::ArmPairUdpLoss(const std::array<std::uint8_t,32>& node,
@@ -219,7 +287,13 @@ ese::QuicUdpSendResult CClientUDPSocket::SendQuicDatagram(ese::QuicUdpIngress* o
     CSingleLock lock(&sendLocker,TRUE);
     const int sent = CAsyncSocket::SendTo(bytes,static_cast<int>(count),
         reinterpret_cast<const SOCKADDR*>(&target),targetSize);
-    if (sent == static_cast<int>(count)) return {QuicUdpSendStatus::Sent,0};
+    if (sent == static_cast<int>(count)) {
+        if (m_pairQuicPollEnabled) {
+            ++m_pairQuicTxPackets;
+            m_pairQuicTxBytes += count;
+        }
+        return {QuicUdpSendStatus::Sent,0};
+    }
     if (sent != SOCKET_ERROR) return {QuicUdpSendStatus::Failed,WSAEMSGSIZE};
     const auto error = static_cast<uint32>(CAsyncSocket::GetLastError());
     if (error == WSAEWOULDBLOCK) {
@@ -232,6 +306,7 @@ ese::QuicUdpSendResult CClientUDPSocket::SendQuicDatagram(ese::QuicUdpIngress* o
 void CClientUDPSocket::ResetQuicIngress()
 {
     ASSERT(::GetCurrentThreadId() == m_quicOwnerThread);
+    StopQuicTransferTimer();
     auto* ingress = m_quicIngress;
     m_quicIngress = nullptr;
     if (m_quicResetting) return;

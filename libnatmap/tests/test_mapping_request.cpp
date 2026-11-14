@@ -421,6 +421,56 @@ void TestNetworkChangeRejectsOldRoute() {
     CHECK(!legacyGate.has_pending());
 }
 
+void TestHealthReadbackCarriesNoLeaseAndAppliesExactlyOnce() {
+    MappingRequestSequence sequence;
+    constexpr std::uint64_t generation = 21;
+    const auto request = sequence.Issue(generation, MappingOperation::Readback);
+    CHECK(request.IsIssued());
+
+    MapperResultData data{};
+    data.mapper = MapperKind::UpnpIgd;
+    data.source = MapperSource::UpnpIgd;
+    data.gateway = Ep(192, 168, 68, 1, 1900);
+    data.request_interface_index = 8;
+    data.request_local_address = IpAddress::V4(192, 168, 68, 54);
+    data.request_id = request.context.request_id;
+    data.topology_generation = generation;
+    data.operation = request.context.operation;
+    data.status = MappingStatus::Observed;
+    CHECK(MapperResult(data).IsStructurallyValid());
+    CHECK(!MapperResult(data).IsPublishable(generation));
+
+    const MappingRouteIdentity route{
+        data.request_interface_index, data.request_local_address,
+        data.gateway.address};
+    MappingResultGate gate;
+    CHECK(gate.Arm(request.context, generation));
+
+    auto invalid = data;
+    invalid.status = MappingStatus::Renewed;
+    CHECK(gate.ConsumeForCurrentRoute(MapperResult(invalid), generation, route)
+          == ResultAcceptance::Invalid);
+    CHECK(gate.has_pending());
+
+    data.status = MappingStatus::Failed;
+    data.verification = VerificationState::Failed;
+    data.reason = ReasonCode::LeaseExpired;
+    CHECK(MapperResult(data).IsStructurallyValid());
+    CHECK(!MapperResult(data).IsPublishable(generation));
+    CHECK(gate.ConsumeForCurrentRoute(MapperResult(data), generation, route)
+          == ResultAcceptance::Apply);
+    CHECK(gate.ConsumeForCurrentRoute(MapperResult(data), generation, route)
+          == ResultAcceptance::NoPendingRequest);
+
+    auto changed = route;
+    changed.interface_index = 9;
+    const auto another = sequence.Issue(generation, MappingOperation::Readback);
+    data.request_id = another.context.request_id;
+    CHECK(gate.Arm(another.context, generation));
+    CHECK(gate.ConsumeForCurrentRoute(MapperResult(data), generation, changed)
+          == ResultAcceptance::RouteMismatch);
+}
+
 void TestMappingRoundFailureAggregation() {
     ReasonCode aggregate = ReasonCode::None;
     // Physical ordering: UPnP reached TCP mapping, one legacy implementation
@@ -469,6 +519,7 @@ int main() {
     TestLegacyEnvelopeRejectsMismatchWithoutDisplacement();
     TestCancellationRejectsLateCallback();
     TestNetworkChangeRejectsOldRoute();
+    TestHealthReadbackCarriesNoLeaseAndAppliesExactlyOnce();
     TestMappingRoundFailureAggregation();
     std::printf("test_mapping_request: %d checks, %d failures\n",
                 checks, failures);

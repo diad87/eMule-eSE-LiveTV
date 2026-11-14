@@ -1646,20 +1646,20 @@ bool CLiveTunnel::OnK6ExitPacket(uint64 streamId,const uint8_t* raw,size_t lengt
         }
         std::set<std::string> dedupe;
         for (size_t i = 0; i < pex.sources.size() && hints.sources.size() < kad6::kK6SourceHintsMaxSources; ++i) {
-            const kad6::K6ParsedPexSource& source = pex.sources[i];
-            if (source.low_id || source.endpoint.tcp_port == 0) continue;
-            std::string key(reinterpret_cast<const char*>(source.endpoint.addr.addr.data()), 16);
-            key.push_back(static_cast<char>(source.endpoint.tcp_port));
-            key.push_back(static_cast<char>(source.endpoint.tcp_port >> 8));
+            const kad6::K6ParsedPexSource& pexSource = pex.sources[i];
+            if (pexSource.low_id || pexSource.endpoint.tcp_port == 0) continue;
+            std::string key(reinterpret_cast<const char*>(pexSource.endpoint.addr.addr.data()), 16);
+            key.push_back(static_cast<char>(pexSource.endpoint.tcp_port));
+            key.push_back(static_cast<char>(pexSource.endpoint.tcp_port >> 8));
             if (!dedupe.insert(key).second) continue;
             LiveTunnelAuthorizedTarget target; target.circ_id = runtime.circ_id;
             target.object_hash = pex.object_hash; target.digest = digest;
-            target.endpoint = source.endpoint;
+            target.endpoint = pexSource.endpoint;
             target.endpoint.valid_until = static_cast<uint64>(time(NULL)) + kad6::kK6TicketMaxTtlSeconds;
             if (!K6AllowTicketTarget(this, static_cast<kad6::Byte>(kad6::K6TicketService::Ed2kTcp), target.endpoint))
                 continue;
             kad6::K6SourceHint hint; hint.endpoint = target.endpoint;
-            hint.user_hash = source.user_hash; hint.crypt_options = source.crypt_options;
+            hint.user_hash = pexSource.user_hash; hint.crypt_options = pexSource.crypt_options;
             if (!IssueK6RuntimeTicket(target, runtime.ticket.max_bytes,
                     kad6::K6Provenance::Pex, runtime.circ_id, streamId,
                     hints.source_message_seq, hint.ticket)) continue;

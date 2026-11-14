@@ -472,6 +472,7 @@ BEGIN_MESSAGE_MAP(CemuleDlg, CTrayDialog)
 	ON_MESSAGE(WM_KICKIDLE, OnKickIdle)
 	ON_MESSAGE(WM_USERCHANGED, OnUserChanged)
 	ON_WM_SHOWWINDOW()
+	ON_WM_WINDOWPOSCHANGING()
 	ON_WM_DESTROY()
 	ON_WM_SETTINGCHANGE()
 	ON_WM_DEVICECHANGE()
@@ -749,11 +750,8 @@ BOOL CemuleDlg::OnInitDialog()
 #endif
 
 	// temporary disable the 'startup minimized' option, otherwise no window will be shown at all
-	if (!thePrefs.IsFirstStart())
+	if (!theApp.m_bHeadless && !thePrefs.IsFirstStart())
 		m_bStartMinimized = thePrefs.GetStartMinimized() || theApp.DidWeAutoStart();
-	// V2-S06: headless honours the user's StartMinimized preference but does NOT
-	// force-minimize on its own (forcing here triggers a tray-icon code path that
-	// crashes when InitInstance hasn't fully wired up the TrayDialog parent).
 
 	// show splash screen as early as possible to "entertain" user while starting emule up
 	if (thePrefs.UseSplashScreen() && !m_bStartMinimized && !theApp.m_bHeadless)
@@ -981,7 +979,8 @@ BOOL CemuleDlg::OnInitDialog()
 			wp.showCmd = SW_SHOWNORMAL;
 		m_bStartMinimizedChecked = true;
 	}
-	SetWindowPlacement(&wp);
+	if (!theApp.m_bHeadless)
+		SetWindowPlacement(&wp);
 
 	// --selftest is deliberately network-free. Run it before WebServer,
 	// startup timers and UPnP are armed; those subsystems are irrelevant to
@@ -990,7 +989,7 @@ BOOL CemuleDlg::OnInitDialog()
 	if (theApp.m_bSelfTest) {
 		LIVE_LOG("HEADLESS", "Running isolated selftest before network startup");
 		RunHeadlessAction();
-		return TRUE;
+		return FALSE; // Do not give a control default keyboard focus.
 	}
 
 	// Resolve every consent boundary before listeners, KRP and capability
@@ -1028,7 +1027,7 @@ BOOL CemuleDlg::OnInitDialog()
 
 	// Mapping starts in StartupTimer, after TCP/UDP bindings exist.
 
-	if (thePrefs.IsFirstStart()) {
+	if (!theApp.m_bHeadless && thePrefs.IsFirstStart()) {
 		// temporary disable the 'startup minimized' option, otherwise no window will be shown at all
 		m_bStartMinimized = false;
 		DestroySplash();
@@ -1100,7 +1099,7 @@ BOOL CemuleDlg::OnInitDialog()
 	if (!theApp.m_bHeadless)
 		CheckForPreviousCrashDumps();
 
-	return TRUE;
+	return !theApp.m_bHeadless;
 }
 // D7: scan %APPDATA%\eMule\crashdumps\ for .dmp files newer than
 // "LastCrashAck" timestamp. On match, ask the user once whether to open
@@ -1260,7 +1259,9 @@ LRESULT CemuleDlg::OnProcessKnownMetSave(WPARAM, LPARAM)
 
 static bool RunReachBindingSelfTest()
 {
+#ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
 	CNativeDirectSelfTestAccess::TestWindowIsolation();
+#endif
 	auto fail = [](LPCTSTR stage) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: %s"),stage); return false; };
 	if (!theApp.directreachability || !theApp.listensocket || !theApp.clientudp
 		|| thePrefs.IsUPnPEnabled() || thePrefs.DoAutoConnect() || thePrefs.IsIPv6Enabled()
@@ -1366,7 +1367,17 @@ static bool RunReachBindingSelfTest()
 		|| !manager.MappingRediscoveryNeeded() || !manager.ConsumeMappingRediscovery()
 		|| manager.ConsumeMappingRediscovery()) return fail(_T("network signature invalidation and one-shot rediscovery"));
 	const uint64 beforeResume = manager.GetTopologyGeneration();
-	if (theApp.emuledlg->SendMessage(WM_POWERBROADCAST,PBT_APMRESUMEAUTOMATIC,0)!=TRUE)
+	LRESULT resumeResult;
+	{
+		const int savedConsent = thePrefs.GetEseNetLabConsent();
+		const bool savedEnabled = thePrefs.GetEseNetLabEnabled();
+		thePrefs.SetEseNetLabConsent(CPreferences::EseNetLabAccepted);
+		thePrefs.SetEseNetLabEnabled(true);
+		resumeResult = theApp.emuledlg->SendMessage(WM_POWERBROADCAST, PBT_APMRESUMEAUTOMATIC, 0);
+		thePrefs.SetEseNetLabConsent(savedConsent);
+		thePrefs.SetEseNetLabEnabled(savedEnabled);
+	}
+	if (resumeResult != TRUE)
 		return fail(_T("resume Windows message handler"));
 	if (manager.GetTopologyGeneration()<=beforeResume
 		|| !manager.ConsumeMappingRediscovery() || manager.ConsumeMappingRediscovery()) return fail(_T("resume retires prior generation with unchanged network signature"));
@@ -1503,10 +1514,12 @@ static bool RunReachBindingSelfTest()
 	Log(_T("REACH_SELFTEST V21 PASS: real registered client and socket transfer authority, stale generation, detach and subscriber revocation"));
 	{
 		auto malformedClient=std::make_unique<CUpDownClient>();
+#ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
 		try { CNativeDirectSelfTestAccess::TestMalformedBlockTimer(*malformedClient); }
 		catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: block timer: %hs"),error.what()); return false; }
 		try { CNativeDirectSelfTestAccess::TestPackedLimits(*malformedClient); }
 		catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: packed limits: %hs"),error.what()); return false; }
+#endif
 		const uchar bytes[32]={};
 		for(const bool packed : {false,true}) for(const bool wide : {false,true}) {
 			const uint32 header=16+(wide ? 8 : 4)+(packed ? 4 : wide ? 8 : 4);
@@ -1523,8 +1536,10 @@ static bool RunReachBindingSelfTest()
 		}
 	}
 	Log(_T("REACH_SELFTEST V26 PASS: block parser rejects truncated empty and null headers for packed plain and I64 before offset reads"));
+#ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
 	Log(_T("REACH_SELFTEST V91 PASS: production unzip seven-byte input fragments exact512 and reserved32 rejects expansion2048 at probe33 with no returned output; direct decoder lab not native file acceptance"));
 	Log(_T("REACH_SELFTEST V94 PASS: production unzip altered checksum and trailing byte after zlib end reject with zero returned output; direct decoder lab not full malformed native corpus"));
+#endif
 	if(!CUtpSocket::RunExactAcceptSelfTest(udp)) return fail(_T("real UDP libutp exact accept"));
 	Log(_T("REACH_SELFTEST V35 PASS: real shared UDP libutp rejects nearby port, accepts exact ownerless endpoint and retires wrapper"));
 	Log(_T("REACH_SELFTEST V135 PASS: actual accepted uTP GetPeerName exact full IPv4 short buffer reports required size unchanged null negative rejected; no authenticated DCO uTP transfer"));
@@ -1936,8 +1951,8 @@ void CemuleDlg::RunHeadlessAction() noexcept
 						ScheduleSelfTestExit(1); return;
 					}
 					LaunchEseServer(false); // Actual launcher, owned child, no browser.
-					const auto deadline=ese::shared_socket_selftest::Now()+20000;
-					while (!GetOwnedEseDashboardPort(m_hEseProcess) && ese::shared_socket_selftest::Now()<deadline) {
+					const DWORD started = ::GetTickCount();
+					while (!GetOwnedEseDashboardPort(m_hEseProcess) && ::GetTickCount() - started < SEC2MS(20)) {
 						MSG message;
 						while(PeekMessage(&message,nullptr,0,0,PM_REMOVE)) {
 							TranslateMessage(&message); DispatchMessage(&message);
@@ -1958,18 +1973,30 @@ void CemuleDlg::RunHeadlessAction() noexcept
 				return; // Real modal pump and existing UploadTimer; no WM_QUIT shortcut.
 			}
 
-            // Optional explicitly enabled loopback HTTP diagnostic fixture.
-            // Generic --selftest and ordinary reach fixtures remain unchanged.
-            if(thePrefs.GetWSIsEnabled()) {
-                if(!theApp.m_strQuicPairSelfTestRole.IsEmpty() || !thePrefs.GetBindAddrA() ||
-                    strcmp(thePrefs.GetBindAddrA(),"127.0.0.1") ||
-                    thePrefs.GetWSPort()<1024 || thePrefs.GetWSPort()==thePrefs.GetPort() ||
-                    thePrefs.GetWSPort()==thePrefs.GetUDPPort())
-                    throw std::runtime_error("unsafe diagnostic HTTP fixture binding");
-                theApp.webserver->StartServer();
-            }
+			// Optional explicitly enabled loopback HTTP diagnostic fixture.
+			if (thePrefs.GetWSIsEnabled()) {
+				if (!theApp.m_strQuicPairSelfTestRole.IsEmpty() || !thePrefs.GetBindAddrA() ||
+					strcmp(thePrefs.GetBindAddrA(), "127.0.0.1") ||
+					thePrefs.GetWSPort() < 1024 || thePrefs.GetWSPort() == thePrefs.GetPort() ||
+					thePrefs.GetWSPort() == thePrefs.GetUDPPort()) {
+					LogError(LOG_STATUSBAR, _T("REACH_SELFTEST FAIL: unsafe diagnostic HTTP fixture binding"));
+					ScheduleSelfTestExit(1);
+					return;
+				}
+				theApp.webserver->StartServer();
+			}
 			bool passed=false;
-			try { passed=theApp.m_strQuicPairSelfTestRole.IsEmpty() ? RunReachBindingSelfTest() : ese::pair_selftest::Run(); }
+			try {
+				if (theApp.m_strQuicPairSelfTestRole.IsEmpty())
+					passed = RunReachBindingSelfTest();
+				else {
+#ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
+					passed = ese::pair_selftest::Run();
+#else
+					LogError(LOG_STATUSBAR, _T("REACH_SELFTEST FAIL: QUIC pair fixture requires a native QUIC laboratory build"));
+#endif
+				}
+			}
 			catch(CException* error) {
 				TCHAR message[1024]={}; GetExceptionMessage(*error,message,_countof(message));
 				LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: MFC exception: %s"),message);
@@ -2076,6 +2103,8 @@ void CemuleDlg::RunHeadlessAction() noexcept
 // modders: don't remove or change the original version check! (additional are OK)
 void CemuleDlg::DoVersioncheck(bool manual)
 {
+	if (theApp.m_bHeadless)
+		return;
 #ifndef _DEVBUILD
 	if (!manual && thePrefs.GetLastVC() != 0) {
 		CTime last(thePrefs.GetLastVC());
@@ -2882,7 +2911,8 @@ void CemuleDlg::SetActiveDialog(CWnd *dlg)
 	if (activewnd)
 		activewnd->ShowWindow(SW_HIDE);
 	dlg->ShowWindow(SW_SHOW);
-	dlg->SetFocus();
+	if (!theApp.m_bHeadless)
+		dlg->SetFocus();
 	activewnd = dlg;
 	int iToolbarButtonID = MapWindowToToolbarButton(dlg);
 	if (iToolbarButtonID != -1)
@@ -3484,7 +3514,7 @@ bool RunAuthenticatedWebCloseUiSelfTest() noexcept
 
 bool CemuleDlg::CanClose()
 {
-	if (theApp.m_app_state == APP_STATE_RUNNING && thePrefs.IsConfirmExitEnabled()) {
+	if (!theApp.m_bHeadless && theApp.m_app_state == APP_STATE_RUNNING && thePrefs.IsConfirmExitEnabled()) {
 		theApp.m_app_state = APP_STATE_ASKCLOSE; //disable tray menu
 		RestoreWindow(); // make sure the window is in foreground for this prompt
 		ExitBox request;
@@ -3546,7 +3576,7 @@ void CemuleDlg::OnClose()
 	// get main window placement
 	WINDOWPLACEMENT wp;
 	wp.length = (UINT)sizeof wp;
-	if (GetWindowPlacement(&wp)) {
+	if (!theApp.m_bHeadless && GetWindowPlacement(&wp)) {
 		ASSERT(wp.showCmd == SW_SHOWMAXIMIZED || wp.showCmd == SW_SHOWMINIMIZED || wp.showCmd == SW_SHOWNORMAL);
 		if (wp.showCmd == SW_SHOWMINIMIZED && (wp.flags & WPF_RESTORETOMAXIMIZED))
 			wp.showCmd = SW_SHOWMAXIMIZED;
@@ -3751,7 +3781,10 @@ void CemuleDlg::OnClose()
 
 	thePrefs.Uninit();
 	theApp.m_app_state = APP_STATE_DONE;
-	CTrayDialog::OnCancel();
+	if (theApp.m_bHeadless)
+		EndModalLoop(IDCANCEL);
+	else
+		CTrayDialog::OnCancel();
 	//flush queued messages
 	theApp.HandleDebugLogQueue();
 	theApp.HandleLogQueue();
@@ -3991,6 +4024,8 @@ void CemuleDlg::CloseConnection()
 
 void CemuleDlg::RestoreWindow()
 {
+	if (theApp.m_bHeadless)
+		return;
 	if (IsPreferencesDlgOpen()) {
 		MessageBeep(MB_OK);
 		preferenceswnd->SetForegroundWindow();
@@ -4059,6 +4094,8 @@ void CemuleDlg::UpdateTrayIcon(int iPercent)
 
 int CemuleDlg::OnCreate(LPCREATESTRUCT lpCreateStruct)
 {
+	if (theApp.m_bHeadless)
+		ModifyStyleEx(WS_EX_APPWINDOW, WS_EX_NOACTIVATE);
 	return CTrayDialog::OnCreate(lpCreateStruct);
 }
 
@@ -4073,9 +4110,18 @@ void CemuleDlg::OnShowWindow(BOOL bShow, UINT nStatus)
 	CTrayDialog::OnShowWindow(bShow, nStatus);
 }
 
+void CemuleDlg::OnWindowPosChanging(WINDOWPOS *position)
+{
+	if (theApp.m_bHeadless) {
+		position->flags &= ~SWP_SHOWWINDOW;
+		position->flags |= SWP_NOACTIVATE;
+	}
+	CTrayDialog::OnWindowPosChanging(position);
+}
+
 void CemuleDlg::ShowNotifier(LPCTSTR pszText, TbnMsg nMsgType, LPCTSTR pszLink, bool bForceSoundOFF)
 {
-	if (!notifierenabled)
+	if (theApp.m_bHeadless || !notifierenabled)
 		return;
 
 	LPCTSTR pszSoundEvent = NULL;
@@ -6074,6 +6120,10 @@ bool CemuleDlg::CheckUPnPLease()
 		RefreshUPnP(true);
 		return true;
 	}
+	if (thePrefs.IsEseNetLabActive() && impl->BeginMappingReadbackIfDue()) {
+		RefreshUPnP(true, natmap::MappingOperation::Readback);
+		return true;
+	}
 	return false;
 }
 
@@ -6103,6 +6153,7 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 	natmap::RouteBindingIdentity mapperRouteBinding;
 	UINT resultCode = static_cast<UINT>(wParam);
 	bool bWasRefresh = false;
+	bool bWasReadback = false;
 	bool bPcpUpstreamBundle = false;
 	bool bPcpTcpOnlyCgnatFailure = false;
 	bool bMapperAdmissionRejected = false;
@@ -6245,8 +6296,9 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 					natmap::MappingStatus::Renewed;
 		resultCode = success
 			? CUPnPImpl::UPNP_OK : CUPnPImpl::UPNP_FAILED;
-		bWasRefresh = mapperResultData.operation
-			== natmap::MappingOperation::Refresh;
+		bWasReadback = mapperResultData.operation == natmap::MappingOperation::Readback;
+		bWasRefresh = bWasReadback
+			|| mapperResultData.operation == natmap::MappingOperation::Refresh;
 		bPcpTcpOnlyCgnatFailure = !bPcpUpstreamBundle
 			&& mapperResultData.mapper == natmap::MapperKind::Pcp
 			&& mapperResultData.source == natmap::MapperSource::PcpCpe
@@ -6262,6 +6314,8 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 			return 0;
 		}
 		bWasRefresh = m_bUPnPTimeoutForRefresh;
+		bWasReadback = m_mappingResultGate.has_pending()
+			&& m_mappingResultGate.pending().operation == natmap::MappingOperation::Readback;
 		m_mappingResultGate.CancelPending();
 		InvalidateLocalUPnPFailure();
 	} else if (bLocalFailure) {
@@ -6287,6 +6341,25 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 	}
 
 	CUPnPImpl *impl = theApp.m_pUPnPFinder->GetImplementation();
+	const bool readbackLost = bWasReadback && bMapperResult
+		&& natmap::MapperResult(mapperResultData).IsStructurallyValid()
+		&& mapperResultData.status == natmap::MappingStatus::Failed
+		&& mapperResultData.reason == natmap::ReasonCode::LeaseExpired;
+	if (bWasReadback) {
+		RetireUPnPTimeout();
+		m_bUPnPTimeoutForRefresh = false;
+		if (bTimeout) {
+			impl->SetMessageOnResult(NULL, 0);
+			impl->StopAsyncFind();
+		}
+		if (!readbackLost) {
+			LIVE_LOG("NATMAP", "owned mapping readback outcome=%s; lease unchanged",
+				mapperResultData.status == natmap::MappingStatus::Observed
+					? "present" : "inconclusive");
+			return 0;
+		}
+		impl->RecordMappingReadbackLoss();
+	}
 	LIVE_LOG("NATMAP", "impl=%d result=%u refresh=%u stage=%s(%ld) local=%u/%u external=%u/%u ip=%u lease=%u epoch=%u",
 		impl->GetImplementationID(), (unsigned)resultCode, (unsigned)bWasRefresh,
 		impl->GetDiagnosticStageName(), impl->GetDiagnosticStage(),
@@ -6411,16 +6484,15 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		}
 	}
 
-	// A failed refresh of a finite lease is not proof that the mapping has
-	// vanished: its deadline remains authoritative. A failed health probe of
-	// a permanent mapping is positive loss evidence, so withdraw it before
-	// any retry and bind the bounded recovery budget to the new generation.
+	// A failed refresh of a finite lease leaves its deadline authoritative.
+	// An exact readback can prove earlier loss. Withdraw the old grant before
+	// arming generation-bound recovery, as with a failed permanent probe.
 	if (bWasRefresh
 		&& !bPcpUpstreamBundle
 		&& !bPcpTcpOnlyCgnatFailure
 		&& resultCode != CUPnPImpl::UPNP_OK
-		&& impl->GetMappingLeaseLifetime() == 0
-		&& impl->SupportsMappingHealthCheck()
+		&& (readbackLost || (impl->GetMappingLeaseLifetime() == 0
+			&& impl->SupportsMappingHealthCheck()))
 		&& theApp.directreachability != NULL) {
 		const uint64 previousGeneration =
 			theApp.directreachability->GetTopologyGeneration();
@@ -6441,7 +6513,7 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 				theApp.serverconnect->IsConnected(),
 				theApp.serverconnect->IsConnecting(),
 				theApp.serverconnect->IsConnectedViaRelay())) {
-			LogWarning(_T("Permanent mapping health probe failed; reconnecting without the withdrawn endpoint"));
+			LogWarning(_T("Mapping lost; reconnecting without the withdrawn endpoint"));
 			if (theApp.serverconnect->IsConnecting())
 				theApp.serverconnect->StopConnectionTry();
 			if (theApp.serverconnect->IsConnected())
@@ -6453,7 +6525,7 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 				recoveryGeneration, UPnPMonotonicMilliseconds())) {
 			m_bUPnPRouteRecoveryPending = true;
 			LIVE_LOG("NATMAP",
-				"permanent mapping withdrawn after failed health probe; recovery generation=%llu",
+				"mapping withdrawn after failed health probe; recovery generation=%llu",
 				(unsigned long long)recoveryGeneration);
 		}
 	}
@@ -6740,7 +6812,8 @@ void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort,
 	}
 	m_bUPnPExplicitRequest = bExplicitRequest;
 	if (m_hUPnPLeaseTimer == 0)
-		VERIFY((m_hUPnPLeaseTimer = ::SetTimer(NULL, 0, SEC2MS(30), UPnPLeaseTimer)) != 0);
+		VERIFY((m_hUPnPLeaseTimer = ::SetTimer(NULL, 0,
+			SEC2MS(thePrefs.IsEseNetLabActive() ? 1 : 30), UPnPLeaseTimer)) != 0);
 	if (!m_upnpNetworkSignature.IsValid())
 		m_upnpNetworkSignature = GetUPnPNetworkSignature();
 	if (theApp.m_pUPnPFinder != NULL && (m_hUPnPTimeOutTimer == 0 || !bReset)) {
@@ -6882,6 +6955,13 @@ void CemuleDlg::RefreshUPnP(bool bRequestAnswer)
 {
 	if (!thePrefs.IsUPnPEnabled())
 		return;
+	RefreshUPnP(bRequestAnswer, natmap::MappingOperation::Refresh);
+}
+
+void CemuleDlg::RefreshUPnP(bool bRequestAnswer, natmap::MappingOperation operation)
+{
+	if (!thePrefs.IsUPnPEnabled())
+		return;
 	if (m_mappingResultGate.has_pending()) {
 		LIVE_LOG("NATMAP",
 			"refresh skipped while mapper request=%llu is pending",
@@ -6897,8 +6977,7 @@ void CemuleDlg::RefreshUPnP(bool bRequestAnswer)
 				const uint64 generation = theApp.directreachability != NULL
 					? theApp.directreachability->GetTopologyGeneration() : 1;
 				const natmap::RequestIssue request =
-					m_mappingRequestSequence.Issue(generation,
-						natmap::MappingOperation::Refresh);
+					m_mappingRequestSequence.Issue(generation, operation);
 				if (!request.IsIssued()) {
 					LIVE_LOG("NATMAP", "refresh request sequence exhausted or invalid");
 					return;
@@ -6924,7 +7003,10 @@ void CemuleDlg::RefreshUPnP(bool bRequestAnswer)
 					impl->SetMessageOnResult(
 						this, UM_UPNP_RESULT,
 						m_mappingResultMailbox);
-				if (impl->CheckAndRefresh() && bRequestAnswer) {
+				const bool readback = operation == natmap::MappingOperation::Readback;
+				const bool started = readback
+					? impl->CheckMappingReadback() : impl->CheckAndRefresh();
+				if (started && bRequestAnswer) {
 					m_bUPnPTimeoutForRefresh = true;
 					if (!ArmUPnPTimeout(SEC2MS(10))) {
 						impl->SetMessageOnResult(NULL, 0);

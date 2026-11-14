@@ -3434,7 +3434,6 @@ bool CListenSocket::Rebind()
 bool CListenSocket::StartListening()
 {
 	m_port = 0;
-	if(theApp.directreachability) theApp.directreachability->SynchronizeLocalSocketBindings();
 	bListening = true;
 
 	// Creating the socket with SO_REUSEADDR may solve LowID issues if emule was restarted
@@ -3477,6 +3476,8 @@ bool CListenSocket::StartListening()
 		if (!Create(thePrefs.GetPort(), SOCK_STREAM, FD_ACCEPT, thePrefs.GetBindAddr(), AF_INET)) {
 			bListening = false;
 			m_nListenerTopologyGeneration = 0;
+			if (theApp.directreachability)
+				theApp.directreachability->SynchronizeLocalSocketBindings();
 			return false;
 		}
 	}
@@ -3525,10 +3526,14 @@ bool CListenSocket::StartListening()
 		Close();
 		bListening = false;
 		m_nListenerTopologyGeneration = 0;
+		if (theApp.directreachability)
+			theApp.directreachability->SynchronizeLocalSocketBindings();
 		return false;
 	}
 
 	m_port = thePrefs.GetPort();
+	// Publish only the result of the bind. A successful same-port rebind
+	// clears old accepts without withdrawing the current mapping.
 	if(theApp.directreachability) theApp.directreachability->SynchronizeLocalSocketBindings();
 	m_nListenerTopologyGeneration =
 		theApp.directreachability != NULL
@@ -3865,7 +3870,7 @@ void CListenSocket::OnAccept(int nErrorCode)
 						localPort=ntohs(((SOCKADDR_IN6*)&localStorage)->sin6_port);
 				}
 				if (theApp.directreachability->ObserveInboundTcpAccept(
-						m_ed2kVerificationAttempt, localPort,
+						m_ed2kVerificationAttempt, acceptedTopologyGeneration, localPort,
 						SockAddr.sin_addr.s_addr, inboundAcceptedAt)
 					&& !wasVerified
 					&& theApp.directreachability->HasVerifiedEd2kReachability())

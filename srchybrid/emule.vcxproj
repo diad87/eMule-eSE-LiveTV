@@ -334,7 +334,7 @@
     </ClCompile>
     <ClCompile Include="Emule.cpp" />
     <ClCompile Include="EmuleDlg.cpp">
-      <PreprocessorDefinitions Condition="'$(EseQuicDependencyRoot)'!=''">ESE_NATIVE_QUIC_LAB_AVAILABLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(EseQuicDependencyRoot)'!='' Or '$(EseQuicReleaseRoot)'!=''">ESE_NATIVE_QUIC_LAB_AVAILABLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <ClCompile Include="eSEHelpers.cpp" />
     <ClCompile Include="EnBitmap.cpp" />
@@ -1110,7 +1110,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <WarningLevel>Level4</WarningLevel>
-      <PreprocessorDefinitions Condition="'$(EseQuicDependencyRoot)'!=''">ESE_NATIVE_QUIC_LAB_AVAILABLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(EseQuicDependencyRoot)'!='' Or '$(EseQuicReleaseRoot)'!=''">ESE_NATIVE_QUIC_LAB_AVAILABLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <ClCompile Include="EseNodeBindingCrypto.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>

@@ -47,6 +47,14 @@ public:
     bool AttachQuicIngress(ese::QuicUdpIngress* ingress) override;
     bool DetachQuicIngress(ese::QuicUdpIngress* ingress) override;
     void PollQuicIngress();
+    bool StartQuicTransferTimer();
+    bool HasQuicTransferTimer() const { return m_quicTransferTimer != 0; }
+    struct PairQuicPollSample {
+        uint64 polls=0, gapSamples=0, totalGapMs=0, maxGapMs=0, workUs=0, maxWorkUs=0;
+        uint64 txPackets=0, txBytes=0, txPolls=0, maxTxPackets=0;
+    };
+    void EnablePairQuicPollSample() { m_pairQuicPollEnabled=true; }
+    PairQuicPollSample TakePairQuicPollSample();
     // Explicit pair-lab silent loss, restricted to the enrolled exact endpoint.
     bool ArmPairUdpLoss(const std::array<std::uint8_t,32>&,const ese::udp::Endpoint&,uint32 durationMs);
     uint64 PairUdpLossDrops() const { return m_pairLossTx+m_pairLossRx; }
@@ -82,11 +90,17 @@ protected:
 	virtual void	OnReceive(int nErrorCode);
 
 private:
+    static void CALLBACK QuicTransferTimer(HWND, UINT, UINT_PTR, DWORD) noexcept;
+    void StopQuicTransferTimer();
     void ResetQuicIngress();
     bool FeedQuicUdp(const byte*,size_t,const CAddress&,uint16,uint32 scope);
     ese::QuicUdpIngress* m_quicIngress = nullptr;
     DWORD m_quicOwnerThread = 0;
+    UINT_PTR m_quicTransferTimer = 0;
     bool m_quicResetting = false;
+    PairQuicPollSample m_pairQuicPollSample;
+    bool m_pairQuicPollEnabled=false;
+    uint64 m_pairQuicLastPollMs=0, m_pairQuicTxPackets=0, m_pairQuicTxBytes=0;
     bool DropPairUdp(const ese::udp::Endpoint&,bool outgoing);
     ese::udp::Endpoint m_pairLossPeer;
     uint64 m_pairLossUntil=0,m_pairLossTx=0,m_pairLossRx=0;

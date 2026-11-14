@@ -2,6 +2,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$ReleaseTag,
     [string]$RepoRoot = '',
+    [string]$QuicReleaseRoot = '',
     [switch]$AllowDirty,
     [switch]$RequireFreshBinaries
 )
@@ -22,11 +23,25 @@ if ($ReleaseTag -notmatch '^v0\.70b-eSE(?<version>\d+\.\d+\.\d+(?:-(?:alpha|beta
     Fail "invalid tag '$ReleaseTag' (expected v0.70b-eSEX.Y.Z[-alpha.N|-beta.N|-rc.N])"
 }
 $tagVersion = $Matches.version
+$requiresQuic = Test-ReleaseRequiresQuic $ReleaseTag
+$quicManifestSha256 = ''
+if ($QuicReleaseRoot) {
+    if (-not $requiresQuic) { Fail 'this release tag predates the signed QUIC package' }
+    try {
+        $quicManifestSha256 = Get-ReleaseQuicManifestHash -RepoRoot $RepoRoot `
+            -QuicReleaseRoot $QuicReleaseRoot
+    } catch {
+        Fail $_.Exception.Message
+    }
+} elseif ($requiresQuic -and ($RequireFreshBinaries -or -not $AllowDirty)) {
+    Fail '9.3 and later require -QuicReleaseRoot for verified signed QUIC dependencies'
+}
 
 Require-File 'srchybrid\Version.h'
 Require-File 'srchybrid\eSE\package.json'
 Require-File 'srchybrid\eSE\package-lock.json'
 Require-File 'srchybrid\eSE\server.js'
+Require-File 'srchybrid\eSE\dashboard_bind.js'
 Require-File 'srchybrid\eSE\tunnel.js'
 Require-File 'srchybrid\eSE\live_player_server.js'
 Require-File 'srchybrid\eSE\pages\misc_pages.js'
@@ -171,9 +186,14 @@ if ($serverSource -notmatch
     [regex]::Escape("require('../package.json').version")) {
     Fail 'dashboard runtime version is not derived from package.json'
 }
-if ($serverSource -notmatch
-    "server\.listen\(PORT,\s*'127\.0\.0\.1'") {
-    Fail 'dashboard server must bind explicitly to 127.0.0.1'
+$dashboardBindSource = Get-Content (
+    Join-Path $RepoRoot 'srchybrid\eSE\dashboard_bind.js'
+) -Raw
+if ($dashboardBindSource -notmatch "DEFAULT_BIND_HOST\s*=\s*'127\.0\.0\.1'" -or
+    $serverSource -notmatch
+        'if\s*\(!dashboardBind\.isLoopbackBindHost\(BIND_HOST\)\)\s*\{[^}]*process\.exit\(78\)' -or
+    $serverSource -notmatch 'dashboardBind\.listenDashboard\(server,\s*PORT,\s*BIND_HOST,') {
+    Fail 'dashboard server must default to 127.0.0.1 and reject non-loopback addresses'
 }
 if ($legacyPlayerSource -notmatch
         "server\.listen\(PORT,\s*'127\.0\.0\.1'" -or
@@ -258,8 +278,7 @@ if ($livePageSource -match
     '/api/(?:eSE/update/check|live/update_(?:status|check|run))') {
     Fail 'LiveTV page still invokes a legacy updater route'
 }
-$serverSource = Get-Content (Join-Path $RepoRoot 'srchybrid\eSE\server.js') -Raw
-if ($serverSource -notmatch [regex]::Escape("eSE v$tagVersion -")) {
+if ($serverSource -notmatch [regex]::Escape("'  eSE v' + APP_VERSION + ' - http://'")) {
     Fail "server.js does not display eSE v$tagVersion"
 }
 $installerSource = Get-Content (Join-Path $RepoRoot 'installer.iss') -Raw
@@ -353,7 +372,7 @@ if ($RequireFreshBinaries) {
     try {
         Assert-ReleaseBinaryStamp -RepoRoot $RepoRoot `
             -ReleaseTag $ReleaseTag -Component emule `
-            -BinaryPath $emuleBinary `
+            -BinaryPath $emuleBinary -QuicManifestSha256 $quicManifestSha256 `
             -StampPath (Join-Path $stampRoot 'emule-release-build.json.log')
         Assert-ReleaseBinaryStamp -RepoRoot $RepoRoot `
             -ReleaseTag $ReleaseTag -Component ese `

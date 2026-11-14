@@ -4,6 +4,7 @@ param(
     [Parameter(Mandatory = $true)][string]$ReleaseTag,
     [string]$RepoRoot = '',
     [string]$FfmpegPath = '',
+    [string]$QuicReleaseRoot = '',
     [switch]$AllowDirty
 )
 
@@ -11,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $RepoRoot) { $RepoRoot = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path } }
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 . (Join-Path $RepoRoot 'tools\release_zip_integrity.ps1')
+. (Join-Path $RepoRoot 'tools\release_fingerprint.ps1')
 
 $preflightArgs = @{
     ReleaseTag = $ReleaseTag
@@ -18,7 +20,19 @@ $preflightArgs = @{
     RequireFreshBinaries = $true
 }
 if ($AllowDirty) { $preflightArgs.AllowDirty = $true }
+$quicManifestSha256 = ''
+if (Test-ReleaseRequiresQuic -ReleaseTag $ReleaseTag) {
+    if (-not $QuicReleaseRoot) { throw 'Supply -QuicReleaseRoot for the signed x64 QUIC build inputs.' }
+    $QuicReleaseRoot = (Resolve-Path -LiteralPath $QuicReleaseRoot).Path
+    $preflightArgs.QuicReleaseRoot = $QuicReleaseRoot
+    $quicManifestPath = Join-Path $QuicReleaseRoot 'manifest-x64.json'
+    $quicManifestSha256 = Get-ReleaseZipHash $quicManifestPath
+}
 & (Join-Path $RepoRoot 'tools\release_preflight.ps1') @preflightArgs
+if ($quicManifestSha256) {
+    $quicManifest = & (Join-Path $RepoRoot 'tools\verify_quic_release_dependencies.ps1') `
+        -Root $QuicReleaseRoot -Architecture x64 -ExpectedManifestSha256 $quicManifestSha256 -PassThru
+}
 
 # release_preflight has already validated this exact tag grammar. Derive the
 # matching notes filename here so stable, alpha, beta and RC packages cannot
@@ -201,6 +215,12 @@ function Copy-GitTrackedTopLevelFiles(
 }
 function Hash([string]$Path) { return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToUpperInvariant() }
 
+function Copy-VerifiedQuicFile([string]$Source, [string]$Destination, [string]$Sha256) {
+    if (Test-Path -LiteralPath $Destination) { throw "QUIC package destination already exists: $Destination" }
+    Require-Copy $Source $Destination
+    if ((Hash $Destination) -ne $Sha256) { throw "QUIC package input changed: $Source" }
+}
+
 function Assert-NoHiddenOrSystemEntries([string]$Root) {
     foreach ($entry in Get-ChildItem -LiteralPath $Root -Recurse -Force) {
         if (($entry.Attributes -band [IO.FileAttributes]::Hidden) -ne 0 -or
@@ -213,6 +233,26 @@ function Assert-NoHiddenOrSystemEntries([string]$Root) {
 Write-Host '[1/7] Fresh binaries'
 Require-Copy (Join-Path $RepoRoot 'srchybrid\x64\Release\emule.exe') (Join-Path $packageDir 'emule.exe')
 Require-Copy (Join-Path $RepoRoot 'srchybrid\eSE\ese-server.exe') (Join-Path $packageDir 'ese-server.exe')
+if ($quicManifestSha256) {
+    Write-Host '      Signed QUIC runtime, notices and corresponding sources'
+    Assert-ReleaseQuicBinary -BinaryPath (Join-Path $packageDir 'emule.exe') `
+        -QuicManifestSha256 $quicManifestSha256
+    $quicPackage = Join-Path $packageDir 'third_party\quic'
+    foreach ($entry in $quicManifest.runtime) {
+        Copy-VerifiedQuicFile (Join-Path $QuicReleaseRoot $entry.path) `
+            (Join-Path $packageDir ([IO.Path]::GetFileName($entry.path))) $entry.sha256
+    }
+    foreach ($entry in (@($quicManifest.notices) + @($quicManifest.sources))) {
+        Copy-VerifiedQuicFile (Join-Path $QuicReleaseRoot $entry.path) `
+            (Join-Path $quicPackage $entry.path) $entry.sha256
+    }
+    Copy-VerifiedQuicFile $quicManifestPath `
+        (Join-Path $quicPackage 'manifest-x64.json') $quicManifestSha256
+    Copy-VerifiedQuicFile (Join-Path $RepoRoot 'third_party\quic\dependencies.lock.json') `
+        (Join-Path $quicPackage 'dependencies.lock.json') $quicManifest.lock_sha256
+    Copy-VerifiedQuicFile (Join-Path $RepoRoot 'third_party\quic\msys2-gnutls-x64-candidate.json') `
+        (Join-Path $quicPackage 'msys2-gnutls-x64-candidate.json') $quicManifest.msys2_candidate_sha256
+}
 
 $langSource = Join-Path $RepoRoot 'srchybrid\x64\Release\lang'
 Assert-NoReparseAncestors -Path $langSource -Anchor $RepoRoot
@@ -248,8 +288,7 @@ Require-Copy $ffprobePath (Join-Path $packageDir 'ffprobe.exe')
 Write-Host '[3/7] Dashboard source assets'
 $eseDest = Join-Path $packageDir 'eSE'
 New-Item -ItemType Directory $eseDest -Force | Out-Null
-Copy-GitTrackedTopLevelFiles -RelativeSource 'srchybrid\eSE' `
-    -Destination $eseDest -FileNames @(
+$eseTopLevel = @(
         '_player_bundle.js',
         'ai_assistant.js',
         'ai_oauth.js',
@@ -283,7 +322,20 @@ Copy-GitTrackedTopLevelFiles -RelativeSource 'srchybrid\eSE' `
         'tunnel.js',
         'tunnel_settings.js',
         'utils.js'
+)
+if ($quicManifestSha256) {
+    $eseTopLevel += @(
+        'bounded_process_runner.js',
+        'dashboard_bind.js',
+        'dashboard_endpoint.js',
+        'dashboard_port_range.js',
+        'emule_web_port.js',
+        'movie_metadata.js',
+        'part_metadata.js'
     )
+}
+Copy-GitTrackedTopLevelFiles -RelativeSource 'srchybrid\eSE' `
+    -Destination $eseDest -FileNames $eseTopLevel
 foreach ($directory in @('pages','routes','shared','eSE-live')) {
     Copy-GitTrackedTree "srchybrid\eSE\$directory" `
         (Join-Path $eseDest $directory)
@@ -390,6 +442,7 @@ $npmVersion = (& npm.cmd --version 2>$null)
     "ffmpeg_sha256: $(Hash (Join-Path $packageDir 'ffmpeg.exe'))",
     "ffprobe_sha256: $(Hash (Join-Path $packageDir 'ffprobe.exe'))",
     "nodes_dat_sha256: $nodesActual"
+    if ($quicManifestSha256) { "quic_manifest_sha256: $quicManifestSha256" }
 ) | Out-File (Join-Path $packageDir 'BUILD_INFO.txt') -Encoding ASCII
 
 $manifestPath = Join-Path $packageDir 'SHA256SUMS.txt'

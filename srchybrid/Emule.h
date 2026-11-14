@@ -142,6 +142,7 @@ public:
 	virtual BOOL InitInstance();
 	virtual int	ExitInstance();
 	virtual BOOL IsIdleMessage(MSG *pMsg);
+	int DoMessageBox(LPCTSTR prompt, UINT type, UINT promptId) override;
 
 	// ed2k link functions
 	void		AddEd2kLinksToDownload(const CString &strLinks, int cat);

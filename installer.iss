@@ -1,6 +1,6 @@
 [Setup]
 AppName=eSE Live TV
-AppVersion=9.1.0-beta.2
+AppVersion=9.3.0-rc.1
 AppPublisher=eSE Project
 DefaultDirName={localappdata}\eSE-Live
 DefaultGroupName=eSE Live TV

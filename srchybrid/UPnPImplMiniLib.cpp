@@ -396,16 +396,20 @@ static std::array<std::uint8_t, 32> UpnpOwnershipDigest(
 	return digest;
 }
 
+static bool IsMappingDisabled(const char* enabled)
+{
+	return enabled != NULL
+		&& (strcmp(enabled, "0") == 0 || _stricmp(enabled, "false") == 0);
+}
+
 static bool MappingTargetsLocalSocket(const char* internalClient,
 	const char* internalPort, const char* enabled, const char* lanAddress,
 	uint16 localPort)
 {
 	uint16 parsedPort = 0;
-	const bool mappingEnabled = enabled == NULL || enabled[0] == 0
-		|| (strcmp(enabled, "0") != 0 && _stricmp(enabled, "false") != 0);
 	return natmap::ParseUpnpDecimalPort(internalPort, parsedPort)
-		&& parsedPort == localPort
-		&& mappingEnabled && SameIPv4Address(internalClient, lanAddress);
+		&& parsedPort == localPort && !IsMappingDisabled(enabled)
+		&& SameIPv4Address(internalClient, lanAddress);
 }
 
 static uint32 ParseLeaseDuration(const char* text, uint32 fallback)
@@ -861,9 +865,11 @@ natmap::OwnershipDecision CUPnPImplMiniLib::PreflightOwnedMapping(
 }
 
 natmap::OwnershipDecision CUPnPImplMiniLib::ObserveOwnedMapping(
-	const natmap::UpnpOwnershipRecord& record, bool& absent) const
+	const natmap::UpnpOwnershipRecord& record, bool& absent, bool* disabled) const
 {
 	absent = false;
+	if (disabled != nullptr)
+		*disabled = false;
 	if (!record.IsStructurallyValid() || m_pURLs == NULL
 		|| m_pURLs->controlURL == NULL || m_pIGDData == NULL)
 		return natmap::OwnershipDecision::InvalidRecord;
@@ -874,6 +880,7 @@ natmap::OwnershipDecision CUPnPImplMiniLib::ObserveOwnedMapping(
 	char internalClient[40] = {};
 	char internalPort[8] = {};
 	char description[80] = {};
+	char enabled[8] = {};
 	char leaseDuration[16] = {};
 	_snprintf_s(externalPort, _countof(externalPort), _TRUNCATE,
 		"%hu", record.external_port);
@@ -883,7 +890,9 @@ natmap::OwnershipDecision CUPnPImplMiniLib::ObserveOwnedMapping(
 		record.transport == natmap::Transport::Tcp ? sTCPa : sUDPa,
 		NULL, internalClient, _countof(internalClient),
 		internalPort, _countof(internalPort),
-		description, _countof(description), NULL, 0,
+		description, _countof(description),
+		disabled != nullptr ? enabled : NULL,
+		disabled != nullptr ? _countof(enabled) : 0,
 		leaseDuration, _countof(leaseDuration));
 	if (m_bAbortDiscovery)
 		return natmap::OwnershipDecision::InvalidObservation;
@@ -901,7 +910,10 @@ natmap::OwnershipDecision CUPnPImplMiniLib::ObserveOwnedMapping(
 		|| !natmap::ParseOwnershipDescription(description,
 			_countof(description), observed.description))
 		return natmap::OwnershipDecision::InvalidObservation;
-	return natmap::EvaluateOwnershipForDeletion(record, gateway, observed);
+	const auto ownership = natmap::EvaluateOwnershipForDeletion(record, gateway, observed);
+	if (disabled != nullptr && ownership == natmap::OwnershipDecision::Owned)
+		*disabled = IsMappingDisabled(enabled);
+	return ownership;
 }
 
 bool CUPnPImplMiniLib::CleanupOwnedRecordAttempt(
@@ -1372,6 +1384,25 @@ bool CUPnPImplMiniLib::CheckAndRefresh()
 	StartThread();
 	return true;
 }
+
+bool CUPnPImplMiniLib::CheckMappingReadback()
+{
+	if (!IsReady() || !m_bSucceededOnce || m_bUPnPPortsForwarded != TRIS_TRUE
+		|| m_pURLs == NULL || m_pURLs->controlURL == NULL || m_pIGDData == NULL
+		|| m_nExternalTCPPort == 0 || m_nExternalUDPPort == 0)
+		return false;
+
+	StartThread();
+	return true;
+}
+
+void CUPnPImplMiniLib::RecordMappingReadbackLoss()
+{
+	CUPnPImpl::RecordMappingReadbackLoss();
+	// Legacy refresh callers must not recreate the pair ahead of recovery.
+	m_bSucceededOnce = false;
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 /// CUPnPImplMiniLib::CStartDiscoveryThread Implementation
 typedef CUPnPImplMiniLib::CStartDiscoveryThread CStartDiscoveryThread;
@@ -1420,6 +1451,62 @@ void CUPnPImplMiniLib::CStartDiscoveryThread::SendFailure(
 		m_operation, natmap::BuildUpnpPairMapperResult(input));
 }
 
+void CUPnPImplMiniLib::CStartDiscoveryThread::ReadMappingHealth()
+{
+	if (!SameNatmapAddress(m_pOwner->m_mappingLocalAddress, m_operation.local_address)
+		|| !SameNatmapAddress(m_pOwner->m_mappingGatewayAddress, m_operation.gateway_address)) {
+		SendFailure(natmap::ReasonCode::InterfaceChanged);
+		return;
+	}
+
+	unsigned healthy = 0;
+	const auto gateway = m_pOwner->CurrentGatewayFingerprint();
+	const auto& ledger = m_pOwner->m_ownershipLedger;
+	for (std::size_t i = 0; i < ledger.count && !m_pOwner->m_bAbortDiscovery; ++i) {
+		const auto& record = ledger.records[i];
+		const bool tcp = record.transport == natmap::Transport::Tcp;
+		if (record.owner_token != m_pOwner->m_ownerToken
+			|| record.generation != m_pOwner->m_mappingGeneration
+			|| record.gateway_fingerprint != gateway
+			|| !SameNatmapAddress(record.local_address, m_operation.local_address)
+			|| record.local_port != (tcp ? m_pOwner->m_nTCPPort : m_pOwner->m_nUDPPort)
+			|| record.external_port != (tcp ? m_pOwner->m_nExternalTCPPort : m_pOwner->m_nExternalUDPPort))
+			continue;
+
+		bool absent = false;
+		bool disabled = false;
+		const auto observation = m_pOwner->ObserveOwnedMapping(record, absent, &disabled);
+		if (m_pOwner->m_bAbortDiscovery)
+			return;
+		if (absent || disabled
+			|| observation == natmap::OwnershipDecision::InternalClientMismatch
+			|| observation == natmap::OwnershipDecision::InternalPortMismatch
+			|| observation == natmap::OwnershipDecision::DescriptionMismatch) {
+			SendFailure(natmap::ReasonCode::LeaseExpired);
+			return;
+		}
+		if (observation == natmap::OwnershipDecision::Owned)
+			++healthy;
+	}
+	if (healthy != 2) {
+		SendFailure(natmap::ReasonCode::InvalidResponse);
+		return;
+	}
+
+	natmap::MapperResultData result;
+	result.mapper = natmap::MapperKind::UpnpIgd;
+	result.source = natmap::MapperSource::UpnpIgd;
+	result.gateway = natmap::Endpoint{
+		m_operation.gateway_address, 1900, natmap::EndpointSource::LocalInterface};
+	result.request_id = m_operation.request.request_id;
+	result.topology_generation = m_operation.request.topology_generation;
+	result.operation = natmap::MappingOperation::Readback;
+	result.status = natmap::MappingStatus::Observed;
+	UPnPWorkerGlobalAccess globalAccess;
+	if (globalAccess && !m_pOwner->m_bAbortDiscovery)
+		m_pOwner->SendMapperResultMessage(m_operation, result);
+}
+
 DWORD CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 {
 	if (!m_pOwner)
@@ -1437,6 +1524,10 @@ DWORD CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 
 	if (m_pOwner->m_bAbortDiscovery)// requesting to abort ASAP?
 		return 0;
+	if (m_operation.request.operation == natmap::MappingOperation::Readback) {
+		ReadMappingHealth();
+		return 0;
+	}
 	if (m_pOwner->m_bCheckAndRefresh)
 		m_pOwner->m_dwMappingLeaseLifetime = 0;
 
@@ -2141,16 +2232,22 @@ void CUPnPImplMiniLib::Cleanup()
 
 void CUPnPImplMiniLib::StartThread()
 {
+	const MappingOperationContext operation = CaptureMappingOperation();
+	const bool readback = operation.request.operation == natmap::MappingOperation::Readback;
 	if (!ReapCompletedWorker() || m_hThreadHandle != NULL) {
-		m_bUPnPPortsForwarded = TRIS_FALSE;
-		m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
+		if (!readback) {
+			m_bUPnPPortsForwarded = TRIS_FALSE;
+			m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
+		}
 		return;
 	}
 	// A worker that never starts must answer its operation with an honest
 	// failure instead of leaving the caller to wait for the UI timeout.
-	const auto SendStartFailure = [this]() {
-		const MappingOperationContext operation =
-			CaptureMappingOperation();
+	const auto SendStartFailure = [this, &operation, readback]() {
+		if (!readback) {
+			m_bUPnPPortsForwarded = TRIS_FALSE;
+			m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
+		}
 		natmap::UpnpPairResultInput input;
 		input.request = operation.request;
 		input.gateway_address = operation.gateway_address;
@@ -2164,8 +2261,6 @@ void CUPnPImplMiniLib::StartThread()
 		new (std::nothrow) CStartDiscoveryThread(this);
 	if (pStartDiscoveryThread == NULL) {
 		m_hThreadHandle = NULL;
-		m_bUPnPPortsForwarded = TRIS_FALSE;
-		m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
 		SendStartFailure();
 		return;
 	}
@@ -2176,8 +2271,6 @@ void CUPnPImplMiniLib::StartThread()
 	if (m_hThreadHandle == NULL) {
 		delete m_pWorkerThread;
 		m_pWorkerThread = NULL;
-		m_bUPnPPortsForwarded = TRIS_FALSE;
-		m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
 		SendStartFailure();
 		return;
 	}

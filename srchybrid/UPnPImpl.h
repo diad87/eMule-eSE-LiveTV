@@ -18,6 +18,7 @@
 #include <exception>
 #include <memory>
 #include <mutex>
+#include "EseMappingReadback.h"
 #include "natmap/natmap_policy.h"
 #include "natmap/mapping_request.h"
 #include "natmap/mapping_result_mailbox.h"
@@ -95,6 +96,8 @@ public:
 	virtual natmap::MapperSource GetMapperSource() const
 		{ return natmap::MapperSource::None; }
 	virtual bool SupportsMappingHealthCheck() const { return true; }
+	virtual bool SupportsMappingReadback() const { return false; }
+	virtual bool CheckMappingReadback() { return false; }
 
 	void LateEnableWebServerPort(uint16 nPort);	// V9.2 compatibility no-op; WebServer is never mapped
 
@@ -120,6 +123,8 @@ public:
 	void RecordLeaseSuccess();
 	bool IsLeaseRefreshDue() const;
 	bool IsLeaseExpired() const;
+	bool BeginMappingReadbackIfDue();
+	virtual void RecordMappingReadbackLoss();
 	void BeginLeaseRefreshAttempt();
 	uint64 GetLeaseRefreshSecondsUntilDue() const;
 	uint32 GetLeaseRefreshAttemptCount() const;
@@ -165,6 +170,7 @@ protected:
 	natmap::PermanentMappingProbeSchedule m_permanentProbeSchedule;
 
 private:
+	ese::mapping::ReadbackSchedule m_readbackSchedule;
 	mutable std::mutex m_resultMutex;
 	std::shared_ptr<natmap::MappingResultMailbox> m_resultMailbox;
 	natmap::MappingRequestContext m_requestContext;

@@ -35,8 +35,8 @@ inline void RunIndexHost(CDirectReachabilityManager& manager,std::uint16_t portN
     Require(Kademlia::CKademlia::IsKad6Running(),"index Kad6 activation");
     manager.TickDirectConnections(); Require(manager.EnableNativeQuicLab(),"index real host activation");
     Require(!manager.GetKad6ServiceCapabilities(),"index no capability from mapping alone");
-    Require(manager.ObserveMappedPortsForSelfTest(natmap::MapperKind::Pcp,htonl(0x34020304),thePrefs.GetPort(),
-        55001,portNumber,55002,120,1,false),"index injected mapping transaction");
+    Require(manager.ObserveMappedPortsForSelfTest(htonl(0x34020304),thePrefs.GetPort(),
+        55001,portNumber,55002,120,1),"index injected mapping transaction");
     const auto peerIp=htonl(0x35020304);
     Require(manager.BeginKad6PublicContactVerification(peerIp) &&
         manager.ObserveKad6PublicContactVerification(peerIp,55002,portNumber),"index injected UDP witness verdict");
@@ -162,8 +162,8 @@ inline void RunIndexHost(CDirectReachabilityManager& manager,std::uint16_t portN
     thePrefs.SetEseNetLabEnabled(true);
     manager.TickDirectConnections();
     const auto boundTcp=theApp.listensocket->GetConnectedPort();
-    Require(boundTcp && manager.ObserveMappedPortsForSelfTest(natmap::MapperKind::Pcp,htonl(0x34020304),boundTcp,
-        55001,portNumber,55002,120,2,false),"classic fresh injected mapping after consent reactivation");
+    Require(boundTcp && manager.ObserveMappedPortsForSelfTest(htonl(0x34020304),boundTcp,
+        55001,portNumber,55002,120,2),"classic fresh injected mapping after consent reactivation");
     Log(_T("CLASSIC_HOST_SELFTEST mapping: enabled=%u localTCP=%u advertisedTCP=%u generation=%I64u"),
         unsigned(manager.IsEnabled()),unsigned(manager.GetLocalTcpPort()),unsigned(manager.GetAdvertisedTcpPort()),
         static_cast<ULONGLONG>(manager.GetTopologyGeneration()));
@@ -177,11 +177,25 @@ inline void RunIndexHost(CDirectReachabilityManager& manager,std::uint16_t portN
     };
     ack(); receive(response,Now()+50);
     Require(!manager.HasVerifiedClassicCallbackReachability(),"classic ACK without inbound socket rejected");
-    SOCKET inbound=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
-    Require(inbound!=INVALID_SOCKET,"classic inbound socket creation");
-    struct CloseSocket { SOCKET value; ~CloseSocket() { closesocket(value); } } closeSocket{inbound};
     auto tcpDestination=destination; tcpDestination.sin_port=htons(boundTcp);
-    Require(connect(inbound,reinterpret_cast<const sockaddr*>(&tcpDestination),sizeof(tcpDestination))==0,"classic new TCP connection to actual listener");
+    struct CloseSocket { SOCKET value; ~CloseSocket() { if(value!=INVALID_SOCKET) closesocket(value); } };
+    auto connectInbound=[&](SOCKET inbound) {
+        Require(inbound!=INVALID_SOCKET,"classic inbound socket creation");
+        Require(connect(inbound,reinterpret_cast<const sockaddr*>(&tcpDestination),sizeof(tcpDestination))==0,
+            "classic TCP connection to actual listener");
+    };
+    const auto mappingGeneration=manager.GetTopologyGeneration();
+    {
+        // The old listener drops queued connections when it sees the changed
+        // topology. Its same-port rebind must preserve the new mapping.
+        CloseSocket oldListenerPeer{socket(AF_INET,SOCK_STREAM,IPPROTO_TCP)};
+        connectInbound(oldListenerPeer.value);
+        receive(response,Now()+100); ack(); receive(response,Now()+100);
+        Require(manager.GetTopologyGeneration()==mappingGeneration && manager.GetAdvertisedTcpPort()==55001 &&
+            !manager.HasVerifiedClassicCallbackReachability(),"classic stale listener rejected without withdrawing current mapping");
+    }
+    CloseSocket inbound{socket(AF_INET,SOCK_STREAM,IPPROTO_TCP)};
+    connectInbound(inbound.value);
     receive(response,Now()+100); ack(); receive(response,Now()+100);
     Require(manager.HasVerifiedClassicCallbackReachability() && manager.GetAdvertisedTcpPort()==55001 &&
         manager.GetLocalTcpPort()==boundTcp,"classic inbound then ACK exact external/local mapping tuple");
@@ -193,7 +207,7 @@ inline void RunIndexHost(CDirectReachabilityManager& manager,std::uint16_t portN
         !manager.HasVerifiedClassicCallbackReachability() && !manager.GetKad6ServiceCapabilities() &&
         manager.MappingRediscoveryNeeded(),
         "topology invalidation retires grant callback receiver and generation");
-    Log(_T("REACH_SELFTEST V170 PASS: local topology invalidation withdraws grant classic callback and receiver before rediscovery; the 9.3 mapper readback worker is not ported to the rc.2 mapper"));
+    Log(_T("REACH_SELFTEST V170 PASS: local topology invalidation withdraws grant classic callback and receiver before rediscovery; simulated topology change with injected mapping"));
     Require(Kademlia::CKademlia::ApplyNetworkMask(KadNetworkPolicy::Kad6),"publication Kad6-only profile");
     manager.Initialize(boundTcp,portNumber);
     Require(!manager.GetKad6ServiceCapabilities() && !manager.HasVerifiedClassicCallbackReachability(),

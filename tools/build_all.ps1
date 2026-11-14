@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory = $true)][string]$ReleaseTag,
     [string[]]$Skip = @(),
     [string]$FfmpegPath = '',
+    [string]$QuicReleaseRoot = '',
     [ValidateRange(0, 64)][int]$MaxCpuCount = 0,
     [switch]$AllowDirty,
     [switch]$DryRun
@@ -27,6 +28,14 @@ if ($DryRun -and -not $AllowDirty) {
     )
 }
 . (Join-Path $RepoRoot 'tools\release_fingerprint.ps1')
+$requiresQuic = Test-ReleaseRequiresQuic $ReleaseTag
+if ($requiresQuic -and -not $QuicReleaseRoot -and -not $DryRun) {
+    throw '9.3 and later require -QuicReleaseRoot. Build it with tools/build_quic_msys2_candidate.ps1.'
+}
+if ($QuicReleaseRoot) {
+    if (-not $requiresQuic) { throw 'This release tag predates the signed QUIC package' }
+    $QuicReleaseRoot = (Resolve-Path -LiteralPath $QuicReleaseRoot).Path
+}
 $logDir = Join-Path $RepoRoot 'tools\build_logs'
 New-Item -ItemType Directory $logDir -Force | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -142,6 +151,7 @@ if ($AllowDirty) { Write-Host 'WARNING: dirty-worktree development mode' -Foregr
 Stage 'preflight' {
     $args = @{ ReleaseTag = $ReleaseTag; RepoRoot = $RepoRoot }
     if ($AllowDirty) { $args.AllowDirty = $true }
+    if ($QuicReleaseRoot) { $args.QuicReleaseRoot = $QuicReleaseRoot }
     & (Join-Path $RepoRoot 'tools\release_preflight.ps1') @args
 }
 if (-not $AllowDirty -and -not $DryRun) {
@@ -170,9 +180,19 @@ Stage 'libutp' {
 
 Stage 'emule' {
     $log = Join-Path $logDir "emule-$stamp.log"
+    $quicBuildArgs = @()
+    $nativeQuicManifest = ''
+    if ($requiresQuic) {
+        $nativeQuicManifest = Get-ReleaseQuicManifestHash -RepoRoot $RepoRoot `
+            -QuicReleaseRoot $QuicReleaseRoot
+        $quicBuildArgs = @(
+            "/p:EseQuicReleaseRoot=$QuicReleaseRoot",
+            "/p:EseQuicReleaseManifestSha256=$nativeQuicManifest"
+        )
+    }
     & $msbuild (Join-Path $RepoRoot 'srchybrid\emule.sln') /t:Rebuild `
         /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 `
-        $msbuildParallelArg /v:minimal /nologo /fl /flp:"LogFile=$log;Verbosity=normal"
+        @quicBuildArgs $msbuildParallelArg /v:minimal /nologo /fl /flp:"LogFile=$log;Verbosity=normal"
     if ($LASTEXITCODE -ne 0) { throw "emule build failed; see $log" }
     $emuleBinary = Join-Path $RepoRoot 'srchybrid\x64\Release\emule.exe'
     if (-not (Test-Path $emuleBinary)) { throw 'emule.exe was not produced' }
@@ -182,7 +202,8 @@ Stage 'emule' {
         throw "emule.exe version '$fileVersion' does not identify $expectedVersion"
     }
     Write-ReleaseBinaryStamp -RepoRoot $RepoRoot -ReleaseTag $ReleaseTag `
-        -Component emule -BinaryPath $emuleBinary -StampPath $emuleBuildStamp
+        -Component emule -BinaryPath $emuleBinary -StampPath $emuleBuildStamp `
+        -QuicManifestSha256 $nativeQuicManifest
 }
 
 Stage 'tests-integration' {
@@ -295,6 +316,7 @@ Stage 'package' {
     $args = @{ ReleaseTag = $ReleaseTag; RepoRoot = $RepoRoot }
     if ($FfmpegPath) { $args.FfmpegPath = $FfmpegPath }
     if ($AllowDirty) { $args.AllowDirty = $true }
+    if ($QuicReleaseRoot) { $args.QuicReleaseRoot = $QuicReleaseRoot }
     & (Join-Path $RepoRoot 'build_package.ps1') @args
 }
 
@@ -338,6 +360,12 @@ Stage 'package-smoke' {
         $verifiedHashes++
     }
     if ($verifiedHashes -eq 0) { throw 'package smoke SHA256SUMS is empty' }
+    if ($requiresQuic) {
+        $packageQuicManifest = Join-Path $packageDir 'third_party\quic\manifest-x64.json'
+        $packagedManifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $packageQuicManifest).Hash
+        Assert-ReleaseQuicBinary -BinaryPath (Join-Path $packageDir 'emule.exe') `
+            -QuicManifestSha256 $packagedManifestSha256
+    }
     Write-Host "Package hashes: $verifiedHashes verified"
     & (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot -RuntimeDir $packageDir
     $oldTestMode = $env:ESE_TEST_MODE

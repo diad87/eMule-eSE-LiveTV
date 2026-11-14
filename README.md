@@ -11,21 +11,16 @@ Windows x64 package.
 
 ## Current candidate
 
-### eSE 9.2.0-rc.2 for Windows x64
+### eSE 9.3.0-rc.1 for Windows x64
 
-This source tree builds the `9.2.0-rc.2` Windows x64 qualification candidate.
-It remains **NO_GO** until its physical O01 evidence is complete and independently
-validated. The latest published stable release remains `9.1.0`.
+This source tree is preparing the `9.3.0-rc.1` Windows x64 candidate. Packaging
+and R1 qualification are in progress. The latest published stable release is
+`9.1.0`.
 
-[9.2.0-rc.2 release notes](docs/RELEASE_NOTES_v9.2.0-rc.2.md)
-· [RC1 execution contract](docs/V92_RC1_EXECUTION.md)
+[Draft 9.3.0-rc.1 release notes](docs/RELEASE_NOTES_v9.3.0-rc.1.md)
+· [RC1 execution plan](docs/V93_RC1_EXECUTION.md)
 · [All releases](https://github.com/diad87/eMule-eSE-LiveTV/releases)
 
-> [!IMPORTANT]
-> This candidate is not a public release and must not be presented as one.
-> Historical v9.1 qualification does not transfer to the v9.2 binary. Use only
-> the exact hash-bound package, read its release notes, and wait for the formal
-> eight-hour O01 result before any release claim or deployment.
 
 ### Run it
 
@@ -161,8 +156,11 @@ Set-Location eMule-eSE-LiveTV
 For a local developer build:
 
 ```powershell
+.\tools\build_quic_msys2_candidate.ps1 -WorkRoot D:\tmp\ese-quic-x64
 .\tools\build_all.ps1 `
-  -ReleaseTag v0.70b-eSE9.2.0-rc.2 `
+  -ReleaseTag v0.70b-eSE9.3.0-rc.1 `
+  -QuicReleaseRoot D:\tmp\ese-quic-x64 `
+  -FfmpegPath <path-to-pinned-ffmpeg.exe> `
   -AllowDirty `
   -MaxCpuCount 1
 ```

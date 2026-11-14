@@ -1802,7 +1802,12 @@ inline void ResolveSimulatedSource(CDirectReachabilityManager& manager,
     Require(port.AttachQuicIngress(&inbox),"discovery simulated witness ingress");
     struct Cleanup {
         CDirectReachabilityManager& manager; Port& port; Inbox& inbox;
-        ~Cleanup() { manager.CancelDirectKad6Resolution(); manager.CancelDirectControlBootstrap(); port.DetachQuicIngress(&inbox); }
+        ~Cleanup() {
+            // The timer can start the download bootstrap while consuming the
+            // discovery result. Retire only the lookup and its own bootstrap.
+            manager.CancelDirectKad6Resolution();
+            port.DetachQuicIngress(&inbox);
+        }
     } cleanup{manager,port,inbox};
     struct Signer final : control::Signer {
         Identity& identity; explicit Signer(Identity& value):identity(value) {}

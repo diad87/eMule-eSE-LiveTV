@@ -54,6 +54,9 @@ bool StatusMatchesOperation(MappingOperation operation,
     case MappingOperation::Delete:
         return status == MappingStatus::Deleted ||
                status == MappingStatus::Failed;
+    case MappingOperation::Readback:
+        return status == MappingStatus::Observed ||
+               status == MappingStatus::Failed;
     }
     return false;
 }
@@ -194,6 +197,16 @@ bool MapperResult::IsStructurallyValid() const noexcept {
     const bool partial = data_.status == MappingStatus::Partial;
     const bool deleted = data_.status == MappingStatus::Deleted;
     const bool failed = data_.status == MappingStatus::Failed;
+
+    if (data_.operation == MappingOperation::Readback &&
+        (data_.mapper != MapperKind::UpnpIgd ||
+         data_.mapping_count != 0 ||
+         data_.ownership != OwnershipState::Unknown ||
+         (data_.status == MappingStatus::Observed &&
+          (data_.verification != VerificationState::NotAttempted ||
+           data_.reason != ReasonCode::None ||
+           data_.protocol_result_code != 0))))
+        return false;
 
     if (mapped && !HasAtomicPair(data_))
         return false;

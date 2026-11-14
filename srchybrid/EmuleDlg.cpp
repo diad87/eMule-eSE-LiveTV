@@ -1257,7 +1257,7 @@ LRESULT CemuleDlg::OnProcessKnownMetSave(WPARAM, LPARAM)
 	return 0;
 }
 
-static bool RunReachBindingSelfTest()
+static bool RunReachBindingSelfTest(bool tcpFallbackF1)
 {
 #ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
 	CNativeDirectSelfTestAccess::TestWindowIsolation();
@@ -1294,6 +1294,14 @@ static bool RunReachBindingSelfTest()
 	}
 	if (manager.GetLocalTcpPort()!=tcp || manager.GetLocalUdpPort()!=udp
 		|| manager.GetTopologyGeneration()<=emptyGeneration) return fail(_T("manager binding synchronization"));
+	if (tcpFallbackF1) {
+#ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
+		ese::shared_socket_selftest::RunClassicTcpObservation(manager,0,udp,true);
+		return true;
+#else
+		return fail(_T("TCP fallback fixture requires native QUIC"));
+#endif
+	}
 	reach::NativeDirectCandidateSnapshotV1 directSnapshot;
 	directSnapshot.local_generation=manager.GetTopologyGeneration();
 	directSnapshot.remote_generation=99;
@@ -2015,17 +2023,9 @@ void CemuleDlg::RunHeadlessAction() noexcept
 			bool passed=false;
 			try {
 				if (theApp.m_strQuicPairSelfTestRole.IsEmpty()) {
-#ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
 					TCHAR fallback[2]={};
-					if (GetEnvironmentVariable(_T("ESE_TCP_FALLBACK_F1"),fallback,_countof(fallback))==1 && fallback[0]==_T('1')) {
-						if (!thePrefs.GetBindAddrA() || strcmp(thePrefs.GetBindAddrA(),"127.0.0.1") || !theApp.clientudp ||
-							!theApp.clientudp->GetConnectedPort() || !theApp.directreachability || thePrefs.DoAutoConnect() || thePrefs.IsUPnPEnabled())
-							throw std::runtime_error("unsafe TCP fallback fixture binding");
-						ese::shared_socket_selftest::RunClassicTcpObservation(*theApp.directreachability,0,theApp.clientudp->GetConnectedPort(),true);
-						passed=true;
-					} else
-#endif
-					passed = RunReachBindingSelfTest();
+					const bool tcpFallbackF1=GetEnvironmentVariable(_T("ESE_TCP_FALLBACK_F1"),fallback,_countof(fallback))==1 && fallback[0]==_T('1');
+					passed = RunReachBindingSelfTest(tcpFallbackF1);
 				} else {
 #ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
 					passed = ese::pair_selftest::Run();

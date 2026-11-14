@@ -455,28 +455,30 @@ Write-Host '[6/7] Build provenance and file manifest'
 $gitSha = (& git -C $RepoRoot rev-parse HEAD).Trim()
 $dirty = @(& git -C $RepoRoot status --porcelain=v1 --untracked-files=all --ignore-submodules=none)
 $dirtyText = if ($dirty.Count -eq 0) { 'false' } else { 'true (development override)' }
-if ($layout.Dashboard) {
-    $nodeVersion = (& node --version 2>$null)
-    $npmVersion = (& npm.cmd --version 2>$null)
-} else {
+$sourceTimestamp = $null
+if ($quicManifestSha256) {
     $commitEpoch = (& git -C $RepoRoot log -1 --format=%ct HEAD).Trim()
     if ($LASTEXITCODE -ne 0 -or $commitEpoch -notmatch '^\d+$') { throw 'Cannot determine the source revision timestamp' }
     $sourceTimestamp = [DateTimeOffset]::FromUnixTimeSeconds([long]$commitEpoch)
 }
+if ($layout.Dashboard) {
+    $nodeVersion = (& node --version 2>$null)
+    $npmVersion = (& npm.cmd --version 2>$null)
+}
 @(
     "release: $ReleaseTag"
-    "architecture: $Architecture"
+    if ($quicManifestSha256) { "architecture: $Architecture" }
     "commit: $gitSha"
     "dirty: $dirtyText"
+    if ($sourceTimestamp) { "source_utc: $($sourceTimestamp.ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture))" }
+    else { "built_utc: $([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))" }
     if ($layout.Dashboard) {
-        "built_utc: $([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))"
         "node: $nodeVersion"
         "npm: $npmVersion"
         "ffmpeg: $ffmpegVersionLine"
         "ffmpeg_sha256: $(Hash (Join-Path $packageDir 'ffmpeg.exe'))"
         "ffprobe_sha256: $(Hash (Join-Path $packageDir 'ffprobe.exe'))"
     } else {
-        "source_utc: $($sourceTimestamp.ToString('yyyy-MM-ddTHH:mm:ssZ'))"
         'bundle: eMule with native authenticated WebServer'
     }
     "nodes_dat_sha256: $nodesActual"
@@ -484,18 +486,24 @@ if ($layout.Dashboard) {
 ) | Out-File (Join-Path $packageDir 'BUILD_INFO.txt') -Encoding ASCII
 
 $manifestPath = Join-Path $packageDir 'SHA256SUMS.txt'
-$manifestLines = @(Get-ChildItem -LiteralPath $packageDir -Recurse -File -Force | Where-Object { $_.FullName -ne $manifestPath } | Sort-Object FullName | ForEach-Object {
-    $relative = $_.FullName.Substring($packageDir.Length + 1).Replace('\','/')
-    "$(Hash $_.FullName)  $relative"
-})
+$manifestLines = if ($sourceTimestamp) {
+    foreach ($relative in Get-ReleaseZipRelativePaths -Root $packageDir) {
+        "$(Hash (Join-Path $packageDir $relative))  $relative"
+    }
+} else {
+    Get-ChildItem -LiteralPath $packageDir -Recurse -File -Force | Sort-Object FullName | ForEach-Object {
+        $relative = $_.FullName.Substring($packageDir.Length + 1).Replace('\','/')
+        "$(Hash $_.FullName)  $relative"
+    }
+}
 $manifestLines | Out-File $manifestPath -Encoding ASCII
 
 Write-Host '[7/7] ZIP and external checksum'
 Assert-NoHiddenOrSystemEntries -Root $packageDir
-if ($layout.Dashboard) {
-    Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $zipPath -CompressionLevel Optimal -Force
-} else {
+if ($sourceTimestamp) {
     New-DeterministicReleaseZip -SourceDirectory $packageDir -Archive $zipPath -Timestamp $sourceTimestamp
+} else {
+    Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $zipPath -CompressionLevel Optimal -Force
 }
 Test-ReleaseZipIntegrity -SourceDirectory $packageDir -Archive $zipPath `
     -VerificationRoot $releaseRoot | Out-Null

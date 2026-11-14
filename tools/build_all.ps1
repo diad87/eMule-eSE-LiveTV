@@ -248,8 +248,9 @@ if ($layout.Dashboard) {
         try {
             & npm.cmd ci --no-audit --no-fund
             if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
-            & npm.cmd run build
-            if ($LASTEXITCODE -ne 0) { throw 'npm run build failed' }
+            $dashboardScript = if ($requiresQuic) { 'build:release' } else { 'build' }
+            & npm.cmd run $dashboardScript
+            if ($LASTEXITCODE -ne 0) { throw "npm run $dashboardScript failed" }
             $eseBinary = Join-Path $eseDir 'ese-server.exe'
             if (-not (Test-Path $eseBinary)) { throw 'ese-server.exe was not produced' }
             Write-ReleaseBinaryStamp -RepoRoot $RepoRoot -ReleaseTag $ReleaseTag `

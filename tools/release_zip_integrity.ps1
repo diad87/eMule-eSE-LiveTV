@@ -39,6 +39,16 @@ function Assert-ReleaseZipNoReparseTree {
     }
 }
 
+function Get-ReleaseZipRelativePaths {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    $source = (Resolve-Path -LiteralPath $Root).Path.TrimEnd('\')
+    [string[]]$paths = @(Get-ChildItem -LiteralPath $source -Recurse -File -Force | ForEach-Object {
+        $_.FullName.Substring($source.Length + 1).Replace('\', '/')
+    })
+    [Array]::Sort($paths, [StringComparer]::Ordinal)
+    return $paths
+}
+
 function New-DeterministicReleaseZip {
     param(
         [Parameter(Mandatory = $true)][string]$SourceDirectory,
@@ -49,10 +59,7 @@ function New-DeterministicReleaseZip {
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $source = (Resolve-Path -LiteralPath $SourceDirectory).Path.TrimEnd('\')
-    [string[]]$paths = @(Get-ChildItem -LiteralPath $source -Recurse -File -Force | ForEach-Object {
-        $_.FullName.Substring($source.Length + 1).Replace('\', '/')
-    })
-    [Array]::Sort($paths, [StringComparer]::Ordinal)
+    $paths = @(Get-ReleaseZipRelativePaths -Root $source)
     $temporary = $Archive + '.tmp-' + [Guid]::NewGuid().ToString('N')
     try {
         $zip = [IO.Compression.ZipFile]::Open($temporary, [IO.Compression.ZipArchiveMode]::Create)

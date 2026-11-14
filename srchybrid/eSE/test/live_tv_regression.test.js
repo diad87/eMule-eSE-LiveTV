@@ -312,6 +312,7 @@ test('package manifest includes every offline player asset', () => {
   assert.ok(!pkg.pkg.assets.includes('eSE_Remote.html'));
   assert.equal(pkg.dependencies['nat-upnp-2'], undefined);
   assert.match(pkg.scripts.build, /node22-win-x64/);
+  assert.match(pkg.scripts['build:release'], /npm run build -- --no-bytecode --public --public-packages "\*"/);
   assert.ok(pkg.devDependencies['@yao-pkg/pkg']);
   assert.equal(pkg.devDependencies.pkg, undefined);
   assert.equal(pkg.license, 'GPL-2.0-only');
@@ -380,12 +381,16 @@ test('release dashboard is loopback-only and legacy updates fail closed', () => 
   assert.match(packageScript, /Copy-GitTrackedTopLevelFiles/);
   assert.match(packageScript, /Assert-GitTrackedSource/);
   assert.match(packageScript, /Test-ReleaseZipIntegrity/);
+  assert.match(packageScript, /if \(\$quicManifestSha256\) \{\s*\$commitEpoch = \(& git -C \$RepoRoot log -1 --format=%ct HEAD\)/);
+  assert.match(packageScript, /if \(\$sourceTimestamp\) \{ "source_utc:[^\r\n]+\}\s*else \{ "built_utc:/);
+  assert.match(packageScript, /if \(\$sourceTimestamp\) \{\s*New-DeterministicReleaseZip[^\r\n]+\s*\} else \{\s*Compress-Archive/);
   assert.doesNotMatch(packageScript, /function\s+Copy-Tree/);
   assert.match(buildAll, /\$Skip\.Count\s+-gt\s+0\s+-and\s+-not\s+\$AllowDirty/);
   assert.match(buildAll, /\$DryRun\s+-and\s+-not\s+\$AllowDirty/);
   assert.match(buildAll, /Assert-OfficialHead -Context "before \$Name"/);
   assert.match(buildAll, /Assert-OfficialHead -Context "after \$Name"/);
   assert.match(buildAll, /Development pipeline complete \(NOT RELEASABLE\)/);
+  assert.match(buildAll, /\$dashboardScript = if \(\$requiresQuic\) \{ 'build:release' \} else \{ 'build' \}/);
   assert.match(buildAll, /Get-NetTCPConnection[\s\S]{0,500}127\.0\.0\.1/);
   assert.match(buildAll, /\[ValidateSet\('x64',\s*'Win32'\)\]\[string\]\$Architecture\s*=\s*'x64'/);
   assert.match(buildAll, /srchybrid\\lang\\\$Architecture\\Dynamic/);

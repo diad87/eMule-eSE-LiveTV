@@ -53,6 +53,67 @@
 // seed a per-file timestamp to exercise the normal periodic deadline branch.
 class CNativeDirectSelfTestAccess {
 public:
+    static void TestPrivatePeerHelloTag() {
+        if(!theApp.m_bReachBindingSelfTest) throw std::runtime_error("private peer HELLO fixture gate");
+        struct RestoreMode {
+            CPreferences::EIPv6Mode mode=thePrefs.GetIPv6Mode();
+            ~RestoreMode() { thePrefs.SetIPv6Mode(mode); }
+        } restore;
+        CUpDownClient sender(static_cast<CPartFile*>(nullptr),4662,0,0,0,false);
+        for(const auto mode : {CPreferences::IPv6OffMode,CPreferences::IPv6AutoMode}) {
+            thePrefs.SetIPv6Mode(mode);
+            CSafeMemFile payload;
+            sender.SendHelloTypePacket(payload);
+            const auto size=static_cast<UINT>(payload.GetLength());
+            payload.Seek(22,CFile::begin); // hash16, ID4, port2
+            const auto count=payload.ReadUInt32();
+            unsigned aliases=0;
+            for(uint32 i=0;i<count;++i) {
+                const auto begin=payload.GetPosition();
+                const CTag tag(payload,true);
+                if(tag.GetNameID()!=0xf0) continue;
+                ++aliases;
+                const auto end=payload.GetPosition();
+                const auto* actual=payload.GetBuffer()+begin;
+                const unsigned char header[]={0x03,0x01,0x00,0xf0};
+                const uint32 bits=tag.IsInt() ? tag.GetInt() : 0;
+                const uint32 required=mode==CPreferences::IPv6OffMode ? 0x08 : 0x09;
+                if(end-begin!=8 || memcmp(actual,header,sizeof header)!=0 ||
+                    (bits & ~0x0fu)!=0 || (bits & 0x09u)!=required ||
+                    (mode==CPreferences::IPv6OffMode && bits!=0x08u))
+                    throw std::runtime_error("private peer HELLO alias wire mismatch");
+            }
+            if(aliases!=1 || payload.GetPosition()+6!=size)
+                throw std::runtime_error("private peer HELLO tag count or footer mismatch");
+        }
+
+        CUpDownClient peer(static_cast<CPartFile*>(nullptr),4662,0,0,0,false);
+        CClientReqSocket socket(&peer);
+        auto hello=[&](bool addAlias) {
+            CSafeMemFile payload;
+            const unsigned char hash[16]={0x18,0x39,0x9f,0x61,0x0e,0xb8,0x64,0x87,
+                0x0a,0x29,0xc0,0xa1,0x6d,0x56,0x25,0x91};
+            payload.WriteHash16(hash);
+            payload.WriteUInt32(0);
+            payload.WriteUInt16(4662);
+            payload.WriteUInt32(addAlias ? 2u : 1u);
+            CTag name(CT_NAME,_T("peer fixture"));
+            name.WriteTagToFile(payload);
+            if(addAlias) {
+                const unsigned char fixture[]={0x03,0x01,0x00,0xf0,0x0f,0x00,0x00,0x00};
+                payload.Write(fixture,sizeof fixture);
+            }
+            payload.WriteUInt32(0);
+            payload.WriteUInt16(0);
+            peer.ProcessHelloAnswer(payload.GetBuffer(),static_cast<UINT>(payload.GetLength()));
+        };
+        hello(true);
+        if(peer.GetForkCaps()!=0x0f) throw std::runtime_error("private peer HELLO bits not received");
+        hello(false);
+        if(peer.GetForkCaps()!=0) throw std::runtime_error("classic peer HELLO inherited private bits");
+        Log(_T("REACH_SELFTEST V176 PASS: private peer HELLO wire 0xF0 UINT32 bitmap, IPv6 settings and legacy omission"));
+    }
+
     static uint64 StoredKad6Publications(CDirectReachabilityManager& manager) {
         if(!theApp.m_bReachBindingSelfTest) throw std::runtime_error("publication diagnostic fixture gate");
         return manager.m_kad6StoredPublications;

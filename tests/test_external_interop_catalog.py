@@ -22,7 +22,6 @@ V94_PLAN = ROOT / "docs" / "V9.4_DEVELOPMENT_AND_TEST_PLAN.md"
 ADR93 = ROOT / "docs" / "adr" / "ADR-0001-tesis-vs-especificacion-9.3.md"
 UNIFIED_PLAN = ROOT / "docs" / "V9.3_PLUS_RELEASE_TRAIN.md"
 UNIFIED_STATE = ROOT / "docs" / "V9.3_EXECUTION_STATE.md"
-REGISTRY_CHECKER = ROOT / "tools" / "check_protocol_registry.py"
 OWNED_REGISTRIES = (
     ROOT / "docs" / "protocol" / "OPCODES.csv",
     ROOT / "docs" / "protocol" / "TAGS.csv",
@@ -703,9 +702,8 @@ def main() -> int:
     adr93 = ADR93.read_text(encoding="utf-8")
     unified_plan = UNIFIED_PLAN.read_text(encoding="utf-8")
     unified_state = UNIFIED_STATE.read_text(encoding="utf-8")
-    registry_checker = REGISTRY_CHECKER.read_text(encoding="utf-8")
-    if "REG-DEBT-001" not in registry or "blocks every\nexternal emitter gate" not in registry:
-        fail("REG-DEBT-001 is not an explicit registry-level emitter blocker")
+    if "REG-DEBT-001" not in registry or "Any new external emitter" not in registry:
+        fail("REG-DEBT-001 resolution must preserve external emitter admission")
     if "REG-DEBT-001" not in roadmap or "antes de cualquier emisión externa" not in roadmap:
         fail("the v9.7 roadmap does not block emitters on REG-DEBT-001")
     for marker in (
@@ -743,10 +741,21 @@ def main() -> int:
         if reference not in unified_plan:
             fail(f"unified plan has no authority/ledger reference to {reference}")
 
-    if not re.search(
-        r'"CT_FORK_CAPABILITIES":\s*\(\s*0xF0\s*,', registry_checker
-    ) or "DEBT-DRIFT" not in registry_checker:
-        fail("REG-DEBT-001 checker no longer pins CT_FORK_CAPABILITIES to 0xF0")
+    with (REGISTRY.parent / "TAGS.csv").open(encoding="utf-8", newline="") as source:
+        private_aliases = {
+            row["name"]: (row["namespace"], row["value"], row["compat"])
+            for row in csv.DictReader(source)
+            if row["name"] in {"CT_PEER_FORK_CAPABILITIES", "CT_SERVER_FORK_CAPABILITIES"}
+        }
+    if private_aliases != {
+        "CT_PEER_FORK_CAPABILITIES": (
+            "ESE-PRIVATE-PEER-HELLO", "0xF0", "private-alias:CT_EMULE_RESERVED1"
+        ),
+        "CT_SERVER_FORK_CAPABILITIES": (
+            "ESE-PRIVATE-V1-SERVER-LOGIN", "0xF0", "private-alias:CT_EMULE_RESERVED1"
+        ),
+    }:
+        fail("REG-DEBT-001 requires separately registered peer and server aliases")
     for marker in (
         "server login",
         "peer HELLO",

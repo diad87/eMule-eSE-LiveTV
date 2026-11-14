@@ -63,8 +63,8 @@ python tools\check_protocol_registry.py
 python tests\test_external_interop_catalog.py
 ```
 
-The first command validates registered identifiers owned by eSE and reports
-declared blocking governance debt such as `REG-DEBT-001`. The second validates
+The first command validates registered identifiers owned by eSE, including
+the private peer HELLO and server login aliases of classic slot `0xF0`. The second validates
 the pinned, observational eMuleQt/eNode catalog and its receiver-first
 promotion gates; it does not allocate external identifiers to eSE.
 

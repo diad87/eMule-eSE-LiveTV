@@ -273,11 +273,10 @@ maintain eMule eSE.
 - [Third-party licenses](../THIRD_PARTY_LICENSES.md) — dependency
   attribution and redistribution notices.
 
-The six eSE-owned registry CSVs in [`protocol/`](protocol/) are checked by
+The eSE-owned registry CSVs in [`protocol/`](protocol/) are checked by
 `tools/check_protocol_registry.py` and form the governed local registry for
-opcodes, tags, capabilities and tunnel services. `REG-DEBT-001` remains an
-explicit blocking exception until `CT_FORK_CAPABILITIES 0xF0` is represented
-with its private-dialect ownership. The external catalog is
+opcodes, tags, capabilities and tunnel services. The private aliases of the
+reserved slot `0xF0` have distinct peer HELLO and server login rows. The external catalog is
 observational and has its separate `tests/test_external_interop_catalog.py`
 gate.
 The CSV files in [`protocol/`](protocol/) are checked by

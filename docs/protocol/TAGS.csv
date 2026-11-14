@@ -1,4 +1,6 @@
 name,value,namespace,intro_version,status,capability_gate,format,compat,file,line,value_kind
+CT_PEER_FORK_CAPABILITIES,0xF0,ESE-PRIVATE-PEER-HELLO,v0.71,stable,peer OP_HELLO or OP_HELLOANSWER,"UINT32 peer bitmap: IPV6_WIRE 0x01, IPV6_KAD 0x02, IPV6_DUALSTACK 0x04, ED25519 0x08",private-alias:CT_EMULE_RESERVED1,srchybrid/Opcodes.h,,
+CT_SERVER_FORK_CAPABILITIES,0xF0,ESE-PRIVATE-V1-SERVER-LOGIN,v0.71,stable,IPv6 enabled on OP_LOGINREQUEST,"UINT32 ESE_PRIVATE_V1 login bitmap: IPV6_WIRE 0x01",private-alias:CT_EMULE_RESERVED1,srchybrid/Opcodes.h,,
 TAG_SOURCEIP_V6,0x66,TAG-ED2K,v9,experimental,CAP_FORK_IPV6_WIRE,"HELLO uses raw IPv6 blob 16B; Kad source publication uses CAddress 18B; consumers require a valid TAG_ESE_REACH V6_IN route before dialing",additive-ignorable,srchybrid/Opcodes.h,508
 TAG_SERVERIP_V6,0x67,TAG-ED2K,v0.71,reserved,CAP_FORK_IPV6_WIRE,"<CAddress> alongside legacy uint32 server IP",additive-ignorable,srchybrid/Opcodes.h,495
 TAG_ESE_REACH,0x68,TAG-ED2K,v9,experimental,ESE_CAP_REACH_V2,"strict libreach v2 BSOB: version u8 + capflags u16le + nRdv u8 + reserved rendezvous entries/TLV tail; capflags bit10 is explicit ESE_NETLAB_V1 cohort participation and is absent without consent; source publication keeps classic tags",additive-ignorable,srchybrid/Opcodes.h,510

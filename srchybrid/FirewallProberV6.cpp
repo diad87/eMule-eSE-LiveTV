@@ -439,7 +439,7 @@ PcpMapExchangeResult ExchangePcpMapV6(const CAddress& gateway, ULONG interfaceIn
 } // namespace
 
 // v0.71 IPv6 Sprint 6 — runtime fork capability bits OR-ed into every
-// CT_FORK_CAPABILITIES emit. The prober updates this once it settles on a
+// CT_PEER_FORK_CAPABILITIES emit. The prober updates this once it settles on a
 // reachability layer (e.g. CAP_FORK_IPV6_DUALSTACK once HighID is confirmed).
 uint32 g_uForkCapsRuntime = 0;
 

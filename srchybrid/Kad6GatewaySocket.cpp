@@ -243,7 +243,7 @@ bool SanitizeK6HelloFrame(const uint8_t* frame,std::size_t length,
             CTag v6(static_cast<uint8>(0x66),static_cast<size_t>(16),
                 reinterpret_cast<const BYTE*>(apparent.addr.addr.data()));
             if(!v6.WriteTagToFile(body)){return false;}++kept;
-            CTag forkCaps(CT_FORK_CAPABILITIES,static_cast<uint32>(CAP_FORK_IPV6_WIRE));
+            CTag forkCaps(CT_PEER_FORK_CAPABILITIES,static_cast<uint32>(CAP_FORK_IPV6_WIRE));
             if(!forkCaps.WriteTagToFile(body)){return false;}++kept;
         }
         const uint32 ignoredServer=input.ReadUInt32();const uint16 ignoredPort=input.ReadUInt16();

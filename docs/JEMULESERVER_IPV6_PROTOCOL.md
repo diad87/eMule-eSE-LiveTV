@@ -19,9 +19,9 @@ When IPv6 is enabled, eMule eSE adds this numeric tag to `OP_LOGINREQUEST`:
 
 | Field | Value |
 |---|---:|
-| Tag ID | `CT_FORK_CAPABILITIES` (`0xF0`) |
+| Tag ID | `CT_SERVER_FORK_CAPABILITIES` (`0xF0`) |
 | Tag type | unsigned integer |
-| Value bit | `CAP_FORK_IPV6_WIRE` (`0x00000001`) |
+| Value bit | `CAP_SERVER_FORK_IPV6_WIRE` (`0x00000001`) |
 
 `0xF0` numerically aliases the classic `CT_EMULE_RESERVED1` slot. An unmodified
 server may ignore it, but that does not make it a globally allocated capability
@@ -36,11 +36,9 @@ Any future migration to an ecosystem value requires receiver-first golden/fuzz
 tests, registry review and an explicit downgrade plan.
 
 This document specifies only the **server-login** use of bit `0x00000001`.
-eSE also emits numeric tag `0xF0` in peer HELLO with a separate private bitmap:
+eSE emits `CT_PEER_FORK_CAPABILITIES` (`0xF0`) in peer HELLO with its own bitmap:
 `IPV6_WIRE 0x01`, `IPV6_KAD 0x02`, `IPV6_DUALSTACK 0x04` and `ED25519 0x08`.
-That peer dialect is not a JEmuleServer allocation and remains part of
-`REG-DEBT-001`; fixtures and any migration decision must keep the two contexts
-separate.
+Both aliases and their dispatch contexts appear in the [protocol registry](protocol/PROTOCOL_REGISTRY.md).
 
 ## UDP response
 

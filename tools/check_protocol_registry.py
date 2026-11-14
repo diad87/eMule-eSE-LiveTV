@@ -42,11 +42,9 @@ KAD6_HEADERS = (
 # Statuses that are allowed to exist in the registry without a code symbol yet.
 RESERVED_STATES = {"reserved-proposed", "design"}
 
-KNOWN_UNREGISTERED_DEBT = {
-    "CT_FORK_CAPABILITIES": (
-        0xF0,
-        "REG-DEBT-001 (private peer-HELLO/server-login alias)",
-    ),
+PRIVATE_TAG_ALIASES = {
+    "CT_PEER_FORK_CAPABILITIES": "ESE-PRIVATE-PEER-HELLO",
+    "CT_SERVER_FORK_CAPABILITIES": "ESE-PRIVATE-V1-SERVER-LOGIN",
 }
 
 # A symbol in code is "fork-owned" (and therefore must be registered) when its
@@ -60,10 +58,10 @@ def is_fork_symbol(name: str) -> bool:
                 "KADEMLIA2_KEY_SHARD_ANNOUNCE", "KADEMLIA2_PUBLISH_TRIGRAM_REQ",
                 "KADEMLIA2_SEARCH_TRIGRAM_REQ", "KADEMLIA2_BLOOM_DIGEST_REQ",
                 "KADEMLIA2_LOCAL_QUERY_REQ", "KADEMLIA2_LOCAL_QUERY_RES",
-                "CT_FORK_CAPABILITIES"):
+                "CT_FORK_CAPABILITIES", *PRIVATE_TAG_ALIASES):
         return True
     for pre in ("OP_LIVE_", "KADEMLIA3_", "KADEMLIA_ESE_HOLEPUNCH_",
-                "ESE_CAP_", "CAP_FORK_", "TAG_ESE_", "TUN_OP_", "KRP_"):
+                "ESE_CAP_", "CAP_FORK_", "CAP_SERVER_FORK_", "TAG_ESE_", "TUN_OP_", "KRP_"):
         if name.startswith(pre):
             return True
     return False
@@ -129,8 +127,7 @@ def load_registry():
 
 
 def main():
-    errors, warnings = [], []
-    observed_debts = set()
+    errors = []
     reg = load_registry()
     code = parse_code()
 
@@ -146,25 +143,19 @@ def main():
             seen[key] = r["name"]
 
     by_name = {r["name"]: r for r in reg}
+    for name, namespace in PRIVATE_TAG_ALIASES.items():
+        aliases = [row for row in reg if row["name"] == name]
+        if (len(aliases) != 1 or aliases[0]["_src"] != "TAGS.csv"
+                or aliases[0]["namespace"] != namespace or aliases[0]["_val"] != 0xF0
+                or aliases[0]["compat"] != "private-alias:CT_EMULE_RESERVED1"):
+            errors.append(f"PRIVATE-ALIAS  {name} must be recorded as reserved 0xF0 in {namespace}")
 
     # --- check 2: every fork symbol in code is registered, value matches ---
     for name, (val, fname, line) in sorted(code.items()):
         r = by_name.get(name)
         if r is None:
-            if name in KNOWN_UNREGISTERED_DEBT:
-                expected_val, debt_description = KNOWN_UNREGISTERED_DEBT[name]
-                if val != expected_val:
-                    errors.append(
-                        f"DEBT-DRIFT    {name}: code={hex(val)} ({fname}:{line}) "
-                        f"!= declared debt value {hex(expected_val)}")
-                else:
-                    observed_debts.add(name)
-                    warnings.append(
-                        f"BLOCKING-DEBT  {name} = {hex(val)} ({fname}:{line}): "
-                        f"{debt_description}")
-            else:
-                errors.append(
-                    f"UNREGISTERED   {name} = {val!r} ({fname}:{line}) not in registry")
+            errors.append(
+                f"UNREGISTERED   {name} = {val!r} ({fname}:{line}) not in registry")
         elif r["_val"] != val:
             errors.append(
                 f"DRIFT          {name}: code={val!r} ({fname}:{line}) "
@@ -180,18 +171,13 @@ def main():
                 f"has no matching #define (stale registry row?)")
 
     print(f"protocol registry: {len(reg)} entries, {len(code)} fork symbols in code")
-    for w in warnings:
-        print(f"  WARN  {w}")
     for e in errors:
         print(f"  FAIL  {e}")
     if errors:
         print(f"\n{len(errors)} registry/code mismatch(es). See "
               "docs/protocol/PROTOCOL_REGISTRY.md. CI is red until they are resolved.")
         return 1
-    if observed_debts:
-        print("OK: registered entries match selected code; declared blocking governance debt remains.")
-    else:
-        print("OK: registry is internally consistent and matches selected code.")
+    print("OK: registry is internally consistent and matches selected code.")
     return 0
 
 

@@ -618,7 +618,7 @@ void CUpDownClient::Init()
 	m_byExtendedRequestsVer = 0;
 
 	m_byCompatibleClient = 0;
-	m_dwForkCaps = 0;  // v0.71 IPv6 Sprint 6 — unset until peer sends CT_FORK_CAPABILITIES
+	m_dwForkCaps = 0;  // Unset until peer sends CT_PEER_FORK_CAPABILITIES.
 	m_uEseCapabilities = 0;  // v0.71 P3.5 — unset until peer sends TAG_ESE_CAPS
 	m_uReachCaps = 0;  // no Kad reach vector until a validated source result supplies one
 	m_dwIPv6DirectFailed = 0;
@@ -1118,7 +1118,7 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 				}
 			}
 			break;
-		case CT_FORK_CAPABILITIES:
+		case CT_PEER_FORK_CAPABILITIES:
 			// v0.71 IPv6 Sprint 6 — fork capability bits.
 			// Bits: 0x01 IPV6_WIRE, 0x02 IPV6_KAD, 0x04 IPV6_DUALSTACK, 0x08 ED25519.
 			// Upstream eMule and pre-v7.7 forks don't emit this tag, so absent =
@@ -1595,14 +1595,14 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 		&& !theApp.clientlist->GetBuddy()->IsIPv6OnlyEndpoint())
 		tagcount += 2;
 
-	// v0.71 IPv6 Sprint 6 — always advertise CT_FORK_CAPABILITIES so peers
+	// v0.71 IPv6 Sprint 6 — always advertise CT_PEER_FORK_CAPABILITIES so peers
 	// can route to our _V6 opcodes. Upstream eMule and forks that don't know
 	// this tag drop it silently (per the eD2K TLV contract), so it's safe.
 	tagcount += 1;
 
 	// v0.71 P3.5 — advertise TAG_ESE_CAPS (0x6C) so the privacy stack
 	// can detect which peers run this fork and support tunneling. Same
-	// TLV-additive contract as CT_FORK_CAPABILITIES: unknown tag drops
+	// TLV-additive contract as CT_PEER_FORK_CAPABILITIES: unknown tag drops
 	// silently on legacy peers, no wire break.
 	tagcount += 1;
 
@@ -1736,7 +1736,7 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 		forkCaps |= static_cast<uint32>(::InterlockedCompareExchange(
 			reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime), 0, 0));
 	}
-	CTag tagForkCaps(CT_FORK_CAPABILITIES, forkCaps);
+	CTag tagForkCaps(CT_PEER_FORK_CAPABILITIES, forkCaps);
 	tagForkCaps.WriteTagToFile(data);
 	if (bSendHelloV6) {
 		CTag tagV6((uint8)0x66, (size_t)16, (const BYTE*)helloV6.Data());

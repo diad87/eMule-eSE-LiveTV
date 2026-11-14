@@ -201,6 +201,7 @@ inline void RunIndexHost(CDirectReachabilityManager& manager,std::uint16_t portN
         manager.GetLocalTcpPort()==boundTcp,"classic inbound then ACK exact external/local mapping tuple");
     Log(_T("REACH_SELFTEST V167 PASS: classic UDP ACK before inbound rejected then real new loopback TCP accept and classic UDP ACK verify mapped external port distinct from bind; router injected not external client or HighID proof"));
     RunServerCallbackHost(manager);
+    CNativeDirectSelfTestAccess::TestPrivatePeerHelloTag();
     const auto oldGeneration=manager.GetTopologyGeneration();
     manager.InvalidateLocalTopology();
     Require(manager.GetTopologyGeneration()!=oldGeneration && !manager.IsEnabled() &&

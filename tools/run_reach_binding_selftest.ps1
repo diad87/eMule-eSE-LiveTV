@@ -412,6 +412,8 @@ if($terminal) {
             if(!$logText.Contains('REACH_SELFTEST V172 PASS: normal automatic classic login failure selects second known server once after closing first; duplicate LowID no third login and no HighID; two loopback protocol fixtures not external servers')) { $result.verdict='FAIL' }
             if(!$logText.Contains('REACH_SELFTEST V173 PASS: disabling bounded callback fallback restores normal classic SmartID handling on duplicate LowID without another login; loopback fixture no HighID proof')) { $result.verdict='FAIL' }
             if(!$logText.Contains('REACH_SELFTEST V174 PASS: actual legacy Kad2 index inserts10000 sources normal stop writes owned profile real restart loader recovers10000 exact duplicate stable drain under30s; no GUI responsiveness 2h20 soak or exit20 cause claim')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V175 PASS: loopback OP_LOGINREQUEST exact private 0xF0 UINT32 bit 0x01 and IPv6-off classic tag list')) { $result.verdict='FAIL' }
+            if(!$logText.Contains('REACH_SELFTEST V176 PASS: private peer HELLO wire 0xF0 UINT32 bitmap, IPv6 settings and legacy omission')) { $result.verdict='FAIL' }
         }
         if(!$logText.Contains('REACH_SELFTEST V36 PASS: real shared UDP libutp rejects stale owner generation and unregister removes expectations')) { $result.verdict='FAIL' }
     }

@@ -1,6 +1,8 @@
 #pragma once
 #include <initializer_list>
 #include <memory>
+#include "Packets.h"
+#include "SafeFile.h"
 #include "Server.h"
 #include "ServerList.h"
 #include "ServerConnect.h"
@@ -13,6 +15,7 @@ inline void RunServerCallbackHost(CDirectReachabilityManager& manager) {
         SOCKET listener=INVALID_SOCKET,peer=INVALID_SOCKET;
         uint16 port=0; unsigned logins=0; bool closed=false;
         std::vector<unsigned char> input;
+        std::vector<unsigned char> login;
         Endpoint() {
             listener=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
             Require(listener!=INVALID_SOCKET,"callback mock server socket");
@@ -42,9 +45,31 @@ inline void RunServerCallbackHost(CDirectReachabilityManager& manager) {
                 const uint32 size=uint32(input[1])|(uint32(input[2])<<8)|(uint32(input[3])<<16)|(uint32(input[4])<<24);
                 Require(input[0]==OP_EDONKEYPROT && size && size<=65536,"callback classic frame");
                 if(input.size()<std::size_t(size)+5) break;
-                if(input[5]==OP_LOGINREQUEST) ++logins;
+                if(input[5]==OP_LOGINREQUEST) {
+                    ++logins;
+                    login.assign(input.begin()+6,input.begin()+size+5);
+                }
                 input.erase(input.begin(),input.begin()+size+5);
             }
+        }
+        void CheckLoginTag(bool ipv6Enabled) {
+            Require(login.size()>=26,"server login fixed fields");
+            CSafeMemFile frame(login.data(),static_cast<UINT>(login.size()));
+            frame.Seek(22,CFile::begin); // hash16, ID4, port2
+            Require(frame.ReadUInt32()==(ipv6Enabled ? 5u : 4u),"server login tag count");
+            const uint8 names[]={CT_NAME,CT_VERSION,CT_SERVER_FLAGS,CT_EMULE_VERSION};
+            for(uint8 name:names) {
+                CTag tag(frame,true);
+                Require(tag.GetNameID()==name,"server login preserves classic tag order");
+            }
+            if(ipv6Enabled) {
+                // uint32 TLV, reserved name 0xf0, only server IPv6 wire bit.
+                const unsigned char fixture[]={0x03,0x01,0x00,0xf0,0x01,0x00,0x00,0x00};
+                unsigned char actual[sizeof fixture]={};
+                Require(frame.Read(actual,sizeof actual)==sizeof actual &&
+                    memcmp(actual,fixture,sizeof fixture)==0,"private server login alias exact bytes");
+            }
+            Require(frame.GetPosition()==frame.GetLength(),"no extra server login tags");
         }
         void LowId(bool duplicate) {
             const unsigned char frame[20]={OP_EDONKEYPROT,5,0,0,0,OP_IDCHANGE,10,0,0,0,
@@ -52,25 +77,27 @@ inline void RunServerCallbackHost(CDirectReachabilityManager& manager) {
             const int length=duplicate?20:10;
             Require(send(peer,reinterpret_cast<const char*>(frame),length,0)==length,"callback LowID wire");
         }
-    } first,second;
+    } first,second,ipv6;
     struct Restore {
-        uint16 firstPort,secondPort;
+        uint16 firstPort,secondPort,ipv6Port;
+        CPreferences::EIPv6Mode mode=thePrefs.GetIPv6Mode();
         bool smart=thePrefs.GetSmartIdCheck();
         bool enabled=thePrefs.GetEseNetLabEnabled();
         uint8 smartState=thePrefs.GetSmartIdState();
         ~Restore() {
             theApp.serverconnect->StopConnectionTry(); theApp.serverconnect->Disconnect();
             theApp.serverconnect->StopConnectionTry();
-            for(uint16 port: {firstPort,secondPort}) {
+            for(uint16 port: {firstPort,secondPort,ipv6Port}) {
                 CServer* own=theApp.serverlist->GetServerByAddress(_T("localhost"),port);
                 if(own) theApp.serverlist->RemoveServer(own);
             }
             thePrefs.SetSmartIdCheck(smart);
             thePrefs.SetEseNetLabEnabled(enabled);
             thePrefs.SetSmartIdState(smartState);
+            thePrefs.SetIPv6Mode(mode);
         }
-    } restore{first.port,second.port};
-    for(uint16 port: {first.port,second.port}) {
+    } restore{first.port,second.port,ipv6.port};
+    for(uint16 port: {first.port,second.port,ipv6.port}) {
         std::unique_ptr<CServer> known(new CServer(port,_T("localhost")));
         known->SetIsStaticMember(true);
         Require(theApp.serverlist->AddServer(known.get()),"callback register owned known server"); known.release();
@@ -82,7 +109,7 @@ inline void RunServerCallbackHost(CDirectReachabilityManager& manager) {
             if(message.message==WM_TIMER) continue;
             TranslateMessage(&message); DispatchMessage(&message);
         }
-        first.Poll(); second.Poll(); Sleep(1);
+        first.Poll(); second.Poll(); ipv6.Poll(); Sleep(1);
     };
     // Normal auto-connect path, plaintext classic server fixture, no private/public
     // endpoint authority, mapped reachability or HighID is inferred from this test.
@@ -119,5 +146,18 @@ inline void RunServerCallbackHost(CDirectReachabilityManager& manager) {
         "callback feature disabled restores legacy SmartID handling");
     thePrefs.SetEseNetLabEnabled(restore.enabled);
     Log(_T("REACH_SELFTEST V173 PASS: disabling bounded callback fallback restores normal classic SmartID handling on duplicate LowID without another login; loopback fixture no HighID proof"));
+
+    first.CheckLoginTag(false);
+    second.CheckLoginTag(false);
+    theApp.serverconnect->Disconnect();
+    thePrefs.SetIPv6Mode(CPreferences::IPv6AutoMode);
+    auto* owned=theApp.serverlist->GetServerByAddress(_T("localhost"),ipv6.port);
+    Require(owned!=nullptr,"server login positive fixture owned endpoint");
+    theApp.serverconnect->ConnectToServer(owned,false,true);
+    until=Now()+3000;
+    while(!ipv6.logins && Now()<until) pump();
+    Require(ipv6.logins==1,"server login positive fixture capture");
+    ipv6.CheckLoginTag(true);
+    Log(_T("REACH_SELFTEST V175 PASS: loopback OP_LOGINREQUEST exact private 0xF0 UINT32 bit 0x01 and IPv6-off classic tag list"));
 }
 }}

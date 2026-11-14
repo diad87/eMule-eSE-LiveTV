@@ -276,8 +276,8 @@ void CServerConnect::ConnectionEstablished(CServerSocket *sender)
 		// locally. A supporting server may then send OP_EMULEPROT:
 		// OP_FOUNDSOURCES_V6 in addition to the legacy IPv4 source response.
 		if (bAdvertiseIPv6Wire) {
-			CTag tagForkCapabilities(CT_FORK_CAPABILITIES,
-				static_cast<uint32>(CAP_FORK_IPV6_WIRE));
+			CTag tagForkCapabilities(CT_SERVER_FORK_CAPABILITIES,
+				static_cast<uint32>(CAP_SERVER_FORK_IPV6_WIRE));
 			tagForkCapabilities.WriteTagToFile(data);
 		}
 

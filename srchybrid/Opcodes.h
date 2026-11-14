@@ -293,7 +293,7 @@
 //   <HASH 16><count 1>(<CAddress family=6,length=16><PORT 2>)[count]
 // PORT is little-endian (CSafeMemFile::ReadUInt16). Servers must emit this
 // only after the client advertised CAP_FORK_IPV6_WIRE in the
-// CT_FORK_CAPABILITIES OP_LOGINREQUEST tag. OP_GLOBFOUNDSOURCES (0xE3:0x9B)
+// CT_SERVER_FORK_CAPABILITIES OP_LOGINREQUEST tag. OP_GLOBFOUNDSOURCES (0xE3:0x9B)
 // remains the parallel IPv4 response.
 #define	OP_FOUNDSOURCES_V6		0xE2
 #define OP_CALLBACK				0x99	// <HASH 16><HASH 16><uint 16>
@@ -691,15 +691,19 @@ void RefreshEseV9PreviewCaps();
 #define CT_EMULE_RESERVED13		0xff
 #define CT_SERVER_UDPSEARCH_FLAGS 0x0E
 
-// v0.71 IPv6 Sprint 6 — fork-private capability bits in OP_HELLO[ANSWER] and
-// OP_LOGINREQUEST. Upstream eMule/servers ignore unknown CT_ tags, so this is
-// wire-additive and safe vs the baseline. Value: <uint32 capability bits>.
-#define CT_FORK_CAPABILITIES	0xF0
-// Capability bits:
+// Two private dialects alias CT_EMULE_RESERVED1. Each dispatch context has
+// its own bitmap. These tags do not allocate the slot for other clients.
+#define CT_PEER_FORK_CAPABILITIES   0xF0  // OP_HELLO / OP_HELLOANSWER
+#define CT_SERVER_FORK_CAPABILITIES 0xF0  // ESE_PRIVATE_V1 OP_LOGINREQUEST
+static_assert(CT_PEER_FORK_CAPABILITIES == CT_EMULE_RESERVED1);
+static_assert(CT_SERVER_FORK_CAPABILITIES == CT_EMULE_RESERVED1);
+// Peer HELLO capability bits:
 #define CAP_FORK_IPV6_WIRE      0x00000001  // peer speaks _V6 opcodes
 #define CAP_FORK_IPV6_KAD       0x00000002  // peer participates in KADEMLIA3_*
 #define CAP_FORK_IPV6_DUALSTACK 0x00000004  // peer has both v4 + v6 reachable
 #define CAP_FORK_ED25519        0x00000008  // peer speaks v7.6+ signed live chunks
+// ESE_PRIVATE_V1 server-login capability bits:
+#define CAP_SERVER_FORK_IPV6_WIRE 0x00000001  // client accepts OP_FOUNDSOURCES_V6
 
 // values for CT_SERVER_FLAGS (server capabilities)
 #define SRVCAP_ZLIB				0x0001

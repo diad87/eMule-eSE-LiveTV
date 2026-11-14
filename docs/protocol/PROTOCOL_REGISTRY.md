@@ -3,8 +3,7 @@
 The eSE-owned CSV files in this directory are the governed registry for wire
 identifiers owned by the fork. They prevent accidental reuse of a value within
 the same protocol namespace and document how an extension behaves with older
-clients. Their authority is subject to the blocking governance debt recorded
-below; the checker must not be described as complete while that debt remains.
+clients. Private aliases have their own dispatch namespaces.
 
 `EXTERNAL_INTEROP_CATALOG.csv` is deliberately different: it records contracts
 observed in pinned third-party implementations. It is evidence for compatibility
@@ -29,8 +28,7 @@ bytes (for example `\x00ESECTL1`), never the implicit C string terminator.
 The checker inspects EseWireProtocol.h and compares decoded values. Collision
 keys include namespace and value kind; string tags do not allocate classic
 numeric slots. `design` means no receiver/emitter is enabled by this declaration.
-The new file and selected-code checks do not resolve REG-DEBT-001 or prove
-that the named transports, discovery, or advertisements are operational.
+Transport, discovery and advertising behavior is verified by runtime fixtures.
 
 Each row records a symbolic name, value, namespace, introduction
 version, lifecycle status, capability gate, format, compatibility behavior and
@@ -44,8 +42,7 @@ CSVs until eSE implements and legitimately owns that surface.
 ## Ownership boundary
 
 - `OPCODES.csv`, `TAGS.csv`, `CAPABILITIES.csv`, `TUNNEL_SERVICES.csv`,
-  `KAD6_MESSAGES.csv` and `KRP_MESSAGES.csv` form the governed eSE-owned set,
-  subject to the explicit blocking exception `REG-DEBT-001` below.
+  `KAD6_MESSAGES.csv` and `KRP_MESSAGES.csv` form the governed eSE-owned set.
 - `EXTERNAL_INTEROP_CATALOG.csv` is an observational compatibility ledger.
 - Narrative documents and forum posts allocate nothing.
 - The same numeric value may be an exact alias, a different dialect, a real
@@ -55,25 +52,19 @@ CSVs until eSE implements and legitimately owns that surface.
   an emitter additionally requires capability negotiation, downgrade behavior
   and a verified ownership/reservation decision.
 
-### Known governance debt
+### Private aliases for reserved tag 0xF0
 
-`REG-DEBT-001`: `CT_FORK_CAPABILITIES (0xF0)` exists in code but is not yet
-represented in `TAGS.csv`; the checker selects it and reports a named blocking
-debt instead of pretending the registry is complete. In classic eMule headers
-the numeric slot is `CT_EMULE_RESERVED1`. The debt has
-two distinct wire contexts: server login advertises `CAP_FORK_IPV6_WIRE 0x01`
-to the private JEmuleServer dialect, while peer HELLO always emits the tag with
-the defined bits `IPV6_WIRE 0x01`, `IPV6_KAD 0x02`, `IPV6_DUALSTACK 0x04` and
-`ED25519 0x08` as applicable.
+`REG-DEBT-001` tracks the registration of two existing aliases of the classic
+`CT_EMULE_RESERVED1` slot. `CT_PEER_FORK_CAPABILITIES` carries the peer HELLO
+bitmap `IPV6_WIRE 0x01`, `IPV6_KAD 0x02`, `IPV6_DUALSTACK 0x04` and
+`ED25519 0x08`. `CT_SERVER_FORK_CAPABILITIES` carries only
+`CAP_SERVER_FORK_IPV6_WIRE 0x01` in the private JEmuleServer login dialect
+`ESE_PRIVATE_V1`.
 
-This exception is recorded rather than hidden. `REG-DEBT-001` blocks every
-external emitter gate, not only presentation: `0xF0` cannot be treated as an
-ecosystem capability or reused for eMuleQt/eNode interoperability. A
-dedicated protocol change must decide whether to retain it as an explicitly
-private alias, migrate it or deprecate its emission, then update code, registry,
-fixtures and compatibility evidence together. Resolution requires separate
-peer-HELLO and server-login fixtures; proving one context never authorizes or
-defines the other.
+The checker requires both rows in their own namespaces with the reserved slot
+and explicit alias scope. Peer HELLO and server login have separate fixtures.
+Any new external emitter still requires its own registered contract,
+capability negotiation and downgrade behavior.
 
 ## Namespaces
 
@@ -152,7 +143,5 @@ When changing a wire identifier:
 5. test against an older eSE peer and vanilla eMule when the outer protocol is
    shared.
 
-Do not allocate identifiers from narrative documentation. The eSE-owned CSVs
-and matching code definitions are the governed local set, subject to
-`REG-DEBT-001`. The external catalog is authoritative only about what snapshot
-was audited and what compatibility verdict eSE recorded.
+The eSE-owned CSVs and matching code definitions govern local allocation.
+The external catalog records the audited snapshot and eSE's compatibility verdict.

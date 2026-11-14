@@ -251,6 +251,7 @@ public:
 	bool			LoadHashSet(); // Loading from known2.met
 
 	static CAICHHashAlgo*	GetNewHashAlgo();
+	static bool			RunRecoverySelfTest();
 	static void		ClientAICHRequestFailed(CUpDownClient *pClient);
 	static void		RemoveClientAICHRequest(const CUpDownClient *pClient);
 	static bool		IsClientRequestPending(const CPartFile *pForFile, uint16 nPart);

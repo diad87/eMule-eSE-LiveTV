@@ -1962,6 +1962,12 @@ void CemuleDlg::RunHeadlessAction() noexcept
 {
 	try {
 		if (theApp.m_bReachBindingSelfTest) {
+			TCHAR aichSelfTest[2] = {};
+			if (GetEnvironmentVariable(_T("ESE_AICH_RECOVERY_SELFTEST"), aichSelfTest, _countof(aichSelfTest)) == 1 &&
+				aichSelfTest[0] == _T('1')) {
+				ScheduleSelfTestExit(CAICHRecoveryHashSet::RunRecoverySelfTest() ? 0 : 1);
+				return;
+			}
 			if (ese::kad2_soak::Enabled()) {
 				ese::kad2_soak::Start();
 				TCHAR dashboard[8]={};

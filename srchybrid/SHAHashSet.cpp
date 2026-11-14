@@ -26,6 +26,9 @@
 #include "DownloadQueue.h"
 #include "partfile.h"
 #include "Log.h"
+#include <algorithm>
+#include <memory>
+#include <vector>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -97,6 +100,11 @@ static const UINT AICH_TREE_SLOTS_PER_SLAB = (UINT)((AICH_TREE_SLAB_SIZE - AICH_
 static_assert(AICH_TREE_SLOT_SIZE >= sizeof(void*) && AICH_TREE_SLOTS_PER_SLAB > 0, "AICH slab layout");
 
 static AICHTreeSlab *s_pAvailAICHSlabs = NULL;	// slabs with at least one free slot
+struct AICHSlabCounters {
+	size_t liveSlots = 0;
+	size_t committedSlabs = 0;
+};
+static AICHSlabCounters s_AICHSlabCounters;
 
 static CCriticalSection& AICHTreePoolLock()
 {
@@ -118,6 +126,7 @@ void* CAICHHashTree::operator new(size_t size)
 		pSlab = static_cast<AICHTreeSlab*>(::VirtualAlloc(NULL, AICH_TREE_SLAB_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
 		if (pSlab == NULL)
 			AfxThrowMemoryException();
+		++s_AICHSlabCounters.committedSlabs;
 		pSlab->pPrevAvail = NULL;
 		pSlab->pNextAvail = NULL;
 		pSlab->pFreeSlots = NULL;
@@ -131,6 +140,7 @@ void* CAICHHashTree::operator new(size_t size)
 	else
 		pSlot = reinterpret_cast<BYTE*>(pSlab) + AICH_TREE_SLOTS_OFFSET + (size_t)pSlab->nCarved++ * AICH_TREE_SLOT_SIZE;
 	++pSlab->nLive;
+	++s_AICHSlabCounters.liveSlots;
 	if (pSlab->pFreeSlots == NULL && pSlab->nCarved >= AICH_TREE_SLOTS_PER_SLAB) {
 		// full - drop it from the available list (allocation always uses the head);
 		// operator delete finds it again by masking the node address
@@ -156,6 +166,7 @@ void CAICHHashTree::operator delete(void *ptr, size_t size)
 	const bool bWasFull = pSlab->pFreeSlots == NULL && pSlab->nCarved >= AICH_TREE_SLOTS_PER_SLAB;
 	*static_cast<void**>(ptr) = pSlab->pFreeSlots;
 	pSlab->pFreeSlots = ptr;
+	--s_AICHSlabCounters.liveSlots;
 	if (--pSlab->nLive == 0) {
 		if (!bWasFull) {
 			if (pSlab->pPrevAvail != NULL)
@@ -165,7 +176,8 @@ void CAICHHashTree::operator delete(void *ptr, size_t size)
 			if (pSlab->pNextAvail != NULL)
 				pSlab->pNextAvail->pPrevAvail = pSlab->pPrevAvail;
 		}
-		::VirtualFree(pSlab, 0, MEM_RELEASE);
+		if (::VirtualFree(pSlab, 0, MEM_RELEASE))
+			--s_AICHSlabCounters.committedSlabs;
 	} else if (bWasFull) {
 		pSlab->pPrevAvail = NULL;
 		pSlab->pNextAvail = s_pAvailAICHSlabs;
@@ -173,6 +185,18 @@ void CAICHHashTree::operator delete(void *ptr, size_t size)
 			s_pAvailAICHSlabs->pPrevAvail = pSlab;
 		s_pAvailAICHSlabs = pSlab;
 	}
+}
+
+static AICHSlabCounters GetAICHSlabCounters()
+{
+	CSingleLock lock(&AICHTreePoolLock(), TRUE);
+	return s_AICHSlabCounters;
+}
+
+static bool AICHSlabsAreAtBaseline(const AICHSlabCounters &baseline)
+{
+	const AICHSlabCounters current = GetAICHSlabCounters();
+	return baseline.liveSlots == current.liveSlots && baseline.committedSlabs == current.committedSlabs;
 }
 
 #ifdef _DEBUG
@@ -756,20 +780,36 @@ bool CAICHRecoveryHashSet::ReadRecoveryData(uint64 nPartStartPos, CSafeMemFile &
 		(<identifier uint32><hash HASHSIZE>)[count2]			AICH hashes
 	*/
 
-	// at this time we check the recovery data for the correct amounts of hashes only
-	// all hash are then taken into the tree, depending on there hash identifier (except the masterhash)
-
+	// Check the packet framing before a peer can populate any hash in the tree.
+	const uint64 fileSize = m_pOwner->GetFileSize();
+	if (nPartStartPos >= fileSize || nPartStartPos % PARTSIZE != 0 ||
+		fileDataIn.GetLength() - fileDataIn.GetPosition() < sizeof(uint16))
+		return false;
 	uint8 nLevel = 0;
-	uint32 nPartSize = (uint32)min(PARTSIZE, (uint64)m_pOwner->GetFileSize() - nPartStartPos);
-	m_pHashTree.FindHash(nPartStartPos, nPartSize, &nLevel);
+	const uint32 nPartSize = (uint32)min(PARTSIZE, fileSize - nPartStartPos);
+	if (!m_pHashTree.FindHash(nPartStartPos, nPartSize, &nLevel))
+		return false;
 	uint16 nHashsToRead = (uint16)((nLevel - 1) + nPartSize / EMBLOCKSIZE + static_cast<unsigned>(nPartSize % EMBLOCKSIZE != 0));
 
 	// read hashes with 16 bit identifier
 	uint16 nHashesAvailable = fileDataIn.ReadUInt16();
-	if (fileDataIn.GetLength() - fileDataIn.GetPosition() < (ULONGLONG)nHashsToRead * (HASHSIZE + 2) || (nHashsToRead != nHashesAvailable && nHashesAvailable != 0)) {
-		// this check is redundant, CSafememfile would catch such an error too
-		theApp.QueueDebugLogLine(/*DLP_VERYHIGH,*/ false, _T("Failed to read recovery data for %s - Received data size/count of hashes was invalid (1)"), (LPCTSTR)m_pOwner->GetFileName());
-		return false;
+	bool hasNarrowSuffix = false;
+	if (nHashesAvailable != 0) {
+		const ULONGLONG bytes = static_cast<ULONGLONG>(nHashesAvailable) * (HASHSIZE + sizeof(uint16));
+		const ULONGLONG remaining = fileDataIn.GetLength() - fileDataIn.GetPosition();
+		if (nHashsToRead != nHashesAvailable || (remaining != bytes && remaining != bytes + sizeof(uint16))) {
+			theApp.QueueDebugLogLine(/*DLP_VERYHIGH,*/ false, _T("Failed to read recovery data for %s - Received data size/count of hashes was invalid (1)"), (LPCTSTR)m_pOwner->GetFileName());
+			return false;
+		}
+		// Legacy 16-bit packets end with the last hash. A V2 suffix is an exact zero count.
+		if (remaining != bytes) {
+			fileDataIn.Seek(static_cast<LONGLONG>(bytes), CFile::current);
+			const uint16 highCount = fileDataIn.ReadUInt16();
+			if (highCount != 0)
+				return false;
+			fileDataIn.Seek(-static_cast<LONGLONG>(remaining), CFile::current);
+			hasNarrowSuffix = true;
+		}
 	}
 	DEBUG_ONLY(theApp.QueueDebugLogLine(/*DLP_VERYHIGH,*/ false, _T("Read recovery data for %s - Received packet with  %u 16bit hash identifiers)"), (LPCTSTR)m_pOwner->GetFileName(), nHashesAvailable));
 	for (uint32 i = 0; i < nHashesAvailable; ++i) {
@@ -784,10 +824,12 @@ bool CAICHRecoveryHashSet::ReadRecoveryData(uint64 nPartStartPos, CSafeMemFile &
 	}
 
 	// read hashes with 32bit identifier
-	if (nHashesAvailable == 0 && fileDataIn.GetLength() - fileDataIn.GetPosition() >= 2) {
+	if (nHashesAvailable == 0) {
+		if (fileDataIn.GetLength() - fileDataIn.GetPosition() < sizeof(uint16))
+			return false;
 		nHashesAvailable = fileDataIn.ReadUInt16();
-		if (fileDataIn.GetLength() - fileDataIn.GetPosition() < (ULONGLONG)nHashsToRead * (HASHSIZE + 4) || (nHashsToRead != nHashesAvailable && nHashesAvailable != 0)) {
-			// this check is redundant, CSafememfile would catch such an error too
+		if (nHashesAvailable == 0 || nHashsToRead != nHashesAvailable ||
+			fileDataIn.GetLength() - fileDataIn.GetPosition() != static_cast<ULONGLONG>(nHashesAvailable) * (HASHSIZE + sizeof(uint32))) {
 			theApp.QueueDebugLogLine(/*DLP_VERYHIGH,*/ false, _T("Failed to read recovery data for %s - Received data size/count of hashes was invalid (2)"), (LPCTSTR)m_pOwner->GetFileName());
 			return false;
 		}
@@ -803,13 +845,8 @@ bool CAICHRecoveryHashSet::ReadRecoveryData(uint64 nPartStartPos, CSafeMemFile &
 				return false;
 			}
 		}
-	} else if (fileDataIn.GetLength() - fileDataIn.GetPosition() >= 2)
+	} else if (hasNarrowSuffix)
 		fileDataIn.ReadUInt16();
-
-	if (nHashesAvailable == 0) {
-		theApp.QueueDebugLogLine(/*DLP_VERYHIGH,*/ false, _T("Failed to read recovery data for %s - Packet didn't contain any hashes"), (LPCTSTR)m_pOwner->GetFileName());
-		return false;
-	}
 
 
 	if (VerifyHashTree(true)) {
@@ -827,6 +864,166 @@ bool CAICHRecoveryHashSet::ReadRecoveryData(uint64 nPartStartPos, CSafeMemFile &
 
 	theApp.QueueDebugLogLine(/*DLP_VERYHIGH,*/ false, _T("Failed to read recovery data for %s - Verifying received hash tree failed"), (LPCTSTR)m_pOwner->GetFileName());
 	return false;
+}
+
+bool CAICHRecoveryHashSet::RunRecoverySelfTest()
+{
+	const auto fail = [](LPCTSTR phase, size_t detail) {
+		LogError(LOG_STATUSBAR, _T("AICH_RECOVERY_SELFTEST FAIL: %s (%Iu)"), phase, detail);
+		return false;
+	};
+	const AICHSlabCounters baseline = GetAICHSlabCounters();
+	constexpr size_t treeCount = 10000;
+	constexpr size_t batchSize = 40;
+	CKnownFile owner;
+	owner.SetFileSize(PARTSIZE + 2ull * EMBLOCKSIZE + 17);
+	CSHA algorithm;
+	const auto populate = [&](CAICHRecoveryHashSet &set, uint64 seed) {
+		for (uint64 part = 0; part < owner.GetFileSize(); part += PARTSIZE) {
+			const uint64 end = min(part + PARTSIZE, static_cast<uint64>(owner.GetFileSize()));
+			for (uint64 block = part; block < end; block += EMBLOCKSIZE) {
+				const uint64 leafSeed[] = { seed, block };
+				algorithm.Reset();
+				algorithm.Add(leafSeed, sizeof leafSeed);
+				set.m_pHashTree.SetBlockHash(min(static_cast<uint64>(EMBLOCKSIZE), end - block), block, &algorithm);
+			}
+		}
+		return set.ReCalculateHash() && set.HasValidMasterHash() && set.VerifyHashTree(false);
+	};
+
+	size_t peakSlabBytes = 0;
+	size_t peakTreeNodes = 0;
+	std::vector<std::unique_ptr<CAICHRecoveryHashSet>> batch;
+	batch.reserve(batchSize);
+	for (size_t index = 0; index < treeCount; ++index) {
+		const auto before = GetAICHSlabCounters();
+		auto tree = std::make_unique<CAICHRecoveryHashSet>(&owner, owner.GetFileSize());
+		if (!populate(*tree, index))
+			return fail(_T("materialized tree verification"), index);
+		const AICHSlabCounters after = GetAICHSlabCounters();
+		if (after.liveSlots <= before.liveSlots || after.committedSlabs < baseline.committedSlabs)
+			return fail(_T("empty tree or inconsistent allocator accounting"), index);
+		peakTreeNodes = (std::max)(peakTreeNodes, after.liveSlots - before.liveSlots);
+		peakSlabBytes = (std::max)(peakSlabBytes, (after.committedSlabs - baseline.committedSlabs) * AICH_TREE_SLAB_SIZE);
+		batch.push_back(std::move(tree));
+		if (batch.size() == batchSize) {
+			for (size_t slot = (index / batchSize) % 2; slot < batchSize; slot += 2)
+				batch[slot].reset();
+			batch.clear();
+			if (!AICHSlabsAreAtBaseline(baseline))
+				return fail(_T("slab state did not return to baseline"), index + 1);
+		}
+	}
+	if (!peakTreeNodes || peakSlabBytes <= AICH_TREE_SLAB_SIZE)
+		return fail(_T("fixture did not exercise more than one slab"), peakSlabBytes);
+
+	size_t truncatedCases = 0;
+	size_t malformedCases = 0;
+	{
+		CAICHRecoveryHashSet source(&owner, owner.GetFileSize());
+		if (!populate(source, 42))
+			return fail(_T("source recovery tree"), 0);
+		source.SetStatus(AICH_HASHSETCOMPLETE);
+		CSafeMemFile currentPacket;
+		if (!source.CreatePartRecoveryData(0, currentPacket, true))
+			return fail(_T("recovery encoding"), 0);
+		const auto parse = [&](const BYTE *packet, UINT length, bool expected) {
+			CAICHRecoveryHashSet target(&owner, owner.GetFileSize());
+			target.SetMasterHash(source.GetMasterHash(), AICH_VERIFIED);
+			CSafeMemFile input(packet, length);
+			bool ok = false;
+			try {
+				ok = target.ReadRecoveryData(0, input);
+			} catch (CFileException *error) {
+				const bool endOfFile = error->m_cause == CFileException::endOfFile;
+				error->Delete();
+				if (!endOfFile)
+					return false;
+			}
+			return ok == expected && (!expected || input.GetPosition() == input.GetLength()) &&
+				(!expected || target.IsPartDataAvailable(0)) &&
+				target.HasValidMasterHash() && target.GetMasterHash() == source.GetMasterHash();
+		};
+		const BYTE *packet = currentPacket.GetBuffer();
+		const UINT size = static_cast<UINT>(currentPacket.GetLength());
+		if (!parse(packet, size, true) || !parse(packet, size - 2, true))
+			return fail(_T("valid current and legacy 16-bit packets"), size);
+		const AICHSlabCounters beforeFuzz = GetAICHSlabCounters();
+		for (UINT cut = 0; cut < size; ++cut) {
+			if (cut == size - 2) // Legacy 16-bit packets end exactly after the hashes.
+				continue;
+			if (!parse(packet, cut, false))
+				return fail(_T("truncated 16-bit packet accepted or changed available data"), cut);
+			++truncatedCases;
+		}
+		CSafeMemFile widePacket;
+		CSafeMemFile narrowPacket(packet, size);
+		widePacket.WriteUInt16(0);
+		const uint16 entries = narrowPacket.ReadUInt16();
+		widePacket.WriteUInt16(entries);
+		for (uint16 index = 0; index != entries; ++index) {
+			widePacket.WriteUInt32(narrowPacket.ReadUInt16());
+			const CAICHHash leaf(narrowPacket);
+			leaf.Write(widePacket);
+		}
+		const UINT wideSize = static_cast<UINT>(widePacket.GetLength());
+		if (!parse(widePacket.GetBuffer(), wideSize, true))
+			return fail(_T("valid 32-bit packet"), wideSize);
+		for (UINT cut = 0; cut < wideSize; ++cut) {
+			if (!parse(widePacket.GetBuffer(), cut, false))
+				return fail(_T("truncated 32-bit packet accepted or changed available data"), cut);
+			++truncatedCases;
+		}
+		uint32 random = 0x9e3779b9u;
+		const auto nextRandom = [&]() {
+			random ^= random << 13;
+			random ^= random >> 17;
+			random ^= random << 5;
+			return random;
+		};
+		std::vector<BYTE> mutated;
+		for (size_t index = 0; index < 512; ++index) {
+			const bool useWide = index % 2 != 0;
+			const UINT length = useWide ? wideSize : size;
+			const BYTE *data = useWide ? widePacket.GetBuffer() : packet;
+			mutated.assign(data, data + length);
+			const size_t entrySize = HASHSIZE + (useWide ? sizeof(uint32) : sizeof(uint16));
+			const size_t hashesBegin = useWide ? 4 : 2;
+			const size_t identifierSize = entrySize - HASHSIZE;
+			switch (index % 8) {
+			case 0: case 1: // Impossible count, independent of the random values.
+				mutated[useWide ? 2 : 0] = 0xff;
+				mutated[useWide ? 3 : 1] = 0xff;
+				break;
+			case 2: case 3: { // Flip a hash bit in one complete record.
+				const size_t byte = hashesBegin + (nextRandom() % entries) * entrySize + identifierSize + nextRandom() % HASHSIZE;
+				mutated[byte] ^= static_cast<BYTE>(1u << (nextRandom() % 8));
+				break;
+			}
+			case 4: case 5: // Reserved master identifier in the first record.
+				std::fill_n(mutated.begin() + hashesBegin, identifierSize, 0);
+				mutated[hashesBegin] = 1;
+				break;
+			case 6: case 7: // V2 count trailer or wide trailing data.
+				if (useWide)
+					mutated.push_back(static_cast<BYTE>(nextRandom()));
+				else
+					mutated.back() = 1;
+				break;
+			}
+			if (!parse(mutated.data(), static_cast<UINT>(mutated.size()), false))
+				return fail(_T("malformed packet accepted or changed available data"), index);
+			++malformedCases;
+		}
+		if (!AICHSlabsAreAtBaseline(beforeFuzz))
+			return fail(_T("truncated packet processing retained slots"), truncatedCases);
+	}
+	if (!AICHSlabsAreAtBaseline(baseline))
+		return fail(_T("allocator baseline after packet verification"), truncatedCases);
+	Log(_T("AICH_RECOVERY_SELFTEST PASS trees=%Iu peak_tree_nodes=%Iu peak_tree_slot_bytes=%Iu peak_slab_bytes=%Iu truncated_cases=%Iu malformed_cases=%Iu live_baseline=%Iu slab_baseline=%Iu"),
+		treeCount, peakTreeNodes, peakTreeNodes * AICH_TREE_SLOT_SIZE, peakSlabBytes,
+		truncatedCases, malformedCases, baseline.liveSlots, baseline.committedSlabs);
+	return true;
 }
 
 // this function is only allowed to be called right after successfully calculating the hashset (!)

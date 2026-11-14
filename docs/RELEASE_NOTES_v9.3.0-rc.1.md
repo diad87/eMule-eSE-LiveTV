@@ -11,10 +11,15 @@
   transfer after 15 seconds of UDP packet discard. The verified parts were
   preserved and the completed file matched the source SHA-256. This test used
   the integrated x64 laboratory build on a single host.
-- The x64 package recipe verifies the signed QUIC dependencies and bundles
-  the runtime DLLs, notices and corresponding sources. The current program
-  activates native QUIC in the test harness. Ordinary client activation and
-  behavior across physical networks remain open.
+- The x64 package verifies the signed QUIC dependencies and bundles the
+  runtime DLLs, notices and corresponding sources. In Connection preferences,
+  Direct QUIC can be enabled explicitly with Net Lab consent and a pinned
+  peer key. It starts disabled. Initial transfer authorization still depends
+  on a compatible current route and the ordinary upload queue.
+- Active QUIC sessions track useful transfer progress. An isolated pair
+  completed 1 GiB after 15 seconds of UDP discard. With UDP blocked for
+  longer and no viable alternative, it ended with a no-progress reason
+  and kept the completed parts.
 
 ## Qualification still open
 

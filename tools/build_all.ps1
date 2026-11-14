@@ -140,6 +140,11 @@ function Assert-NoReparseTree([string]$Root) {
 $msbuild = Find-MSBuild
 if (-not $msbuild -and -not $DryRun) { throw 'MSBuild not found (Visual Studio 2022 C++ workload is required).' }
 $msbuildParallelArg = if ($MaxCpuCount -gt 0) { "/m:$MaxCpuCount" } else { '/m' }
+$cppReproArgs = @()
+if ($requiresQuic) {
+    $reproProps = Join-Path $RepoRoot 'tools\release_cpp_repro.props'
+    $cppReproArgs = @("/p:ForceImportBeforeCppTargets=$reproProps", "/p:EseReleaseSourceRoot=$RepoRoot")
+}
 $env:ESE_RELEASE_TAG = $ReleaseTag
 
 Header "eMule eSE $ReleaseTag $Architecture"
@@ -172,11 +177,7 @@ Stage 'libutp' {
     $outDir = Join-Path $RepoRoot "libutp\$Architecture\Release"
     $intDir = Join-Path $outDir 'obj'
     $log = Join-Path $logDir "libutp-$Architecture-$stamp.log"
-    $utpArgs = @()
-    if ($Architecture -eq 'Win32') {
-        $utpArgs += '/p:ForceImportBeforeCppTargets=' + (Join-Path $RepoRoot 'tools\libutp_win32.props')
-    }
-    & $msbuild $project /t:Rebuild /p:Configuration=Release "/p:Platform=$Architecture" @utpArgs `
+    & $msbuild $project /t:Rebuild /p:Configuration=Release "/p:Platform=$Architecture" @cppReproArgs `
         /p:PlatformToolset=v143 /p:OutDir="$outDir\" /p:IntDir="$intDir\" `
         /v:minimal /nologo /fl /flp:"LogFile=$log;Verbosity=normal"
     if ($LASTEXITCODE -ne 0) { throw "libutp build failed; see $log" }
@@ -197,7 +198,7 @@ Stage 'emule' {
     }
     & $msbuild (Join-Path $RepoRoot 'srchybrid\emule.sln') /t:Rebuild `
         /p:Configuration=Release "/p:Platform=$Architecture" /p:PlatformToolset=v143 `
-        @quicBuildArgs $msbuildParallelArg /v:minimal /nologo /fl /flp:"LogFile=$log;Verbosity=normal"
+        @quicBuildArgs @cppReproArgs $msbuildParallelArg /v:minimal /nologo /fl /flp:"LogFile=$log;Verbosity=normal"
     if ($LASTEXITCODE -ne 0) { throw "emule build failed; see $log" }
     $emuleBinary = Join-Path $layout.Runtime 'emule.exe'
     if (-not (Test-Path $emuleBinary)) { throw 'emule.exe was not produced' }
@@ -289,7 +290,7 @@ Stage 'langs' {
         # Language projects share a legacy IntDir. Rebuild would let every
         # project delete the previous project's .res file; Build is the safe
         # deterministic operation once the source tree is clean.
-        & $msbuild $project.FullName /t:Build /p:Configuration=Dynamic "/p:Platform=$Architecture" `
+        & $msbuild $project.FullName /t:Build /p:Configuration=Dynamic "/p:Platform=$Architecture" @cppReproArgs `
             /p:PlatformToolset=v143 $msbuildParallelArg /v:quiet /nologo /fl /flp:"LogFile=$log;ErrorsOnly"
         if ($LASTEXITCODE -ne 0) { throw "language build failed: $($project.Name); see $log" }
     }

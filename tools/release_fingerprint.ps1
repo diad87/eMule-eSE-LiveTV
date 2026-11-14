@@ -138,7 +138,8 @@ function Get-ReleaseSourceFingerprint {
             'third_party/quic',
             'tools/quic',
             'tools/build_quic_msys2_candidate.ps1',
-            'tools/verify_quic_release_dependencies.ps1'
+            'tools/verify_quic_release_dependencies.ps1',
+            'tools/release_cpp_repro.props'
         )
         if ($Architecture -eq 'Win32') {
             $quicInputs += @('tools/build_quic_msys2_win32_release.ps1', 'tools/libutp_win32.props')
@@ -146,7 +147,7 @@ function Get-ReleaseSourceFingerprint {
         }
         $tracked += @(& git -C $RepoRoot -c core.quotepath=false ls-files -- $quicInputs)
         if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate tracked QUIC release inputs' }
-        $include += '|^(?:third_party/quic/|tools/quic/|tools/(?:build_quic_msys2_candidate|verify_quic_release_dependencies)\.ps1$)'
+        $include += '|^(?:third_party/quic/|tools/quic/|tools/(?:build_quic_msys2_candidate|verify_quic_release_dependencies)\.ps1$|tools/release_cpp_repro\.props$)'
     }
 
     $manifest = [Text.StringBuilder]::new()

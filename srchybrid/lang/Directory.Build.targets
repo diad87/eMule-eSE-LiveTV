@@ -3,7 +3,7 @@
     Mirror each language DLL into the selected platform's runtime directory.
     The project post-build copy also maintains the historical language path.
   -->
-  <ItemDefinitionGroup Condition="'$(Platform)'=='Win32'">
+  <ItemDefinitionGroup Condition="'$(Platform)'=='Win32' Or ('$(Platform)'=='x64' And '$(EseReleaseSourceRoot)'!='')">
     <Link>
       <AdditionalOptions>/Brepro /PDBALTPATH:%_PDB% %(AdditionalOptions)</AdditionalOptions>
     </Link>

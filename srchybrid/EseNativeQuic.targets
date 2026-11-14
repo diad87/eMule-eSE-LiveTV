@@ -18,7 +18,7 @@
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
   </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(EseQuicReleaseRoot)'!='' And '$(Platform)'=='Win32'">
+  <ItemDefinitionGroup Condition="'$(EseQuicReleaseRoot)'!=''">
     <Link>
       <AdditionalOptions>/Brepro /PDBALTPATH:%_PDB% %(AdditionalOptions)</AdditionalOptions>
     </Link>

@@ -1,0 +1,8 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="libutp_win32.props" Condition="'$(Platform)'=='Win32' And '$(MSBuildProjectName)'=='libutp'" />
+  <ItemDefinitionGroup Condition="'$(EseReleaseSourceRoot)'!='' And ('$(Platform)'=='Win32' Or '$(Platform)'=='x64')">
+    <ClCompile>
+      <AdditionalOptions>/experimental:deterministic /pathmap:"$(EseReleaseSourceRoot)=Z:\ese-release-source" %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>

@@ -3,6 +3,7 @@ project(ese_server_ref LANGUAGES CXX)
 
 add_library(ese_server_protocol STATIC
     ../srchybrid/EseServerProtocol.cpp ../srchybrid/EseServerAuth.cpp ../srchybrid/EseServerPublication.cpp
+    ../srchybrid/EseServerDescriptor.cpp
     ../libkad6/src/kad6_tags.cpp ../libkad6/src/kad6_address.cpp)
 target_include_directories(ese_server_protocol PUBLIC ../srchybrid)
 target_include_directories(ese_server_protocol PRIVATE ../libkad6/include)

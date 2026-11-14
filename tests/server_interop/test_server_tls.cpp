@@ -2,6 +2,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include "ServerTls.h"
+#include "EseServerDescriptor.h"
 #include "hex_fixture.h"
 #include <gnutls/abstract.h>
 #include <gnutls/crypto.h>
@@ -107,6 +108,52 @@ void CheckAuthVectors(const std::filesystem::path& directory)
         !ChannelCrypto::VerifySignature(server.node,clientProof,clientSignature) &&
         !ChannelCrypto::VerifySignature(client.node,serverProof,clientSignature),
         "independent Ed25519 signatures accept only exact key, role and transcript");
+}
+
+void CheckDescriptor(const Bytes32& publicKey,const Bytes32& pin)
+{
+    auto hex=[](const Bytes32& bytes) {
+        std::string value;
+        for(const auto byte:bytes) {
+            value+="0123456789abcdef"[byte>>4];
+            value+="0123456789abcdef"[byte&15];
+        }
+        return value;
+    };
+    ChannelCrypto crypto(nullptr,nullptr);
+    Bytes32 id{};
+    Check(crypto.Hash({publicKey.data(),publicKey.size()},id),"descriptor identity SHA-256");
+    const std::string base="server_id="+hex(id)+"\nserver_node_pub="+hex(publicKey)+"\nhost=localhost\n";
+    const std::string secure=base+"tls_port=14661\nquic_port=14662\nrdv_udp_port=14663\n";
+    const auto pinned=secure+"trust_mode=PIN\ntls_spki_sha256="+hex(pin)+"\n";
+    ServerDescriptor descriptor;
+    Check(ParseServerDescriptor(pinned,crypto,descriptor) && descriptor.node==publicKey && descriptor.host=="localhost" &&
+        descriptor.trust==DescriptorTrust::Pin && descriptor.spkiSha256==pin && !descriptor.allowPlaintextFallback,
+        "pin descriptor binds exact application identity, SPKI and ports");
+    auto forged=pinned;
+    forged[10]=forged[10]=='0' ? '1' : '0';
+    Check(!ParseServerDescriptor(forged,crypto,descriptor) && descriptor.serverId==id,"wrong server_id rejects transactionally");
+    Check(!ParseServerDescriptor(pinned+"tls_port=1\n",crypto,descriptor) &&
+        !ParseServerDescriptor(base+"tls_port=65536\ntrust_mode=PKIX\n",crypto,descriptor) &&
+        !ParseServerDescriptor(secure+"trust_mode=PIN\n",crypto,descriptor) &&
+        !ParseServerDescriptor(base+"trust_mode=PKIX\n",crypto,descriptor),
+        "duplicate, invalid port, missing pin and absent secure endpoints fail closed");
+    TransportPlan safe(descriptor,{true,true,4661});
+    Check(safe.Current() && safe.Current()->transport==Transport::Quic && safe.Current()->port==14662,"explicit QUIC first");
+    safe.Advance(DialOutcome::NetworkUnavailable);
+    Check(safe.Current() && safe.Current()->transport==Transport::Tls && safe.Current()->port==14661,"explicit TLS fallback");
+    safe.Advance(DialOutcome::Timeout);
+    Check(!safe.Current(),"permitted classic requires affirmative descriptor opt-in");
+    Check(ParseServerDescriptor(pinned+"allow_plaintext_fallback=true\n",crypto,descriptor),"explicit plaintext opt-in parsed");
+    TransportPlan trustFailure(descriptor,{true,true,4661});
+    trustFailure.Advance(DialOutcome::TrustFailed);
+    Check(!trustFailure.Current(),"no downgrade on authentication failure");
+    TransportPlan networkFailure(descriptor,{false,true,4661});
+    networkFailure.Advance(DialOutcome::NetworkUnavailable);
+    Check(networkFailure.Current() && networkFailure.Current()->transport==Transport::Classic &&
+        networkFailure.Current()->port==4661,"network failure can use explicitly authorized classic endpoint");
+    Check(ParseServerDescriptor(secure+"trust_mode=TOFU\nallow_plaintext_fallback=true\n",crypto,descriptor) &&
+        !TransportPlan(descriptor,{true,true,4661}).Current(),"unsupported first-use policy remains closed");
 }
 
 struct TestCertificate {
@@ -332,6 +379,8 @@ int main(int argc,char** argv)
         Check(now>3600,"usable wall clock");
         TestCertificate valid, expired, future;
         const auto goodPin=valid.Issue(now-300,now+3600);
+        ApplicationKey expectedServer;
+        CheckDescriptor(expectedServer.node,goodPin);
         Bytes32 helloDigest{};
         const char fixture[]="reference TLS transcript context";
         Check(gnutls_hash_fast(GNUTLS_DIG_SHA256,fixture,sizeof(fixture)-1,helloDigest.data())==0,"hello digest");

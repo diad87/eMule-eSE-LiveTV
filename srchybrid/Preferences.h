@@ -1607,7 +1607,7 @@ protected:
 	static void		SetStandardValues();
 	static UINT		GetRecommendedMaxConnections();
 	static void		LoadPreferences();
-	static void		SavePreferences();
+	static bool		SavePreferences();
 	static CString	GetHomepageBaseURLForLevel(int nLevel);
 	static CString	GetDefaultDirectory(EDefaultDirectory eDirectory, bool bCreate = true);
 };

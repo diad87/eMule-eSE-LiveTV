@@ -73,6 +73,7 @@ CIni::CIni(const CIni &Ini)
 	: m_bModulePath(Ini.m_bModulePath)
 	, m_strFileName(Ini.m_strFileName)
 	, m_strSection(Ini.m_strSection)
+	, m_bWriteError(Ini.m_bWriteError)
 {
 	if (m_strFileName.IsEmpty())
 		m_strFileName = GetDefaultIniFile(m_bModulePath);
@@ -108,6 +109,7 @@ CIni& CIni::operator=(const CIni &Ini)
 	m_bModulePath = Ini.m_bModulePath;
 	m_strFileName = Ini.m_strFileName;
 	m_strSection = Ini.m_strSection;
+	m_bWriteError = Ini.m_bWriteError;
 	return *this;
 }
 
@@ -251,98 +253,83 @@ void CIni::WriteString(LPCTSTR lpszEntry, LPCTSTR lpsz, LPCTSTR lpszSection)
 {
 	if (lpszSection != NULL)
 		m_strSection = lpszSection;
-	WritePrivateProfileString(m_strSection, lpszEntry, lpsz, m_strFileName);
+	if (!WritePrivateProfileString(m_strSection, lpszEntry, lpsz, m_strFileName))
+		m_bWriteError = true;
 }
 
 void CIni::WriteStringUTF8(LPCTSTR lpszEntry, LPCTSTR lpsz, LPCTSTR lpszSection)
 {
 	if (lpszSection != NULL)
 		m_strSection = lpszSection;
-	WritePrivateProfileStringA((CStringA)m_strSection, CStringA(lpszEntry), StrToUtf8(CString(lpsz)), CStringA(m_strFileName));
+	if (!WritePrivateProfileStringA((CStringA)m_strSection, CStringA(lpszEntry),
+		StrToUtf8(CString(lpsz)), CStringA(m_strFileName)))
+		m_bWriteError = true;
 }
 
 void CIni::WriteDouble(LPCTSTR lpszEntry, double f, LPCTSTR lpszSection)
 {
-	if (lpszSection != NULL)
-		m_strSection = lpszSection;
 	TCHAR szBuffer[MAX_PATH];
 	_sntprintf(szBuffer, _countof(szBuffer), _T("%g"), f);
 	szBuffer[_countof(szBuffer) - 1] = _T('\0');
-	WritePrivateProfileString(m_strSection, lpszEntry, szBuffer, m_strFileName);
+	WriteString(lpszEntry, szBuffer, lpszSection);
 }
 
 void CIni::WriteFloat(LPCTSTR lpszEntry, float f, LPCTSTR lpszSection)
 {
-	if (lpszSection != NULL)
-		m_strSection = lpszSection;
 	TCHAR szBuffer[MAX_PATH];
 	_sntprintf(szBuffer, _countof(szBuffer), _T("%g"), f);
 	szBuffer[_countof(szBuffer) - 1] = _T('\0');
-	WritePrivateProfileString(m_strSection, lpszEntry, szBuffer, m_strFileName);
+	WriteString(lpszEntry, szBuffer, lpszSection);
 }
 
 void CIni::WriteInt(LPCTSTR lpszEntry, int n, LPCTSTR lpszSection)
 {
-	if (lpszSection != NULL)
-		m_strSection = lpszSection;
 	TCHAR szBuffer[MAX_PATH];
 	_itot(n, szBuffer, 10);
-	WritePrivateProfileString(m_strSection, lpszEntry, szBuffer, m_strFileName);
+	WriteString(lpszEntry, szBuffer, lpszSection);
 }
 
 void CIni::WriteUInt64(LPCTSTR lpszEntry, ULONGLONG n, LPCTSTR lpszSection)
 {
-	if (lpszSection != NULL)
-		m_strSection = lpszSection;
 	TCHAR szBuffer[MAX_PATH];
 	_ui64tot(n, szBuffer, 10);
-	WritePrivateProfileString(m_strSection, lpszEntry, szBuffer, m_strFileName);
+	WriteString(lpszEntry, szBuffer, lpszSection);
 }
 
 void CIni::WriteWORD(LPCTSTR lpszEntry, WORD n, LPCTSTR lpszSection)
 {
-	if (lpszSection != NULL)
-		m_strSection = lpszSection;
 	TCHAR szBuffer[MAX_PATH];
 	_ultot(n, szBuffer, 10);
-	WritePrivateProfileString(m_strSection, lpszEntry, szBuffer, m_strFileName);
+	WriteString(lpszEntry, szBuffer, lpszSection);
 }
 
 void CIni::WriteBool(LPCTSTR lpszEntry, bool b, LPCTSTR lpszSection)
 {
-	if (lpszSection != NULL)
-		m_strSection = lpszSection;
 	TCHAR szBuffer[MAX_PATH];
 	_sntprintf(szBuffer, _countof(szBuffer), _T("%d"), (int)b);
 	szBuffer[_countof(szBuffer) - 1] = _T('\0');
-	WritePrivateProfileString(m_strSection, lpszEntry, szBuffer, m_strFileName);
+	WriteString(lpszEntry, szBuffer, lpszSection);
 }
 
 void CIni::WritePoint(LPCTSTR lpszEntry, const CPoint &pt, LPCTSTR lpszSection)
 {
-	if (lpszSection != NULL)
-		m_strSection = lpszSection;
 	CString strBuffer;
 	strBuffer.Format(_T("(%d,%d)"), pt.x, pt.y);
-	Write(m_strFileName, m_strSection, lpszEntry, strBuffer);
+	WriteString(lpszEntry, strBuffer, lpszSection);
 }
 
 void CIni::WriteRect(LPCTSTR lpszEntry, const CRect &rect, LPCTSTR lpszSection)
 {
-	if (lpszSection != NULL)
-		m_strSection = lpszSection;
 	CString strBuffer;
 	strBuffer.Format(_T("(%d,%d,%d,%d)"), rect.top, rect.left, rect.bottom, rect.right);
-	Write(m_strFileName, m_strSection, lpszEntry, strBuffer);
+	WriteString(lpszEntry, strBuffer, lpszSection);
 }
 
 void CIni::WriteColRef(LPCTSTR lpszEntry, COLORREF cr, LPCTSTR lpszSection)
 {
-	if (lpszSection != NULL)
-		m_strSection = lpszSection;
 	CString strBuffer;
 	strBuffer.Format(_T("RGB(%d,%d,%d)"), GetRValue(cr), GetGValue(cr), GetBValue(cr));
-	Write(m_strFileName, m_strSection, lpszEntry, strBuffer);
+	WriteString(lpszEntry, strBuffer, lpszSection);
 }
 
 void CIni::SerGetString(bool bGet, CString &rstr, LPCTSTR lpszEntry, LPCTSTR lpszSection, LPCTSTR lpszDefault)
@@ -692,11 +679,6 @@ CString CIni::Read(LPCTSTR lpszFileName, LPCTSTR lpszSection, LPCTSTR lpszEntry,
 	return strReturn;
 }
 
-void CIni::Write(LPCTSTR lpszFileName, LPCTSTR lpszSection, LPCTSTR lpszEntry, LPCTSTR lpszValue)
-{
-	WritePrivateProfileString(lpszSection, lpszEntry, lpszValue	, lpszFileName);
-}
-
 bool CIni::GetBinary(LPCTSTR lpszEntry, BYTE **ppData, UINT *pBytes, LPCTSTR pszSection)
 {
 	*ppData = NULL;
@@ -733,5 +715,5 @@ bool CIni::WriteBinary(LPCTSTR lpszEntry, LPBYTE pData, size_t nBytes, LPCTSTR l
 
 void CIni::DeleteKey(LPCTSTR lpszKey)
 {
-	WritePrivateProfileString(m_strSection, lpszKey, NULL, m_strFileName);
+	WriteString(lpszKey, NULL);
 }

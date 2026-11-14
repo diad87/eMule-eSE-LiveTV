@@ -1497,7 +1497,7 @@ bool CPreferences::Save()
 	} else
 		error = true;
 
-	SavePreferences();
+	error |= !SavePreferences();
 	SaveStats();
 
 	const CString &strSharesPath(sConfDir + SHAREDDIRS);
@@ -1566,9 +1566,27 @@ UINT CPreferences::GetRecommendedMaxConnections()
 	return iRealMax - 20;
 }
 
-void CPreferences::SavePreferences()
+bool CPreferences::SavePreferences()
 {
-	CIni ini(GetConfigFile(), _T("eMule"));
+	// Keep unknown keys from the existing profile, and publish the complete
+	// settings revision only after all of the INI writes have succeeded.
+	struct StagedIni {
+		TCHAR path[MAX_PATH] = {};
+		~StagedIni() { if (path[0] != _T('\0')) ::DeleteFile(path); }
+	} staging;
+	const LPCTSTR path = GetConfigFile();
+	const auto fail = [](LPCTSTR operation, DWORD error) {
+		LogError(_T("Failed to %s preferences.ini (Windows error %lu)"), operation, error);
+		return false;
+	};
+	if (!::GetTempFileName(GetMuleDirectory(EMULE_CONFIGDIR), _T("Prf"), 0, staging.path))
+		return fail(_T("stage"), ::GetLastError());
+	if (!::CopyFile(path, staging.path, FALSE)) {
+		const DWORD error = ::GetLastError();
+		if (error != ERROR_FILE_NOT_FOUND)
+			return fail(_T("copy"), error);
+	}
+	CIni ini(staging.path, _T("eMule"));
 	//---
 	ini.WriteString(_T("AppVersion"), theApp.m_strCurVersionLong);
 	//---
@@ -1919,6 +1937,23 @@ void CPreferences::SavePreferences()
 	ini.WriteBool(_T("EseHolePunchPortPredict"), m_bEseHolePunchPortPredict, _T("eSE"));
 	ini.WriteInt(_T("EseHolePunchPortSpread"), m_iEseHolePunchPortSpread, _T("eSE"));
 	ini.WriteBool(_T("EseEd2kPunch3"), m_bEseEd2kPunch3, _T("eSE"));
+
+	if (ini.HasWriteError()) {
+		LogError(_T("Failed to write staged preferences.ini"));
+		return false;
+	}
+	const HANDLE output = ::CreateFile(staging.path, GENERIC_WRITE, FILE_SHARE_READ,
+		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (output == INVALID_HANDLE_VALUE)
+		return fail(_T("open staged"), ::GetLastError());
+	const DWORD flushError = ::FlushFileBuffers(output) ? ERROR_SUCCESS : ::GetLastError();
+	::CloseHandle(output);
+	if (flushError != ERROR_SUCCESS)
+		return fail(_T("flush staged"), flushError);
+	if (!::MoveFileEx(staging.path, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+		return fail(_T("replace"), ::GetLastError());
+	staging.path[0] = _T('\0');
+	return true;
 }
 
 void CPreferences::ResetStatsColor(int index)

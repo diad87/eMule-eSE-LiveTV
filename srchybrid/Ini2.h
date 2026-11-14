@@ -51,6 +51,7 @@ public:
 	void SetSection(const CString &rstrSection)			{ m_strSection = rstrSection; }
 	const CString& GetFileName() const					{ return m_strFileName; }
 	const CString& GetSection() const					{ return m_strSection;}
+	bool HasWriteError() const							{ return m_bWriteError; }
 
 	CString	GetStringUTF8(LPCTSTR lpszEntry,LPCTSTR		lpszDefault = NULL,		LPCTSTR lpszSection = NULL);
 	CString	GetStringLong(LPCTSTR lpszEntry,LPCTSTR		lpszDefault = NULL,		LPCTSTR lpszSection = NULL);
@@ -115,7 +116,6 @@ public:
 
 private:
 	static CString	Read(LPCTSTR lpszFileName, LPCTSTR lpszSection, LPCTSTR lpszEntry, LPCTSTR lpszDefault);
-	static void		Write(LPCTSTR lpszFileName, LPCTSTR lpszSection, LPCTSTR lpszEntry, LPCTSTR lpszValue);
 
 	//true: Filenames without path take the Modulepath
 	//false: Filenames without path take the CurrentDirectory
@@ -123,5 +123,6 @@ private:
 
 	CString m_strFileName;
 	CString m_strSection;
+	bool m_bWriteError = false;
 
 };

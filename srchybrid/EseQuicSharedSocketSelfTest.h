@@ -3736,7 +3736,7 @@ inline void RunClassicTcpFallbackF1(CDirectReachabilityManager& manager,CUpDownC
     for(const auto b:digest) digestText.AppendFormat(_T("%02X"),b);
     Require(digestText==_T("2C06ADE942EE3F17A048DD1064B2FAB046A4BB95386D8BB41B68DC6711AC2AF3"),"TCP F1 independent SHA-256");
     Log(_T("TCP_FALLBACK_F1 PASS bytes=%u parts=%u slots=%u fallbacks=%u sha256=%s"),fileBytes,partCount,slots,
-        final->fallback_count,(LPCTSTR)digestText);
+        static_cast<unsigned>(final->fallback_count),(LPCTSTR)digestText);
 }
 
 inline void RunClassicTcpObservation(CDirectReachabilityManager& manager,unsigned variant=0,uint16 fallbackUdpPort=0,bool fullFile=false) {

@@ -16,15 +16,21 @@
   Direct QUIC can be enabled explicitly with Net Lab consent and a pinned
   peer key. It starts disabled. Initial transfer authorization still depends
   on a compatible current route and the ordinary upload queue.
-- Active QUIC sessions track useful transfer progress. An isolated pair
-  completed 1 GiB after 15 seconds of UDP discard. With UDP blocked for
-  longer and no viable alternative, it ended with a no-progress reason
-  and kept the completed parts.
+- Active QUIC sessions track useful transfer progress. When prolonged UDP
+  loss leaves no viable route, the transfer ends with a no-progress reason
+  and keeps its verified parts. The isolated restart test recovered those
+  parts and completed the 1 GiB file with the same SHA-256.
+- In an explicitly scheduled mixed-route loopback test, loss of the initial
+  QUIC packets triggered one switch to observed TCP. Fresh SecureIdent,
+  all 111 part hashes and the final 1 GiB SHA-256 passed.
+- The native build retires the KRP proxy and LiveTV buddy relay. The former
+  LiveTV relay mutation endpoints report HTTP 410. Their opcodes and feature
+  bit remain reserved for compatibility.
 
 ## Qualification still open
 
 The candidate must complete the two-machine transfer and recovery checks,
-TCP fallback, mobility, classic interoperability and the integrated 24-hour
+normal route selection for TCP fallback, mobility, classic interoperability and the integrated 24-hour
 campaign. The exact distribution package, supported profiles, experimental
 features and network limitations will be recorded after qualification.
 [Candidate execution record](V93_RC1_EXECUTION.md)

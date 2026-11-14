@@ -11,6 +11,14 @@ namespace ese { namespace test {
 class SimulatedQuicPort final : public QuicSocketPort {
 public:
     static constexpr std::size_t Capacity=64,MaxPacket=1200;
+    struct Path {
+        std::size_t udpPayload=MaxPacket, dropEvery=0;
+        std::uint64_t delayMs=0;
+        bool reorder=false;
+    };
+    struct PathCounts {
+        std::size_t sent=0, oversized=0, lost=0, reordered=0, delayed=0, largest=0, peakQueue=0;
+    };
     explicit SimulatedQuicPort(udp::Endpoint endpoint)
         : endpoint_(endpoint),packets_(std::make_unique<std::array<Packet,Capacity>>()) {}
     SimulatedQuicPort(const SimulatedQuicPort&)=delete;
@@ -38,21 +46,52 @@ public:
         if(!remote_ || !remote_->ingress_) return {QuicUdpSendStatus::Closed,0};
         if(!(destination==remote_->endpoint_)) return {QuicUdpSendStatus::Invalid,0};
         if(dropNext_) { --dropNext_; ++dropped_; return {QuicUdpSendStatus::Sent,0}; }
+        const auto sequence=pathCounts_.sent+1;
+        pathCounts_.largest=(std::max)(pathCounts_.largest,length);
+        if(length>path_.udpPayload) {
+            ++pathCounts_.sent; ++pathCounts_.oversized;
+            return {QuicUdpSendStatus::Sent,0}; // no fragmentation or ICMP reply from this fixture
+        }
+        if(path_.dropEvery && sequence%path_.dropEvery==0) {
+            ++pathCounts_.sent; ++pathCounts_.lost;
+            return {QuicUdpSendStatus::Sent,0};
+        }
         if(remote_->size_==Capacity) return {QuicUdpSendStatus::WouldBlock,0};
         auto& packet=(*remote_->packets_)[(remote_->head_+remote_->size_)%Capacity];
         packet.source=endpoint_; packet.length=length;
+        packet.readyAt=now_+path_.delayMs;
+        packet.tryReorder=path_.reorder && sequence%9==1;
+        ++pathCounts_.sent;
+        if(path_.delayMs) ++pathCounts_.delayed;
         std::copy_n(bytes,length,packet.bytes.begin()); ++remote_->size_;
+        remote_->pathCounts_.peakQueue=(std::max)(remote_->pathCounts_.peakQueue,remote_->size_);
         return {QuicUdpSendStatus::Sent,0};
     }
     std::size_t Deliver(std::size_t budget=Capacity) noexcept {
         std::size_t delivered=0;
         while(ingress_ && size_ && delivered<budget) {
+            auto& first=(*packets_)[head_];
+            if(first.readyAt>now_) break;
+            if(first.tryReorder) {
+                auto& second=(*packets_)[(head_+1)%Capacity];
+                if(size_>1 && second.readyAt<=now_) {
+                    first.tryReorder=false;
+                    std::swap(first,second);
+                    ++pathCounts_.reordered;
+                } else if(now_-first.readyAt<30) break;
+            }
             const auto packet=(*packets_)[head_]; // Stable even if Receive reenters the fixture.
             head_=(head_+1)%Capacity; --size_; ++delivered;
             if(!ingress_->Receive(packet.source,{packet.bytes.data(),packet.length})) ++unclaimed_;
         }
         return delivered;
     }
+    bool ConfigurePath(Path path) noexcept {
+        if(!path.udpPayload || path.udpPayload>65507 || path.delayMs>400 || size_ || pathCounts_.sent) return false;
+        path_=path; return true;
+    }
+    void SetTime(std::uint64_t now) noexcept { now_=now; }
+    const PathCounts& Counts() const noexcept { return pathCounts_; }
     std::size_t Queued() const noexcept { return size_; }
     bool DropNext(std::size_t count) noexcept {
         if(!count || count>Capacity || dropNext_) return false;
@@ -65,11 +104,20 @@ public:
     std::size_t Unclaimed() const noexcept { return unclaimed_; }
     const udp::Endpoint& Endpoint() const noexcept { return endpoint_; }
 private:
-    struct Packet { udp::Endpoint source; std::array<std::uint8_t,MaxPacket> bytes{}; std::size_t length=0; };
+    struct Packet {
+        udp::Endpoint source;
+        std::array<std::uint8_t,MaxPacket> bytes{};
+        std::size_t length=0;
+        std::uint64_t readyAt=0;
+        bool tryReorder=false;
+    };
     udp::Endpoint endpoint_;
     std::unique_ptr<std::array<Packet,Capacity>> packets_;
     SimulatedQuicPort* remote_=nullptr;
     QuicUdpIngress* ingress_=nullptr;
     std::size_t head_=0,size_=0,unclaimed_=0,dropNext_=0,dropped_=0;
+    std::uint64_t now_=0;
+    Path path_{};
+    PathCounts pathCounts_{};
 };
 } }

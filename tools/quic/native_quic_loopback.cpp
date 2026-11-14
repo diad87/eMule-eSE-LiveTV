@@ -3,6 +3,7 @@
 #include "../../srchybrid/EseNativeQuicRuntime.h"
 #include "../../srchybrid/LiveCrypto.h"
 #include "../../srchybrid/NodeIdentity.h"
+#include "../../cryptopp/sha.h"
 #include "../../srchybrid/EseQuicHeaderProbe.h"
 #include "../../srchybrid/EseQuicUdpRouter.h"
 #include "../../srchybrid/EseQuicSocketOwner.h"
@@ -128,7 +129,7 @@ static DirectSessionRoute Route(const Port& peer) {
 }
 // Actual native TLS/exporter/Ed25519 over a memory-only datagram namespace.
 // Logical globally shaped addresses are NOT physical return-path evidence.
-static void RunSimulatedNative() {
+static void RunSimulatedNative(const char* scenario=nullptr) {
     struct State { DirectBufferPool pool; DirectEventQueue events; };
     auto state=std::make_unique<State>();
     Identity a,b; Probe probe;
@@ -136,7 +137,18 @@ static void RunSimulatedNative() {
     eb.address[0]=9; eb.address[3]=1; eb.port=41002;
     test::SimulatedQuicPort pa(ea),pb(eb);
     Check(pa.Link(pb),"simulated native link");
-    {
+    test::SimulatedQuicPort::Path path;
+    unsigned ipv4Mtu=0;
+    if(scenario) {
+        if(std::strcmp(scenario,"ipv4-mtu1100")==0) ipv4Mtu=1100;
+        if(std::strcmp(scenario,"ipv4-mtu1200")==0) ipv4Mtu=1200;
+        if(std::strcmp(scenario,"ipv4-mtu1280")==0) ipv4Mtu=1280;
+        if(ipv4Mtu) path.udpPayload=ipv4Mtu-28; // IPv4 header without options plus UDP header.
+        if(std::strcmp(scenario,"loss-five")==0) path.dropEvery=20;
+        if(std::strcmp(scenario,"reorder")==0) path.reorder=true;
+        if(std::strcmp(scenario,"delay400")==0) path.delayMs=400;
+        Check(pa.ConfigurePath(path) && pb.ConfigurePath(path),"isolated UDP shaping");
+    } else {
         control::PacketBudget ba,bb;
         auto ha=CreateQuicSessionHost(pa,state->pool,state->events,ba);
         auto hb=CreateQuicSessionHost(pb,state->pool,state->events,bb);
@@ -202,16 +214,24 @@ static void RunSimulatedNative() {
         Check(oa.Begin({ea,false},Config(a,b,false),{0,1},route(eb),&a)==1 &&
             ob.Begin({eb,true},Config(b,a,true),{1,1},route(ea),&b)==1,"simulated native begin");
         auto& client=*oa.Find(1); auto& server=*ob.Find(1);
+        if(scenario) server.SetReceiveBudget(64*1024);
         const std::uint8_t early=1;
         Check(client.Send({&early,1}).status==DirectIoStatus::WouldBlock &&
             server.Send({&early,1}).status==DirectIoStatus::WouldBlock,"simulated pre-auth guard");
-        const auto deadline=Now()+20000;
+        const auto started=Now();
+        const auto deadline=started+20000;
         bool adopted=false;
-        std::array<std::uint8_t,4097> bytes{};
+        std::vector<std::uint8_t> bytes(scenario ? 65536 : 4097);
         for(std::size_t i=0;i<bytes.size();++i) bytes[i]=static_cast<std::uint8_t>(i%251);
-        std::size_t sent=0,received=0;
+        const bool mtuBlocksInitial=path.udpPayload<1200;
+        CryptoPP::SHA256 digest;
+        std::size_t sent=0,received=0,peakPool=0;
         while(Now()<deadline) {
-            pa.Deliver(); pb.Deliver(); oa.Poll(Now()); ob.Poll(Now());
+            const auto now=Now();
+            pa.SetTime(now); pb.SetTime(now);
+            pa.Deliver(); pb.Deliver(); oa.Poll(now); ob.Poll(now);
+            peakPool=(std::max)(peakPool,state->pool.Used());
+            if(mtuBlocksInitial && client.Snapshot().closed) break;
             Check(!client.Snapshot().closed && !server.Snapshot().closed,"simulated unexpected close");
             if(!adopted && client.Ready() && server.Ready()) {
                 Check(client.AdoptWinner({0,1},3,1) && server.AdoptWinner({1,1},3,1),"simulated bound winner");
@@ -225,18 +245,58 @@ static void RunSimulatedNative() {
             const auto data=server.ReceivedFront();
             Check(data.size<=bytes.size()-received,"simulated receive bounds");
             for(std::size_t i=0;i<data.size;++i) Check(data.data[i]==bytes[received+i],"simulated exact payload");
+            if(scenario && data.size) digest.Update(data.data,data.size);
             received+=data.size; Check(server.ConsumeReceived(data.size),"simulated consume");
             if(received==bytes.size() && client.Snapshot().acknowledged_offset==bytes.size()) break;
             std::this_thread::yield();
         }
-        Check(adopted && sent==bytes.size() && received==bytes.size() &&
+        if(mtuBlocksInitial) {
+            unsigned clientDeadlines=0;
+            for(const auto& event:state->events.Drain()) {
+                Check(event.type!=DirectEventType::Authenticated,"sub-1200 path cannot authenticate");
+                if(event.handle.slot==0 && event.type==DirectEventType::Closed && event.reason==DirectReason::Deadline)
+                    ++clientDeadlines;
+            }
+            Check(clientDeadlines==1 && client.Snapshot().closed && !adopted && !sent && !received &&
+                Now()-started<=4250 && pa.Counts().oversized>0 && pa.Counts().largest==1200,
+                "sub-1200 path times out cleanly without fragments");
+        } else Check(adopted && sent==bytes.size() && received==bytes.size() &&
             client.Snapshot().acknowledged_offset==bytes.size(),"simulated native transfer deadline");
+        std::array<CryptoPP::byte,CryptoPP::SHA256::DIGESTSIZE> actualDigest{},expectedDigest{};
+        if(scenario && !mtuBlocksInitial) {
+            digest.Final(actualDigest.data());
+            CryptoPP::SHA256 reference;
+            reference.CalculateDigest(expectedDigest.data(),bytes.data(),bytes.size());
+            Check(actualDigest==expectedDigest,"isolated QUIC transferred SHA-256");
+            if(path.dropEvery) Check(pa.Counts().lost+pb.Counts().lost>0 &&
+                pa.Counts().lost==pa.Counts().sent/20 && pb.Counts().lost==pb.Counts().sent/20,
+                "deterministic every-twentieth packet loss");
+            if(path.reorder) Check(pa.Counts().reordered+pb.Counts().reordered>0,"virtual path actually reordered packets");
+            if(path.delayMs) Check(pa.Counts().delayed && pb.Counts().delayed && Now()-started>=2*path.delayMs,
+                "virtual path imposed the symmetric propagation delay");
+            Check(!pa.Counts().oversized && !pb.Counts().oversized && pa.Counts().largest==1200,
+                "positive path carries full unfragmented Initial");
+        }
         Check(pa.Unclaimed()==0 && pb.Unclaimed()==0,"simulated native all packets claimed");
+        const auto elapsed=Now()-started;
         client.Close(DirectReason::Disabled); server.Close(DirectReason::Disabled);
         state->events.Drain(); oa.Poll(Now()); ob.Poll(Now());
         Check(oa.RetireClosed()==1 && ob.RetireClosed()==1 && state->pool.Used()==0,"simulated native retirement");
         Check(oa.Detach() && ob.Detach() && pa.Queued()==0 && pb.Queued()==0,"simulated native detach");
-        std::printf("native QUIC simulated namespace: real TLS/exporter/Ed25519, 4097 exact bytes + ACK, pool drained PASS (no physical UDP/NAT; no MFC scheduler)\n");
+        if(scenario) {
+            const auto queuePeak=(std::max)(pa.Counts().peakQueue,pb.Counts().peakQueue);
+            Check(queuePeak<=test::SimulatedQuicPort::Capacity && peakPool<=256*1024,"virtual path memory bounded");
+            char sha256[2*CryptoPP::SHA256::DIGESTSIZE+1]{};
+            if(!mtuBlocksInitial) for(std::size_t i=0;i<actualDigest.size();++i)
+                std::snprintf(sha256+2*i,3,"%02x",static_cast<unsigned>(actualDigest[i]));
+            std::printf("NC-Q08 native virtual UDP %s PASS ipv4_mtu=%u udp_budget=%zu max_payload=%zu "
+                "oversized=%zu lost=%zu reordered=%zu delayed=%zu peak_queue=%zu peak_pool=%zu "
+                "received=%zu elapsed_ms=%llu sha256=%s\n",scenario,ipv4Mtu,path.udpPayload,
+                (std::max)(pa.Counts().largest,pb.Counts().largest),pa.Counts().oversized+pb.Counts().oversized,
+                pa.Counts().lost+pb.Counts().lost,pa.Counts().reordered+pb.Counts().reordered,
+                pa.Counts().delayed+pb.Counts().delayed,queuePeak,peakPool,received,
+                static_cast<unsigned long long>(elapsed),mtuBlocksInitial?"none":sha256);
+        } else std::printf("native QUIC simulated namespace: real TLS/exporter/Ed25519, 4097 exact bytes + ACK, pool drained PASS (no physical UDP/NAT; no MFC scheduler)\n");
     } catch(...) {
         oa.Stop(); ob.Stop(); state->events.Drain(); oa.Poll(Now()); ob.Poll(Now());
         oa.RetireClosed(); ob.RetireClosed(); throw;
@@ -248,6 +308,13 @@ int main(int argc,char** argv) {
     int result=1;
     try {
         if(argc>1 && std::strcmp(argv[1],"simulated")==0) { RunSimulatedNative(); return 0; }
+        if(argc==3 && std::strcmp(argv[1],"virtual-path")==0) {
+            const auto supported={ "ipv4-mtu1100","ipv4-mtu1200","ipv4-mtu1280","udp-payload1200",
+                "loss-five","reorder","delay400" };
+            Check(std::any_of(supported.begin(),supported.end(),[&](const char* mode) { return std::strcmp(mode,argv[2])==0; }),
+                "unsupported virtual UDP path");
+            RunSimulatedNative(argv[2]); return 0;
+        }
         // Keep bounded registry/mailbox storage off the caller's stack. The
         // simulated branch has its own owner frame; growing scalar snapshots
         // must not make their combined frames exceed the Windows stack reserve.

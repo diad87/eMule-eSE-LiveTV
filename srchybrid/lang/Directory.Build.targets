@@ -1,14 +1,16 @@
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <!--
-    Language projects historically copied to srchybrid\x64\lang, while the
-    development executable lives in srchybrid\x64\Release.  The packaged build
-    worked, but a freshly built emule.exe could not discover any translation.
-    Keep the legacy output for compatibility and also mirror each x64 DLL into
-    the exact runtime layout used by the executable.
+    Mirror each language DLL into the selected platform's runtime directory.
+    The project post-build copy also maintains the historical language path.
   -->
-  <Target Name="CopyLanguageNextToEmule" AfterTargets="Build" Condition="'$(Platform)' == 'x64'">
+  <ItemDefinitionGroup Condition="'$(Platform)'=='Win32'">
+    <Link>
+      <AdditionalOptions>/Brepro %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+  <Target Name="CopyLanguageNextToEmule" AfterTargets="Build" Condition="'$(Platform)'=='x64' Or '$(Platform)'=='Win32'">
     <PropertyGroup>
-      <EmuleRuntimeLangDir>$(MSBuildThisFileDirectory)..\x64\Release\lang\</EmuleRuntimeLangDir>
+      <EmuleRuntimeLangDir>$(MSBuildThisFileDirectory)..\$(Platform)\Release\lang\</EmuleRuntimeLangDir>
     </PropertyGroup>
     <MakeDir Directories="$(EmuleRuntimeLangDir)" />
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(EmuleRuntimeLangDir)" SkipUnchangedFiles="true" />

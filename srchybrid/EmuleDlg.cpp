@@ -5357,6 +5357,9 @@ void CemuleDlg::LaunchEseServer(bool bOpenBrowser)
 		}
 	}
 
+	// Release Win32 bundles have a native WebServer and use only explicitly
+	// colocated companion programs when an operator supplies one.
+#if !defined(ESE_QUIC_SIGNED_RELEASE) || !defined(_M_IX86)
 	// Strategy 3: scan known fallback locations for ese-server.exe
 	if (launchExe.IsEmpty()) {
 		TCHAR userProfile[MAX_PATH] = {};
@@ -5378,6 +5381,7 @@ void CemuleDlg::LaunchEseServer(bool bOpenBrowser)
 			}
 		}
 	}
+#endif
 
 	if (launchExe.IsEmpty()) {
 		// Don't pop a modal dialog during auto-spawn at startup — the user

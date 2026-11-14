@@ -7,28 +7,82 @@ function Test-ReleaseRequiresQuic {
     return [version]$Matches.version -ge [version]'9.3.0'
 }
 
+function Get-ReleaseLayout {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$ReleaseTag,
+        [ValidateSet('x64', 'Win32')][string]$Architecture = 'x64'
+    )
+    $win32 = $Architecture -eq 'Win32'
+    $platform = if ($win32) { 'Win32' } else { 'x64' }
+    $stampSuffix = if ($win32) { '-Win32' } else { '' }
+    $releaseRoot = Join-Path $RepoRoot "dist\$ReleaseTag"
+    $stampRoot = Join-Path $RepoRoot 'tools\build_logs'
+    return [pscustomobject]@{
+        Architecture = $platform
+        Dashboard = -not $win32
+        Runtime = Join-Path $RepoRoot "srchybrid\$platform\Release"
+        ReleaseRoot = $releaseRoot
+        Package = Join-Path $releaseRoot $(if ($win32) { 'package-x86' } else { 'package' })
+        Archive = Join-Path $releaseRoot $(if ($win32) { "eMule-eSE-$ReleaseTag-x86.zip" } else { "eSE-LiveTV-$ReleaseTag-x64.zip" })
+        EmuleStamp = Join-Path $stampRoot "emule-release-build$stampSuffix.json.log"
+        LanguageStamp = Join-Path $stampRoot "languages-release-build$stampSuffix.json.log"
+        DashboardStamp = Join-Path $stampRoot 'ese-release-build.json.log'
+    }
+}
+
+function Assert-ReleasePEArchitecture {
+    param(
+        [Parameter(Mandatory = $true)][string]$BinaryPath,
+        [ValidateSet('x64', 'Win32')][string]$Architecture = 'x64'
+    )
+    $reader = [IO.BinaryReader]::new([IO.File]::OpenRead($BinaryPath))
+    try {
+        $stream = $reader.BaseStream
+        if ($stream.Length -lt 64 -or $reader.ReadUInt16() -ne 0x5a4d) { throw "Invalid PE image: $BinaryPath" }
+        $stream.Position = 0x3c
+        $offset = $reader.ReadUInt32()
+        if ($offset -lt 64 -or $offset -gt $stream.Length - 26) { throw "Invalid PE header: $BinaryPath" }
+        $stream.Position = $offset
+        if ($reader.ReadUInt32() -ne 0x00004550) { throw "Invalid PE signature: $BinaryPath" }
+        $machine = $reader.ReadUInt16()
+        $stream.Position = [long]$offset + 20
+        $optionalSize = $reader.ReadUInt16()
+        $stream.Position = [long]$offset + 24
+        $magic = $reader.ReadUInt16()
+        $expectedMachine = if ($Architecture -eq 'Win32') { 0x014c } else { 0x8664 }
+        $expectedMagic = if ($Architecture -eq 'Win32') { 0x010b } else { 0x020b }
+        if ($optionalSize -lt 2 -or $machine -ne $expectedMachine -or $magic -ne $expectedMagic) {
+            throw "Expected $Architecture PE image: $BinaryPath"
+        }
+    } finally { $reader.Dispose() }
+}
+
 function Get-ReleaseQuicManifestHash {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
-        [Parameter(Mandatory = $true)][string]$QuicReleaseRoot
+        [Parameter(Mandatory = $true)][string]$QuicReleaseRoot,
+        [ValidateSet('x64', 'Win32')][string]$Architecture = 'x64'
     )
 
-    $manifest = Join-Path $QuicReleaseRoot 'manifest-x64.json'
+    $manifest = Join-Path $QuicReleaseRoot "manifest-$Architecture.json"
     $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifest).Hash
     & (Join-Path $RepoRoot 'tools\verify_quic_release_dependencies.ps1') `
-        -Root $QuicReleaseRoot -Architecture x64 -ExpectedManifestSha256 $hash | Out-Null
+        -Root $QuicReleaseRoot -Architecture $Architecture -ExpectedManifestSha256 $hash | Out-Null
     return $hash
 }
 
 function Assert-ReleaseQuicBinary {
     param(
         [Parameter(Mandatory = $true)][string]$BinaryPath,
-        [Parameter(Mandatory = $true)][string]$QuicManifestSha256
+        [Parameter(Mandatory = $true)][string]$QuicManifestSha256,
+        [ValidateSet('x64', 'Win32')][string]$Architecture = 'x64'
     )
 
     if ($QuicManifestSha256 -notmatch '^[0-9A-Fa-f]{64}$') {
         throw 'Signed QUIC build requires a manifest SHA-256'
     }
+    Assert-ReleasePEArchitecture -BinaryPath $BinaryPath -Architecture $Architecture
     $versionInfo = (Get-Item -LiteralPath $BinaryPath).VersionInfo
     if ($versionInfo.Comments -ne "eSE QUIC manifest SHA-256 $QuicManifestSha256") {
         throw 'emule.exe was not linked with the verified signed QUIC manifest'
@@ -40,7 +94,8 @@ function Get-ReleaseSourceFingerprint {
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)]
         [ValidateSet('emule', 'ese')][string]$Component,
-        [switch]$IncludeQuic
+        [switch]$IncludeQuic,
+        [ValidateSet('x64', 'Win32')][string]$Architecture = 'x64'
     )
 
     $roots = if ($Component -eq 'ese') {
@@ -85,6 +140,10 @@ function Get-ReleaseSourceFingerprint {
             'tools/build_quic_msys2_candidate.ps1',
             'tools/verify_quic_release_dependencies.ps1'
         )
+        if ($Architecture -eq 'Win32') {
+            $quicInputs += @('tools/build_quic_msys2_win32_release.ps1', 'tools/libutp_win32.props')
+            $include += '|^tools/(?:build_quic_msys2_win32_release\.ps1|libutp_win32\.props)$'
+        }
         $tracked += @(& git -C $RepoRoot -c core.quotepath=false ls-files -- $quicInputs)
         if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate tracked QUIC release inputs' }
         $include += '|^(?:third_party/quic/|tools/quic/|tools/(?:build_quic_msys2_candidate|verify_quic_release_dependencies)\.ps1$)'
@@ -154,7 +213,8 @@ function Write-ReleaseBinaryStamp {
         [ValidateSet('emule', 'ese')][string]$Component,
         [Parameter(Mandatory = $true)][string]$BinaryPath,
         [Parameter(Mandatory = $true)][string]$StampPath,
-        [string]$QuicManifestSha256
+        [string]$QuicManifestSha256,
+        [ValidateSet('x64', 'Win32')][string]$Architecture = 'x64'
     )
 
     if (-not (Test-Path -LiteralPath $BinaryPath -PathType Leaf)) {
@@ -162,7 +222,7 @@ function Write-ReleaseBinaryStamp {
     }
     $requiresQuic = $Component -eq 'emule' -and (Test-ReleaseRequiresQuic $ReleaseTag)
     if ($requiresQuic) {
-        Assert-ReleaseQuicBinary -BinaryPath $BinaryPath -QuicManifestSha256 $QuicManifestSha256
+        Assert-ReleaseQuicBinary -BinaryPath $BinaryPath -QuicManifestSha256 $QuicManifestSha256 -Architecture $Architecture
     }
     $stampParent = Split-Path -Parent $StampPath
     New-Item -ItemType Directory -Path $stampParent -Force | Out-Null
@@ -173,14 +233,17 @@ function Write-ReleaseBinaryStamp {
         releaseTag = $ReleaseTag
         commit = (& git -C $RepoRoot rev-parse HEAD).Trim()
         sourceFingerprint = Get-ReleaseSourceFingerprint `
-            -RepoRoot $RepoRoot -Component $Component -IncludeQuic:$requiresQuic
+            -RepoRoot $RepoRoot -Component $Component -IncludeQuic:$requiresQuic -Architecture $Architecture
         binarySha256 = (
             Get-FileHash -Algorithm SHA256 -LiteralPath $BinaryPath
         ).Hash.ToUpperInvariant()
         binaryLength = [long]$binary.Length
         builtAtUtc = [DateTime]::UtcNow.ToString('o')
     }
-    if ($requiresQuic) { $stamp.quicManifestSha256 = $QuicManifestSha256.ToUpperInvariant() }
+    if ($requiresQuic) {
+        $stamp.architecture = $Architecture
+        $stamp.quicManifestSha256 = $QuicManifestSha256.ToUpperInvariant()
+    }
     $stamp | ConvertTo-Json -Depth 3 |
         Set-Content -LiteralPath $StampPath -Encoding UTF8
 }
@@ -193,7 +256,8 @@ function Assert-ReleaseBinaryStamp {
         [ValidateSet('emule', 'ese')][string]$Component,
         [Parameter(Mandatory = $true)][string]$BinaryPath,
         [Parameter(Mandatory = $true)][string]$StampPath,
-        [string]$QuicManifestSha256
+        [string]$QuicManifestSha256,
+        [ValidateSet('x64', 'Win32')][string]$Architecture = 'x64'
     )
 
     if (-not (Test-Path -LiteralPath $BinaryPath -PathType Leaf)) {
@@ -214,7 +278,10 @@ function Assert-ReleaseBinaryStamp {
     }
     $requiresQuic = $Component -eq 'emule' -and (Test-ReleaseRequiresQuic $ReleaseTag)
     if ($requiresQuic) {
-        Assert-ReleaseQuicBinary -BinaryPath $BinaryPath -QuicManifestSha256 $QuicManifestSha256
+        Assert-ReleaseQuicBinary -BinaryPath $BinaryPath -QuicManifestSha256 $QuicManifestSha256 -Architecture $Architecture
+        if (($stamp.architecture -or $Architecture -eq 'Win32') -and $stamp.architecture -ne $Architecture) {
+            throw 'emule.exe build stamp was recorded for another architecture'
+        }
         if ($stamp.quicManifestSha256 -ne $QuicManifestSha256) {
             throw 'emule.exe build stamp was recorded for different QUIC dependencies'
         }
@@ -224,7 +291,7 @@ function Assert-ReleaseBinaryStamp {
         throw "Release binary was built from another commit: $Component"
     }
     $sourceFingerprint = Get-ReleaseSourceFingerprint `
-        -RepoRoot $RepoRoot -Component $Component -IncludeQuic:$requiresQuic
+        -RepoRoot $RepoRoot -Component $Component -IncludeQuic:$requiresQuic -Architecture $Architecture
     if ([string]$stamp.sourceFingerprint -ne $sourceFingerprint) {
         throw "Release binary is older than its source inputs: $Component"
     }
@@ -240,7 +307,8 @@ function Assert-ReleaseBinaryStamp {
 
 function Get-ReleaseLanguageManifest {
     param(
-        [Parameter(Mandatory = $true)][string]$RuntimeDir
+        [Parameter(Mandatory = $true)][string]$RuntimeDir,
+        [ValidateSet('x64', 'Win32')][string]$Architecture = 'x64'
     )
 
     $languageDir = Join-Path $RuntimeDir 'lang'
@@ -259,6 +327,7 @@ function Get-ReleaseLanguageManifest {
         throw "Release language manifest contains a reparse-point DLL: $($reparseDlls[0].FullName)"
     }
     return @($dlls | ForEach-Object {
+        Assert-ReleasePEArchitecture -BinaryPath $_.FullName -Architecture $Architecture
         [pscustomobject][ordered]@{
             name = $_.Name
             sha256 = (
@@ -274,7 +343,8 @@ function Write-ReleaseLanguageStamp {
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)][string]$ReleaseTag,
         [Parameter(Mandatory = $true)][string]$RuntimeDir,
-        [Parameter(Mandatory = $true)][string]$StampPath
+        [Parameter(Mandatory = $true)][string]$StampPath,
+        [ValidateSet('x64', 'Win32')][string]$Architecture = 'x64'
     )
 
     $stampParent = Split-Path -Parent $StampPath
@@ -282,11 +352,12 @@ function Write-ReleaseLanguageStamp {
     $stamp = [ordered]@{
         schema = 1
         component = 'languages'
+        architecture = $Architecture
         releaseTag = $ReleaseTag
         commit = (& git -C $RepoRoot rev-parse HEAD).Trim()
         sourceFingerprint = Get-ReleaseSourceFingerprint `
             -RepoRoot $RepoRoot -Component emule
-        languageDlls = @(Get-ReleaseLanguageManifest -RuntimeDir $RuntimeDir)
+        languageDlls = @(Get-ReleaseLanguageManifest -RuntimeDir $RuntimeDir -Architecture $Architecture)
         builtAtUtc = [DateTime]::UtcNow.ToString('o')
     }
     $stamp | ConvertTo-Json -Depth 5 |
@@ -298,7 +369,8 @@ function Assert-ReleaseLanguageStamp {
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)][string]$ReleaseTag,
         [Parameter(Mandatory = $true)][string]$RuntimeDir,
-        [Parameter(Mandatory = $true)][string]$StampPath
+        [Parameter(Mandatory = $true)][string]$StampPath,
+        [ValidateSet('x64', 'Win32')][string]$Architecture = 'x64'
     )
 
     if (-not (Test-Path -LiteralPath $StampPath -PathType Leaf)) {
@@ -314,6 +386,9 @@ function Assert-ReleaseLanguageStamp {
         [string]$stamp.releaseTag -ne $ReleaseTag) {
         throw 'Release language provenance identity mismatch'
     }
+    if (($stamp.architecture -or $Architecture -eq 'Win32') -and $stamp.architecture -ne $Architecture) {
+        throw 'Release languages were built for another architecture'
+    }
     $head = (& git -C $RepoRoot rev-parse HEAD).Trim()
     if ([string]$stamp.commit -ne $head) {
         throw 'Release languages were built from another commit'
@@ -325,7 +400,7 @@ function Assert-ReleaseLanguageStamp {
     }
 
     $expected = @($stamp.languageDlls)
-    $actual = @(Get-ReleaseLanguageManifest -RuntimeDir $RuntimeDir)
+    $actual = @(Get-ReleaseLanguageManifest -RuntimeDir $RuntimeDir -Architecture $Architecture)
     if ($expected.Count -ne $actual.Count) {
         throw 'Release language DLL count no longer matches its build provenance'
     }

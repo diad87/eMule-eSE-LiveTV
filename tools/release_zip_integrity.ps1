@@ -39,6 +39,39 @@ function Assert-ReleaseZipNoReparseTree {
     }
 }
 
+function New-DeterministicReleaseZip {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceDirectory,
+        [Parameter(Mandatory = $true)][string]$Archive,
+        [Parameter(Mandatory = $true)][DateTimeOffset]$Timestamp
+    )
+    Assert-ReleaseZipNoReparseTree -Root $SourceDirectory
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $source = (Resolve-Path -LiteralPath $SourceDirectory).Path.TrimEnd('\')
+    [string[]]$paths = @(Get-ChildItem -LiteralPath $source -Recurse -File -Force | ForEach-Object {
+        $_.FullName.Substring($source.Length + 1).Replace('\', '/')
+    })
+    [Array]::Sort($paths, [StringComparer]::Ordinal)
+    $temporary = $Archive + '.tmp-' + [Guid]::NewGuid().ToString('N')
+    try {
+        $zip = [IO.Compression.ZipFile]::Open($temporary, [IO.Compression.ZipArchiveMode]::Create)
+        try {
+            foreach ($path in $paths) {
+                $entry = $zip.CreateEntry($path, [IO.Compression.CompressionLevel]::Optimal)
+                $entry.LastWriteTime = $Timestamp.ToUniversalTime()
+                $entrySource = [IO.File]::OpenRead((Join-Path $source $path))
+                try {
+                    $entryTarget = $entry.Open()
+                    try { $entrySource.CopyTo($entryTarget) } finally { $entryTarget.Dispose() }
+                } finally { $entrySource.Dispose() }
+            }
+        } finally { $zip.Dispose() }
+        Move-Item -LiteralPath $temporary -Destination $Archive -Force
+    } finally {
+        if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary -Force }
+    }
+}
+
 function Test-ReleaseZipIntegrity {
     [CmdletBinding()]
     param(

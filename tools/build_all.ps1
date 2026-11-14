@@ -6,6 +6,7 @@ param(
     [string[]]$Skip = @(),
     [string]$FfmpegPath = '',
     [string]$QuicReleaseRoot = '',
+    [ValidateSet('x64', 'Win32')][string]$Architecture = 'x64',
     [ValidateRange(0, 64)][int]$MaxCpuCount = 0,
     [switch]$AllowDirty,
     [switch]$DryRun
@@ -29,6 +30,9 @@ if ($DryRun -and -not $AllowDirty) {
 }
 . (Join-Path $RepoRoot 'tools\release_fingerprint.ps1')
 $requiresQuic = Test-ReleaseRequiresQuic $ReleaseTag
+$layout = Get-ReleaseLayout -RepoRoot $RepoRoot -ReleaseTag $ReleaseTag -Architecture $Architecture
+$Architecture = $layout.Architecture
+if ($Architecture -eq 'Win32' -and -not $requiresQuic) { throw 'Win32 release packages require version 9.3 or later.' }
 if ($requiresQuic -and -not $QuicReleaseRoot -and -not $DryRun) {
     throw '9.3 and later require -QuicReleaseRoot. Build it with tools/build_quic_msys2_candidate.ps1.'
 }
@@ -39,9 +43,6 @@ if ($QuicReleaseRoot) {
 $logDir = Join-Path $RepoRoot 'tools\build_logs'
 New-Item -ItemType Directory $logDir -Force | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$emuleBuildStamp = Join-Path $logDir 'emule-release-build.json.log'
-$eseBuildStamp = Join-Path $logDir 'ese-release-build.json.log'
-$languageBuildStamp = Join-Path $logDir 'languages-release-build.json.log'
 $officialHead = ''
 
 function Header([string]$Title) {
@@ -141,7 +142,7 @@ if (-not $msbuild -and -not $DryRun) { throw 'MSBuild not found (Visual Studio 2
 $msbuildParallelArg = if ($MaxCpuCount -gt 0) { "/m:$MaxCpuCount" } else { '/m' }
 $env:ESE_RELEASE_TAG = $ReleaseTag
 
-Header "eMule eSE $ReleaseTag"
+Header "eMule eSE $ReleaseTag $Architecture"
 Write-Host "Repo:      $RepoRoot"
 Write-Host "MSBuild:   $msbuild"
 Write-Host "MSBuild parallelism: $msbuildParallelArg"
@@ -149,7 +150,7 @@ Write-Host "Skip:      $($Skip -join ', ')"
 if ($AllowDirty) { Write-Host 'WARNING: dirty-worktree development mode' -ForegroundColor Yellow }
 
 Stage 'preflight' {
-    $args = @{ ReleaseTag = $ReleaseTag; RepoRoot = $RepoRoot }
+    $args = @{ ReleaseTag = $ReleaseTag; RepoRoot = $RepoRoot; Architecture = $Architecture }
     if ($AllowDirty) { $args.AllowDirty = $true }
     if ($QuicReleaseRoot) { $args.QuicReleaseRoot = $QuicReleaseRoot }
     & (Join-Path $RepoRoot 'tools\release_preflight.ps1') @args
@@ -168,10 +169,14 @@ Stage 'tests-core' {
 
 Stage 'libutp' {
     $project = Join-Path $RepoRoot 'libutp\libutp.vcxproj'
-    $outDir = Join-Path $RepoRoot 'libutp\x64\Release'
+    $outDir = Join-Path $RepoRoot "libutp\$Architecture\Release"
     $intDir = Join-Path $outDir 'obj'
-    $log = Join-Path $logDir "libutp-$stamp.log"
-    & $msbuild $project /t:Rebuild /p:Configuration=Release /p:Platform=x64 `
+    $log = Join-Path $logDir "libutp-$Architecture-$stamp.log"
+    $utpArgs = @()
+    if ($Architecture -eq 'Win32') {
+        $utpArgs += '/p:ForceImportBeforeCppTargets=' + (Join-Path $RepoRoot 'tools\libutp_win32.props')
+    }
+    & $msbuild $project /t:Rebuild /p:Configuration=Release "/p:Platform=$Architecture" @utpArgs `
         /p:PlatformToolset=v143 /p:OutDir="$outDir\" /p:IntDir="$intDir\" `
         /v:minimal /nologo /fl /flp:"LogFile=$log;Verbosity=normal"
     if ($LASTEXITCODE -ne 0) { throw "libutp build failed; see $log" }
@@ -179,22 +184,22 @@ Stage 'libutp' {
 }
 
 Stage 'emule' {
-    $log = Join-Path $logDir "emule-$stamp.log"
+    $log = Join-Path $logDir "emule-$Architecture-$stamp.log"
     $quicBuildArgs = @()
     $nativeQuicManifest = ''
     if ($requiresQuic) {
         $nativeQuicManifest = Get-ReleaseQuicManifestHash -RepoRoot $RepoRoot `
-            -QuicReleaseRoot $QuicReleaseRoot
+            -QuicReleaseRoot $QuicReleaseRoot -Architecture $Architecture
         $quicBuildArgs = @(
             "/p:EseQuicReleaseRoot=$QuicReleaseRoot",
             "/p:EseQuicReleaseManifestSha256=$nativeQuicManifest"
         )
     }
     & $msbuild (Join-Path $RepoRoot 'srchybrid\emule.sln') /t:Rebuild `
-        /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 `
+        /p:Configuration=Release "/p:Platform=$Architecture" /p:PlatformToolset=v143 `
         @quicBuildArgs $msbuildParallelArg /v:minimal /nologo /fl /flp:"LogFile=$log;Verbosity=normal"
     if ($LASTEXITCODE -ne 0) { throw "emule build failed; see $log" }
-    $emuleBinary = Join-Path $RepoRoot 'srchybrid\x64\Release\emule.exe'
+    $emuleBinary = Join-Path $layout.Runtime 'emule.exe'
     if (-not (Test-Path $emuleBinary)) { throw 'emule.exe was not produced' }
     $expectedVersion = $ReleaseTag -replace '^v0\.70b-eSE', ''
     $fileVersion = (Get-Item -LiteralPath $emuleBinary).VersionInfo.FileVersion
@@ -202,8 +207,8 @@ Stage 'emule' {
         throw "emule.exe version '$fileVersion' does not identify $expectedVersion"
     }
     Write-ReleaseBinaryStamp -RepoRoot $RepoRoot -ReleaseTag $ReleaseTag `
-        -Component emule -BinaryPath $emuleBinary -StampPath $emuleBuildStamp `
-        -QuicManifestSha256 $nativeQuicManifest
+        -Component emule -BinaryPath $emuleBinary -StampPath $layout.EmuleStamp `
+        -QuicManifestSha256 $nativeQuicManifest -Architecture $Architecture
 }
 
 Stage 'tests-integration' {
@@ -215,12 +220,12 @@ Stage 'tests-integration' {
 
 Stage 'cleanup-libutp' {
     # libutp is a pinned submodule whose upstream .gitignore predates VS2022.
-    # Its x64 output has already been linked into emule.exe. Historical VS
+    # Its output has already been linked into emule.exe. Historical VS
     # property sheets and command-line OutDir overrides have used three
     # different generated roots; remove only those verified roots so stale
     # output from an earlier build cannot make package provenance fail.
     $submoduleRoot = (Resolve-Path (Join-Path $RepoRoot 'libutp')).Path.TrimEnd('\') + '\'
-    foreach ($relativeGenerated in @('x64', 'Build\x64', 'libutp\x64')) {
+    foreach ($relativeGenerated in @($Architecture, "Build\$Architecture", "libutp\$Architecture")) {
         $generated = [IO.Path]::GetFullPath((Join-Path $submoduleRoot $relativeGenerated))
         if (-not $generated.StartsWith($submoduleRoot, [StringComparison]::OrdinalIgnoreCase)) {
             throw "unsafe libutp cleanup target: $generated"
@@ -235,19 +240,21 @@ Stage 'cleanup-libutp' {
     if ($submoduleStatus.Count -gt 0) { throw 'libutp is dirty after generated-output cleanup' }
 }
 
-Stage 'ese' {
-    $eseDir = Join-Path $RepoRoot 'srchybrid\eSE'
-    Push-Location $eseDir
-    try {
-        & npm.cmd ci --no-audit --no-fund
-        if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
-        & npm.cmd run build
-        if ($LASTEXITCODE -ne 0) { throw 'npm run build failed' }
-        $eseBinary = Join-Path $eseDir 'ese-server.exe'
-        if (-not (Test-Path $eseBinary)) { throw 'ese-server.exe was not produced' }
-        Write-ReleaseBinaryStamp -RepoRoot $RepoRoot -ReleaseTag $ReleaseTag `
-            -Component ese -BinaryPath $eseBinary -StampPath $eseBuildStamp
-    } finally { Pop-Location }
+if ($layout.Dashboard) {
+    Stage 'ese' {
+        $eseDir = Join-Path $RepoRoot 'srchybrid\eSE'
+        Push-Location $eseDir
+        try {
+            & npm.cmd ci --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+            & npm.cmd run build
+            if ($LASTEXITCODE -ne 0) { throw 'npm run build failed' }
+            $eseBinary = Join-Path $eseDir 'ese-server.exe'
+            if (-not (Test-Path $eseBinary)) { throw 'ese-server.exe was not produced' }
+            Write-ReleaseBinaryStamp -RepoRoot $RepoRoot -ReleaseTag $ReleaseTag `
+                -Component ese -BinaryPath $eseBinary -StampPath $layout.DashboardStamp
+        } finally { Pop-Location }
+    }
 }
 
 Stage 'langs' {
@@ -260,15 +267,15 @@ Stage 'langs' {
         Get-Item -LiteralPath (Join-Path $RepoRoot $_)
     })
     & (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot
-    $langOutputDir = Join-Path $RepoRoot 'srchybrid\x64\Release\lang'
+    $langOutputDir = Join-Path $layout.Runtime 'lang'
     # The projects share one legacy output/intermediate tree and copy each DLL
     # into two mirrors. Remove all three generated roots once, before any Build,
     # so neither MSBuild's incremental checks nor a stale mirror can reuse an
     # earlier release. Rebuild per project is unsafe because each Clean would
     # remove outputs produced by the preceding language.
     foreach ($languageGeneratedRoot in @(
-        (Join-Path $RepoRoot 'srchybrid\lang\x64\Dynamic'),
-        (Join-Path $RepoRoot 'srchybrid\x64\lang'),
+        (Join-Path $RepoRoot "srchybrid\lang\$Architecture\Dynamic"),
+        (Join-Path $RepoRoot "srchybrid\$Architecture\lang"),
         $langOutputDir
     )) {
         Assert-SafeRepositoryPath -Path $languageGeneratedRoot
@@ -278,11 +285,11 @@ Stage 'langs' {
         }
     }
     foreach ($project in $projects) {
-        $log = Join-Path $logDir "lang-$($project.BaseName)-$stamp.log"
+        $log = Join-Path $logDir "lang-$Architecture-$($project.BaseName)-$stamp.log"
         # Language projects share a legacy IntDir. Rebuild would let every
         # project delete the previous project's .res file; Build is the safe
         # deterministic operation once the source tree is clean.
-        & $msbuild $project.FullName /t:Build /p:Configuration=Dynamic /p:Platform=x64 `
+        & $msbuild $project.FullName /t:Build /p:Configuration=Dynamic "/p:Platform=$Architecture" `
             /p:PlatformToolset=v143 $msbuildParallelArg /v:quiet /nologo /fl /flp:"LogFile=$log;ErrorsOnly"
         if ($LASTEXITCODE -ne 0) { throw "language build failed: $($project.Name); see $log" }
     }
@@ -290,10 +297,9 @@ Stage 'langs' {
         -File -Force -ErrorAction SilentlyContinue)
     if ($dlls.Count -eq 0) { throw 'no language DLLs were produced' }
     & (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot `
-        -RuntimeDir (Join-Path $RepoRoot 'srchybrid\x64\Release')
+        -RuntimeDir $layout.Runtime
     Write-ReleaseLanguageStamp -RepoRoot $RepoRoot -ReleaseTag $ReleaseTag `
-        -RuntimeDir (Join-Path $RepoRoot 'srchybrid\x64\Release') `
-        -StampPath $languageBuildStamp
+        -RuntimeDir $layout.Runtime -StampPath $layout.LanguageStamp -Architecture $Architecture
 }
 
 Stage 'cleanup-generated-metadata' {
@@ -316,7 +322,7 @@ Stage 'cleanup-generated-metadata' {
 }
 
 Stage 'package' {
-    $args = @{ ReleaseTag = $ReleaseTag; RepoRoot = $RepoRoot }
+    $args = @{ ReleaseTag = $ReleaseTag; RepoRoot = $RepoRoot; Architecture = $Architecture }
     if ($FfmpegPath) { $args.FfmpegPath = $FfmpegPath }
     if ($AllowDirty) { $args.AllowDirty = $true }
     if ($QuicReleaseRoot) { $args.QuicReleaseRoot = $QuicReleaseRoot }
@@ -324,21 +330,23 @@ Stage 'package' {
 }
 
 Stage 'package-smoke' {
-    $packageDir = Join-Path $RepoRoot "dist\$ReleaseTag\package"
-    foreach ($required in @(
+    $packageDir = $layout.Package
+    $requiredItems = @(
         'emule.exe',
-        'ese-server.exe',
-        'ffmpeg.exe',
-        'ffprobe.exe',
         'config\preferences.ini',
         'config\nodes.dat',
-        'eSE\eSE-live\vendor\hls.min.js',
-        'eSE\eSE-live\vendor\hls.LICENSE',
         'license.txt',
         'THIRD_PARTY_LICENSES.md',
         'BUILD_INFO.txt',
         'SHA256SUMS.txt'
-    )) {
+    )
+    if ($layout.Dashboard) {
+        $requiredItems += @('ese-server.exe','ffmpeg.exe','ffprobe.exe',
+            'eSE\eSE-live\vendor\hls.min.js','eSE\eSE-live\vendor\hls.LICENSE')
+    } else {
+        $requiredItems += @('eMule.tmpl','WIN32.md')
+    }
+    foreach ($required in $requiredItems) {
         if (-not (Test-Path (Join-Path $packageDir $required) -PathType Leaf)) { throw "package smoke missing $required" }
     }
     $packageRootPrefix = [IO.Path]::GetFullPath($packageDir).TrimEnd('\') + '\'
@@ -364,13 +372,17 @@ Stage 'package-smoke' {
     }
     if ($verifiedHashes -eq 0) { throw 'package smoke SHA256SUMS is empty' }
     if ($requiresQuic) {
-        $packageQuicManifest = Join-Path $packageDir 'third_party\quic\manifest-x64.json'
+        $packageQuicManifest = Join-Path $packageDir "third_party\quic\manifest-$Architecture.json"
         $packagedManifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $packageQuicManifest).Hash
         Assert-ReleaseQuicBinary -BinaryPath (Join-Path $packageDir 'emule.exe') `
-            -QuicManifestSha256 $packagedManifestSha256
+            -QuicManifestSha256 $packagedManifestSha256 -Architecture $Architecture
     }
     Write-Host "Package hashes: $verifiedHashes verified"
     & (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot -RuntimeDir $packageDir
+    if (-not $layout.Dashboard) {
+        & (Join-Path $RepoRoot 'tools\test_win32_release_package.ps1') -Archive $layout.Archive
+        return
+    }
     $oldTestMode = $env:ESE_TEST_MODE
     $oldPort = $env:ESE_PORT
     $serverProcess = $null

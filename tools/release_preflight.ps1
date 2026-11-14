@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$ReleaseTag,
     [string]$RepoRoot = '',
     [string]$QuicReleaseRoot = '',
+    [ValidateSet('x64', 'Win32')][string]$Architecture = 'x64',
     [switch]$AllowDirty,
     [switch]$RequireFreshBinaries
 )
@@ -24,12 +25,15 @@ if ($ReleaseTag -notmatch '^v0\.70b-eSE(?<version>\d+\.\d+\.\d+(?:-(?:alpha|beta
 }
 $tagVersion = $Matches.version
 $requiresQuic = Test-ReleaseRequiresQuic $ReleaseTag
+$layout = Get-ReleaseLayout -RepoRoot $RepoRoot -ReleaseTag $ReleaseTag -Architecture $Architecture
+$Architecture = $layout.Architecture
+if ($Architecture -eq 'Win32' -and -not $requiresQuic) { Fail 'Win32 release packages require version 9.3 or later' }
 $quicManifestSha256 = ''
 if ($QuicReleaseRoot) {
     if (-not $requiresQuic) { Fail 'this release tag predates the signed QUIC package' }
     try {
         $quicManifestSha256 = Get-ReleaseQuicManifestHash -RepoRoot $RepoRoot `
-            -QuicReleaseRoot $QuicReleaseRoot
+            -QuicReleaseRoot $QuicReleaseRoot -Architecture $Architecture
     } catch {
         Fail $_.Exception.Message
     }
@@ -369,22 +373,21 @@ if ($packageScript -match 'function\s+Copy-Tree' -or
 & git -C $RepoRoot rev-parse --is-inside-work-tree 2>$null | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail 'repository is not a Git worktree' }
 if ($RequireFreshBinaries) {
-    $emuleBinary = Join-Path $RepoRoot 'srchybrid\x64\Release\emule.exe'
-    $eseBinary = Join-Path $RepoRoot 'srchybrid\eSE\ese-server.exe'
-    $stampRoot = Join-Path $RepoRoot 'tools\build_logs'
+    $emuleBinary = Join-Path $layout.Runtime 'emule.exe'
     try {
         Assert-ReleaseBinaryStamp -RepoRoot $RepoRoot `
             -ReleaseTag $ReleaseTag -Component emule `
             -BinaryPath $emuleBinary -QuicManifestSha256 $quicManifestSha256 `
-            -StampPath (Join-Path $stampRoot 'emule-release-build.json.log')
-        Assert-ReleaseBinaryStamp -RepoRoot $RepoRoot `
-            -ReleaseTag $ReleaseTag -Component ese `
-            -BinaryPath $eseBinary `
-            -StampPath (Join-Path $stampRoot 'ese-release-build.json.log')
+            -StampPath $layout.EmuleStamp -Architecture $Architecture
+        if ($layout.Dashboard) {
+            Assert-ReleaseBinaryStamp -RepoRoot $RepoRoot `
+                -ReleaseTag $ReleaseTag -Component ese `
+                -BinaryPath (Join-Path $RepoRoot 'srchybrid\eSE\ese-server.exe') `
+                -StampPath $layout.DashboardStamp
+        }
         Assert-ReleaseLanguageStamp -RepoRoot $RepoRoot `
-            -ReleaseTag $ReleaseTag `
-            -RuntimeDir (Join-Path $RepoRoot 'srchybrid\x64\Release') `
-            -StampPath (Join-Path $stampRoot 'languages-release-build.json.log')
+            -ReleaseTag $ReleaseTag -RuntimeDir $layout.Runtime `
+            -StampPath $layout.LanguageStamp -Architecture $Architecture
     } catch {
         Fail $_.Exception.Message
     }

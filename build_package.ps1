@@ -5,6 +5,7 @@ param(
     [string]$RepoRoot = '',
     [string]$FfmpegPath = '',
     [string]$QuicReleaseRoot = '',
+    [ValidateSet('x64', 'Win32')][string]$Architecture = 'x64',
     [switch]$AllowDirty
 )
 
@@ -13,25 +14,28 @@ if (-not $RepoRoot) { $RepoRoot = if ($PSScriptRoot) { $PSScriptRoot } else { (G
 $RepoRoot = (Resolve-Path $RepoRoot).Path
 . (Join-Path $RepoRoot 'tools\release_zip_integrity.ps1')
 . (Join-Path $RepoRoot 'tools\release_fingerprint.ps1')
+$layout = Get-ReleaseLayout -RepoRoot $RepoRoot -ReleaseTag $ReleaseTag -Architecture $Architecture
+$Architecture = $layout.Architecture
 
 $preflightArgs = @{
     ReleaseTag = $ReleaseTag
     RepoRoot = $RepoRoot
+    Architecture = $Architecture
     RequireFreshBinaries = $true
 }
 if ($AllowDirty) { $preflightArgs.AllowDirty = $true }
 $quicManifestSha256 = ''
 if (Test-ReleaseRequiresQuic -ReleaseTag $ReleaseTag) {
-    if (-not $QuicReleaseRoot) { throw 'Supply -QuicReleaseRoot for the signed x64 QUIC build inputs.' }
+    if (-not $QuicReleaseRoot) { throw "Supply -QuicReleaseRoot for the signed $Architecture QUIC build inputs." }
     $QuicReleaseRoot = (Resolve-Path -LiteralPath $QuicReleaseRoot).Path
     $preflightArgs.QuicReleaseRoot = $QuicReleaseRoot
-    $quicManifestPath = Join-Path $QuicReleaseRoot 'manifest-x64.json'
+    $quicManifestPath = Join-Path $QuicReleaseRoot "manifest-$Architecture.json"
     $quicManifestSha256 = Get-ReleaseZipHash $quicManifestPath
 }
 & (Join-Path $RepoRoot 'tools\release_preflight.ps1') @preflightArgs
 if ($quicManifestSha256) {
     $quicManifest = & (Join-Path $RepoRoot 'tools\verify_quic_release_dependencies.ps1') `
-        -Root $QuicReleaseRoot -Architecture x64 -ExpectedManifestSha256 $quicManifestSha256 -PassThru
+        -Root $QuicReleaseRoot -Architecture $Architecture -ExpectedManifestSha256 $quicManifestSha256 -PassThru
 }
 
 # release_preflight has already validated this exact tag grammar. Derive the
@@ -56,9 +60,9 @@ $testerNick = switch -Regex ($releaseVersion) {
 }
 
 $distRoot = Join-Path $RepoRoot 'dist'
-$releaseRoot = Join-Path $distRoot $ReleaseTag
-$packageDir = Join-Path $releaseRoot 'package'
-$zipPath = Join-Path $releaseRoot "eSE-LiveTV-$ReleaseTag-x64.zip"
+$releaseRoot = $layout.ReleaseRoot
+$packageDir = $layout.Package
+$zipPath = $layout.Archive
 $resolvedDist = [IO.Path]::GetFullPath($distRoot).TrimEnd('\') + '\'
 $resolvedRelease = [IO.Path]::GetFullPath($releaseRoot).TrimEnd('\') + '\'
 if (-not $resolvedRelease.StartsWith($resolvedDist, [StringComparison]::OrdinalIgnoreCase)) {
@@ -120,10 +124,15 @@ function Assert-NoReparseTree([string]$Root) {
     }
 }
 
-Assert-NoReparseAncestors -Path $releaseRoot -Anchor $RepoRoot
-if (Test-Path -LiteralPath $releaseRoot) {
-    Assert-NoReparseTree -Root $releaseRoot
-    Remove-Item -LiteralPath $releaseRoot -Recurse -Force
+Assert-NoReparseAncestors -Path $packageDir -Anchor $RepoRoot
+foreach ($output in @($zipPath, "$zipPath.sha256")) {
+    Assert-NoReparseAncestors -Path $output -Anchor $RepoRoot
+    if (Test-Path -LiteralPath $output -PathType Container) { throw "Expected package output file: $output" }
+    if (Test-Path -LiteralPath $output -PathType Leaf) { Remove-Item -LiteralPath $output -Force }
+}
+if (Test-Path -LiteralPath $packageDir) {
+    Assert-NoReparseTree -Root $packageDir
+    Remove-Item -LiteralPath $packageDir -Recurse -Force
 }
 New-Item -ItemType Directory $packageDir -Force | Out-Null
 
@@ -231,12 +240,14 @@ function Assert-NoHiddenOrSystemEntries([string]$Root) {
 }
 
 Write-Host '[1/7] Fresh binaries'
-Require-Copy (Join-Path $RepoRoot 'srchybrid\x64\Release\emule.exe') (Join-Path $packageDir 'emule.exe')
-Require-Copy (Join-Path $RepoRoot 'srchybrid\eSE\ese-server.exe') (Join-Path $packageDir 'ese-server.exe')
+Require-Copy (Join-Path $layout.Runtime 'emule.exe') (Join-Path $packageDir 'emule.exe')
+if ($layout.Dashboard) {
+    Require-Copy (Join-Path $RepoRoot 'srchybrid\eSE\ese-server.exe') (Join-Path $packageDir 'ese-server.exe')
+}
 if ($quicManifestSha256) {
     Write-Host '      Signed QUIC runtime, notices and corresponding sources'
     Assert-ReleaseQuicBinary -BinaryPath (Join-Path $packageDir 'emule.exe') `
-        -QuicManifestSha256 $quicManifestSha256
+        -QuicManifestSha256 $quicManifestSha256 -Architecture $Architecture
     $quicPackage = Join-Path $packageDir 'third_party\quic'
     foreach ($entry in $quicManifest.runtime) {
         Copy-VerifiedQuicFile (Join-Path $QuicReleaseRoot $entry.path) `
@@ -247,17 +258,18 @@ if ($quicManifestSha256) {
             (Join-Path $quicPackage $entry.path) $entry.sha256
     }
     Copy-VerifiedQuicFile $quicManifestPath `
-        (Join-Path $quicPackage 'manifest-x64.json') $quicManifestSha256
+        (Join-Path $quicPackage "manifest-$Architecture.json") $quicManifestSha256
     Copy-VerifiedQuicFile (Join-Path $RepoRoot 'third_party\quic\dependencies.lock.json') `
         (Join-Path $quicPackage 'dependencies.lock.json') $quicManifest.lock_sha256
-    Copy-VerifiedQuicFile (Join-Path $RepoRoot 'third_party\quic\msys2-gnutls-x64-candidate.json') `
-        (Join-Path $quicPackage 'msys2-gnutls-x64-candidate.json') $quicManifest.msys2_candidate_sha256
+    $inventoryName = "msys2-gnutls-$($Architecture.ToLowerInvariant())-candidate.json"
+    Copy-VerifiedQuicFile (Join-Path $RepoRoot "third_party\quic\$inventoryName") `
+        (Join-Path $quicPackage $inventoryName) $quicManifest.msys2_candidate_sha256
 }
 
-$langSource = Join-Path $RepoRoot 'srchybrid\x64\Release\lang'
+$langSource = Join-Path $layout.Runtime 'lang'
 Assert-NoReparseAncestors -Path $langSource -Anchor $RepoRoot
 & (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot `
-    -RuntimeDir (Join-Path $RepoRoot 'srchybrid\x64\Release')
+    -RuntimeDir $layout.Runtime
 $langDlls = @(Get-ChildItem -LiteralPath $langSource -Filter '*.dll' -File -Force `
     -ErrorAction SilentlyContinue | Sort-Object Name)
 if ($langDlls.Count -eq 0) { throw 'No freshly built language DLLs found.' }
@@ -266,79 +278,83 @@ New-Item -ItemType Directory $langDir -Force | Out-Null
 foreach ($dll in $langDlls) { Copy-Item -LiteralPath $dll.FullName -Destination (Join-Path $langDir $dll.Name) -Force }
 & (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot -RuntimeDir (Split-Path -Parent $langDir)
 
-Write-Host '[2/7] Pinned media toolchain'
-$inputs = Get-Content (Join-Path $RepoRoot 'tools\release_inputs.json') -Raw | ConvertFrom-Json
-if (-not $FfmpegPath) {
-    $ffmpegCommand = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
-    if ($ffmpegCommand) { $FfmpegPath = $ffmpegCommand.Source }
-}
-if (-not $FfmpegPath -or -not (Test-Path $FfmpegPath -PathType Leaf)) {
-    throw 'Pinned ffmpeg.exe not found. Pass -FfmpegPath explicitly.'
-}
-$FfmpegPath = (Resolve-Path $FfmpegPath).Path
-$ffprobePath = Join-Path (Split-Path -Parent $FfmpegPath) 'ffprobe.exe'
-if (-not (Test-Path $ffprobePath -PathType Leaf)) { throw "ffprobe.exe missing next to $FfmpegPath" }
-if ((Hash $FfmpegPath) -ne $inputs.ffmpeg.sha256.ToUpperInvariant()) { throw 'ffmpeg.exe SHA-256 does not match tools/release_inputs.json' }
-if ((Hash $ffprobePath) -ne $inputs.ffprobe.sha256.ToUpperInvariant()) { throw 'ffprobe.exe SHA-256 does not match tools/release_inputs.json' }
-$ffmpegVersionLine = (& $FfmpegPath -version 2>&1 | Select-Object -First 1)
-if ($ffmpegVersionLine -notmatch [regex]::Escape($inputs.ffmpeg.version)) { throw "Unexpected FFmpeg version: $ffmpegVersionLine" }
-Require-Copy $FfmpegPath (Join-Path $packageDir 'ffmpeg.exe')
-Require-Copy $ffprobePath (Join-Path $packageDir 'ffprobe.exe')
+if ($layout.Dashboard) {
+    Write-Host '[2/7] Pinned media toolchain'
+    $inputs = Get-Content (Join-Path $RepoRoot 'tools\release_inputs.json') -Raw | ConvertFrom-Json
+    if (-not $FfmpegPath) {
+        $ffmpegCommand = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
+        if ($ffmpegCommand) { $FfmpegPath = $ffmpegCommand.Source }
+    }
+    if (-not $FfmpegPath -or -not (Test-Path $FfmpegPath -PathType Leaf)) {
+        throw 'Pinned ffmpeg.exe not found. Pass -FfmpegPath explicitly.'
+    }
+    $FfmpegPath = (Resolve-Path $FfmpegPath).Path
+    $ffprobePath = Join-Path (Split-Path -Parent $FfmpegPath) 'ffprobe.exe'
+    if (-not (Test-Path $ffprobePath -PathType Leaf)) { throw "ffprobe.exe missing next to $FfmpegPath" }
+    if ((Hash $FfmpegPath) -ne $inputs.ffmpeg.sha256.ToUpperInvariant()) { throw 'ffmpeg.exe SHA-256 does not match tools/release_inputs.json' }
+    if ((Hash $ffprobePath) -ne $inputs.ffprobe.sha256.ToUpperInvariant()) { throw 'ffprobe.exe SHA-256 does not match tools/release_inputs.json' }
+    $ffmpegVersionLine = (& $FfmpegPath -version 2>&1 | Select-Object -First 1)
+    if ($ffmpegVersionLine -notmatch [regex]::Escape($inputs.ffmpeg.version)) { throw "Unexpected FFmpeg version: $ffmpegVersionLine" }
+    Require-Copy $FfmpegPath (Join-Path $packageDir 'ffmpeg.exe')
+    Require-Copy $ffprobePath (Join-Path $packageDir 'ffprobe.exe')
 
-Write-Host '[3/7] Dashboard source assets'
-$eseDest = Join-Path $packageDir 'eSE'
-New-Item -ItemType Directory $eseDest -Force | Out-Null
-$eseTopLevel = @(
-        '_player_bundle.js',
-        'ai_assistant.js',
-        'ai_oauth.js',
-        'api_keys.js',
-        'cinema_player.js',
-        'clean_syntax.js',
-        'cleanup.js',
-        'debug_log.js',
-        'debug_logo.js',
-        'debug_search.js',
-        'emule_api.js',
-        'emule_mascot.svg',
-        'favicon.ico',
-        'hw_encoder.js',
-        'init.js',
-        'live_player_html.js',
-        'live_player_server.js',
-        'media_resolver.js',
-        'mse_engine.js',
-        'package-lock.json',
-        'package.json',
-        'player.js',
-        'player_core.js',
-        'poster_hero.js',
-        'runtime_dir.js',
-        'search_ui.js',
-        'security.js',
-        'server.js',
-        'smart_play.js',
-        'tmdb_api.js',
-        'tunnel.js',
-        'tunnel_settings.js',
-        'utils.js'
-)
-if ($quicManifestSha256) {
-    $eseTopLevel += @(
-        'bounded_process_runner.js',
-        'dashboard_bind.js',
-        'dashboard_endpoint.js',
-        'dashboard_port_range.js',
-        'emule_web_port.js',
-        'movie_metadata.js',
-        'part_metadata.js'
+    Write-Host '[3/7] Dashboard source assets'
+    $eseDest = Join-Path $packageDir 'eSE'
+    New-Item -ItemType Directory $eseDest -Force | Out-Null
+    $eseTopLevel = @(
+            '_player_bundle.js',
+            'ai_assistant.js',
+            'ai_oauth.js',
+            'api_keys.js',
+            'cinema_player.js',
+            'clean_syntax.js',
+            'cleanup.js',
+            'debug_log.js',
+            'debug_logo.js',
+            'debug_search.js',
+            'emule_api.js',
+            'emule_mascot.svg',
+            'favicon.ico',
+            'hw_encoder.js',
+            'init.js',
+            'live_player_html.js',
+            'live_player_server.js',
+            'media_resolver.js',
+            'mse_engine.js',
+            'package-lock.json',
+            'package.json',
+            'player.js',
+            'player_core.js',
+            'poster_hero.js',
+            'runtime_dir.js',
+            'search_ui.js',
+            'security.js',
+            'server.js',
+            'smart_play.js',
+            'tmdb_api.js',
+            'tunnel.js',
+            'tunnel_settings.js',
+            'utils.js'
     )
-}
-Copy-GitTrackedTopLevelFiles -RelativeSource 'srchybrid\eSE' `
-    -Destination $eseDest -FileNames $eseTopLevel
-foreach ($directory in @('pages','routes','shared','eSE-live')) {
-    Copy-GitTrackedTree "srchybrid\eSE\$directory" `
-        (Join-Path $eseDest $directory)
+    if ($quicManifestSha256) {
+        $eseTopLevel += @(
+            'bounded_process_runner.js',
+            'dashboard_bind.js',
+            'dashboard_endpoint.js',
+            'dashboard_port_range.js',
+            'emule_web_port.js',
+            'movie_metadata.js',
+            'part_metadata.js'
+        )
+    }
+    Copy-GitTrackedTopLevelFiles -RelativeSource 'srchybrid\eSE' `
+        -Destination $eseDest -FileNames $eseTopLevel
+    foreach ($directory in @('pages','routes','shared','eSE-live')) {
+        Copy-GitTrackedTree "srchybrid\eSE\$directory" `
+            (Join-Path $eseDest $directory)
+    }
+} else {
+    Write-Host '[2-3/7] Native WebServer for Win32'
 }
 
 Write-Host '[4/7] Canonical configuration'
@@ -411,6 +427,14 @@ foreach ($mapping in @(
 )) {
     Require-Copy (Join-Path $RepoRoot $mapping[0]) (Join-Path $packageDir $mapping[1])
 }
+if (-not $layout.Dashboard) {
+    Require-Copy (Join-Path $RepoRoot 'docs\RELEASE_WIN32.md') (Join-Path $packageDir 'WIN32.md')
+    foreach ($image in Get-ChildItem -LiteralPath $packageDir -Recurse -File) {
+        if ($image.Extension -in @('.exe', '.dll')) {
+            Assert-ReleasePEArchitecture -BinaryPath $image.FullName -Architecture Win32
+        }
+    }
+}
 $packageDocs = Join-Path $packageDir 'docs'
 Copy-GitTrackedTree 'docs' $packageDocs
 # These two exact, version-bound files are required even for an explicitly
@@ -431,18 +455,30 @@ Write-Host '[6/7] Build provenance and file manifest'
 $gitSha = (& git -C $RepoRoot rev-parse HEAD).Trim()
 $dirty = @(& git -C $RepoRoot status --porcelain=v1 --untracked-files=all --ignore-submodules=none)
 $dirtyText = if ($dirty.Count -eq 0) { 'false' } else { 'true (development override)' }
-$nodeVersion = (& node --version 2>$null)
-$npmVersion = (& npm.cmd --version 2>$null)
+if ($layout.Dashboard) {
+    $nodeVersion = (& node --version 2>$null)
+    $npmVersion = (& npm.cmd --version 2>$null)
+} else {
+    $commitEpoch = (& git -C $RepoRoot log -1 --format=%ct HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or $commitEpoch -notmatch '^\d+$') { throw 'Cannot determine the source revision timestamp' }
+    $sourceTimestamp = [DateTimeOffset]::FromUnixTimeSeconds([long]$commitEpoch)
+}
 @(
-    "release: $ReleaseTag",
-    "commit: $gitSha",
-    "dirty: $dirtyText",
-    "built_utc: $([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))",
-    "node: $nodeVersion",
-    "npm: $npmVersion",
-    "ffmpeg: $ffmpegVersionLine",
-    "ffmpeg_sha256: $(Hash (Join-Path $packageDir 'ffmpeg.exe'))",
-    "ffprobe_sha256: $(Hash (Join-Path $packageDir 'ffprobe.exe'))",
+    "release: $ReleaseTag"
+    "architecture: $Architecture"
+    "commit: $gitSha"
+    "dirty: $dirtyText"
+    if ($layout.Dashboard) {
+        "built_utc: $([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))"
+        "node: $nodeVersion"
+        "npm: $npmVersion"
+        "ffmpeg: $ffmpegVersionLine"
+        "ffmpeg_sha256: $(Hash (Join-Path $packageDir 'ffmpeg.exe'))"
+        "ffprobe_sha256: $(Hash (Join-Path $packageDir 'ffprobe.exe'))"
+    } else {
+        "source_utc: $($sourceTimestamp.ToString('yyyy-MM-ddTHH:mm:ssZ'))"
+        'bundle: eMule with native authenticated WebServer'
+    }
     "nodes_dat_sha256: $nodesActual"
     if ($quicManifestSha256) { "quic_manifest_sha256: $quicManifestSha256" }
 ) | Out-File (Join-Path $packageDir 'BUILD_INFO.txt') -Encoding ASCII
@@ -456,14 +492,19 @@ $manifestLines | Out-File $manifestPath -Encoding ASCII
 
 Write-Host '[7/7] ZIP and external checksum'
 Assert-NoHiddenOrSystemEntries -Root $packageDir
-Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $zipPath -CompressionLevel Optimal -Force
+if ($layout.Dashboard) {
+    Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $zipPath -CompressionLevel Optimal -Force
+} else {
+    New-DeterministicReleaseZip -SourceDirectory $packageDir -Archive $zipPath -Timestamp $sourceTimestamp
+}
 Test-ReleaseZipIntegrity -SourceDirectory $packageDir -Archive $zipPath `
     -VerificationRoot $releaseRoot | Out-Null
 Write-Host 'ZIP content verification PASS'
 $zipHash = Hash $zipPath
 "$zipHash  $([IO.Path]::GetFileName($zipPath))" | Out-File "$zipPath.sha256" -Encoding ASCII
 $forumDraftSource = Join-Path $RepoRoot "docs\FORUM_POST_v$releaseVersion.md"
-if (Test-Path -LiteralPath $forumDraftSource -PathType Leaf) {
+if ($layout.Dashboard -and (Test-Path -LiteralPath $forumDraftSource -PathType Leaf)) {
+    Assert-NoReparseAncestors -Path (Join-Path $releaseRoot 'FORUM_POST.md') -Anchor $RepoRoot
     $forumDraft = (Get-Content -LiteralPath $forumDraftSource -Raw).Replace('<ZIP_SHA256>', $zipHash)
     [IO.File]::WriteAllText(
         (Join-Path $releaseRoot 'FORUM_POST.md'),

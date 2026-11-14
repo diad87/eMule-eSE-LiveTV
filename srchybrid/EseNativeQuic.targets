@@ -18,6 +18,11 @@
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
   </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(EseQuicReleaseRoot)'!='' And '$(Platform)'=='Win32'">
+    <Link>
+      <AdditionalOptions>/Brepro /PDBALTPATH:%_PDB% %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
   <ItemGroup Condition="'$(_EseQuicRoot)'!=''">
     <ClCompile Include="EseNativeQuicRuntime.cpp;EseQuicHeaderProbe.cpp;EseQuicSocketOwner.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -33,7 +38,7 @@
   </Target>
   <Target Name="VerifyEseNativeQuicReleaseInputs" BeforeTargets="PrepareForBuild" Condition="'$(EseQuicReleaseRoot)'!=''">
     <Error Condition="'$(EseQuicDependencyRoot)'!='' Or '$(EseQuicLabOnly)'!=''" Text="Select either signed release QUIC inputs or laboratory QUIC inputs." />
-    <Error Condition="'$(Configuration)|$(Platform)'!='Release|x64'" Text="Signed QUIC release inputs support Release|x64 only." />
+    <Error Condition="'$(Configuration)'!='Release' Or ('$(Platform)'!='x64' And '$(Platform)'!='Win32')" Text="Signed QUIC release inputs support Release|x64 and Release|Win32." />
     <Error Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(EseQuicReleaseManifestSha256)', '^[A-Fa-f0-9]{64}$'))" Text="Signed QUIC needs the verified manifest SHA-256 in EseQuicReleaseManifestSha256." />
     <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\tools\verify_quic_release_dependencies.ps1&quot; -Root &quot;$(EseQuicReleaseRoot)&quot; -Architecture $(Platform) -ExpectedManifestSha256 $(EseQuicReleaseManifestSha256)" />
     <MakeDir Directories="$(IntDir)" />

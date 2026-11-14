@@ -18,6 +18,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cstdio>
+#include <deque>
 #include <stdexcept>
 #include <thread>
 // This fixture uses explicit ephemeral identities, never production persistence.
@@ -61,6 +62,9 @@ struct Port final : QuicSocketPort {
         DirectByteView View() const { return {bytes.data(),size}; }
     };
     Datagram* divertShort=nullptr;
+    struct Delayed { udp::Endpoint peer; Datagram packet; std::uint64_t due=0; };
+    std::deque<Delayed> delayed;
+    std::uint64_t delayMs=0;
     Probe probe; QuicUdpIngress* ingress=nullptr;
     unsigned classified=0,initials=0;
     Port() {
@@ -101,6 +105,18 @@ struct Port final : QuicSocketPort {
             divertShort=nullptr;
             return true;
         }
+        if(delayMs) {
+            Delayed item;
+            if(delayed.size()>=1024 || p.size>item.packet.bytes.size()) std::abort();
+            item.peer=peer; item.due=Now()+delayMs;
+            item.packet.size=p.size;
+            std::copy_n(p.data,p.size,item.packet.bytes.begin());
+            try { delayed.push_back(item); } catch(...) { std::abort(); }
+            return true;
+        }
+        return SendTo(peer,p);
+    }
+    bool SendTo(const udp::Endpoint& peer,DirectByteView p) noexcept {
         sockaddr_in address{}; address.sin_family=AF_INET; address.sin_port=htons(peer.port);
         std::memcpy(&address.sin_addr,peer.address.data(),4);
         return sendto(socket,reinterpret_cast<const char*>(p.data),static_cast<int>(p.size),0,
@@ -116,6 +132,12 @@ struct Port final : QuicSocketPort {
         return static_cast<std::size_t>(n);
     }
     void Deliver(QuicSocketOwner& owner) {
+        const auto now=Now();
+        while(!delayed.empty() && delayed.front().due<=now) {
+            const auto& ready=delayed.front();
+            Check(SendTo(ready.peer,ready.packet.View()),"delayed QUIC datagram send");
+            delayed.pop_front();
+        }
         std::array<std::uint8_t,65536> packet{};
         for(unsigned i=0;i<128;++i) {
             udp::Endpoint peer;
@@ -579,6 +601,7 @@ int main(int argc,char** argv) {
         pa.loss=pb.loss=argc>1 && std::strcmp(argv[1],"loss")==0;
         pa.block=pb.block=argc>1 && std::strcmp(argv[1],"block")==0;
         const bool selectiveLoss=argc>1 && std::strcmp(argv[1],"selective-loss")==0;
+        if(selectiveLoss) pa.delayMs=pb.delayMs=10;
         const bool dcoScenario=selectiveLoss || (argc>1 && std::strcmp(argv[1],"dco")==0);
         struct ServerDcoState { DirectEventQueue events; DirectCoordinator coordinator; };
         auto serverDco=std::make_unique<ServerDcoState>();
@@ -611,7 +634,8 @@ int main(int argc,char** argv) {
             auto& client=*oa.Find(1); auto& server=*ob.Find(1);
             auto forwardWriter=std::make_unique<QuicEd2kWriter>(client.TxPool());
             auto reverseWriter=std::make_unique<QuicEd2kWriter>(server.TxPool());
-            client.SetReceiveBudget(4096); server.SetReceiveBudget(4096);
+            const auto receiveBudget=selectiveLoss ? 256*1024u : 4096u;
+            client.SetReceiveBudget(receiveBudget); server.SetReceiveBudget(receiveBudget);
             const std::uint8_t early=1;
             Check(client.Send({&early,1}).status==DirectIoStatus::WouldBlock &&
                 server.Send({&early,1}).status==DirectIoStatus::WouldBlock && pool.Used()==0,"pre-auth bulk forbidden");
@@ -619,16 +643,18 @@ int main(int argc,char** argv) {
             const std::uint8_t unknown[]={0x40,1,2,3,4,5,6,7,8,9};
             Check(oa.Classify(pb.endpoint,{unknown,sizeof(unknown)},Now()).channel==udp::Channel::Legacy,
                 "unknown fixed-bit packet must remain legacy");
-            const auto deadline=Now()+(selectiveLoss ? 45000 : 20000);
-            const std::size_t total=selectiveLoss ? 8192 : 6*1024*1024;
-            constexpr std::size_t retainedPrefix=4096;
+            const auto deadline=Now()+(selectiveLoss ? 70000 : 20000);
+            constexpr std::size_t retainedPrefix=8u*1024*1024;
+            constexpr std::size_t lostTail=8*1024;
+            const std::size_t total=selectiveLoss ? lostTail : 6*1024*1024;
             std::array<std::uint8_t,32768> data{};
             std::size_t sent=0,received=0,reverseSent=0,reverseReceived=0;
-            const std::size_t forwardTotal=serverOnly ? 0 : total;
-            std::uint64_t pausedAt=0; bool resumed=false,adopted=false;
+            const std::size_t forwardTotal=selectiveLoss ? retainedPrefix+lostTail : serverOnly ? 0 : total;
+            std::uint64_t pausedAt=0; bool resumed=false,adopted=false,blackhole=false;
             QuicProgressWatchdog progress;
+            CryptoPP::SHA256 prefixDigest;
             std::size_t useful=0,discarded=0;
-            std::uint64_t stallStarted=0,probeSent=0,expired=0;
+            std::uint64_t stallStarted=0,probeSent=0,expired=0,stallRtt=0;
             while(Now()<deadline) {
                 pa.Deliver(oa); pb.Deliver(ob); oa.Poll(Now()); ob.Poll(Now());
                 if((badAuth || sendFail || tofuFail) && client.Snapshot().closed) break;
@@ -663,10 +689,13 @@ int main(int argc,char** argv) {
                     if(!dcoScenario) Check(server.AdoptWinner(serverHandle,3,1),"native server winner epoch adoption");
                     adopted=true;
                 }
-                if(client.Ready() && server.Ready() && sent<forwardTotal) {
+                if(selectiveLoss && !blackhole && server.UsefulReceived()==retainedPrefix &&
+                    client.Snapshot().acknowledged_offset==retainedPrefix) blackhole=true;
+                const auto sendLimit=selectiveLoss && !blackhole ? retainedPrefix : forwardTotal;
+                if(client.Ready() && server.Ready() && sent<sendLimit) {
                     if(pause && !pausedAt) { pausedAt=Now(); server.SetReceiveBudget(0); }
                     if(!forwardWriter->Remaining()) {
-                        const auto n=(std::min)(data.size(),forwardTotal-sent);
+                        const auto n=(std::min)(data.size(),sendLimit-sent);
                         for(std::size_t i=0;i<n;++i) data[i]=static_cast<std::uint8_t>((sent+i)%251);
                         const auto queued=forwardWriter->Queue({data.data(),n});
                         Check(queued.status==DirectIoStatus::Accepted || queued.status==DirectIoStatus::WouldBlock,"forward writer queue");
@@ -689,10 +718,11 @@ int main(int argc,char** argv) {
                 }
                 for(std::size_t i=0;i<p.size;++i) Check(p.data[i]==static_cast<std::uint8_t>((received+i)%251),"payload mismatch");
                 if(selectiveLoss) {
-                    const auto kept=received>=retainedPrefix ? 0 : (std::min)(retainedPrefix-received,p.size);
+                    const auto kept=blackhole ? 0 : p.size;
                     useful+=kept;
                     discarded+=p.size-kept; // encrypted STREAM bytes received, acknowledged and discarded above QUIC
                     if(kept) {
+                        prefixDigest.Update(p.data,kept);
                         Check(server.ConsumeReceived(kept) && server.ReportUsefulBytes(kept),"retained application prefix progress");
                     }
                     Check(server.ConsumeReceived(p.size-kept),"consume selectively discarded bytes");
@@ -706,7 +736,10 @@ int main(int argc,char** argv) {
                 if(dcoScenario && reverse.size) Check(client.ReportUsefulBytes(reverse.size),"client application-checked payload progress");
                 if(selectiveLoss && discarded) {
                     const auto now=Now();
-                    if(!stallStarted) stallStarted=now;
+                    if(!stallStarted) {
+                        stallStarted=now; stallRtt=server.SmoothedRttMs();
+                        Check(useful==retainedPrefix && stallRtt>=18 && stallRtt<=200,"20 ms profile with retained 8 MiB before discard");
+                    }
                     const auto action=progress.Observe(now,true,server.UsefulReceived(),server.SmoothedRttMs());
                     if(action==QuicProgressWatchdog::Action::Probe) {
                         Check(!probeSent && server.RequestLivenessProbe(now),"watchdog sends authenticated liveness probe once");
@@ -715,8 +748,8 @@ int main(int argc,char** argv) {
                         Check(probeSent && now-probeSent>=5000 && !server.LivenessUnresponsive(),
                             "real authenticated PONG before watchdog recovery");
                         Check(adopted && server.Ready() && client.Ready() && useful==retainedPrefix &&
-                            server.UsefulReceived()==retainedPrefix && discarded==total-retainedPrefix &&
-                            client.Snapshot().acknowledged_offset==total && reverseReceived==total &&
+                            server.UsefulReceived()==retainedPrefix && discarded==lostTail &&
+                            client.Snapshot().acknowledged_offset==forwardTotal && reverseReceived==total &&
                             !server.HasReportedVerifiedPart(),"transport ACK did not count discarded data as application progress");
                         expired=now;
                         break;
@@ -755,7 +788,8 @@ int main(int argc,char** argv) {
             Check(sent==forwardTotal && received==forwardTotal && client.Snapshot().acknowledged_offset==forwardTotal,"transfer deadline");
             Check(reverseSent==total && reverseReceived==total && server.Snapshot().acknowledged_offset==total,"reverse deadline");
             if(selectiveLoss) {
-                Check(expired && expired-stallStarted>=30000 && expired-stallStarted<=35000,
+                Check(expired && probeSent-stallStarted>=15000 && probeSent-stallStarted<17000 &&
+                    expired-stallStarted>=30000 && expired-stallStarted<=46000,
                     "selectively discarded payload expires at the real watchdog deadline");
             }
             if(dcoScenario) {
@@ -779,9 +813,13 @@ int main(int argc,char** argv) {
                     recovery->peer.identity==a.pub && !recovery->winner &&
                     recovery->useful_bytes==retainedPrefix && !recovery->transfer_verified,
                     "typed recovery preserves pinned peer and the useful prefix");
-                std::printf("native QUIC selective application loss PASS: acknowledged=%zu useful=%zu discarded=%zu probe_ms=%llu recovery_ms=%llu authenticated PONG received\n",
-                    received,useful,discarded,static_cast<unsigned long long>(probeSent-stallStarted),
-                    static_cast<unsigned long long>(expired-stallStarted));
+                std::array<std::uint8_t,CryptoPP::SHA256::DIGESTSIZE> digest{};
+                prefixDigest.Final(digest.data());
+                std::printf("native QUIC selective application loss PASS: acknowledged=%zu useful=%zu discarded=%zu configured_rtt_ms=20 smoothed_rtt_ms=%llu probe_ms=%llu recovery_ms=%llu authenticated PONG received prefix_sha256=",
+                    received,useful,discarded,static_cast<unsigned long long>(stallRtt),
+                    static_cast<unsigned long long>(probeSent-stallStarted),static_cast<unsigned long long>(expired-stallStarted));
+                for(const auto byte:digest) std::printf("%02x",static_cast<unsigned>(byte));
+                std::printf("\n");
             }
             Check(!pause || resumed,"pause resume");
             Check(!pa.loss || pa.drops+pb.drops>0,"loss injection");

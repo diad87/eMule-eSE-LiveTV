@@ -176,10 +176,10 @@ inline bool Run() {
     Require(!manager.IsIsolatedLanQuicPeer(node,wrongEndpoint),"pair other endpoint not authorized");
     auto wrongNode=node; wrongNode[0]^=1;
     Require(!manager.IsIsolatedLanQuicPeer(wrongNode,endpoint),"pair other node not authorized");
-    const uint64 transferBudget=large ? (highEntropy ? 2400000 : 900000) : 60000;
     const CString fixtureName=fixtureBytes==65537?_T("pair-small.bin"):(large?_T("pair-f1.bin"):_T("pair-f2.bin"));
     const unsigned modulus=fixtureBytes==65537?251:256;
     const bool highEntropy=GetPrivateProfileInt(_T("Pair"),_T("HighEntropy"),0,ini)!=0;
+    const uint64 transferBudget=large ? (highEntropy ? 2400000 : 900000) : 60000;
     Log(_T("QUIC_PAIR FIXTURE high_entropy=%u"), static_cast<UINT>(highEntropy));
     std::vector<BYTE> chunk(65536);
     uint32 entropyState = 0x9e3779b9u;

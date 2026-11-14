@@ -174,9 +174,15 @@ inline bool Run() {
         "pair supported fixture size");
     const bool large=fixtureBytes>=1073741824;
     Require(!recovery || large,"pair interruption requires real F1");
+    const bool highEntropy=GetPrivateProfileInt(_T("Pair"),_T("HighEntropy"),0,ini)!=0;
+    Require(!wideOffsets || !highEntropy,"wide-offset test uses the specified repeating fixture");
+    const uint64 transferBudget=wideOffsets ? 3600000 : (large ? (highEntropy ? 2400000 : 900000) : 60000);
+    // The authorization begins before the fixture is written and hashed.
+    const uint64 authorizationMs=large ? transferBudget+300000 : 120000;
     Require(!manager.ConfigureIsolatedLanQuicPeer(node,endpoint,interfaceId,119999) &&
-        !manager.ConfigureIsolatedLanQuicPeer(node,endpoint,interfaceId,1200001),"pair rejects unbounded lab authorization");
-    Require(manager.ConfigureIsolatedLanQuicPeer(node,endpoint,interfaceId,large?1100000:120000),"pair exact assigned LAN authorization");
+        !manager.ConfigureIsolatedLanQuicPeer(node,endpoint,interfaceId,
+            CDirectReachabilityManager::MaxIsolatedLanQuicDurationMs+1),"pair rejects unbounded lab authorization");
+    Require(manager.ConfigureIsolatedLanQuicPeer(node,endpoint,interfaceId,authorizationMs),"pair exact assigned LAN authorization");
     auto wrongEndpoint=endpoint; ++wrongEndpoint.port;
     Require(!manager.IsIsolatedLanQuicPeer(node,wrongEndpoint),"pair other endpoint not authorized");
     auto wrongNode=node; wrongNode[0]^=1;
@@ -184,10 +190,8 @@ inline bool Run() {
     const CString fixtureName=wideOffsets?_T("pair-f3.bin"):
         (fixtureBytes==65537?_T("pair-small.bin"):(large?_T("pair-f1.bin"):_T("pair-f2.bin")));
     const unsigned modulus=fixtureBytes==65537?251:256;
-    const bool highEntropy=GetPrivateProfileInt(_T("Pair"),_T("HighEntropy"),0,ini)!=0;
-    Require(!wideOffsets || !highEntropy,"wide-offset test uses the specified repeating fixture");
-    const uint64 transferBudget=wideOffsets ? 3600000 : (large ? (highEntropy ? 2400000 : 900000) : 60000);
-    Log(_T("QUIC_PAIR FIXTURE high_entropy=%u"), static_cast<UINT>(highEntropy));
+    Log(_T("QUIC_PAIR FIXTURE high_entropy=%u authorization_ms=%I64u transfer_budget_ms=%I64u"),
+        static_cast<UINT>(highEntropy),authorizationMs,transferBudget);
     std::vector<BYTE> chunk(65536);
     uint32 entropyState = 0x9e3779b9u;
     std::array<BYTE,16> md4{};

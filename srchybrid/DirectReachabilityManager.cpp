@@ -1566,7 +1566,7 @@ bool CDirectReachabilityManager::ConfigureIsolatedLanQuicPeer(const std::array<s
 {
 	AssertMainThread();
 	if(theApp.m_strQuicPairSelfTestRole.IsEmpty() || !theApp.m_bReachBindingSelfTest || m_isolatedLanQuicPolicy ||
-		labDurationMs<120000 || labDurationMs>1200000 ||
+		labDurationMs<120000 || labDurationMs>MaxIsolatedLanQuicDurationMs ||
 		endpoint.ipv6 || endpoint.scope || !endpoint.port || !interfaceId || !GetTopologyGeneration() ||
 		!thePrefs.GetBindAddr() || !reach::NonzeroIdentity(node)) return false;
 	const auto& a=endpoint.address;

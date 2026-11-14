@@ -71,6 +71,7 @@ public:
 	bool AdoptDirectConsumer(std::unique_ptr<ese::DirectBatchConsumer>&);
 	bool InstallQuicDownloadConsumer(); // no host activation, packets or capability advertisement
 	// Explicit isolated pair lab only; exact pinned peer and IPv4 endpoint, never a global LAN switch.
+	static constexpr uint64 MaxIsolatedLanQuicDurationMs=3900000;
 	bool ConfigureIsolatedLanQuicPeer(const std::array<std::uint8_t,32>&,const ese::udp::Endpoint&,uint64 interfaceId,uint64 labDurationMs=120000);
 	bool IsIsolatedLanQuicPeer(const std::array<std::uint8_t,32>&,const ese::udp::Endpoint&) const;
 	bool AppendIsolatedLanQuicCandidate(reach::NativeDirectCandidateSnapshotV1&) const;

@@ -3584,7 +3584,9 @@ inline void RunClassicTcpObservation(CDirectReachabilityManager& manager,unsigne
     thePrefs.SetEseNetLabConsent(CPreferences::EseNetLabAccepted); thePrefs.SetEseNetLabEnabled(true);
     if(initialFallback) {
         thePrefs.SetUDPPort(fallbackUdpPort);
-        Require(theApp.clientudp->Rebind(),"initial fallback local UDP rebind");
+        if(theApp.clientudp->GetConnectedPort()!=fallbackUdpPort)
+            Require(theApp.clientudp->Rebind(),"initial fallback local UDP rebind");
+        Require(theApp.clientudp->GetConnectedPort()==fallbackUdpPort,"initial fallback bound UDP port");
         manager.TickDirectConnections(); // Establish topology before observing TCP.
     }
     SOCKET listener=::socket(AF_INET,SOCK_STREAM,IPPROTO_TCP),remote=INVALID_SOCKET;

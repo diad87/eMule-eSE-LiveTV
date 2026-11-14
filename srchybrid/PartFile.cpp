@@ -330,6 +330,49 @@ bool CPartFile::RunHashVerdictFenceSelfTest()
 	return current.m_mapPendingHashParts.Lookup(0,generation) && generation==7 && current.m_directHashSnapshots.count(0)==1;
 }
 
+bool CPartFile::RunPreviewCopySelfTest()
+{
+	if (!theApp.m_bReachBindingSelfTest)
+		return false;
+	const CString directory = CString(thePrefs.GetTempDir()) + _T("\\");
+	const CString sourcePath = directory + _T("v93-preview-copy-source.bin");
+	const CString previewPath = directory + _T("v93-preview-copy-sample.bin");
+	if (::GetFileAttributes(sourcePath) != INVALID_FILE_ATTRIBUTES || ::GetFileAttributes(previewPath) != INVALID_FILE_ATTRIBUTES)
+		return false;
+	struct FixtureFiles {
+		const CString& source;
+		const CString& preview;
+		~FixtureFiles() { ::DeleteFile(source); ::DeleteFile(preview); }
+	} files{sourcePath,previewPath};
+	try {
+		std::vector<BYTE> sourceBytes(40000);
+		for (size_t i = 0; i < sourceBytes.size(); ++i)
+			sourceBytes[i] = static_cast<BYTE>(1 + i % 255);
+		CFile source(sourcePath, CFile::modeCreate | CFile::modeWrite | CFile::shareExclusive);
+		source.Write(sourceBytes.data(), static_cast<UINT>(sourceBytes.size()));
+		source.Close();
+		CPartFile file;
+		if (!file.m_hpartfile.Open(sourcePath, CFile::modeRead | CFile::shareDenyNone))
+			return false;
+		CArray<Gap_Struct> ranges;
+		if (file.CopyPartFile(ranges, previewPath))
+			return false;
+		ranges.Add(Gap_Struct{0,37});
+		ranges.Add(Gap_Struct{200,37493});
+		if (!file.CopyPartFile(ranges, previewPath))
+			return false;
+		std::fill(sourceBytes.begin()+37,sourceBytes.begin()+200,0);
+		sourceBytes.resize(37493);
+		CFile preview(previewPath, CFile::modeRead | CFile::shareDenyNone);
+		std::vector<BYTE> actual(sourceBytes.size());
+		return preview.GetLength()==actual.size() && preview.Read(actual.data(),static_cast<UINT>(actual.size()))==actual.size() &&
+			actual==sourceBytes;
+	} catch (CFileException *error) {
+		error->Delete();
+		return false;
+	}
+}
+
 bool CPartFile::RunHashVerdictAcceptanceSelfTest(const PartHashVerdict_Struct& diskVerdict)
 {
 	if(!theApp.m_bReachBindingSelfTest || diskVerdict.bReadError) return false;
@@ -3414,12 +3457,10 @@ void  CPartFile::RemoveAllSources(bool bTryToSwap)
 
 void CPartFile::DeletePartFile()
 {
-	ASSERT(!m_bPreviewing);
-
 	// Barry - Need to tell any connected clients to stop sending the file
 	StopFile(true);
 
-	if (GetFileOp() != PFOP_NONE) { //hashing, copying, uncompressing
+	if (m_bPreviewing || GetFileOp() != PFOP_NONE) {
 		if (!m_bDelayDelete) {
 			LogWarning(LOG_STATUSBAR, GetResString(IDS_DELETEAFTERFILEOP), (LPCTSTR)GetFileName());
 			m_bDelayDelete = true; //signal to hashing thread
@@ -3669,7 +3710,7 @@ void CPartFile::StopPausedFile()
 	EPartFileStatus uState = GetStatus();
 	if ((uState == PS_PAUSED || uState == PS_INSUFFICIENT || uState == PS_ERROR) && !m_stopped && time(NULL) >= m_iLastPausePurge + HR2S(1))
 		StopFile();
-	else if (m_bDelayDelete)
+	else if (m_bDelayDelete && !m_bPreviewing)
 		DeletePartFile();
 }
 
@@ -3884,6 +3925,10 @@ void CPartFile::PreviewFile()
 			return;
 		m_bPreviewing = true;
 		CPreviewThread *pThread = static_cast<CPreviewThread*>(AfxBeginThread(RUNTIME_CLASS(CPreviewThread), THREAD_PRIORITY_BELOW_NORMAL, 0, CREATE_SUSPENDED));
+		if (!pThread) {
+			m_bPreviewing = false;
+			return;
+		}
 		pThread->SetValues(this, thePrefs.GetVideoPlayer(), thePrefs.GetVideoPlayerArgs());
 		pThread->ResumeThread();
 	} else
@@ -5706,45 +5751,39 @@ CString CPartFile::GetInfoSummary(bool bNoFormatCommands) const
 	return info;
 }
 
-//This method is supposed to be called from other threads.
-//To prevent the part file from vanishing while copying, a lock on m_FileCompleteMutex
-//might be better than currently used m_bPreviewing flag
+// The preview worker retains the part file until copying finishes. Serialize
+// opening and copying the source with the completion thread's rename.
 bool CPartFile::CopyPartFile(CArray<Gap_Struct> &raFilled, const CString & tempFileName)
 {
 	const INT_PTR iLast = raFilled.GetCount() - 1;
-	ASSERT(iLast >= 0);
+	if (iLast < 0)
+		return false;
+	CSingleLock fileCompletion(&m_FileCompleteMutex, TRUE);
 	try {
-		// Create destination file and set length to the last filled end position
-		CFile destFile;
-		destFile.Open(tempFileName, CFile::modeCreate | CFile::modeWrite | CFile::shareDenyWrite | CFile::osSequentialScan);
+		// Use a separate file cursor while the downloader owns its original handle.
+		CFile sourceFile(m_hpartfile.GetFilePath(), CFile::modeRead | CFile::shareDenyNone | CFile::osSequentialScan);
+		CFile destFile(tempFileName, CFile::modeCreate | CFile::modeWrite | CFile::shareDenyWrite | CFile::osSequentialScan);
 		destFile.SetLength(raFilled[iLast].end);
 
-		// Loop through the filled areas and copy data
-		m_bPreviewing = true;
+		BYTE buffer[16384];
 		for (INT_PTR i = 0; i <= iLast; ++i) {
 			const Gap_Struct &fill = raFilled[i];
-			for (uint64 uStart = fill.start; uStart < fill.end;) { //last valid byte was at fill.end-1
-				BYTE buffer[16384];
-				OVERLAPPED ovr = { 0, 0, {{ LODWORD(uStart), HIDWORD(uStart)}} };
-				OVERLAPPED ovw = ovr;
-				DWORD lenData = (DWORD)min(uStart - fill.end, sizeof buffer);
-				DWORD dwRead;
-				if (!::ReadFile((HANDLE)m_hpartfile, buffer, lenData, &dwRead, &ovr))
-					CFileException::ThrowOsError((LONG)::GetLastError(), GetFileName());
-				if (!::WriteFile((HANDLE)destFile, buffer, dwRead, NULL, &ovw))
-					CFileException::ThrowOsError((LONG)::GetLastError(), tempFileName);
-				ASSERT(dwRead && dwRead < fill.end);
-				uStart += dwRead;
+			sourceFile.Seek(fill.start, CFile::begin);
+			destFile.Seek(fill.start, CFile::begin);
+			for (uint64 offset = fill.start; offset < fill.end;) {
+				const UINT count = static_cast<UINT>((std::min)(fill.end - offset, uint64{sizeof buffer}));
+				if (sourceFile.Read(buffer, count) != count)
+					AfxThrowFileException(CFileException::endOfFile, 0, sourceFile.GetFilePath());
+				destFile.Write(buffer, count);
+				offset += count;
 			}
 		}
-		m_bPreviewing = false;
 		return true;
 	} catch (CFileException *ex) {
 		ex->Delete();
 	} catch (...) {
 		ASSERT(0);
 	}
-	m_bPreviewing = false;
 	return false;
 }
 

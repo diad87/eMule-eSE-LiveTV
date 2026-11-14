@@ -18,6 +18,7 @@
 #include "DeadSourceList.h"
 #include "CorruptionBlackBox.h"
 #include "reach/part_contributions.h"
+#include <atomic>
 #include <map>
 
 enum EPartFileStatus
@@ -134,6 +135,7 @@ public:
 	virtual	~CPartFile();
 	reach::DirectFileKey NativeDirectFileKey() const;
 	static bool RunHashVerdictFenceSelfTest(); // explicit headless selftest only
+	static bool RunPreviewCopySelfTest();
 	static bool RunHashVerdictAcceptanceSelfTest(const struct PartHashVerdict_Struct&);
 
 	bool	IsPartFile() const							{ return (status != PS_COMPLETE); }
@@ -393,7 +395,7 @@ public:
 	uint16	src_stats[4];
 	uint16	net_stats[3];
 	uint8	m_TotalSearchesKad;
-	volatile bool m_bPreviewing;
+	std::atomic<bool> m_bPreviewing{false};
 	volatile bool m_bRecoveringArchive; // Is archive recovery in progress
 	bool	m_bLocalSrcReqQueued;
 	bool	srcarevisible;				// used for downloadlistctrl

@@ -1940,6 +1940,8 @@ static bool RunReachBindingSelfTest(bool tcpFallbackF1)
 	Log(_T("REACH_SELFTEST V13 PASS: PartFile stale verdict preserves pending job and snapshot, no valid hash acceptance"));
 	Log(_T("REACH_SELFTEST V14 PASS: part hash generation saturates without reuse"));
 	Log(_T("REACH_SELFTEST V15 PASS: PartFile accepts disk digest and rejects changed digest, fixture pending marker prevents completion"));
+	if (!CPartFile::RunPreviewCopySelfTest()) return fail(_T("preview copy respects filled byte ranges"));
+	Log(_T("REACH_SELFTEST preview copy PASS: exact filled ranges, zeroed gap and no file length extension"));
 	Log(_T("REACH_SELFTEST PASS: real bindings, generation fence, single-use, UDP disable and TCP close"));
 	Log(_T("REACH_SELFTEST V2 PASS: signature invalidation and WM_POWERBROADCAST resume handler"));
 	LIVE_LOG("REACH_SELFTEST", "PASS actual TCP/UDP bindings, closed-port rejection, generation invalidation, stale result discard, single-use and UDP disable; no router/transfer acceptance");

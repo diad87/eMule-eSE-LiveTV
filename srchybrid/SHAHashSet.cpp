@@ -28,6 +28,7 @@
 #include "Log.h"
 #include <algorithm>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #ifdef _DEBUG
@@ -1017,6 +1018,24 @@ bool CAICHRecoveryHashSet::RunRecoverySelfTest()
 		}
 		if (!AICHSlabsAreAtBaseline(beforeFuzz))
 			return fail(_T("truncated packet processing retained slots"), truncatedCases);
+		const CAICHHash rootHash = source.GetMasterHash();
+		if (!source.SaveHashSet())
+			return fail(_T("persist complete hashset for concurrent read"), 0);
+		source.FreeHashSet();
+		CEvent acquired, release;
+		std::thread compactor([&] {
+			CSingleLock guard(&m_mutKnown2File);
+			if (guard.Lock(2000)) {
+				acquired.SetEvent();
+				release.Lock(3000);
+			}
+		});
+		const bool excluded = acquired.Lock(2200) && !source.LoadHashSet();
+		release.SetEvent();
+		compactor.join();
+		if (!excluded || !source.LoadHashSet() || !source.IsPartDataAvailable(0) || source.GetMasterHash()!=rootHash)
+			return fail(_T("lock excludes conflicting known2.met read then permits retry"), 0);
+		Log(_T("AICH known2.met locking PASS: exact saved hashset read after compactor releases lock"));
 	}
 	if (!AICHSlabsAreAtBaseline(baseline))
 		return fail(_T("allocator baseline after packet verification"), truncatedCases);
@@ -1113,6 +1132,11 @@ bool CAICHRecoveryHashSet::LoadHashSet()
 		ASSERT(0);
 		return false;
 	}
+	// The index offsets and the file being compacted are one snapshot. Network
+	// callers can retry without waiting on the compactor in the main thread.
+	CSingleLock lockKnown2Met(&m_mutKnown2File);
+	if (!lockKnown2Met.Lock(0))
+		return false;
 
 	CSafeBufferedFile file;
 	CFileException fex;

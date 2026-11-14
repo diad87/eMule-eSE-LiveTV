@@ -64,6 +64,7 @@ BOOL CPreviewThread::Run()
 
 		bool bRet = m_pPartfile->CopyPartFile(m_aFilled, strPreviewName);
 		m_pPartfile->m_bPreviewing = false;
+		m_pPartfile = nullptr;
 		m_aFilled.RemoveAll();
 		if (!bRet)
 			return FALSE;
@@ -108,7 +109,8 @@ BOOL CPreviewThread::Run()
 		}
 		CFile::Remove(strPreviewName);
 	} catch (CFileException *ex) {
-		m_pPartfile->m_bPreviewing = false;
+		if (m_pPartfile)
+			m_pPartfile->m_bPreviewing = false;
 		ex->Delete();
 	}
 	return TRUE;

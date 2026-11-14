@@ -18,14 +18,31 @@ dashboard and FFmpeg smoke. The extracted binary passed portable self-test
 and native reachability. The same executable completed 1 GiB after 15 seconds
 of UDP discard and passed the 1 GiB observed-TCP fallback fixture. The longer
 stall ended with a typed no-progress result and six complete parts on disk.
-Restart qualification on this package is open after a new bootstrap deadline
-expired following successful rehash. Later runtime changes have their own
-build and evidence.
+On this revision a new bootstrap expired after rehash. The later `b4fa26e7`
+build verified the consent rollover correction with a delayed authenticated
+response and completed the restart case. It rehashed six parts totaling
+67,768,320 bytes, requested missing ranges, and matched the original 1 GiB
+SHA-256 `2C06ADE942EE3F17A048DD1064B2FAB046A4BB95386D8BB41B68DC6711AC2AF3`.
+The upload and download processes both exited successfully in private desktops.
 
 | Artifact | SHA-256 |
 | --- | --- |
 | `deddf0ea` eMule x64 | `BC47A6302BF6A25DCC288F6F4E2876A0CE01D4089DE200F78D69A43A655046C2` |
 | Local portable x64 ZIP | `1D7769738A26AE3DCA2FDF759943FB438D069A7A18DBCD1A91516AD1450BE1D5` |
+
+The same `deddf0ea` binary completed classic eD2K/TCP transfers from the
+unmodified eMule 0.70b x64 binary and the archived eSE 9.2.0-rc.2 x64 binary.
+Both tests used a private local eD2K server and a 1 MiB fixture with SHA-256
+`FBBAB289F7F94B25736C58BE46A994C441FD02552CC6022352E3D86D2FAB7C83`.
+All four client launches closed successfully. Kad2 and the physical control
+cases are still required.
+
+The Win32 dependency build verified the signed MSYS2 inventories and ngtcp2
+source, rebuilt GnuTLS without hardware acceleration, checked the architecture
+and import closure of 20 DLLs, and passed the ABI test and eight loopback
+cases. Independent GnuTLS rebuilds produced the same SHA-256
+`E964569804BBF514069D027BD99BBDA62CDE4C7029D3DEB6A1B3C809A32C883C`.
+[Win32 dependency notices](../third_party/quic/DISTRIBUTION-Win32.md)
 
 ## Pending exit checks
 

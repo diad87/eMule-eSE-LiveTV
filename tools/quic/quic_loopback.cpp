@@ -105,9 +105,30 @@ struct Runtime {
     ~Runtime() { gnutls_global_deinit(); WSACleanup(); }
 };
 
+static bool SameAddress(const sockaddr_in& a,const sockaddr_in& b) {
+    return a.sin_family==b.sin_family && a.sin_addr.s_addr==b.sin_addr.s_addr && a.sin_port==b.sin_port;
+}
+static SOCKET BindLoopback(sockaddr_in& address) {
+    const SOCKET result=::socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
+    Require(result!=INVALID_SOCKET,"socket");
+    try {
+        // Keep kernel overflow separate from the explicit packet-loss fixture.
+        const int receiveBuffer=4*1024*1024;
+        Require(setsockopt(result,SOL_SOCKET,SO_RCVBUF,
+            reinterpret_cast<const char*>(&receiveBuffer),sizeof(receiveBuffer))==0,"UDP receive budget");
+        address.sin_family=AF_INET; address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+        Require(bind(result,reinterpret_cast<sockaddr*>(&address),sizeof(address))==0,"bind loopback");
+        int length=sizeof(address);
+        Require(getsockname(result,reinterpret_cast<sockaddr*>(&address),&length)==0,"getsockname");
+        u_long nonblocking=1;
+        Require(ioctlsocket(result,FIONBIO,&nonblocking)==0,"nonblocking");
+        return result;
+    } catch(...) { closesocket(result); throw; }
+}
+
 struct Endpoint {
-    SOCKET socket=INVALID_SOCKET;
-    sockaddr_in local{},remote{};
+    SOCKET socket=INVALID_SOCKET,reboundSocket=INVALID_SOCKET;
+    sockaddr_in local{},remote{},reboundLocal{},candidateRemote{};
     ngtcp2_conn* conn=nullptr;
     gnutls_session_t tls=nullptr;
     FixtureCrypto crypto{tls};
@@ -122,7 +143,9 @@ struct Endpoint {
     gnutls_x509_privkey_t key=nullptr;
     gnutls_x509_crt_t cert=nullptr;
     ngtcp2_crypto_conn_ref reference{};
-    bool server=false,handshake=false;
+    bool server=false,handshake=false,handshakeConfirmed=false;
+    bool validationBegun=false,validationPassed=false;
+    unsigned candidateDatagramsBeforeValidation=0;
     std::array<std::vector<std::uint8_t>,2> sent,received;
     std::array<std::size_t,2> submitted{};
     std::uint64_t datagrams_sent=0,datagrams_received=0;
@@ -131,28 +154,11 @@ struct Endpoint {
     explicit Endpoint(bool is_server,reach::DirectBufferPool& pool)
         : dataBuffers(pool),dataWriter(dataBuffers),server(is_server)
     {
-        try {
         // ngtcp2 retains send pointers until ACK. Appending AUTH must not move HELLO.
         sent[0].reserve(4096);
-        socket=::socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
-        Require(socket!=INVALID_SOCKET,"socket");
-        // Write batches can exceed the default Windows UDP receive buffer.
-        // Keep kernel overflow separate from our explicit 10% loss injection.
-        const int receiveBuffer=4*1024*1024;
-        Require(setsockopt(socket,SOL_SOCKET,SO_RCVBUF,
-            reinterpret_cast<const char*>(&receiveBuffer),sizeof(receiveBuffer))==0,"UDP receive budget");
-        local.sin_family=AF_INET; local.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
-        Require(bind(socket,reinterpret_cast<sockaddr*>(&local),sizeof(local))==0,"bind loopback");
-        int length=sizeof(local);
-        Require(getsockname(socket,reinterpret_cast<sockaddr*>(&local),&length)==0,"getsockname");
-        u_long nonblocking=1;
-        Require(ioctlsocket(socket,FIONBIO,&nonblocking)==0,"nonblocking");
+        socket=BindLoopback(local);
         reference.user_data=this;
         reference.get_conn=[](ngtcp2_crypto_conn_ref* r) { return static_cast<Endpoint*>(r->user_data)->conn; };
-        } catch(...) {
-            if(socket!=INVALID_SOCKET) closesocket(socket);
-            throw;
-        }
     }
     ~Endpoint()
     {
@@ -161,10 +167,16 @@ struct Endpoint {
         if(credentials) gnutls_certificate_free_credentials(credentials);
         if(cert) gnutls_x509_crt_deinit(cert);
         if(key) gnutls_x509_privkey_deinit(key);
+        if(reboundSocket!=INVALID_SOCKET) closesocket(reboundSocket);
         if(socket!=INVALID_SOCKET) closesocket(socket);
     }
     Endpoint(const Endpoint&)=delete;
     Endpoint& operator=(const Endpoint&)=delete;
+    SOCKET WireSocket() const { return reboundSocket!=INVALID_SOCKET ? reboundSocket : socket; }
+    bool CandidatePath(const ngtcp2_path& path) const {
+        return candidateRemote.sin_port && path.remote.addrlen==sizeof(candidateRemote) &&
+            SameAddress(candidateRemote,*reinterpret_cast<const sockaddr_in*>(path.remote.addr));
+    }
     ngtcp2_path Path()
     {
         ngtcp2_path p{};
@@ -172,10 +184,11 @@ struct Endpoint {
         p.remote.addr=reinterpret_cast<sockaddr*>(&remote); p.remote.addrlen=sizeof(remote);
         return p;
     }
-    ese::udp::Endpoint RemoteEndpoint() const {
-        ese::udp::Endpoint out; out.port=ntohs(remote.sin_port);
-        std::memcpy(out.address.data(),&remote.sin_addr,4); return out;
+    static ese::udp::Endpoint UdpEndpoint(const sockaddr_in& address) {
+        ese::udp::Endpoint out; out.port=ntohs(address.sin_port);
+        std::memcpy(out.address.data(),&address.sin_addr,4); return out;
     }
+    ese::udp::Endpoint RemoteEndpoint() const { return UdpEndpoint(remote); }
     void InitTls(const char* protocol)
     {
         Tls(gnutls_certificate_allocate_credentials(&credentials));
@@ -268,6 +281,25 @@ struct Endpoint {
         callbacks.delete_crypto_cipher_ctx=ngtcp2_crypto_delete_crypto_cipher_ctx_cb;
         callbacks.version_negotiation=ngtcp2_crypto_version_negotiation_cb;
         callbacks.get_path_challenge_data2=ngtcp2_crypto_get_path_challenge_data2_cb;
+        callbacks.handshake_confirmed=[](ngtcp2_conn*,void* userdata) {
+            static_cast<Endpoint*>(userdata)->handshakeConfirmed=true;
+            return 0;
+        };
+        callbacks.begin_path_validation=[](ngtcp2_conn*,uint32_t,const ngtcp2_path* path,
+            const ngtcp2_path*,void* userdata) {
+            auto& endpoint=*static_cast<Endpoint*>(userdata);
+            if(endpoint.CandidatePath(*path)) endpoint.validationBegun=true;
+            return 0;
+        };
+        callbacks.path_validation=[](ngtcp2_conn*,uint32_t,const ngtcp2_path* path,const ngtcp2_path*,
+            ngtcp2_path_validation_result result,void* userdata) {
+            auto& endpoint=*static_cast<Endpoint*>(userdata);
+            if(endpoint.CandidatePath(*path)) {
+                if(result!=NGTCP2_PATH_VALIDATION_RESULT_SUCCESS) return NGTCP2_ERR_CALLBACK_FAILURE;
+                endpoint.validationPassed=true;
+            }
+            return 0;
+        };
         callbacks.rand=[](std::uint8_t* dest,std::size_t size,const ngtcp2_rand_ctx*) {
             if(gnutls_rnd(GNUTLS_RND_RANDOM,dest,size)!=0) std::abort();
         };
@@ -330,13 +362,14 @@ struct Endpoint {
         std::array<std::uint8_t,65536> packet{};
         for(unsigned i=0;i<128;++i) {
             sockaddr_in from{}; int from_size=sizeof(from);
-            const int length=recvfrom(socket,reinterpret_cast<char*>(packet.data()),
+            const int length=recvfrom(WireSocket(),reinterpret_cast<char*>(packet.data()),
                 static_cast<int>(packet.size()),0,reinterpret_cast<sockaddr*>(&from),&from_size);
             if(length==SOCKET_ERROR) { Require(WSAGetLastError()==WSAEWOULDBLOCK,"recvfrom"); return; }
-            Require(from.sin_addr.s_addr==remote.sin_addr.s_addr && from.sin_port==remote.sin_port,"unexpected endpoint");
+            const bool candidate=server && candidateRemote.sin_port && SameAddress(from,candidateRemote);
+            Require(SameAddress(from,remote) || candidate,"unexpected endpoint");
             ++datagrams_received;
             const auto decision=demux.Inspect(udpProbe,packet.data(),static_cast<std::size_t>(length),
-                RemoteEndpoint(),Now()/NGTCP2_MILLISECONDS);
+                UdpEndpoint(from),Now()/NGTCP2_MILLISECONDS);
             Require(decision.channel==ese::udp::Channel::Quic && decision.owner==1 && demux.Current(decision),
                 "UDP demux did not authorize QUIC delivery");
             if(!conn) {
@@ -348,6 +381,7 @@ struct Endpoint {
                 InitConnection(&initial);
             }
             auto path=Path(); ngtcp2_pkt_info info{};
+            path.remote.addr=reinterpret_cast<sockaddr*>(&from);
             const auto result=ngtcp2_conn_read_pkt(conn,&path,&info,packet.data(),static_cast<std::size_t>(length),Now());
             if(result==NGTCP2_ERR_CRYPTO && ngtcp2_conn_get_tls_alert(conn)==GNUTLS_A_NO_APPLICATION_PROTOCOL)
                 throw AlpnRejected{};
@@ -367,6 +401,7 @@ struct Endpoint {
             int64_t stream=-1; ngtcp2_vec vec{}; std::size_t count=0;
             for(std::size_t index=0;index<2;++index) {
                 if(index==1) {
+                    if(candidateRemote.sin_port && !validationPassed) continue;
                     const auto pending=dataWriter.Pending();
                     if(pending.size) {
                         stream=4; vec.base=const_cast<std::uint8_t*>(pending.data); vec.len=pending.size;
@@ -390,8 +425,9 @@ struct Endpoint {
             if(!result) return;
             ++datagrams_sent;
             if(inject_loss && datagrams_sent%10==0) { ++datagrams_dropped; continue; }
-            const int written=sendto(socket,reinterpret_cast<const char*>(packet.data()),static_cast<int>(result),0,
-                reinterpret_cast<sockaddr*>(&remote),sizeof(remote));
+            if(CandidatePath(path.path) && !validationPassed) ++candidateDatagramsBeforeValidation;
+            const int written=sendto(WireSocket(),reinterpret_cast<const char*>(packet.data()),static_cast<int>(result),0,
+                path.path.remote.addr,static_cast<int>(path.path.remote.addrlen));
             Require(written==result,"sendto");
         }
     }
@@ -402,7 +438,8 @@ int main(int argc,char** argv)
     const bool wrong_alpn=argc==2 && std::strcmp(argv[1],"--wrong-alpn")==0;
     const bool loss=argc==2 && std::strcmp(argv[1],"--loss")==0;
     const bool bad_auth=argc==2 && std::strcmp(argv[1],"--bad-auth")==0;
-    if(argc>2 || (argc==2 && !wrong_alpn && !loss && !bad_auth)) return 2;
+    const bool rebind=argc==2 && std::strcmp(argv[1],"--nat-rebind")==0;
+    if(argc>2 || (argc==2 && !wrong_alpn && !loss && !bad_auth && !rebind)) return 2;
     try {
         Runtime runtime;
         reach::DirectBufferPool pool;
@@ -418,8 +455,20 @@ int main(int argc,char** argv)
             Now()/NGTCP2_MILLISECONDS).channel==ese::udp::Channel::Legacy,"fixed-bit lookalike claimed as QUIC");
         const auto started=Now(); bool streams=false,response=false,dataQueued=false;
         std::uint64_t handshake_elapsed=0;
+        std::uint64_t holdResponseUntil=0;
+        bool testedResponseGate=false;
         while(Now()-started<10u*NGTCP2_SECONDS) {
-            client.Write(); server.Read(); server.Write(); client.Read();
+            client.Write(); server.Read(); server.Write();
+            if(rebind && dataQueued && !testedResponseGate) {
+                if(server.validationBegun && server.candidateDatagramsBeforeValidation) {
+                    if(!holdResponseUntil) holdResponseUntil=Now()+100*NGTCP2_MILLISECONDS;
+                    if(Now()>=holdResponseUntil && response) {
+                        Require(!server.validationPassed && !server.submitted[1] && client.received[1].empty(),
+                            "validation pending, no application data sent to candidate");
+                        testedResponseGate=true;
+                    }
+                }
+            } else client.Read();
             if(client.handshake && server.handshake && !streams) {
                 Require(!wrong_alpn,"incompatible ALPN reached handshake");
                 handshake_elapsed=Now()-started;
@@ -448,16 +497,24 @@ int main(int argc,char** argv)
                     std::printf("QUIC bad AUTH PASS: Ed25519 rejection; zero bulk bytes\n"); return 0;
                 }
             }
-            if(streams && client.binding->Ready() && server.binding->Ready() && !dataQueued) {
+            if(streams && client.binding->Ready() && server.binding->Ready() && !dataQueued &&
+                (!rebind || client.handshakeConfirmed)) {
                 Require(!bad_auth,"corrupt AUTH reached READY");
                 std::printf("QUIC signed binding PASS: HELLO/AUTH on stream 0, both NODE_BOUND before bulk\n");
+                if(rebind) {
+                    // UDP rewrites the external source port while the client's
+                    // ngtcp2 connection continues to use the original local path.
+                    client.reboundSocket=BindLoopback(client.reboundLocal);
+                    Require(client.reboundLocal.sin_port!=client.local.sin_port,"real UDP source port changed");
+                    server.candidateRemote=client.reboundLocal;
+                }
                 client.sent[1].resize(1024u*1024u);
                 for(std::size_t i=0;i<client.sent[1].size();++i) client.sent[1][i]=static_cast<std::uint8_t>((i*37u+13u)&255u);
                 Require(client.dataBuffers.Send({client.sent[1].data(),client.sent[1].size()}).accepted==client.sent[1].size(),
                     "owned client bulk buffer");
                 dataQueued=true;
             }
-            if(dataQueued && !response && server.received[1]==client.sent[1]) {
+            if(dataQueued && !response && (rebind ? !server.received[1].empty() : server.received[1]==client.sent[1])) {
                 server.sent[1]=client.sent[1]; response=true;
                 Require(server.dataBuffers.Send({server.sent[1].data(),server.sent[1].size()}).accepted==server.sent[1].size(),
                     "owned server bulk buffer");
@@ -468,6 +525,16 @@ int main(int argc,char** argv)
                 Require(pool.Used()==0,"owned buffers not retired after full ACK/consume");
                 Require(gnutls_protocol_get_version(client.tls)==GNUTLS_TLS1_3 &&
                         gnutls_protocol_get_version(server.tls)==GNUTLS_TLS1_3,"TLS1.3");
+                if(rebind) {
+                    const auto* boundClient=client.binding->BoundPeer();
+                    const auto* boundServer=server.binding->BoundPeer();
+                    Require(testedResponseGate && server.validationPassed &&
+                        server.CandidatePath(*ngtcp2_conn_get_path2(server.conn)) &&
+                        boundClient && boundClient->node==server.crypto.pub && boundServer && boundServer->node==client.crypto.pub,
+                        "PATH_RESPONSE validates changed port while signed binding stays intact");
+                    std::printf("QUIC dependency NAT rebinding PASS: original port=%hu rebound port=%hu, protocol datagrams=%u before validation, zero application bytes sent before PATH_RESPONSE\n",
+                        ntohs(client.local.sin_port),ntohs(client.reboundLocal.sin_port),server.candidateDatagramsBeforeValidation);
+                }
                 std::printf("QUIC loopback PASS: TLS1.3 ALPN ese-peer/1; control=0 data=4; 1048576 data bytes exact per direction\n");
                 std::printf("UDP client sent=%llu received=%llu; server sent=%llu received=%llu\n",
                     static_cast<unsigned long long>(client.datagrams_sent),static_cast<unsigned long long>(client.datagrams_received),

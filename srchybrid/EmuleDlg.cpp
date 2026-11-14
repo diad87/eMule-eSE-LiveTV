@@ -1296,6 +1296,8 @@ static bool RunReachBindingSelfTest(bool tcpFallbackF1)
 		|| manager.GetTopologyGeneration()<=emptyGeneration) return fail(_T("manager binding synchronization"));
 	if (tcpFallbackF1) {
 #ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
+		if (!eSELive::NodeIdentityInit() || !eSELive::NodeIdentityIsPersistent())
+			return fail(_T("TCP fallback fixture identity initialization"));
 		ese::shared_socket_selftest::RunClassicTcpObservation(manager,0,udp,true);
 		return true;
 #else

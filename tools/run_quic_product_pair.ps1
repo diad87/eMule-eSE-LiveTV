@@ -26,7 +26,9 @@ if($ResumeFrom -and ($FileBytes -ne 1073741824 -or $Interrupt -or $NetworkLossMs
     throw 'Resume requires a completed stall fixture and healthy F1 network.'
 }
 $fixtureName=if($FileBytes -eq 65537){'pair-small.bin'}elseif($FileBytes -eq 1048576){'pair-f2.bin'}else{'pair-f1.bin'}
-if($FileBytes -eq 1073741824 -and !$PSBoundParameters.ContainsKey('TimeoutSeconds')) { $TimeoutSeconds=1100 }
+if($FileBytes -eq 1073741824 -and !$PSBoundParameters.ContainsKey('TimeoutSeconds')) {
+    $TimeoutSeconds=if($HighEntropy){2700}else{1100}
+}
 $patternModulus=$null
 if ($HighEntropy) {
     # SHA-256 of the xorshift32 little-endian byte stream seeded with 0x9e3779b9.

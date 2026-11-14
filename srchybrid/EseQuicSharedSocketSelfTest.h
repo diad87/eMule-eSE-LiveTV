@@ -2177,9 +2177,9 @@ inline void RunProductUpload(CDirectReachabilityManager& manager,CUpDownClient& 
 inline void RunMultipartTransfer(CDirectReachabilityManager& manager,CUpDownClient& client,CPartFile& file,
     QuicEd2kWriter& writer,QuicTransport& transport,Ed2kFramer& reader,Port& port,QuicSocketOwner& peer,
     reach::DirectCoordinator& core,reach::DirectEventQueue& events,reach::DirectHandle handle,
-    reach::DirectHandle peerHandle,std::uint32_t peerRoute) {
+    reach::DirectHandle peerHandle,std::uint32_t peerRoute,bool watchdogControls=false) {
     std::vector<BYTE> expected(PARTSIZE+4097);
-    for(size_t i=0;i<expected.size();++i) expected[i]=static_cast<BYTE>(i*31+41);
+    for(size_t i=0;i<expected.size();++i) expected[i]=static_cast<BYTE>(i*31+(watchdogControls ? 211 : 41));
     std::array<BYTE,32> partHashes{}; std::array<BYTE,16> root{};
     MultipartHash(expected.data(),partHashes,root);
     Require(file.GetFileSize()==expected.size() && file.GetPartCount()==2 &&
@@ -2194,7 +2194,23 @@ inline void RunMultipartTransfer(CDirectReachabilityManager& manager,CUpDownClie
     std::uint64_t served=0,uniqueServed=0; bool completed=false,verified=false; unsigned hashCallbacks=0;
     auto queue=[&](Packet& packet) { return writer.Queue({reinterpret_cast<const std::uint8_t*>(packet.GetPacket()),packet.GetRealPacketSize()}); };
     std::array<std::uint64_t,5> phaseMs{}; unsigned loops=0;
-    const auto deadline=Now()+20000;
+    const auto deadline=Now()+(watchdogControls ? 1500000 : 20000);
+    enum class Control { Start, LocalPause, Resumed, RemoteQueue, Queued, Congestion, DiskFill, DiskBlocked, Slow };
+    auto control=Control::Start;
+    std::uint64_t controlStarted=Now(),nextSend=0,activeStarted=0,acceptanceStarted=0;
+    std::uint64_t slowBytes=0,slowPriorUseful=0,largestUsefulGap=0,lastUseful=0,lastUsefulMs=0;
+    std::uint64_t nextPeerPing=Now()+10000;
+    unsigned activeRanges=0;
+    auto* worker=theApp.m_pPartFileWriteThread;
+    Require(!watchdogControls || (worker && worker->IsRunning() && client.socket),"watchdog requires owned download and IOCP worker");
+    const auto initial=manager.DirectConnections().Snapshot(handle);
+    std::unique_ptr<CSingleLock> diskGate;
+    if(watchdogControls) diskGate=std::make_unique<CSingleLock>(&worker->m_lockFlushList);
+    auto wait=[&](Control phase,std::uint64_t now) { control=phase; controlStarted=now; };
+    auto grant=[&] {
+        Packet slot(OP_ACCEPTUPLOADREQ,0,OP_EDONKEYPROT);
+        Require(queue(slot).status==reach::DirectIoStatus::Accepted,"watchdog remote slot grant");
+    };
     while(Now()<deadline && !completed) {
         ++loops; auto phaseStart=Now();
         const auto sent=writer.Flush(transport,peerHandle,peerRoute,1);
@@ -2229,8 +2245,7 @@ inline void RunMultipartTransfer(CDirectReachabilityManager& manager,CUpDownClie
                 Require(queue(packet).status==reach::DirectIoStatus::Accepted,"multipart requested real hashset reply");
             } else if(opcode==OP_STARTUPLOADREQ) {
                 Require(++slots==1 && hashsets==1,"multipart slot after verified hashset");
-                Packet packet(OP_ACCEPTUPLOADREQ,0,OP_EDONKEYPROT);
-                Require(queue(packet).status==reach::DirectIoStatus::Accepted,"multipart requested slot reply");
+                grant();
             } else {
                 Require(slots==1 && bytes.size==40,"multipart real block request");
                 CSafeMemFile request(const_cast<BYTE*>(bytes.data+16),24);
@@ -2264,9 +2279,111 @@ inline void RunMultipartTransfer(CDirectReachabilityManager& manager,CUpDownClie
             unsigned(admittedRanges.size()),duplicates,unsigned(ranges.size()),hashCallbacks,unsigned(file.GetStatus()));
         Require(received.valid,"multipart request framing");
         phaseMs[1]+=Now()-phaseStart; phaseStart=Now();
-        if(!ranges.empty()) {
+        if(watchdogControls) {
+            const auto now=Now();
+            const auto owned=manager.DirectConnections().Snapshot(handle);
+            if(now>=nextPeerPing) {
+                Require(!transport.LivenessUnresponsive() && transport.RequestLivenessProbe(now),
+                    "watchdog fixture keeps authenticated transport alive during application controls");
+                nextPeerPing=now+10000;
+            }
+            Require(initial && owned && owned->winner==initial->winner && owned->attempt_id==initial->attempt_id &&
+                owned->epoch==initial->epoch && !owned->fallback_count && client.socket &&
+                client.socket->HasAuthenticatedDirectConnection(),"watchdog negative controls retain the original authenticated route");
+            const bool active=client.GetDownloadState()==DS_DOWNLOADING && client.HasQueuedDownloadBlocks() && !ranges.empty();
+            if(owned->useful_bytes!=lastUseful) {
+                if(control==Control::Slow && lastUsefulMs) largestUsefulGap=(std::max)(largestUsefulGap,now-lastUsefulMs);
+                lastUseful=owned->useful_bytes; lastUsefulMs=now;
+                if(control==Control::Slow && !owned->transfer_verified) ++activeRanges;
+            }
+            switch(control) {
+            case Control::Start:
+                if(active && slots) {
+                    if(!activeStarted) activeStarted=now;
+                    if(now-activeStarted<1500) break;
+                    file.PauseFile(false,false);
+                    Require(file.GetStatus()==PS_PAUSED && client.GetDownloadState()==DS_ONQUEUE &&
+                        !client.HasQueuedDownloadBlocks(),"actual local pause cancels the pending slot and blocks");
+                    ranges.clear(); admittedRanges.clear();
+                    wait(Control::LocalPause,now);
+                }
+                break;
+            case Control::LocalPause:
+                Require(file.GetStatus()==PS_PAUSED && !client.HasQueuedDownloadBlocks(),"paused part stays excluded");
+                if(now-controlStarted>=60000) {
+                    Log(_T("REACH_SELFTEST NC-Q07 local pause PASS: elapsed_ms=%I64u, fallback=0"),now-controlStarted);
+                    file.ResumeFile(false); grant(); wait(Control::Resumed,now);
+                }
+                break;
+            case Control::Resumed:
+                if(active && now-controlStarted>=1500) {
+                    Packet release(OP_OUTOFPARTREQS,0,OP_EDONKEYPROT);
+                    CSafeMemFile payload(4); payload.WriteUInt32(17);
+                    Packet rank(payload,OP_EDONKEYPROT,OP_QUEUERANK);
+                    std::vector<std::uint8_t> frames;
+                    for(auto* packet:{&release,&rank}) {
+                        const auto* wire=reinterpret_cast<const std::uint8_t*>(packet->GetPacket());
+                        frames.insert(frames.end(),wire,wire+packet->GetRealPacketSize());
+                    }
+                    Require(writer.Queue({frames.data(),frames.size()}).status==reach::DirectIoStatus::Accepted,
+                        "watchdog wire remote slot release and queue rank");
+                    wait(Control::RemoteQueue,now);
+                }
+                break;
+            case Control::RemoteQueue:
+                if(client.GetDownloadState()==DS_ONQUEUE && client.GetRemoteQueueRank()==17 &&
+                    !client.HasQueuedDownloadBlocks()) {
+                    ranges.clear(); admittedRanges.clear();
+                    wait(Control::Queued,now);
+                }
+                break;
+            case Control::Queued:
+                Require(client.GetDownloadState()==DS_ONQUEUE && client.GetRemoteQueueRank()==17 &&
+                    !client.HasQueuedDownloadBlocks(),"remote queue stays excluded");
+                if(now-controlStarted>=60000) {
+                    Log(_T("REACH_SELFTEST NC-Q07 remote queue PASS: elapsed_ms=%I64u, fallback=0"),now-controlStarted);
+                    grant(); wait(Control::Congestion,now); activeStarted=0;
+                }
+                break;
+            case Control::Congestion:
+                if(active) {
+                    if(!activeStarted) activeStarted=now;
+                    if(now-activeStarted>=10000) {
+                        Log(_T("REACH_SELFTEST NC-Q07 remote data delay PASS: elapsed_ms=%I64u, fallback=0"),now-activeStarted);
+                        Require(diskGate->Lock(),"watchdog blocks the actual IOCP write queue");
+                        wait(Control::DiskFill,now);
+                        nextSend=now;
+                    }
+                }
+                break;
+            case Control::DiskFill:
+                if(file.HasDownloadDiskBackpressure()) {
+                    Require(active && file.m_iWrites>0,"actual queued disk writes with active block requests");
+                    wait(Control::DiskBlocked,now);
+                }
+                break;
+            case Control::DiskBlocked:
+                Require(client.GetDownloadState()==DS_DOWNLOADING && client.HasQueuedDownloadBlocks() &&
+                    file.HasDownloadDiskBackpressure() && file.m_iWrites>0,"disk stays blocked with demand pending");
+                if(now-controlStarted>=60000) {
+                    Log(_T("REACH_SELFTEST NC-Q07 IOCP backpressure PASS: elapsed_ms=%I64u, writes=%d, fallback=0"),
+                        now-controlStarted,file.m_iWrites);
+                    diskGate->Unlock(); wait(Control::Slow,now);
+                    nextSend=now; acceptanceStarted=now; slowPriorUseful=owned->useful_bytes;
+                    lastUsefulMs=now;
+                }
+                break;
+            case Control::Slow:
+                break;
+            }
+            if(control!=Control::Slow && !completed) Require(now-controlStarted<70000,"watchdog control transition deadline");
+        }
+        const bool canSend=!watchdogControls || control==Control::DiskFill ||
+            (control==Control::Slow && Now()>=nextSend);
+        if(!ranges.empty() && canSend) {
             auto& range=ranges.front();
-            const auto count=(std::min)((std::min)(std::uint32_t(32768),range.end-range.next),
+            const auto target=watchdogControls && control==Control::Slow ? std::uint32_t(8192) : std::uint32_t(32768);
+            const auto count=(std::min)((std::min)(target,range.end-range.next),
                 std::uint32_t(PARTSIZE-range.next%PARTSIZE));
             CSafeMemFile data(24+count); data.WriteHash16(file.GetFileHash()); data.WriteUInt32(range.next);
             data.WriteUInt32(range.next+count); data.Write(expected.data()+range.next,count);
@@ -2274,6 +2391,10 @@ inline void RunMultipartTransfer(CDirectReachabilityManager& manager,CUpDownClie
             const auto queued=queue(packet);
             Require(queued.status==reach::DirectIoStatus::Accepted || queued.status==reach::DirectIoStatus::WouldBlock,"multipart bounded chunk admission");
             if(queued.status==reach::DirectIoStatus::Accepted) {
+                if(watchdogControls && control==Control::Slow) {
+                    slowBytes+=count;
+                    nextSend=Now()+(static_cast<std::uint64_t>(count)*1000+8191)/8192;
+                }
                 // Different requests may overlap (not just exact duplicates).
                 // Count the union, while still sending what the real peer asks.
                 auto start=range.next,end=range.next+count;
@@ -2336,6 +2457,13 @@ inline void RunMultipartTransfer(CDirectReachabilityManager& manager,CUpDownClie
     CFile disk(file.GetFilePath(),CFile::modeRead|CFile::shareDenyNone); std::vector<BYTE> actual(expected.size());
     Require(disk.GetLength()==expected.size() && disk.Read(actual.data(),static_cast<UINT>(actual.size()))==actual.size() &&
         actual==expected,"multipart completed disk exact across part boundary");
+    if(watchdogControls) {
+        Require(control==Control::Slow && activeRanges>100 && slowBytes>=expected.size()-slowPriorUseful &&
+            Now()-acceptanceStarted>=1000000 && largestUsefulGap<30000 &&
+            finalProof->fallback_count==0,"slow accepted ranges preserve the route without waiting for a part hash");
+        Log(_T("REACH_SELFTEST NC-Q07 paced file PASS: bytes=%I64u, paced_bytes=%I64u, paced_ms=%I64u, accepted_pre_hash_samples=%u, max_useful_gap_ms=%I64u, hashes=%u, fallback=0"),
+            static_cast<ULONGLONG>(actual.size()),slowBytes,Now()-acceptanceStarted,activeRanges,largestUsefulGap,hashCallbacks);
+    }
 }
 inline void RunLegacyPartialFile(CDirectReachabilityManager& manager,CUpDownClient& client,
     SOCKET& remote,reach::DirectHandle handle,const std::function<void()>& pump,bool corrupt=false,
@@ -4364,8 +4492,9 @@ inline void RunAutomaticQuicRecovery(CDirectReachabilityManager& manager,CUpDown
     }
 }
 
-inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNumber,HelloCase helloCase=HelloCase::Valid,bool fileData=false,bool corruptFileData=false,bool coldIdentity=false,bool serverSide=false,bool firstUse=false,bool automaticHandoff=false,Identity* sharedIdentity=nullptr,bool automaticCaller=false,bool multipart=false,bool productUpload=false,bool packedUpload=false,bool packedDownload=false,bool allPackedDownload=false,bool malformedPacked=false,bool i64Download=false,bool mixedRecovery=false,bool automaticRecovery=false,bool partialRecovery=false,bool optOutConnected=false) {
+inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNumber,HelloCase helloCase=HelloCase::Valid,bool fileData=false,bool corruptFileData=false,bool coldIdentity=false,bool serverSide=false,bool firstUse=false,bool automaticHandoff=false,Identity* sharedIdentity=nullptr,bool automaticCaller=false,bool multipart=false,bool productUpload=false,bool packedUpload=false,bool packedDownload=false,bool allPackedDownload=false,bool malformedPacked=false,bool i64Download=false,bool mixedRecovery=false,bool automaticRecovery=false,bool partialRecovery=false,bool optOutConnected=false,bool watchdogControls=false) {
     const bool rejectHello=helloCase!=HelloCase::Valid;
+    Require(!watchdogControls || (multipart && automaticCaller && fileData),"watchdog controls use actual multipart download");
     Require(!mixedRecovery || (fileData && !packedDownload && !corruptFileData && !coldIdentity && !serverSide && !rejectHello && !i64Download),"mixed recovery plain explicit file scope");
     Require(!packedUpload || (productUpload && !serverSide && !rejectHello),"packed upload explicit valid peer scope");
     Require(!packedDownload || (fileData && !coldIdentity && !corruptFileData && !serverSide && !automaticCaller && !multipart),"packed download explicit file scope");
@@ -4385,7 +4514,8 @@ inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNu
         Require(coldIdentity && !serverSide && !rejectHello,"first-use cold client fixture scope");
     }
     thePrefs.SetEseNetLabConsent(CPreferences::EseNetLabAccepted); thePrefs.SetEseNetLabEnabled(true);
-    thePrefs.SetUDPPort(portNumber); Require(theApp.clientudp->Rebind(),"consumer UDP rebind");
+    thePrefs.SetUDPPort(portNumber);
+    if(theApp.clientudp->GetConnectedPort()!=portNumber) Require(theApp.clientudp->Rebind(),"consumer UDP rebind");
     manager.TickDirectConnections();
     udp::Endpoint simulatedLocal; simulatedLocal.address[0]=9; simulatedLocal.address[1]=9;
     simulatedLocal.address[2]=9; simulatedLocal.address[3]=9; simulatedLocal.port=portNumber;
@@ -4447,7 +4577,7 @@ inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNu
     if(coldIdentity) {
         Require(!fileData || !rejectHello,"cold file requires valid HELLO");
         std::vector<BYTE> coldBytes(multipart?PARTSIZE+4097:4097);
-        for(size_t i=0;i<coldBytes.size();++i) coldBytes[i]=static_cast<BYTE>(i*31+(optOutConnected?179:partialRecovery?173:automaticRecovery?167:multipart?41:automaticCaller?35:automaticHandoff?29:firstUse?23:19));
+        for(size_t i=0;i<coldBytes.size();++i) coldBytes[i]=static_cast<BYTE>(i*31+(watchdogControls?211:optOutConnected?179:partialRecovery?173:automaticRecovery?167:multipart?41:automaticCaller?35:automaticHandoff?29:firstUse?23:19));
         if(corruptFileData) coldBytes[0]^=0x80;
         std::array<BYTE,16> coldHash{};
         if(multipart) { std::array<BYTE,32> parts{}; MultipartHash(coldBytes.data(),parts,coldHash); }
@@ -5121,7 +5251,7 @@ inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNu
             file->srclist.GetHead()==client.get() && theApp.downloadqueue->GetFileByID(file->GetFileHash())==file.get(),
             "multipart source and signed file continuously registered after real HELLO");
         RunMultipartTransfer(manager,*client,*file,*writer,*transport,*reader,port,peer,*core,*events,
-            admitted.request.handle,peerAdmitted.handle,peerRoute.id);
+            admitted.request.handle,peerAdmitted.handle,peerRoute.id,watchdogControls);
     } else if(fileData) {
         Require(!rejectHello && theApp.downloadqueue,"file fixture requires valid handshake and queue");
         std::array<BYTE,4097> expected{};

@@ -1282,6 +1282,19 @@ static bool RunReachBindingSelfTest(bool tcpFallbackF1)
 		return fail(_T("TCP fallback fixture requires native QUIC"));
 #endif
 	}
+#ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
+	TCHAR watchdogControls[2]{};
+	if (::GetEnvironmentVariable(_T("ESE_QUIC_WATCHDOG_SELFTEST"),watchdogControls,_countof(watchdogControls))==1 &&
+		watchdogControls[0]==_T('1')) {
+		ese::shared_socket_selftest::Identity peer;
+		if (!eSELive::NodeIdentityInit() || !eSELive::NodeIdentityIsPersistent() ||
+			manager.ImportDirectQuicPeerPin(peer.pub)!=ese::trust::SaveResult::Created)
+			return fail(_T("watchdog fixture persistent peer pin"));
+		ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,false,true,
+			false,false,true,&peer,true,true,false,false,false,false,false,false,false,false,false,false,true);
+		return true;
+	}
+#endif
 	reach::NativeDirectCandidateSnapshotV1 directSnapshot;
 	directSnapshot.local_generation=manager.GetTopologyGeneration();
 	directSnapshot.remote_generation=99;

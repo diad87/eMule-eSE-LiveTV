@@ -1,6 +1,9 @@
 param([Parameter(Mandatory=$true)][string]$ProfileRoot,
-      [ValidateRange(1,180)][int]$TimeoutSeconds=150)
+      [ValidateRange(1,1550)][int]$TimeoutSeconds=150,
+      [switch]$QuicWatchdogControls)
 $ErrorActionPreference='Stop'
+if ($QuicWatchdogControls -and !$PSBoundParameters.ContainsKey('TimeoutSeconds')) { $TimeoutSeconds=1550 }
+if (!$QuicWatchdogControls -and $TimeoutSeconds -gt 180) { throw 'The normal observation limit is 180 seconds.' }
 . (Join-Path $PSScriptRoot 'start_v93_detached_process.ps1')
 $root=(Resolve-Path -LiteralPath $ProfileRoot).Path
 if(!$root.StartsWith('D:\tmp\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Only a prepared D:\tmp profile is permitted.' }
@@ -24,6 +27,7 @@ if ($manifest.PSObject.Properties.Name -contains 'native_runtime_inputs') {
 $nativeQuicLab=$nativeRuntimeInputs.Count -gt 0
 $signedQuic=$manifest.PSObject.Properties.Name -contains 'signed_quic_dependencies' -and [bool]$manifest.signed_quic_dependencies
 $diagnosticPort=if($manifest.PSObject.Properties.Name -contains 'diagnostic_web_port'){[int]$manifest.diagnostic_web_port}else{0}
+if($QuicWatchdogControls -and (!$nativeQuicLab -or $diagnosticPort)) { throw 'Watchdog controls require the native QUIC profile with diagnostic HTTP disabled.' }
 if ($diagnosticPort -and !$nativeQuicLab) { throw 'The HTTP winner and terminal checks require a native QUIC laboratory profile.' }
 if($diagnosticPort -and ($diagnosticPort -lt 1024 -or $diagnosticPort -gt 65535 -or $diagnosticPort -in @($manifest.tcp,$manifest.udp))) { throw 'Unsafe diagnostic port.' }
 if($diagnosticPort -and (Get-FileHash -LiteralPath (Join-Path $root 'eMule.tmpl')).Hash -ne $manifest.diagnostic_template_sha256) { throw 'Diagnostic template changed.' }
@@ -71,12 +75,37 @@ $started=[ordered]@{schema='ese.v93.reach-binding-started/1';started_utc=[DateTi
     executable_sha256=$manifest.executable_sha256;preferences_sha256=$manifest.preferences_sha256;arguments=$arguments;
     observation_timeout_seconds=$TimeoutSeconds}
 [IO.File]::WriteAllText((Join-Path $root 'started.json'),($started|ConvertTo-Json -Depth 4),[Text.Encoding]::UTF8)
-$process=Start-V93DetachedProcess -FilePath $exe -ArgumentList $arguments -WorkingDirectory $root
+$previousWatchdogMode=$env:ESE_QUIC_WATCHDOG_SELFTEST
+try {
+    $env:ESE_QUIC_WATCHDOG_SELFTEST=if ($QuicWatchdogControls) { '1' } else { $null }
+    $process=Start-V93DetachedProcess -FilePath $exe -ArgumentList $arguments -WorkingDirectory $root
+} finally { $env:ESE_QUIC_WATCHDOG_SELFTEST=$previousWatchdogMode }
 # The launcher retains the exact process handle. This is only an observation
 # window, never a fixture deadline or kill.
 [IO.File]::WriteAllText((Join-Path $root 'process-id.txt'),[string]$process.Id,[Text.Encoding]::UTF8)
 $diagnosticSamples=0; $diagnosticFailures=0; $diagnosticWinner=$false; $diagnosticTerminal=$false
 $diagnosticSequences=[Collections.Generic.HashSet[string]]::new()
+if($QuicWatchdogControls) {
+    $log=Join-Path $root 'logs/eMule.log'
+    $destination=Join-Path $root 'Incoming/cold-binding.bin'
+    try {
+        $terminal=$process.WaitForExit($TimeoutSeconds*1000)
+        $markers=@(if(Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log | Where-Object { $_ -match 'REACH_SELFTEST NC-Q07 ' } })
+        $fileHash=if(Test-Path -LiteralPath $destination -PathType Leaf) { (Get-FileHash -LiteralPath $destination).Hash }
+        $exitCode=if($terminal) { $process.ExitCode }
+        $pass=$terminal -and $exitCode -eq 0 -and $markers.Count -eq 5 -and
+            $fileHash -eq 'FF15AD966A78BEB2447E6E24B494D7CE6753AF2A386A78F31219A27EF152A250'
+        $result=[ordered]@{schema='ese.v93.quic-watchdog-controls/1';profile=$root;desktop=$process.Desktop;pid=$process.Id;
+            exe_sha256=$manifest.executable_sha256;native_runtime_inputs=$nativeRuntimeInputs;
+            terminal=$terminal;observed_exit_code=$exitCode;markers=$markers;file_sha256=$fileHash;
+            verdict=if(!$terminal){'RUNNING'}elseif($pass){'PASS'}else{'FAIL'}}
+        $json=$result | ConvertTo-Json -Depth 5
+        [IO.File]::WriteAllText((Join-Path $root 'runtime-evidence.json'),$json,[Text.Encoding]::UTF8)
+        Write-Output $json
+        if(!$pass) { throw 'Watchdog control evidence did not pass.' }
+    } finally { $process.Dispose() }
+    return
+}
 if(!$diagnosticPort) { $terminal=$process.WaitForExit($TimeoutSeconds*1000) }
 else {
     $handler=[Net.Http.HttpClientHandler]::new(); $handler.UseProxy=$false

@@ -39,11 +39,7 @@ std::array<std::uint8_t,81> AuthMessage(const std::array<std::uint8_t,32>& expor
     const std::array<std::uint8_t,32>& context, std::uint8_t role) noexcept {
     const auto& domain=wire::kEseWirePeerAuthDomain;
     static_assert(sizeof(domain)==16,"signature domain includes NUL");
-    std::array<std::uint8_t,81> b{};
-    std::memcpy(b.data(),domain,sizeof(domain));
-    std::copy(exporter.begin(),exporter.end(),b.begin()+16);
-    std::copy(context.begin(),context.end(),b.begin()+48); b[80]=role;
-    return b;
+    return BuildTranscript(domain,exporter,context,role);
 }
 ReadResult ControlReader::Feed(const std::uint8_t* p,std::size_t n,std::size_t& consumed) noexcept {
     consumed=0;

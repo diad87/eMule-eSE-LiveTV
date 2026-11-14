@@ -1,0 +1,16 @@
+{
+  "specification": "docs/V9.3_IMPLEMENTATION_SPECIFICATION.md §D.3 and §D.11",
+  "case_id": "DS-09",
+  "provenance": "Python struct.pack network order, hashlib SHA-256 and cryptography Ed25519; seeds 0x60..0x7f and 0x80..0x9f are test vectors only",
+  "sha256_format": "decoded wire bytes",
+  "sha256": {
+    "client_hello.hex": "1c9a897b39a4ad1668a59e1ef04b892a5970d0d52b1f8d9c7cd1c4de859ba403",
+    "client_signature.hex": "950632c56cf6bfa497edef29a8a73c6d810245fd9064852139ea5653977422af",
+    "client_transcript.hex": "805662e2006a617d51ba4b8a65b0d97f8c5293e1167c8b348496a886f367e1f9",
+    "exporter.hex": "630dcd2966c4336691125448bbb25b4ff412a49c732db2c8abc1b8581bd710dd",
+    "hello_sha256.hex": "d873d5da4976da3f37817d1584efff07ea58695f8c772517646e1308fe713619",
+    "server_hello.hex": "7012a3d3efa0980864ae24103dccdf193929d5e4a5c1ec1a7d3a023eb84da011",
+    "server_signature.hex": "6134d76b664e9ca621950b2de9b65e3205867fbba31e90b89cb68dc4054c8500",
+    "server_transcript.hex": "cf72bb72d1112b7be1c725e73dc246f47180a5bf62386579bcb3387e3ffd3023"
+  }
+}

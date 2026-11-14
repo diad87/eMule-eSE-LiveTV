@@ -21,13 +21,15 @@ SPEC.loader.exec_module(REGISTRY)
 
 
 class RegistryTest(unittest.TestCase):
-    def test_frame_vector_manifest(self):
-        directory = ROOT / "tests" / "fixtures" / "server_interop" / "frame"
-        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual("DS-03", manifest["case_id"])
-        self.assertEqual({path.name for path in directory.glob("*.hex")}, set(manifest["sha256"]))
-        for name, digest in manifest["sha256"].items():
-            self.assertEqual(digest, hashlib.sha256(bytes.fromhex((directory / name).read_text())).hexdigest())
+    def test_vector_manifests(self):
+        for folder, scenario in {"frame": "DS-03", "auth": "DS-09"}.items():
+            with self.subTest(scenario=scenario):
+                directory = ROOT / "tests" / "fixtures" / "server_interop" / folder
+                manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(scenario, manifest["case_id"])
+                self.assertEqual({path.name for path in directory.glob("*.hex")}, set(manifest["sha256"]))
+                for name, digest in manifest["sha256"].items():
+                    self.assertEqual(digest, hashlib.sha256(bytes.fromhex((directory / name).read_text())).hexdigest())
 
     def run_checker(self, directory):
         output = StringIO()

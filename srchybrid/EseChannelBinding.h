@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include "EseWireProtocol.h"
@@ -7,6 +8,19 @@
 // Wire helpers and binding state machine. Cryptographic operations are supplied
 // by the transport; decoding a HELLO alone does not authenticate a peer.
 namespace ese { namespace binding {
+template<std::size_t DomainSize>
+std::array<std::uint8_t,DomainSize+65> BuildTranscript(const char (&domain)[DomainSize],
+    const std::array<std::uint8_t,32>& exporter,const std::array<std::uint8_t,32>& context,
+    std::uint8_t role) noexcept
+{
+    std::array<std::uint8_t,DomainSize+65> bytes{};
+    auto cursor=std::copy_n(domain,DomainSize,bytes.begin()); // includes the NUL domain delimiter
+    cursor=std::copy(exporter.begin(),exporter.end(),cursor);
+    cursor=std::copy(context.begin(),context.end(),cursor);
+    *cursor=role;
+    return bytes;
+}
+
 constexpr std::size_t HelloSize = 110;
 constexpr std::size_t AuthSize = 65;
 constexpr std::size_t LivenessSize = 24;

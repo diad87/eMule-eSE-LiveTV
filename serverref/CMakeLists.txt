@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(ese_server_ref LANGUAGES CXX)
 
-add_library(ese_server_protocol STATIC ../srchybrid/EseServerProtocol.cpp)
+add_library(ese_server_protocol STATIC ../srchybrid/EseServerProtocol.cpp ../srchybrid/EseServerAuth.cpp)
 target_include_directories(ese_server_protocol PUBLIC ../srchybrid)
 target_compile_features(ese_server_protocol PUBLIC cxx_std_17)
 if(MSVC)
@@ -21,4 +21,44 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME DS-03-frame COMMAND test_server_frame
         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/fixtures/server_interop/frame")
+    add_executable(test_peer_binding ../tools/quic/test_channel_binding.cpp ../srchybrid/EseChannelBinding.cpp)
+    target_include_directories(test_peer_binding PRIVATE ../srchybrid)
+    target_compile_features(test_peer_binding PRIVATE cxx_std_17)
+    add_test(NAME existing-peer-binding COMMAND test_peer_binding)
+endif()
+
+set(ESE_QUIC_RELEASE_ROOT "" CACHE PATH "Verified signed Windows x64 QUIC dependency root")
+if(ESE_QUIC_RELEASE_ROOT)
+    if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+        message(FATAL_ERROR "The signed dependency root targets Windows x64")
+    endif()
+    get_filename_component(ESE_QUIC_RELEASE_ROOT "${ESE_QUIC_RELEASE_ROOT}" ABSOLUTE)
+    execute_process(COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tools/verify_quic_release_dependencies.ps1"
+        -Root "${ESE_QUIC_RELEASE_ROOT}" -Architecture x64
+        RESULT_VARIABLE checked_quic)
+    if(NOT checked_quic STREQUAL "0")
+        message(FATAL_ERROR "The signed QUIC dependency root failed verification")
+    endif()
+
+    add_library(ese_server_tls STATIC ServerTls.cpp)
+    target_include_directories(ese_server_tls PUBLIC . "${ESE_QUIC_RELEASE_ROOT}/include-x64")
+    target_link_libraries(ese_server_tls PUBLIC ese_server_protocol "${ESE_QUIC_RELEASE_ROOT}/gnutls-x64.lib")
+    if(MSVC)
+        target_compile_options(ese_server_tls PRIVATE /W4 /WX)
+    endif()
+
+    if(BUILD_TESTING)
+        add_executable(test_server_tls ../tests/server_interop/test_server_tls.cpp)
+        target_link_libraries(test_server_tls PRIVATE ese_server_tls ws2_32)
+        if(MSVC)
+            target_compile_options(test_server_tls PRIVATE /W4 /WX)
+        endif()
+        file(GLOB runtime_dlls "${ESE_QUIC_RELEASE_ROOT}/runtime-x64/*.dll")
+        add_custom_command(TARGET test_server_tls POST_BUILD COMMAND ${CMAKE_COMMAND} -E
+            copy_if_different ${runtime_dlls} "$<TARGET_FILE_DIR:test_server_tls>")
+        add_test(NAME server-tls-loopback COMMAND test_server_tls
+            "${CMAKE_CURRENT_SOURCE_DIR}/../tests/fixtures/server_interop/auth")
+        set_tests_properties(server-tls-loopback PROPERTIES TIMEOUT 30)
+    endif()
 endif()

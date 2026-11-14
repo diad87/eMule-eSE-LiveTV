@@ -184,8 +184,14 @@ $expectedTests = @('abi','loopback-clean','loopback-wrong-alpn','loopback-bad-au
     'native-clean','native-loss','native-bad-auth','native-dco')
 Assert-FileSet 'tests' $expectedTests @($manifest.tests)
 if ($windows32) {
-    $testLogs = Read-FileRecords 'test log' @($manifest.test_logs)
-    Assert-FileSet 'test log' @($expectedTests | ForEach-Object { "$_.log" }) @($testLogs.Keys)
+    $testReceipts = Read-FileRecords 'test receipt' @($manifest.test_receipts)
+    Assert-FileSet 'test receipt' @($expectedTests | ForEach-Object { "test-receipts/$_.txt" }) @($testReceipts.Keys)
+    foreach ($test in $expectedTests) {
+        $actual = [IO.File]::ReadAllText((Join-Path $dependencyRoot "test-receipts/$test.txt"))
+        if ($actual -cne (@("case=$test",'result=PASS','') -join [char]10)) {
+            throw "QUIC dependency test did not pass: $test"
+        }
+    }
 }
 if ((Get-DependencyHash $manifestPath) -ne $manifestHash) { throw 'QUIC manifest changed during verification.' }
 

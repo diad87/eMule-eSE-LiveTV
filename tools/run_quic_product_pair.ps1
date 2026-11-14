@@ -7,7 +7,8 @@ param(
     [Parameter(Mandatory=$true)][string]$Address,
     [Parameter(Mandatory=$true)][int]$InterfaceId,
     [int]$TimeoutSeconds=120,
-    [ValidateSet(65537,1048576,1073741824)][int]$FileBytes=65537,
+    [ValidateSet('65537','1048576','1073741824','4294967297')][UInt64]$FileBytes=65537,
+    [ValidateRange(1024,65524)][int]$PortBase=49501,
     [switch]$Interrupt,
     [ValidateSet(0,1000,5000,15000,30000,45000)][int]$NetworkLossMs=0,
     [switch]$ExpectStall,
@@ -25,7 +26,16 @@ if($ExpectStall -and $NetworkLossMs -ne 45000){throw 'A 45-second loss window is
 if($ResumeFrom -and ($FileBytes -ne 1073741824 -or $Interrupt -or $NetworkLossMs -or $ExpectStall)) {
     throw 'Resume requires a completed stall fixture and healthy F1 network.'
 }
-$fixtureName=if($FileBytes -eq 65537){'pair-small.bin'}elseif($FileBytes -eq 1048576){'pair-f2.bin'}else{'pair-f1.bin'}
+$fixtureName=switch($FileBytes) {
+    65537 { 'pair-small.bin' }
+    1048576 { 'pair-f2.bin' }
+    1073741824 { 'pair-f1.bin' }
+    4294967297 { 'pair-f3.bin' }
+}
+if($FileBytes -eq 4294967297) {
+    if($HighEntropy) { throw 'F3 uses four repetitions of the periodic F1 fixture plus one byte.' }
+    if(!$PSBoundParameters.ContainsKey('TimeoutSeconds')) { $TimeoutSeconds=3900 }
+}
 if($FileBytes -eq 1073741824 -and !$PSBoundParameters.ContainsKey('TimeoutSeconds')) {
     $TimeoutSeconds=if($HighEntropy){2700}else{1100}
 }
@@ -63,7 +73,7 @@ $ip=[Net.IPAddress]::Parse($Address)
 $bytes=$ip.GetAddressBytes()
 if($bytes.Length -ne 4 -or !($bytes[0] -eq 10 -or ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and $bytes[1] -le 31) -or ($bytes[0] -eq 192 -and $bytes[1] -eq 168))) { throw 'Only an assigned RFC1918 IPv4 address is allowed.' }
 if(!(Get-NetIPAddress -InterfaceIndex $InterfaceId -AddressFamily IPv4 | Where-Object { $_.IPAddress -eq $Address -and $_.AddressState -eq 'Preferred' })) { throw 'The exact LAN interface/address must be assigned and preferred.' }
-$tcpPorts=@(49501,49511); $udpPorts=@(49502,49512)
+$tcpPorts=@($PortBase,($PortBase+10)); $udpPorts=@(($PortBase+1),($PortBase+11))
 if(Get-NetTCPConnection -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in $tcpPorts }) { throw 'Pair TCP ports already occupied.' }
 if(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in $udpPorts }) { throw 'Pair UDP ports already occupied.' }
 $resumeEvidence=$null

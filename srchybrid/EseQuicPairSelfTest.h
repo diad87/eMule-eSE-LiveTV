@@ -165,9 +165,14 @@ inline bool Run() {
         Require(stored && closed,"pair durable pin publication");
     }
     udp::Endpoint endpoint; memcpy(endpoint.address.data(),&ip,4); endpoint.port=peerUdp;
-    const UINT fixtureBytes=GetPrivateProfileInt(_T("Pair"),_T("FileBytes"),65537,ini);
-    Require(fixtureBytes==65537 || fixtureBytes==1048576 || fixtureBytes==1073741824,"pair supported fixture size");
-    const bool large=fixtureBytes==1073741824;
+    TCHAR sizeText[24]={};
+    GetPrivateProfileString(_T("Pair"),_T("FileBytes"),_T("65537"),sizeText,_countof(sizeText),ini);
+    TCHAR* sizeEnd=nullptr;
+    const uint64 fixtureBytes=_tcstoui64(sizeText,&sizeEnd,10);
+    const bool wideOffsets=fixtureBytes==0x100000001ULL;
+    Require(!*sizeEnd && (fixtureBytes==65537 || fixtureBytes==1048576 || fixtureBytes==1073741824 || wideOffsets),
+        "pair supported fixture size");
+    const bool large=fixtureBytes>=1073741824;
     Require(!recovery || large,"pair interruption requires real F1");
     Require(!manager.ConfigureIsolatedLanQuicPeer(node,endpoint,interfaceId,119999) &&
         !manager.ConfigureIsolatedLanQuicPeer(node,endpoint,interfaceId,1200001),"pair rejects unbounded lab authorization");
@@ -176,10 +181,12 @@ inline bool Run() {
     Require(!manager.IsIsolatedLanQuicPeer(node,wrongEndpoint),"pair other endpoint not authorized");
     auto wrongNode=node; wrongNode[0]^=1;
     Require(!manager.IsIsolatedLanQuicPeer(wrongNode,endpoint),"pair other node not authorized");
-    const CString fixtureName=fixtureBytes==65537?_T("pair-small.bin"):(large?_T("pair-f1.bin"):_T("pair-f2.bin"));
+    const CString fixtureName=wideOffsets?_T("pair-f3.bin"):
+        (fixtureBytes==65537?_T("pair-small.bin"):(large?_T("pair-f1.bin"):_T("pair-f2.bin")));
     const unsigned modulus=fixtureBytes==65537?251:256;
     const bool highEntropy=GetPrivateProfileInt(_T("Pair"),_T("HighEntropy"),0,ini)!=0;
-    const uint64 transferBudget=large ? (highEntropy ? 2400000 : 900000) : 60000;
+    Require(!wideOffsets || !highEntropy,"wide-offset test uses the specified repeating fixture");
+    const uint64 transferBudget=wideOffsets ? 3600000 : (large ? (highEntropy ? 2400000 : 900000) : 60000);
     Log(_T("QUIC_PAIR FIXTURE high_entropy=%u"), static_cast<UINT>(highEntropy));
     std::vector<BYTE> chunk(65536);
     uint32 entropyState = 0x9e3779b9u;
@@ -268,7 +275,7 @@ inline bool Run() {
         { CFile disk(root+_T("\\upload.hash"),CFile::modeRead|CFile::shareDenyNone);
           Require(disk.GetLength()==md4.size() && disk.Read(md4.data(),static_cast<UINT>(md4.size()))==md4.size(),"pair source ed2k hashset root"); }
         CString hash; for(const auto byte:md4) hash.AppendFormat(_T("%02X"),byte);
-        CString link; link.Format(_T("ed2k://|file|%s|%u|%s|/"),(LPCTSTR)fixtureName,fixtureBytes,(LPCTSTR)hash);
+        CString link; link.Format(_T("ed2k://|file|%s|%I64u|%s|/"),(LPCTSTR)fixtureName,fixtureBytes,(LPCTSTR)hash);
         std::vector<UINT> persistedParts;
         uint64 persistedBytes=0;
         if(resumePartial) {
@@ -421,7 +428,7 @@ inline bool Run() {
     }
     logPollSample();
     CString hash; for(const auto byte:md4) hash.AppendFormat(_T("%02X"),byte);
-    Log(_T("QUIC_PAIR PASS role=%s bytes=%u MD4=%s two independent product processes exact SameLan pinned enrollment normal queue bootstrap AUTH HELLO file negotiation disk completion"),
+    Log(_T("QUIC_PAIR PASS role=%s bytes=%I64u MD4=%s two independent product processes exact SameLan pinned enrollment normal queue bootstrap AUTH HELLO file negotiation disk completion"),
         (LPCTSTR)theApp.m_strQuicPairSelfTestRole,fixtureBytes,(LPCTSTR)hash);
     return true;
 }

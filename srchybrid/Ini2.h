@@ -52,6 +52,7 @@ public:
 	const CString& GetFileName() const					{ return m_strFileName; }
 	const CString& GetSection() const					{ return m_strSection;}
 	bool HasWriteError() const							{ return m_bWriteError; }
+	static CCriticalSection& GetWriteLock();
 
 	CString	GetStringUTF8(LPCTSTR lpszEntry,LPCTSTR		lpszDefault = NULL,		LPCTSTR lpszSection = NULL);
 	CString	GetStringLong(LPCTSTR lpszEntry,LPCTSTR		lpszDefault = NULL,		LPCTSTR lpszSection = NULL);

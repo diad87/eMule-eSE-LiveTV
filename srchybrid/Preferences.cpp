@@ -1570,12 +1570,14 @@ bool CPreferences::SavePreferences()
 {
 	// Keep unknown keys from the existing profile, and publish the complete
 	// settings revision only after all of the INI writes have succeeded.
+	CSingleLock writer(&CIni::GetWriteLock(), TRUE);
 	struct StagedIni {
 		TCHAR path[MAX_PATH] = {};
 		~StagedIni() { if (path[0] != _T('\0')) ::DeleteFile(path); }
 	} staging;
 	const LPCTSTR path = GetConfigFile();
-	const auto fail = [](LPCTSTR operation, DWORD error) {
+	const auto fail = [&writer](LPCTSTR operation, DWORD error) {
+		writer.Unlock();
 		LogError(_T("Failed to %s preferences.ini (Windows error %lu)"), operation, error);
 		return false;
 	};
@@ -1938,10 +1940,8 @@ bool CPreferences::SavePreferences()
 	ini.WriteInt(_T("EseHolePunchPortSpread"), m_iEseHolePunchPortSpread, _T("eSE"));
 	ini.WriteBool(_T("EseEd2kPunch3"), m_bEseEd2kPunch3, _T("eSE"));
 
-	if (ini.HasWriteError()) {
-		LogError(_T("Failed to write staged preferences.ini"));
-		return false;
-	}
+	if (ini.HasWriteError())
+		return fail(_T("write staged"), ERROR_WRITE_FAULT);
 	const HANDLE output = ::CreateFile(staging.path, GENERIC_WRITE, FILE_SHARE_READ,
 		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (output == INVALID_HANDLE_VALUE)

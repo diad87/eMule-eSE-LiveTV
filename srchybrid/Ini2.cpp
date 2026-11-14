@@ -249,8 +249,15 @@ COLORREF CIni::GetColRef(LPCTSTR lpszEntry, COLORREF crDefault, LPCTSTR lpszSect
 	return (_stscanf(strColRef, _T("RGB(%d,%d,%d)"), &r, &g, &b) == 3) ? RGB(r, g, b) : crDefault;
 }
 
+CCriticalSection& CIni::GetWriteLock()
+{
+	static CCriticalSection lock;
+	return lock;
+}
+
 void CIni::WriteString(LPCTSTR lpszEntry, LPCTSTR lpsz, LPCTSTR lpszSection)
 {
+	CSingleLock writer(&GetWriteLock(), TRUE);
 	if (lpszSection != NULL)
 		m_strSection = lpszSection;
 	if (!WritePrivateProfileString(m_strSection, lpszEntry, lpsz, m_strFileName))
@@ -259,6 +266,7 @@ void CIni::WriteString(LPCTSTR lpszEntry, LPCTSTR lpsz, LPCTSTR lpszSection)
 
 void CIni::WriteStringUTF8(LPCTSTR lpszEntry, LPCTSTR lpsz, LPCTSTR lpszSection)
 {
+	CSingleLock writer(&GetWriteLock(), TRUE);
 	if (lpszSection != NULL)
 		m_strSection = lpszSection;
 	if (!WritePrivateProfileStringA((CStringA)m_strSection, CStringA(lpszEntry),

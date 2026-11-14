@@ -7,7 +7,7 @@ artifacts/**/handoff-9.3/gate-matrix.json text eol=lf
 
 # QUIC dependency manifests hash these build inputs before use.
 third_party/quic/dependencies.lock.json text eol=lf
-third_party/quic/msys2-gnutls-x64-candidate.json text eol=lf
+third_party/quic/msys2-gnutls-x64-candidate.json -text
 third_party/quic/DISTRIBUTION.md text eol=lf
 third_party/quic/rebuild_gnutls_win32.sh text eol=lf
 third_party/quic/gnutls-win32-toolchain.sha256 text eol=lf

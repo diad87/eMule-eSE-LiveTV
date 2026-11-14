@@ -228,6 +228,9 @@ inline bool Run() {
             theApp.sharedfiles->SafeAddKFile(source.get(),true),"pair actual hashed shared source");
         memcpy(md4.data(),source->GetFileHash(),md4.size());
         publish(_T("upload.hash"),md4.data(),static_cast<UINT>(md4.size()));
+        // A restart can rehash the partial file before it is ready to connect.
+        // Keep that work outside the short-lived Control/1 upload grant.
+        if(resumePartial) wait(_T("download.loaded"),120000);
         client->SetUploadFileID(source.get());
         theApp.uploadqueue->AddClientToQueue(client); // normal admission, queue checks and slot scheduler
         const auto grantUntil=Now()+4000;
@@ -271,7 +274,7 @@ inline bool Run() {
         Require(!manager.HasPendingDirectUpload(clientLifetime),"pair unshared file revokes upload authorization");
         publish(_T("upload.complete"),md4.data(),static_cast<UINT>(md4.size()));
     } else {
-        wait(_T("upload.ready"),large?120000:30000);
+        wait(resumePartial?_T("upload.hash"):_T("upload.ready"),large?120000:30000);
         { CFile disk(root+_T("\\upload.hash"),CFile::modeRead|CFile::shareDenyNone);
           Require(disk.GetLength()==md4.size() && disk.Read(md4.data(),static_cast<UINT>(md4.size()))==md4.size(),"pair source ed2k hashset root"); }
         CString hash; for(const auto byte:md4) hash.AppendFormat(_T("%02X"),byte);
@@ -298,6 +301,7 @@ inline bool Run() {
                 "pair startup restored six complete verified parts");
             Log(_T("QUIC_PAIR RESTART_LOAD PASS persisted_parts=%u persisted_bytes=%I64u"),
                 static_cast<unsigned>(persistedParts.size()),persistedBytes);
+            const BYTE loaded=1; publish(_T("download.loaded"),&loaded,1);
         } else {
             download=new CPartFile(link);
             theApp.downloadqueue->AddDownload(download,false);

@@ -317,6 +317,11 @@ void QuicDownloadConsumer::Batch(const reach::DirectCoordinatorBatch& batch) {
                 if(!e->owner) {
                     // One unavailable adapter must not cancel a separately
                     // authorized fallback. No transport owns this route.
+                    const auto routes=manager_.DirectConnections().RoutesSnapshot(e->handle);
+                    if(!routes || routes->size()<2) {
+                        Fail(batch.handle,reach::DirectReason::DirectUnreachable);
+                        return;
+                    }
                     const auto state=manager_.DirectConnections().Snapshot(e->handle);
                     if(!state || manager_.DirectEvents().TryPush({e->handle,state->topology_generation,e->route.id,1,
                         action.session_epoch,reach::DirectEventType::Closed,0,reach::DirectReason::DirectUnreachable})

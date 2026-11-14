@@ -668,7 +668,7 @@ try{
 }
 
 function New-Plane($transport,$configuredPort,$grantedPort,$generation){[pscustomobject]@{
-    gate_state='CANDIDATE';generation=$generation
+    gate_state='CANDIDATE';reason_code=0;generation=$generation
     local=[pscustomobject]@{port=$configuredPort}
     mapped=[pscustomobject]@{port=$grantedPort}
     advertised=[pscustomobject]@{port=$grantedPort}

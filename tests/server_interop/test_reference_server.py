@@ -73,18 +73,18 @@ def write_identity(directory):
     return files, certificate.public_bytes(serialization.Encoding.PEM), server_key.public_key()
 
 
-def authenticate(connection, server_pub):
+def authenticate(connection, server_pub, mode=0, generation_expected=1):
     client_key = ed25519.Ed25519PrivateKey.generate()
     user_hash = bytes([0x37] * 16)
     client_hello = struct.pack("!32s32s16sII16sB", bytes(range(32)), client_key.public_key().public_bytes_raw(),
-                               user_hash, 0x80000011, 65536, bytes([0x4A] * 16), 0)
+                               user_hash, 0x80000011, 65536, bytes([0x4A] * 16), mode)
     wire = frame(0x01, client_hello)
     for offset in range(0, len(wire), 7):
         connection.sendall(wire[offset:offset + 7])
     kind, flags, request, server_hello = read_frame(connection)
     require((kind, flags, request) == (0x02, 0, bytes(16)), "canonical SERVER_HELLO")
     nonce, node, epoch, session, generation, chosen, maximum, lease = struct.unpack("!32s32s16s16sQIII", server_hello)
-    require((node, generation, chosen, maximum, lease) == (server_pub.public_bytes_raw(), 1, 0x11, 65536, 600)
+    require((node, generation, chosen, maximum, lease) == (server_pub.public_bytes_raw(), generation_expected, 0x11, 65536, 600)
             and all(any(value) for value in (nonce, epoch, session)), "expected descriptor and selected capabilities")
     digest = hashlib.sha256(client_hello + server_hello).digest()
     exporter = connection.export_keying_material(b"EXPORTER-eSE-server-v1", 32, digest)
@@ -110,11 +110,15 @@ def operation(connection, request, opcode, body=b""):
     return [first, last]
 
 
-def exercise_operations(connection, user_hash, port):
+def login_command(user_hash):
     name = b"Mule ref"
     tags = struct.pack("<BHBH", 2, 1, 1, len(name)) + name
     tags += b"".join(struct.pack("<BHBI", 3, 1, tag, value) for tag, value in ((0x11, 0x3C), (0x20, 0x10), (0xFB, 0x46)))
-    login = struct.pack("<16sIHI", user_hash, 0, 4662, 4) + tags
+    return struct.pack("<16sIHI", user_hash, 0, 4662, 4) + tags
+
+
+def exercise_operations(connection, user_hash, port):
+    login = login_command(user_hash)
     request = bytes([1] * 16)
     wrong = bytes([0x38]) + login[1:]
     require(operation(connection, request, 1, wrong) == [(0xFF, 3, request, struct.pack("!HI", 1, 0))],
@@ -143,48 +147,103 @@ def exercise_operations(connection, user_hash, port):
     connection.sendall(frame(0x7777, request=unknown) + frame(0xFE, nonce, ping))
     require(read_frame(connection) == (0xFF, 3, unknown, struct.pack("!HI", 2, 0))
             and read_frame(connection) == (0xFD, 3, ping, nonce), "unknown request is recoverable and does not desynchronize")
+    exercise_publication(connection)
+    disconnect_client(connection)
+
+
+def disconnect_client(connection):
     disconnect = bytes([7] * 16)
     require(operation(connection, disconnect, 0x18) == [(0x12, 3, disconnect, b"\x00\x00")],
             "owned reconnect fixture disconnects cleanly")
+
+
+def publish_operation(connection, sequence, kind, body, expected_kind, expected_body):
+    request = sequence.to_bytes(16, byteorder="big")
+    connection.sendall(frame(kind, body, request))
+    require(read_frame(connection) == (expected_kind, 3, request, expected_body),
+            f"publication type {kind} exact response for operation {sequence}")
+
+
+def exercise_publication(connection):
+    name = "Málaga eSE".encode("utf-8")
+    record = bytes([0xA1] * 16) + struct.pack("!QH", 4294967400, len(name)) + name + b"\x02"
+    digest = hashlib.sha256(record).digest()
+    previous = struct.pack("!QI", 0, 0) + hashlib.sha256(b"").digest()
+    proposed = struct.pack("!QI32s", 1, 1, digest)
+    chunk = struct.pack("!QIH", 1, 0, 1) + record
+    commit = struct.pack("!Q32s", 1, digest)
+    ack = b"\x00\x00"
+    publish_operation(connection, 20, 0x23, b"", 0x24, previous)
+    publish_operation(connection, 21, 0x20, proposed, 0x12, ack)
+    publish_operation(connection, 22, 0x21, chunk[:-1], 0xFF, struct.pack("!HI", 1, 0))
+    publish_operation(connection, 23, 0x21, chunk, 0x12, ack)
+    publish_operation(connection, 24, 0x21, chunk, 0x12, ack)
+    publish_operation(connection, 25, 0x23, b"", 0x24, previous)
+    publish_operation(connection, 26, 0x22, commit, 0x12, ack)
+    publish_operation(connection, 27, 0x22, commit, 0x12, ack)
+    publish_operation(connection, 28, 0x23, b"", 0x24, proposed)
+
+    new_state = struct.pack("!QI32s", 2, 1, digest)
+    new_chunk = struct.pack("!QIH", 2, 0, 1) + record
+    publish_operation(connection, 29, 0x20, new_state, 0x12, ack)
+    publish_operation(connection, 30, 0x21, new_chunk, 0x12, ack)
+    publish_operation(connection, 31, 0x21, new_chunk[:-1] + b"\x01", 0xFF, struct.pack("!HI", 10, 0))
+    publish_operation(connection, 32, 0x22, struct.pack("!Q32s", 2, digest), 0xFF, struct.pack("!HI", 13, 0))
+    publish_operation(connection, 33, 0x23, b"", 0x24, proposed)
+
+
+def connect_reference(port, files, expected_certificate, callback):
+    context = SSL.Context(SSL.TLS_CLIENT_METHOD)
+    context.set_min_proto_version(SSL.TLS1_3_VERSION)
+    context.set_max_proto_version(SSL.TLS1_3_VERSION)
+    context.set_alpn_protos([b"ese-server/1"])
+    context.load_verify_locations(str(files[0]))
+    context.set_verify(SSL.VERIFY_PEER, lambda _conn, _cert, _error, _depth, ok: ok)
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+        # PyOpenSSL talks directly to the socket. Blocking mode lets
+        # OpenSSL perform I/O without a Python-side poll loop.
+        sock.setblocking(True)
+        connection = SSL.Connection(context, sock)
+        connection.set_connect_state()
+        connection.set_tlsext_host_name(b"localhost")
+        connection.do_handshake()
+        require(connection.get_alpn_proto_negotiated() == b"ese-server/1"
+                and connection.get_peer_certificate().to_cryptography().public_bytes(serialization.Encoding.PEM) == expected_certificate,
+                "independently trusted reference cert and ALPN")
+        callback(connection)
 
 
 def main():
     require(len(sys.argv) == 2, "usage: test_reference_server.py <ese-server-ref.exe>")
     with tempfile.TemporaryDirectory(prefix="ese-server-ref-") as scratch:
         files, ca, server_pub = write_identity(pathlib.Path(scratch))
-        child = subprocess.Popen([sys.argv[1], "0", *map(str, files), "1"],
+        child = subprocess.Popen([sys.argv[1], "0", *map(str, files), "2"],
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         try:
             match = re.fullmatch(r"LISTENING (\d+)\n", child.stdout.readline())
             require(match is not None, "reference server ready on an owned port")
             port = int(match.group(1))
-            context = SSL.Context(SSL.TLS_CLIENT_METHOD)
-            context.set_min_proto_version(SSL.TLS1_3_VERSION)
-            context.set_max_proto_version(SSL.TLS1_3_VERSION)
-            context.set_alpn_protos([b"ese-server/1"])
-            context.load_verify_locations(str(files[0]))
-            context.set_verify(SSL.VERIFY_PEER, lambda _conn, _cert, _error, _depth, ok: ok)
-            with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
-                # PyOpenSSL talks directly to the socket. Blocking mode lets
-                # OpenSSL perform I/O without a Python-side poll loop.
-                sock.setblocking(True)
-                connection = SSL.Connection(context, sock)
-                connection.set_connect_state()
-                connection.set_tlsext_host_name(b"localhost")
-                connection.do_handshake()
-                require(connection.get_alpn_proto_negotiated() == b"ese-server/1"
-                        and connection.get_peer_certificate().to_cryptography().public_bytes(serialization.Encoding.PEM) == ca,
-                        "independently trusted reference cert and ALPN")
-                exercise_operations(connection, authenticate(connection, server_pub), port)
+            connect_reference(port, files, ca,
+                              lambda connection: exercise_operations(connection, authenticate(connection, server_pub), port))
+
+            def exercise_auxiliary(connection):
+                user_hash = authenticate(connection, server_pub, mode=1, generation_expected=2)
+                request = bytes([1] * 16)
+                require(len(operation(connection, request, 1, login_command(user_hash))) == 2,
+                        "auxiliary performs restricted authenticated login")
+                publish_operation(connection, 21, 0x23, b"", 0xFF, struct.pack("!HI", 13, 0))
+                disconnect_client(connection)
+
+            connect_reference(port, files, ca, exercise_auxiliary)
             stdout, stderr = child.communicate(timeout=5)
-            require(child.returncode == 0 and stdout.strip() == "LOGIN_SESSIONS 1" and not stderr,
-                    "one authenticated session reported by reference server")
+            require(child.returncode == 0 and stdout.strip() == "LOGIN_SESSIONS 2" and not stderr,
+                    "two authenticated sessions reported by reference server")
         finally:
             if child.poll() is None:
                 child.kill()
                 child.communicate()
-    print("Reference server TLS1.3, proof, initial eD2K login and idempotency PASS")
+    print("Reference server TLS1.3, proof, eD2K login, idempotency and atomic publication PASS")
 
 
 if __name__ == "__main__":

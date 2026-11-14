@@ -210,7 +210,9 @@ bool Serve(const Socket& peer,const ServerIdentity& identity,const Bytes16& epoc
     }
     const auto* client=auth.RemoteClient();
     if(!client) return false;
-    ServerSession session(*client,endpoint,Now());
+    Bytes32 emptyDigest{};
+    if(!crypto.Hash({},emptyDigest)) return false;
+    ServerSession session(*client,endpoint,emptyDigest,Now());
     while(!session.Closed()) {
         transport.SetDeadline(session.Deadline());
         const auto frame=transport.Next();

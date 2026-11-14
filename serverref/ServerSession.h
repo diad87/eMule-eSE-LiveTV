@@ -1,5 +1,6 @@
 #pragma once
 #include "EseServerAuth.h"
+#include "PublicationStore.h"
 #include <vector>
 
 namespace ese::server {
@@ -17,7 +18,8 @@ struct ServerEndpoint {
 // Takes no pointers into caller-owned frames after Handle returns.
 class ServerSession {
 public:
-    ServerSession(const ClientHello& authenticatedClient,ServerEndpoint endpoint,std::uint64_t now);
+    ServerSession(const ClientHello& authenticatedClient,ServerEndpoint endpoint,const Bytes32& emptyDigest,
+        std::uint64_t now);
     bool Handle(const FrameView&,AuthCrypto&,std::uint64_t now,Responses& output);
     bool LoggedIn() const noexcept { return loggedIn_; }
     bool Closed() const noexcept { return closed_; }
@@ -29,13 +31,14 @@ private:
         std::uint64_t until;
         Responses responses;
     };
-    bool Dispatch(const FrameView&,std::uint64_t now,Responses&,bool& loggedIn,bool& closed,
+    bool Dispatch(const FrameView&,AuthCrypto&,std::uint64_t now,Responses&,bool& loggedIn,bool& closed,
         std::uint64_t& lease);
 
     ClientHello client_;
     ServerEndpoint endpoint_;
     std::uint64_t lease_ = 0;
     std::vector<Completed> completed_;
+    PublicationStore publication_;
     bool loggedIn_ = false;
     bool closed_ = false;
 };

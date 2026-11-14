@@ -93,8 +93,9 @@ bool ValidateLogin(ByteView input,const Bytes16& expected) noexcept
 }
 }
 
-ServerSession::ServerSession(const ClientHello& authenticatedClient,ServerEndpoint endpoint,std::uint64_t now)
-    : client_(authenticatedClient),endpoint_(endpoint),lease_(AddTime(now,LeaseMilliseconds))
+ServerSession::ServerSession(const ClientHello& authenticatedClient,ServerEndpoint endpoint,const Bytes32& emptyDigest,
+    std::uint64_t now)
+    : client_(authenticatedClient),endpoint_(endpoint),lease_(AddTime(now,LeaseMilliseconds)),publication_(emptyDigest)
 {
     completed_.reserve(CacheEntries);
 }
@@ -109,11 +110,6 @@ bool ServerSession::Handle(const FrameView& frame,AuthCrypto& crypto,std::uint64
         if(!Error(frame.header.request,kEseWireServerExpired,pending)) return false;
         output.swap(pending);
         closed_=true;
-        return true;
-    }
-    if(route==Disposition::UnsupportedRequest) {
-        if(!Error(frame.header.request,kEseWireServerUnsupported,pending)) return false;
-        output.swap(pending);
         return true;
     }
     EncodedFrame request={static_cast<std::uint8_t>(frame.header.type>>8),static_cast<std::uint8_t>(frame.header.type)};
@@ -139,7 +135,9 @@ bool ServerSession::Handle(const FrameView& frame,AuthCrypto& crypto,std::uint64
     auto loggedIn=loggedIn_;
     auto closed=closed_;
     auto lease=lease_;
-    if(!Dispatch(frame,now,pending,loggedIn,closed,lease)) return false;
+    if(route==Disposition::UnsupportedRequest) {
+        if(!Error(frame.header.request,kEseWireServerUnsupported,pending)) return false;
+    } else if(!Dispatch(frame,crypto,now,pending,loggedIn,closed,lease)) return false;
     completed_.push_back({frame.header.request,digest,AddTime(now,CacheMilliseconds),pending});
     loggedIn_=loggedIn;
     closed_=closed;
@@ -148,7 +146,7 @@ bool ServerSession::Handle(const FrameView& frame,AuthCrypto& crypto,std::uint64
     return true;
 }
 
-bool ServerSession::Dispatch(const FrameView& frame,std::uint64_t now,Responses& output,bool& loggedIn,bool& closed,
+bool ServerSession::Dispatch(const FrameView& frame,AuthCrypto& crypto,std::uint64_t now,Responses& output,bool& loggedIn,bool& closed,
     std::uint64_t& lease)
 {
     const auto& request=frame.header.request;
@@ -164,6 +162,33 @@ bool ServerSession::Dispatch(const FrameView& frame,std::uint64_t now,Responses&
         AppendBig32(payload,SessionLeaseSeconds);
         lease=AddTime(now,LeaseMilliseconds);
         return Reply(request,kEseWireServerSessionRenew,{payload.data(),payload.size()},output);
+    }
+    if(frame.header.type>=kEseWireServerPubBegin && frame.header.type<=kEseWireServerPubStateGet) {
+        if(client_.mode==SessionMode::Auxiliary) return Error(request,kEseWireServerWrongState,output);
+        publication_.Expire(now);
+        if(frame.header.type==kEseWireServerPubStateGet) {
+            if(frame.payload.size) return Error(request,kEseWireServerMalformed,output);
+            const auto bytes=EncodePublishState(publication_.State());
+            return Reply(request,kEseWireServerPubState,{bytes.data(),bytes.size()},output);
+        }
+        // Prepare the success response before mutating staging or the visible
+        // publication, so an allocation failure cannot acknowledge lost work.
+        const std::uint8_t ack[2]={};
+        if(!Reply(request,kEseWireServerAck,{ack,sizeof ack},output)) return false;
+        auto status=kEseWireServerMalformed;
+        if(frame.header.type==kEseWireServerPubBegin) {
+            PublishState desired;
+            if(DecodePublishState(frame.payload,desired)) status=publication_.Begin(desired,now);
+        } else if(frame.header.type==kEseWireServerPubChunk) {
+            status=publication_.Chunk(frame.payload,now);
+        } else {
+            std::uint64_t revision=0;
+            Bytes32 digest{};
+            if(DecodePublishCommit(frame.payload,revision,digest)) status=publication_.Commit(revision,digest,crypto,now);
+        }
+        if(!status) return true;
+        output.clear();
+        return Error(request,status,output);
     }
     if(frame.header.type!=kEseWireServerEd2kCommand)
         return Error(request,kEseWireServerUnsupported,output);

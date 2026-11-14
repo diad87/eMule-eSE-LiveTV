@@ -1,0 +1,446 @@
+{
+  "status": "signed-release-inputs",
+  "date": "2026-11-14",
+  "binary_base_url": "https://repo.msys2.org/mingw/mingw32/",
+  "source_base_url": "https://repo.msys2.org/mingw/sources/",
+  "signature_suffix": ".sig",
+  "keyring_url": "https://raw.githubusercontent.com/msys2/MSYS2-keyring/5d249077a0cfeec9dbf51515e5e01da413d28859/msys2.gpg",
+  "keyring_sha256": "1257d4ccc536c53333445a618039af4c3ea3f56b96601de9af89151ea529c19a",
+  "package_signer_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+  "gnutls_import_sha256": "06fe8dbe65f29b43eee9ddbb7fdf9ee104408dd62c6f67e56db00fcb5ee63b2d",
+  "ngtcp2": {
+    "key_url": "https://github.com/tatsuhiro-t.gpg",
+    "key_sha256": "8ff5aa2b967a6414239e0f1b8cba531de18a3cb0c9250a60a2e1259b8221652d",
+    "primary_fingerprint": "F4F3B91474D1EB29889BD0EF7E8403D5D673C366",
+    "signer_fingerprint": "516B622918D15C478AB1EA3A5339A2BE82E07DEC",
+    "signature_sha256": "725c962139b5fcb58b1541ba61f7aa4755ec488ccf0a92bba00cb28534ddfe75"
+  },
+  "packages": [
+    {
+      "package": "mingw-w64-i686-brotli-1.2.0-1-any.pkg.tar.zst",
+      "sha256": "354c0208f0e62b32771fac0abad920278a2d47313e62d6681786bc8a14e3c44d",
+      "signature_sha256": "0d7f9b37aa7dacf2692b268063ea8d0f1b66bfee33087bc7458eb289ff504498",
+      "source": "mingw-w64-brotli-1.2.0-1.src.tar.zst",
+      "source_sha256": "2f0f93875aac21990d20f1eaf0ad8b970eb6f186c663c77ae47aaaf9e5711fcf",
+      "source_signature_sha256": "c4f4dd577c468ccc949f5087d99f02c453ad08007d6c8a84eb355ae140043b54",
+      "recipe_sha256": "894120dac11e7fffd72224148e22d424075fabf23a8cafbf4f2c5390c73755c9",
+      "recipe_path": "mingw-w64-brotli/PKGBUILD",
+      "dlls": {
+        "libbrotlicommon.dll": {
+          "imports": [
+            "kernel32.dll",
+            "msvcrt.dll"
+          ],
+          "sha256": "a5e8a40313a82d4b2805740f9b3ff7563f5691cef75ab51a4fd6d9dc3e751b88"
+        },
+        "libbrotlidec.dll": {
+          "imports": [
+            "kernel32.dll",
+            "libbrotlicommon.dll",
+            "msvcrt.dll"
+          ],
+          "sha256": "c1071c773a0b6f235f22afd97df7723f92e072b19cecffda6de51662b430fc0b"
+        },
+        "libbrotlienc.dll": {
+          "imports": [
+            "kernel32.dll",
+            "libbrotlicommon.dll",
+            "msvcrt.dll"
+          ],
+          "sha256": "4c7be5e7515fd51258ceeff4b0c764e312738c2cfb78ba5d8da2279148dad06b"
+        }
+      },
+      "binary_license_files": [
+        "mingw32/share/licenses/brotli/LICENSE"
+      ]
+    },
+    {
+      "package": "mingw-w64-i686-gcc-libs-16.1.0-5-any.pkg.tar.zst",
+      "sha256": "cdf1886b5f88100748b7abd94a007168f7ab90f40cba75757535263777263b65",
+      "signature_sha256": "0be860298cd9c16a651787b7d89cdb47d0ee5732e94b76ed51c8552a6d051556",
+      "source": "mingw-w64-gcc-16.1.0-5.src.tar.zst",
+      "source_sha256": "947166ed372d28ab8ffa25a66bc5e37a60a42e96a686424ce58cad304fcaea15",
+      "source_signature_sha256": "389d1a3acad9368d7f4fd87beca3ec27b0e53498c9174712ac7eab91c5f6293a",
+      "recipe_sha256": "40f248fa589babd9315cc589a76a0c00939355bd68c92287a2dcb7d1acb58f96",
+      "recipe_path": "mingw-w64-gcc/PKGBUILD",
+      "dlls": {
+        "libgcc_s_dw2-1.dll": {
+          "imports": [
+            "kernel32.dll",
+            "libwinpthread-1.dll",
+            "msvcrt.dll"
+          ],
+          "sha256": "15c0de151dd998a3568a110994a6e79ee0f7465b0baaf8a6b0a9e6d3205339af"
+        }
+      },
+      "binary_license_files": [
+        "mingw32/share/licenses/gcc-libs/COPYING.LIB",
+        "mingw32/share/licenses/gcc-libs/COPYING.RUNTIME",
+        "mingw32/share/licenses/gcc-libs/COPYING3",
+        "mingw32/share/licenses/gcc-libs/README"
+      ]
+    },
+    {
+      "package": "mingw-w64-i686-gettext-runtime-1.0-1-any.pkg.tar.zst",
+      "sha256": "b096eb69be4710c74e1a568f8a6fc05acdaf5fd1cccdf3ba10b62bc74df1dde3",
+      "signature_sha256": "f75b86a9f790864141c8525c3dca72cf1d4ef973034e80fd22e86223496c6e59",
+      "source": "mingw-w64-gettext-1.0-1.src.tar.zst",
+      "source_sha256": "cca0d0c8f60353faccc5ad40405240014e4a7ccc8b1c6ca9f4626aef3097d26e",
+      "source_signature_sha256": "daaa76ab77b852c1d62de5ab2338b026a5281e6d208a5f83e963f19c504baf95",
+      "recipe_sha256": "853ef80a50588f29355722a4513f24cf1a5f8de06e0b5ee326580464db539741",
+      "recipe_path": "mingw-w64-gettext/PKGBUILD",
+      "dlls": {
+        "libintl-8.dll": {
+          "imports": [
+            "advapi32.dll",
+            "kernel32.dll",
+            "libgcc_s_dw2-1.dll",
+            "libiconv-2.dll",
+            "msvcrt.dll"
+          ],
+          "sha256": "c2e16d4306d5ab533a95846817f278495ad97f1d87b2b31b90802c418c7fa17f"
+        }
+      },
+      "binary_license_files": [
+        "mingw32/share/licenses/gettext-runtime/COPYING",
+        "mingw32/share/licenses/gettext-runtime/intl/COPYING.LIB",
+        "mingw32/share/licenses/gettext-runtime/libasprintf/COPYING",
+        "mingw32/share/licenses/gettext-runtime/libasprintf/COPYING.LIB"
+      ]
+    },
+    {
+      "package": "mingw-w64-i686-gmp-6.3.0-2-any.pkg.tar.zst",
+      "sha256": "cb23f87b33c20ae2de9638145a56bffdddf01a2afce2cb6dc43753d4e27bc448",
+      "signature_sha256": "0cb7d90252cf0ba8251b1131127ee31ea17c772fd5f9972305b595a216711bdf",
+      "source": "mingw-w64-gmp-6.3.0-2.src.tar.zst",
+      "source_sha256": "f288f944fd9609db220bcf6a8dd0703a5674eeb906ef35eb8485bb8192135994",
+      "source_signature_sha256": "e17278c63fedeb172553de510ef7b380df1efae2fc4f6e30c0e0ad27f5f40ce7",
+      "recipe_sha256": "b9d3bb2b5b12cb0fc47c4dc17a9a2aa82513236eaefa34c8dfc57dd0d92bc42a",
+      "recipe_path": "mingw-w64-gmp/PKGBUILD",
+      "dlls": {
+        "libgmp-10.dll": {
+          "imports": [
+            "kernel32.dll",
+            "msvcrt.dll"
+          ],
+          "sha256": "ab3888745ca79f6f3888dab36110802ed2114ee024beb5694093ee1508126a56"
+        }
+      },
+      "binary_license_files": [],
+      "source_license_archive": "mingw-w64-gmp/gmp-6.3.0.tar.xz",
+      "source_license_files": [
+        "gmp-6.3.0/COPYING",
+        "gmp-6.3.0/COPYING.LESSERv3",
+        "gmp-6.3.0/COPYINGv3",
+        "gmp-6.3.0/COPYINGv2"
+      ]
+    },
+    {
+      "package": "mingw-w64-i686-gnutls-3.8.13-3-any.pkg.tar.zst",
+      "sha256": "680583ed523686e9366a37050a0b6472c0a0c1d35d1642a43ef3c26c2bcf5982",
+      "signature_sha256": "92b0f1c24331efb1f86cbd8cee381d17bb893a50b1a0919640f9e9f986018ace",
+      "source": "mingw-w64-gnutls-3.8.13-3.src.tar.zst",
+      "source_sha256": "7889cd73810d909642c0f122b40cfe0eaec5b0d2985804f145cd90c6a51c0435",
+      "source_signature_sha256": "140f5c16bbdf0dc5889c864ec4680cd5010342a6a1b0a03b12228041e0e31994",
+      "recipe_sha256": "0626ac4c78bd79c915b3ea1213b66fa384e3a6eaa392b407eb230a87c9ef83db",
+      "recipe_path": "mingw-w64-gnutls/PKGBUILD",
+      "dlls": {
+        "libgnutls-30.dll": {
+          "imports": [
+            "advapi32.dll",
+            "crypt32.dll",
+            "kernel32.dll",
+            "libbrotlidec.dll",
+            "libbrotlienc.dll",
+            "libgcc_s_dw2-1.dll",
+            "libgmp-10.dll",
+            "libhogweed-7.dll",
+            "libidn2-0.dll",
+            "libintl-8.dll",
+            "libnettle-9.dll",
+            "libp11-kit-0.dll",
+            "libtasn1-6.dll",
+            "libunistring-5.dll",
+            "libwinpthread-1.dll",
+            "libzstd.dll",
+            "msvcrt.dll",
+            "ncrypt.dll",
+            "ws2_32.dll",
+            "zlib1.dll"
+          ],
+          "sha256": "cd8e8c1570da9c2b04aece5f02da9915ce1f432431734165c34e10d1a6ee3443"
+        }
+      },
+      "binary_license_files": [],
+      "source_license_archive": "mingw-w64-gnutls/gnutls-3.8.13.tar.xz",
+      "source_license_files": [
+        "gnutls-3.8.13/COPYING",
+        "gnutls-3.8.13/COPYING.LESSERv2",
+        "gnutls-3.8.13/README.md",
+        "gnutls-3.8.13/lib/accelerated/x86/license.txt",
+        "gnutls-3.8.13/lib/crau/LICENSE",
+        "gnutls-3.8.13/lib/crau/UNLICENSE",
+        "gnutls-3.8.13/lib/extras/licenses/CC0",
+        "gnutls-3.8.13/lib/inih/LICENSE.txt"
+      ]
+    },
+    {
+      "package": "mingw-w64-i686-libffi-3.6.0-1-any.pkg.tar.zst",
+      "sha256": "c06d43d489b6147161bbb5f2660af31220acc73c12075b16cd783f59be563ba4",
+      "signature_sha256": "bb68c876c67e525851919d06eb061cd83a1e919ac99c945fbd0bcccab55232ad",
+      "source": "mingw-w64-libffi-3.6.0-1.src.tar.zst",
+      "source_sha256": "181a08e1bed2a07a21d0dc4a5bd01ea2483de65d8597c062bb61158420c5087a",
+      "source_signature_sha256": "d84ac643ee142a059b21ed0c7c4311b18a19da0731d747e7c1dc603a7cf1ffd8",
+      "recipe_sha256": "f30c6f0adfb17bfd75c402946fe28c97ac9a325acb4f4a32ee3a7735f968faac",
+      "recipe_path": "mingw-w64-libffi/PKGBUILD",
+      "dlls": {
+        "libffi-8.dll": {
+          "imports": [
+            "kernel32.dll",
+            "msvcrt.dll"
+          ],
+          "sha256": "53e8cc986e9d80a7844dda061e35d0c01062e33b4d357b7fe8c499084e2f0569"
+        }
+      },
+      "binary_license_files": [
+        "mingw32/share/licenses/libffi/LICENSE"
+      ]
+    },
+    {
+      "package": "mingw-w64-i686-libiconv-1.19-1-any.pkg.tar.zst",
+      "sha256": "12307416cfe45b6fbe1fb29c28594590bb59883856edf41b043d0daf684e4668",
+      "signature_sha256": "9bc4e8e1ff054de54731254714daf2c1a81cb839d099fc925592a878658155b4",
+      "source": "mingw-w64-libiconv-1.19-1.src.tar.zst",
+      "source_sha256": "74428280c17094da5b702c29b2e1a0abae59556ea5dfdd65705cc8ccc1e000fb",
+      "source_signature_sha256": "d99f265bd4e51d7e86267258d3d0101a72d901d8c2b8c4f2f59cf845656dbe62",
+      "recipe_sha256": "9b3212d06910560fb59e017e0b73a29d392a5082d3a47a613e61509bd7dcd475",
+      "recipe_path": "mingw-w64-libiconv/PKGBUILD",
+      "dlls": {
+        "libiconv-2.dll": {
+          "imports": [
+            "kernel32.dll",
+            "msvcrt.dll"
+          ],
+          "sha256": "c15983490044742bb096890098d73f31f9cbb979ba52d914f97966b98f959a30"
+        }
+      },
+      "binary_license_files": [
+        "mingw32/share/licenses/libiconv/COPYING",
+        "mingw32/share/licenses/libiconv/COPYING.LIB",
+        "mingw32/share/licenses/libiconv/README",
+        "mingw32/share/licenses/libiconv/libcharset/COPYING.LIB"
+      ]
+    },
+    {
+      "package": "mingw-w64-i686-libidn2-2.3.8-4-any.pkg.tar.zst",
+      "sha256": "57490f1127f2cc8d38f7202f8e02d30655f8073bf6d4e7d1199d3b502095fedb",
+      "signature_sha256": "f4e5d02a6099a465824b157fbae6c766eeb6e5bc2d459496df772a5c08cb55fc",
+      "source": "mingw-w64-libidn2-2.3.8-4.src.tar.zst",
+      "source_sha256": "cd83e8514fbeb6a4499299b88691b9b9ecc3114cca1e2be4f6c54aab6ae9ddd0",
+      "source_signature_sha256": "8d4be639ec1e269071788b2cfbb2a33355680be3db7c1c4859774ddea37c2f06",
+      "recipe_sha256": "cf6def1817d6a38b49c66fc4cbe36cd56705d9b8952dae13e06d60da703983ff",
+      "recipe_path": "mingw-w64-libidn2/PKGBUILD",
+      "dlls": {
+        "libidn2-0.dll": {
+          "imports": [
+            "kernel32.dll",
+            "libgcc_s_dw2-1.dll",
+            "libiconv-2.dll",
+            "libintl-8.dll",
+            "libunistring-5.dll",
+            "msvcrt.dll"
+          ],
+          "sha256": "b4faef127a8522355943ddb949763e239ce0ef8ece830bf49c671095f1e2321f"
+        }
+      },
+      "binary_license_files": [],
+      "source_license_archive": "mingw-w64-libidn2/libidn2-2.3.8.tar.gz",
+      "source_license_files": [
+        "libidn2-2.3.8/COPYING",
+        "libidn2-2.3.8/COPYING.LESSERv3",
+        "libidn2-2.3.8/COPYING.unicode",
+        "libidn2-2.3.8/COPYINGv2"
+      ]
+    },
+    {
+      "package": "mingw-w64-i686-libtasn1-4.21.0-1-any.pkg.tar.zst",
+      "sha256": "b4b3309bfd40151d2b30ad3c86b2bc24e43494927a33626cac691aeacf89f0e9",
+      "signature_sha256": "490b87093b115f2521710a58a8d9dacbe8c4e2d96d16bde28715f8340db5c7b3",
+      "source": "mingw-w64-libtasn1-4.21.0-1.src.tar.zst",
+      "source_sha256": "c626129c5131eef0a45c736274f0844747605a105161cc0f7d39f6e1c70ed0ff",
+      "source_signature_sha256": "6b0de550dde456add1799c4c8063d83141ec3ba6ecaab41da72b33821b8c3caa",
+      "recipe_sha256": "dd68181f53e6a8481961315b3a6c6caa4370188b1fea219203080b24abd251fe",
+      "recipe_path": "mingw-w64-libtasn1/PKGBUILD",
+      "dlls": {
+        "libtasn1-6.dll": {
+          "imports": [
+            "kernel32.dll",
+            "libgcc_s_dw2-1.dll",
+            "msvcrt.dll"
+          ],
+          "sha256": "bd6910e5b1ebc9dd7a4f37bd56dc0c55bf36b5a52fe4a2d9c9b20ad4b0ebd62d"
+        }
+      },
+      "binary_license_files": [
+        "mingw32/share/licenses/libtasn1/COPYING",
+        "mingw32/share/licenses/libtasn1/COPYING.LESSERv2"
+      ]
+    },
+    {
+      "package": "mingw-w64-i686-libunistring-1.4.2-1-any.pkg.tar.zst",
+      "sha256": "c8e6b485cecfb908674cea221b00a65897cd5aaa0bd6ee366ac3b4914ff9155a",
+      "signature_sha256": "65cd97762c7cd862780510429b44f729fc027d7a309b7732942e7702976175f8",
+      "source": "mingw-w64-libunistring-1.4.2-1.src.tar.zst",
+      "source_sha256": "a5bafb360d5c13c5c52ef071d5a8288ce2345346b902f20ed6e9322766ec60eb",
+      "source_signature_sha256": "3e7cf2c316480c3a5d137294b0f841af61c7647f719cff885e7f90cb012d93ef",
+      "recipe_sha256": "e612db993601f9daf35d4b527f93aad9792b7886735113ac46393a77c17264d7",
+      "recipe_path": "mingw-w64-libunistring/PKGBUILD",
+      "dlls": {
+        "libunistring-5.dll": {
+          "imports": [
+            "kernel32.dll",
+            "libgcc_s_dw2-1.dll",
+            "libiconv-2.dll",
+            "msvcrt.dll"
+          ],
+          "sha256": "cab3ce303b1d164e2076d8849c38e6ac9359a3c4a9e09c16425014811018d2a3"
+        }
+      },
+      "binary_license_files": [
+        "mingw32/share/licenses/libunistring/LICENSE",
+        "mingw32/share/licenses/libunistring/LICENSE.LIB"
+      ]
+    },
+    {
+      "package": "mingw-w64-i686-libwinpthread-14.0.0.r150.g6b5798fd4-1-any.pkg.tar.zst",
+      "sha256": "594a8ef142675ac5cb2ec0201528954e096195c3e10f498de4588ce86b4607f1",
+      "signature_sha256": "db5f51d26d2a1a602936d9aa8cdc2692a7ec130a2ea3863ec789c61ec58b4dea",
+      "source": "mingw-w64-winpthreads-14.0.0.r150.g6b5798fd4-1.src.tar.zst",
+      "source_sha256": "60a6e25d348c106ca8168b66901d0bc89d51bc4ed6530887de650f72c31a16ab",
+      "source_signature_sha256": "85b3cfb59df83b7bafd6481d874745e24304e38f8b699e55b791848705934de8",
+      "recipe_sha256": "7de7c1fe571f85aac04f12ef296e681b91163e018819e5180cdf119f69447579",
+      "recipe_path": "mingw-w64-winpthreads/PKGBUILD",
+      "dlls": {
+        "libwinpthread-1.dll": {
+          "imports": [
+            "kernel32.dll",
+            "msvcrt.dll"
+          ],
+          "sha256": "89513721609b0b2c3ec84760388866487d1cac35c0efb70a158622bfc8697179"
+        }
+      },
+      "binary_license_files": [
+        "mingw32/share/licenses/libwinpthread/COPYING"
+      ]
+    },
+    {
+      "package": "mingw-w64-i686-nettle-4.0-1-any.pkg.tar.zst",
+      "sha256": "e0f94630e60bbd325c17652e931522009c5e4c27421c4fad3229355290ac6d0d",
+      "signature_sha256": "0b31024f334c2f07a3e3f529450ac7851fa5e569c0fc0a209615eeaedfe84182",
+      "source": "mingw-w64-nettle-4.0-1.src.tar.zst",
+      "source_sha256": "453187e86139bce3c5b94542cc709ead7f523f0fc33ce4cc2b8fe9d5a9719cdd",
+      "source_signature_sha256": "8e4ca0e65db427c15e616c137f218c80d8eb3a0dda2205852fa5ce754237b682",
+      "recipe_sha256": "7d82c0e2504f0dabc0170e7b5790f55c4c25a7be7c7dd973ab5d17ebe04d8ae1",
+      "recipe_path": "mingw-w64-nettle/PKGBUILD",
+      "dlls": {
+        "libhogweed-7.dll": {
+          "imports": [
+            "kernel32.dll",
+            "libgmp-10.dll",
+            "libnettle-9.dll",
+            "msvcrt.dll"
+          ],
+          "sha256": "405cf8f0df037a7bc7df5b421a624f064cf528acb27dec92d675629f06e88b89"
+        },
+        "libnettle-9.dll": {
+          "imports": [
+            "kernel32.dll",
+            "libgcc_s_dw2-1.dll",
+            "msvcrt.dll"
+          ],
+          "sha256": "73fea9304bdce71476eeed9441c3c9e02c03b1a69ea856ed426aee6bd3362db1"
+        }
+      },
+      "binary_license_files": [],
+      "source_license_archive": "mingw-w64-nettle/nettle-4.0.tar.gz",
+      "source_license_files": [
+        "nettle-4.0/COPYING.LESSERv3",
+        "nettle-4.0/COPYINGv2",
+        "nettle-4.0/COPYINGv3"
+      ]
+    },
+    {
+      "package": "mingw-w64-i686-p11-kit-0.26.2-1-any.pkg.tar.zst",
+      "sha256": "e2d3830210d96c48b6dba7ef50a0e7394cf039a3f700b6cf3321b1fb6faa8bb2",
+      "signature_sha256": "35aa77e71c35ae5b617e64d42bd2bea4f63da599d077bf9436cf1e47d63dbc91",
+      "source": "mingw-w64-p11-kit-0.26.2-1.src.tar.zst",
+      "source_sha256": "e4d117e5f558e70d9eb5e830406b96c9bbf0de03ce193bfad47fda4b19fb3086",
+      "source_signature_sha256": "34004686890f4143edc5c88eafd99aa168288ac75f73bc3144fc3bbb08d827ba",
+      "recipe_sha256": "7146b1ff88d3682e40906436f611501cc9c695024d1af752438e99e85abab0cd",
+      "recipe_path": "mingw-w64-p11-kit/PKGBUILD",
+      "dlls": {
+        "libp11-kit-0.dll": {
+          "imports": [
+            "kernel32.dll",
+            "libffi-8.dll",
+            "libintl-8.dll",
+            "msvcrt.dll",
+            "shell32.dll"
+          ],
+          "sha256": "50d54325f259ab110bbf5d39fc9ab9cb87879664d2a336a2970d2d81e2774ddf"
+        }
+      },
+      "binary_license_files": [],
+      "source_license_archive": "mingw-w64-p11-kit/p11-kit-0.26.2.tar.xz",
+      "source_license_files": [
+        "p11-kit-0.26.2/COPYING"
+      ]
+    },
+    {
+      "package": "mingw-w64-i686-zlib-1.3.2-2-any.pkg.tar.zst",
+      "sha256": "03d1f7030adc892eb1ee8434f7201847093ff69b8ad9ff77a650d6dfae72083a",
+      "signature_sha256": "0e6e0f45e023b2c41b5ec7d8825a5464456ed3af5655998b8a56dcdcfd72bff4",
+      "source": "mingw-w64-zlib-1.3.2-2.src.tar.zst",
+      "source_sha256": "eef69dea52357e01b272d6fd6dc4d7c0773f71260cb7bcde6047c8c383518db3",
+      "source_signature_sha256": "4f6f43e9c860a7de50ca8fd92b931dff152581dad6da92581f35f0a35b891af1",
+      "recipe_sha256": "8a4a54a964eab7efa313e2faa8267052bc237ef61f8adf82a55cc93f4028db8a",
+      "recipe_path": "mingw-w64-zlib/PKGBUILD",
+      "dlls": {
+        "zlib1.dll": {
+          "imports": [
+            "kernel32.dll",
+            "libgcc_s_dw2-1.dll",
+            "msvcrt.dll"
+          ],
+          "sha256": "52793f33a3dc8a9a57212ae7c98fef6dfbeea89b03149b84d014677ecd59d5dc"
+        }
+      },
+      "binary_license_files": [
+        "mingw32/share/licenses/zlib/LICENSE"
+      ]
+    },
+    {
+      "package": "mingw-w64-i686-zstd-1.5.7-2-any.pkg.tar.zst",
+      "sha256": "e31d4194702b12f83b7b27b03fe4a68a5c2edc63dc4bd4689ab9d5a7bd8e5fff",
+      "signature_sha256": "8837010e40fcb5cb0d261e408a9401505205e29349c006a8b1894401b9693325",
+      "source": "mingw-w64-zstd-1.5.7-2.src.tar.zst",
+      "source_sha256": "306797282df799e95d550e6d0bb4b0a7b848027b8e13893a24236e060837c217",
+      "source_signature_sha256": "aa19abc03ee473ece3f782d5207015e81a9e5203a05d61618ca3439749511ccd",
+      "recipe_sha256": "ef88e168f729b6e57bdccb8d566a1cbc1b0b1fd4ef86b26cc4c441236e496388",
+      "recipe_path": "mingw-w64-zstd/PKGBUILD",
+      "dlls": {
+        "libzstd.dll": {
+          "imports": [
+            "kernel32.dll",
+            "libgcc_s_dw2-1.dll",
+            "msvcrt.dll"
+          ],
+          "sha256": "af7377837f625a568b084d0afed27909957046672968a499148a48c2d0e6aa5b"
+        }
+      },
+      "binary_license_files": [
+        "mingw32/share/licenses/zstd/LICENSE"
+      ]
+    }
+  ]
+}

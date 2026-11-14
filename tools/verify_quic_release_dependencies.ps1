@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Root,
-    [ValidateSet('x64')][string]$Architecture = 'x64',
+    [ValidateSet('x64','Win32')][string]$Architecture = 'x64',
     [ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$ExpectedManifestSha256,
     [switch]$PassThru
 )
@@ -13,7 +13,17 @@ $repoRoot = Split-Path $PSScriptRoot -Parent
 $dependencyRoot = (Get-Item -LiteralPath $Root).FullName
 $manifestPath = Join-Path $dependencyRoot "manifest-$Architecture.json"
 $lockPath = Join-Path $repoRoot 'third_party/quic/dependencies.lock.json'
-$inventoryPath = Join-Path $repoRoot 'third_party/quic/msys2-gnutls-x64-candidate.json'
+$inventoryPath = Join-Path $repoRoot "third_party/quic/msys2-gnutls-$($Architecture.ToLowerInvariant())-candidate.json"
+$windows32 = $Architecture -eq 'Win32'
+$workflow = if ($windows32) { 'build_quic_msys2_win32_release.ps1' } else { 'build_quic_msys2_candidate.ps1' }
+$distribution = if ($windows32) { 'DISTRIBUTION-Win32.md' } else { 'DISTRIBUTION.md' }
+$msysRoot = if ($windows32) { 'mingw32' } else { 'mingw64' }
+$buildDirectory = "build-$Architecture"
+$includeDirectory = "include-$Architecture"
+$runtimeDirectory = "runtime-$Architecture"
+$sourcesDirectory = "sources-$Architecture"
+$noticesDirectory = "notices-$Architecture"
+$gnutlsImport = "gnutls-$Architecture.lib"
 $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
 $inventory = Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json
 
@@ -85,7 +95,7 @@ if ($manifest.schema -ne 'ese.quic.release-dependencies/v1' -or $manifest.archit
     $inventory.status -ne 'signed-release-inputs' -or
     $manifest.lock_sha256 -ne (Get-DependencyHash $lockPath) -or
     $manifest.msys2_candidate_sha256 -ne (Get-DependencyHash $inventoryPath) -or
-    $manifest.workflow_sha256 -ne (Get-DependencyHash (Join-Path $PSScriptRoot 'build_quic_msys2_candidate.ps1'))) {
+    $manifest.workflow_sha256 -ne (Get-DependencyHash (Join-Path $PSScriptRoot $workflow))) {
     throw 'QUIC release manifest does not match the pinned inputs and build workflow.'
 }
 
@@ -95,42 +105,62 @@ $runtime = Read-FileRecords 'runtime' @($manifest.runtime)
 $notices = Read-FileRecords 'notice' @($manifest.notices)
 $sources = Read-FileRecords 'source' @($manifest.sources)
 
-Assert-FileSet 'link input' @('gnutls-x64.lib','build-x64/lib/Release/ngtcp2.lib',
-    'build-x64/crypto/gnutls/Release/ngtcp2_crypto_gnutls.lib') @($links.Keys)
-if ($links['gnutls-x64.lib'] -ne $inventory.gnutls_import_sha256) { throw 'The GnuTLS import library is not the signed MSYS2 input.' }
+Assert-FileSet 'link input' @($gnutlsImport,"$buildDirectory/lib/Release/ngtcp2.lib",
+    "$buildDirectory/crypto/gnutls/Release/ngtcp2_crypto_gnutls.lib") @($links.Keys)
+if ($links[$gnutlsImport] -ne $inventory.gnutls_import_sha256) { throw 'The GnuTLS import library is not the signed MSYS2 input.' }
 $ngtcp2Dir = "ngtcp2-$($lock.ngtcp2.version)"
-$expectedHeaders = @(foreach ($headerRoot in @("$ngtcp2Dir/lib/includes","$ngtcp2Dir/crypto/includes",'build-x64/lib/includes','include-x64')) {
+$expectedHeaders = @(foreach ($headerRoot in @("$ngtcp2Dir/lib/includes","$ngtcp2Dir/crypto/includes","$buildDirectory/lib/includes",$includeDirectory)) {
     Get-PlainTreeFiles $headerRoot | Where-Object { $_ -like '*.h' }
 })
 Assert-FileSet 'header' $expectedHeaders @($headers.Keys)
 foreach ($requiredHeader in @("$ngtcp2Dir/lib/includes/ngtcp2/ngtcp2.h","$ngtcp2Dir/crypto/includes/ngtcp2/ngtcp2_crypto_gnutls.h",
-    'build-x64/lib/includes/ngtcp2/version.h','include-x64/gnutls/gnutls.h','include-x64/gnutls/crypto.h')) {
+    "$buildDirectory/lib/includes/ngtcp2/version.h","$includeDirectory/gnutls/gnutls.h","$includeDirectory/gnutls/crypto.h")) {
     if (!$headers.ContainsKey($requiredHeader)) { throw "Missing QUIC dependency header: $requiredHeader" }
 }
 
-$expectedRuntime = @{'runtime-x64/ngtcp2.dll'=$null; 'runtime-x64/ngtcp2_crypto_gnutls.dll'=$null}
-$expectedSources = @{ "sources-x64/$ngtcp2Dir.tar.gz"=$lock.ngtcp2.sha256;
-    "sources-x64/$ngtcp2Dir.tar.gz.asc"=$inventory.ngtcp2.signature_sha256 }
-$expectedNotices = @('notices-x64/ngtcp2/COPYING','notices-x64/DISTRIBUTION.md')
+$expectedRuntime = @{ "$runtimeDirectory/ngtcp2.dll"=$null
+    "$runtimeDirectory/ngtcp2_crypto_gnutls.dll"=$null }
+$expectedSources = @{ "$sourcesDirectory/$ngtcp2Dir.tar.gz"=$lock.ngtcp2.sha256;
+    "$sourcesDirectory/$ngtcp2Dir.tar.gz.asc"=$inventory.ngtcp2.signature_sha256 }
+$expectedNotices = @("$noticesDirectory/ngtcp2/COPYING","$noticesDirectory/DISTRIBUTION.md")
 foreach ($package in $inventory.packages) {
     foreach ($dll in $package.dlls.PSObject.Properties) {
-        $expectedRuntime.Add("runtime-x64/$($dll.Name)", $dll.Value.sha256)
+        $expectedRuntime.Add("$runtimeDirectory/$($dll.Name)", $dll.Value.sha256)
     }
-    $expectedSources.Add("sources-x64/$($package.source)", $package.source_sha256)
-    $expectedSources.Add("sources-x64/$($package.source)$($inventory.signature_suffix)", $package.source_signature_sha256)
+    $expectedSources.Add("$sourcesDirectory/$($package.source)", $package.source_sha256)
+    $expectedSources.Add("$sourcesDirectory/$($package.source)$($inventory.signature_suffix)", $package.source_signature_sha256)
     foreach ($path in $package.binary_license_files) {
-        $expectedNotices += 'notices-x64/' + $path.Substring('mingw64/share/licenses/'.Length)
+        $expectedNotices += "$noticesDirectory/" + $path.Substring("$msysRoot/share/licenses/".Length)
     }
     if (!$package.binary_license_files.Count) {
-        $expectedNotices += $package.source_license_files | ForEach-Object { "notices-x64/$_" }
+        $expectedNotices += $package.source_license_files | ForEach-Object { "$noticesDirectory/$_" }
     }
+}
+if ($windows32) {
+    $rebuiltGnutls = "$runtimeDirectory/libgnutls-30.dll"
+    if ($manifest.gnutls_rebuilt_sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+        $manifest.gnutls_rebuilt_sha256 -eq $expectedRuntime[$rebuiltGnutls] -or
+        $manifest.gnutls_source_sha256 -ne 'FFED8EC1BF09C2426D4F14AAE377DE4753B53E537D685E604E99A8B16CA9C97E') {
+        throw 'Win32 GnuTLS must be rebuilt from the pinned MSYS2 source.'
+    }
+    $expectedRuntime[$rebuiltGnutls] = $manifest.gnutls_rebuilt_sha256
+    $recipeName = 'rebuild_gnutls_win32.sh'
+    $lockName = 'gnutls-win32-toolchain.sha256'
+    $recipeHash = Get-DependencyHash (Join-Path $repoRoot "third_party/quic/$recipeName")
+    $toolchainHash = Get-DependencyHash (Join-Path $repoRoot "third_party/quic/$lockName")
+    if ($manifest.gnutls_rebuild_recipe_sha256 -ne $recipeHash -or
+        $manifest.gnutls_toolchain_lock_sha256 -ne $toolchainHash) {
+        throw 'Win32 GnuTLS recipe or cross-toolchain lock changed.'
+    }
+    $expectedSources.Add("$sourcesDirectory/$recipeName", $recipeHash)
+    $expectedSources.Add("$sourcesDirectory/$lockName", $toolchainHash)
 }
 Assert-FileSet 'runtime' @($expectedRuntime.Keys) @($runtime.Keys)
 Assert-FileSet 'source' @($expectedSources.Keys) @($sources.Keys)
 Assert-FileSet 'notice' $expectedNotices @($notices.Keys)
-Assert-FileSet 'runtime on disk' @($runtime.Keys) @(Get-PlainTreeFiles 'runtime-x64')
-Assert-FileSet 'sources on disk' @($sources.Keys) @(Get-PlainTreeFiles 'sources-x64')
-Assert-FileSet 'notices on disk' @($notices.Keys) @(Get-PlainTreeFiles 'notices-x64')
+Assert-FileSet 'runtime on disk' @($runtime.Keys) @(Get-PlainTreeFiles $runtimeDirectory)
+Assert-FileSet 'sources on disk' @($sources.Keys) @(Get-PlainTreeFiles $sourcesDirectory)
+Assert-FileSet 'notices on disk' @($notices.Keys) @(Get-PlainTreeFiles $noticesDirectory)
 
 foreach ($path in $expectedRuntime.Keys) {
     if ($expectedRuntime[$path] -and $runtime[$path] -ne $expectedRuntime[$path]) { throw "QUIC DLL differs from the signed inventory: $path" }
@@ -138,7 +168,7 @@ foreach ($path in $expectedRuntime.Keys) {
 foreach ($path in $expectedSources.Keys) {
     if ($sources[$path] -ne $expectedSources[$path]) { throw "QUIC source or signature differs from the signed inventory: $path" }
 }
-if ($notices['notices-x64/DISTRIBUTION.md'] -ne (Get-DependencyHash (Join-Path $repoRoot 'third_party/quic/DISTRIBUTION.md'))) {
+if ($notices["$noticesDirectory/DISTRIBUTION.md"] -ne (Get-DependencyHash (Join-Path $repoRoot "third_party/quic/$distribution"))) {
     throw 'QUIC distribution notice differs from the repository copy.'
 }
 
@@ -151,8 +181,13 @@ foreach ($record in $importRecords) {
         throw "QUIC import closure is incomplete for $($record.Name)."
     }
 }
-Assert-FileSet 'tests' @('abi','loopback-clean','loopback-wrong-alpn','loopback-bad-auth','loopback-loss',
-    'native-clean','native-loss','native-bad-auth','native-dco') @($manifest.tests)
+$expectedTests = @('abi','loopback-clean','loopback-wrong-alpn','loopback-bad-auth','loopback-loss',
+    'native-clean','native-loss','native-bad-auth','native-dco')
+Assert-FileSet 'tests' $expectedTests @($manifest.tests)
+if ($windows32) {
+    $testLogs = Read-FileRecords 'test log' @($manifest.test_logs)
+    Assert-FileSet 'test log' @($expectedTests | ForEach-Object { "$_.log" }) @($testLogs.Keys)
+}
 if ((Get-DependencyHash $manifestPath) -ne $manifestHash) { throw 'QUIC manifest changed during verification.' }
 
 Write-Host "Verified signed QUIC release dependencies for $Architecture."

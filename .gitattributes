@@ -4,3 +4,10 @@ quality/** -text
 
 # Generated handoff matrices are JSON text and must stay diff-check clean.
 artifacts/**/handoff-9.3/gate-matrix.json text eol=lf
+
+# The Win32 QUIC dependency manifest hashes these build inputs before use.
+third_party/quic/rebuild_gnutls_win32.sh text eol=lf
+third_party/quic/gnutls-win32-toolchain.sha256 text eol=lf
+third_party/quic/msys2-gnutls-win32-candidate.json text eol=lf
+third_party/quic/DISTRIBUTION-Win32.md text eol=lf
+tools/build_quic_msys2_win32_release.ps1 text eol=lf

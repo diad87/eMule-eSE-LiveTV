@@ -736,7 +736,6 @@ test('v9 capabilities and remote administration fail closed by default', () => {
     read(repoRoot, 'srchybrid', 'WebLiveApiTransferController.cpp')
   ].join('\n');
   const webRoutes = read(repoRoot, 'srchybrid', 'WebRouteTable.cpp');
-  const nativeProject = read(repoRoot, 'srchybrid', 'emule.vcxproj');
   const webStream = read(repoRoot, 'srchybrid', 'WebLiveApiStreamController.cpp');
   const webAuth = read(repoRoot, 'srchybrid', 'WebAuthPolicy.cpp');
   const partFile = read(repoRoot, 'srchybrid', 'PartFile.cpp');

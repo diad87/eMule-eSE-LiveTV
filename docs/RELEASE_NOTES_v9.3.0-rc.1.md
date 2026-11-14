@@ -30,9 +30,10 @@
 ## Qualification still open
 
 The candidate must complete the two-machine transfer and recovery checks,
-normal route selection for TCP fallback, mobility, classic interoperability and the integrated 24-hour
-campaign. The exact distribution package, supported profiles, experimental
-features and network limitations will be recorded after qualification.
+normal route selection for TCP fallback, mobility, and classic
+interoperability. D21 also requires the x64 and Win32 distribution packages
+and focused integrated qualification. Supported profiles, experimental
+features and network limits will be recorded after qualification.
 [Candidate execution record](V93_RC1_EXECUTION.md)
 
 ## Installation and rollback during qualification

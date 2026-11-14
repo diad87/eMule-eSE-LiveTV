@@ -1579,7 +1579,7 @@ test('--selftest verifies signed chunk ingest and returns failure to the caller'
   assert.match(dialog, /AfxBeginThread\(HeadlessActionDelayThread/);
   assert.match(dialog, /PostMessage\(hwnd, UM_LIVE_HEADLESS_ACTION/);
   assert.match(dialog, /ON_MESSAGE\(UM_LIVE_HEADLESS_ACTION, OnLiveHeadlessAction\)/);
-  assert.match(dialog, /if \(theApp\.m_bSelfTest\) \{[\s\S]{0,180}RunHeadlessAction\(\);[\s\S]{0,40}return TRUE;/);
+  assert.match(dialog, /if \(theApp\.m_bSelfTest\) \{[\s\S]{0,180}RunHeadlessAction\(\);[\s\S]{0,40}return FALSE;/);
   assert.doesNotMatch(dialog, /Selftest: 5 s testpattern broadcast/);
   assert.match(manager, /CreateChunkPacketV2/);
   assert.match(manager, /duplicate V2 chunk was not rejected exactly once/);

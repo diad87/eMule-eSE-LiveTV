@@ -411,6 +411,10 @@ Stage 'package-smoke' {
             )
         }
 
+        $closedRequestOptions = @{}
+        if ($PSVersionTable.PSVersion.Major -ge 7) {
+            $closedRequestOptions.SkipHttpErrorCheck = $true
+        }
         foreach ($closedRoute in @(
             @{ Path = '/api/connect-seed'; Method = 'GET' },
             @{ Path = '/api/tunnel/status'; Method = 'GET' },
@@ -426,7 +430,8 @@ Stage 'package-smoke' {
             try {
                 $closedResponse = Invoke-WebRequest `
                     -Uri ('http://127.0.0.1:48123' + $closedRoute.Path) `
-                    -Method $closedRoute.Method -UseBasicParsing -TimeoutSec 2
+                    -Method $closedRoute.Method -UseBasicParsing -TimeoutSec 2 `
+                    @closedRequestOptions
                 $code = [int]$closedResponse.StatusCode
                 $body = [string]$closedResponse.Content
             } catch {

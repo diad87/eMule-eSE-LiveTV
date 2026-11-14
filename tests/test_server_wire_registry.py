@@ -22,7 +22,7 @@ SPEC.loader.exec_module(REGISTRY)
 
 class RegistryTest(unittest.TestCase):
     def test_vector_manifests(self):
-        for folder, scenario in {"frame": "DS-03", "auth": "DS-09"}.items():
+        for folder, scenario in {"frame": "DS-03", "auth": "DS-09", "rdv": "DS-11"}.items():
             with self.subTest(scenario=scenario):
                 directory = ROOT / "tests" / "fixtures" / "server_interop" / folder
                 manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))

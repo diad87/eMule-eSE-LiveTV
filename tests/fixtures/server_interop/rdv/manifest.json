@@ -1,0 +1,14 @@
+{
+  "specification": "docs/V9.3_IMPLEMENTATION_SPECIFICATION.md §D.6",
+  "case_id": "DS-11",
+  "provenance": "Python struct.pack network order and standard-library HMAC-SHA256; keys are public test vectors only",
+  "sha256_format": "decoded wire bytes",
+  "sha256": {
+    "challenge.hex": "26c131d0ed8406bdd1b5de3c4bfd11c407d66a4a03cff5903244c05c7b6313cd",
+    "cookie_input.hex": "bfd12d9785b9549e37186d6a88f9cab3edc9147c15e988f33a39845cc623373d",
+    "cookie_secret.hex": "7eee5800ddcd3b3cc9fd047831cd8536e3c3f57f44d746f515da93f048ee9e91",
+    "echo.hex": "865826a83493ba41dd978f0eaa6dcda1bd7527ec26db57c463cc9369964ac104",
+    "register.hex": "32362682aee97de29d9f08fa2eefeb6421793dd5ac7010219f4a5bff66eca8fc",
+    "udp_key.hex": "ae216c2ef5247a3782c135efa279a3e4cdc61094270f5d2be58c6204b7a612c9"
+  }
+}

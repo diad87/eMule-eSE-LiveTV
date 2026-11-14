@@ -4,6 +4,7 @@ project(ese_server_ref LANGUAGES CXX)
 add_library(ese_server_protocol STATIC
     ../srchybrid/EseServerProtocol.cpp ../srchybrid/EseServerAuth.cpp ../srchybrid/EseServerPublication.cpp
     ../srchybrid/EseServerDescriptor.cpp
+    ../srchybrid/EseRendezvousV2.cpp
     ../libkad6/src/kad6_tags.cpp ../libkad6/src/kad6_address.cpp)
 target_include_directories(ese_server_protocol PUBLIC ../srchybrid)
 target_include_directories(ese_server_protocol PRIVATE ../libkad6/include)
@@ -81,6 +82,13 @@ if(ESE_QUIC_RELEASE_ROOT)
         add_test(NAME server-tls-loopback COMMAND test_server_tls
             "${CMAKE_CURRENT_SOURCE_DIR}/../tests/fixtures/server_interop/auth")
         set_tests_properties(server-tls-loopback PROPERTIES TIMEOUT 30)
+        add_executable(test_rendezvous ../tests/server_interop/test_rendezvous.cpp)
+        target_link_libraries(test_rendezvous PRIVATE ese_server_tls)
+        if(MSVC)
+            target_compile_options(test_rendezvous PRIVATE /W4 /WX)
+        endif()
+        add_test(NAME DS-11-rendezvous-codec COMMAND test_rendezvous
+            "${CMAKE_CURRENT_SOURCE_DIR}/../tests/fixtures/server_interop/rdv")
         set(ESE_SERVER_INTEROP_PYTHON "" CACHE FILEPATH "Python with pyOpenSSL for the independent reference test")
         if(ESE_SERVER_INTEROP_PYTHON)
             add_test(NAME server-reference-login COMMAND "${ESE_SERVER_INTEROP_PYTHON}"

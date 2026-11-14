@@ -81,6 +81,35 @@ static void ProgressAndLiveness() {
     Check(watchdog.Observe(137999,true,2,3000)==Action::None);
     Check(watchdog.Observe(138000,true,2,3000)==Action::Recover);
 
+    // NC-Q07 timing policy with explicit time samples. The host fixture tests
+    // which real engine states set waiting=false.
+    QuicProgressWatchdog controls;
+    std::uint64_t sample=1000,progress=0;
+    Check(controls.Observe(sample,true,progress,0)==Action::None);
+    for(unsigned excluded=0;excluded<3;++excluded) {
+        sample+=14999;
+        Check(controls.Observe(sample,false,progress,0)==Action::None);
+        sample+=60000;
+        Check(controls.Observe(sample,false,progress,0)==Action::None);
+        Check(controls.Observe(++sample,true,progress,0)==Action::None);
+    }
+    sample+=10000;
+    Check(controls.Observe(sample,true,progress,0)==Action::None);
+    constexpr std::uint64_t part=9728000,block=184320,rate=8192;
+    unsigned probes=0;
+    // Coarsest progress: report only complete blocks at 8 KiB/s.
+    while(progress<part) {
+        const auto bytes=(std::min)(part-progress,block);
+        const auto elapsed=(bytes*1000+rate-1)/rate;
+        if(elapsed>15000) {
+            Check(controls.Observe(sample+15000,true,progress,0)==Action::Probe);
+            ++probes;
+        }
+        sample+=elapsed; progress+=bytes;
+        Check(controls.Observe(sample,true,progress,0)==Action::None);
+    }
+    Check(progress==part && probes==53);
+
     DirectBufferPool pool;
     auto clientEvents=std::make_unique<DirectEventQueue>();
     auto serverEvents=std::make_unique<DirectEventQueue>();

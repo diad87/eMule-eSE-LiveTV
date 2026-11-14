@@ -17,6 +17,7 @@
 #include "stdafx.h"
 #include <io.h>
 #include <algorithm>
+#include <set>
 #include "../cryptopp/sha.h"
 #include "emule.h"
 #include "UpDownClient.h"
@@ -93,8 +94,10 @@ void CDownloadQueue::Init()
 	int count = 0;
 
 	CString searchPath;
+	const LPCTSTR backupSuffixes[] = {PARTMET_BAK_EXT, PARTMET_LEGACY_BACKUP_EXT};
 	for (INT_PTR i = 0; i < thePrefs.GetTempDirCount(); ++i) {
-		searchPath.Format(_T("%s*.part.met"), (LPCTSTR)thePrefs.GetTempDir(i));
+		const CString &tempDir = thePrefs.GetTempDir(i);
+		searchPath.Format(_T("%s*.part.met"), (LPCTSTR)tempDir);
 
 		//check all part.met files
 		for (BOOL bFound = ff.FindFile(searchPath); bFound;) {
@@ -102,15 +105,20 @@ void CDownloadQueue::Init()
 			if (ff.IsDirectory())
 				continue;
 			CPartFile *toadd = new CPartFile();
-			EPartFileLoadResult eResult = toadd->LoadPartFile(thePrefs.GetTempDir(i), ff.GetFileName());
+			EPartFileLoadResult eResult = toadd->LoadPartFile(tempDir, ff.GetFileName());
 			if (eResult == PLR_FAILED_METFILE_CORRUPT) {
-				// .met file is corrupted, try to load the latest backup of this file
-				delete toadd;
-				toadd = new CPartFile();
-				eResult = toadd->LoadPartFile(thePrefs.GetTempDir(i), ff.GetFileName() + PARTMET_BAK_EXT);
-				if (eResult == PLR_LOADSUCCESS) {
-					toadd->SavePartFile(true); // don't override our just used .bak file yet
-					AddLogLine(false, GetResString(IDS_RECOVERED_PARTMET), (LPCTSTR)toadd->GetFileName());
+				for (LPCTSTR suffix : backupSuffixes) {
+					const CString backupName = ff.GetFileName() + suffix;
+					if (::GetFileAttributes(tempDir + backupName) == INVALID_FILE_ATTRIBUTES)
+						continue;
+					delete toadd;
+					toadd = new CPartFile();
+					eResult = toadd->LoadPartFile(tempDir, backupName);
+					if (eResult == PLR_LOADSUCCESS) {
+						toadd->SavePartFile(true); // preserve the recovered .bak
+						AddLogLine(false, GetResString(IDS_RECOVERED_PARTMET), (LPCTSTR)toadd->GetFileName());
+						break;
+					}
 				}
 			}
 
@@ -124,24 +132,36 @@ void CDownloadQueue::Init()
 				delete toadd;
 		}
 
-		//try recovering any part.met files
-		searchPath += _T(".backup");
-		for (BOOL bFound = ff.FindFile(searchPath); bFound;) {
-			bFound = ff.FindNextFile();
-			if (ff.IsDirectory())
-				continue;
-			CPartFile *toadd = new CPartFile();
-			if (toadd->LoadPartFile(thePrefs.GetTempDir(i), ff.GetFileName()) == PLR_LOADSUCCESS) {
-				toadd->SavePartFile(true); // re-save backup, don't overwrite existing bak files yet
+		// A current .tmp belongs to an interrupted save, even without a target.
+		// Recover only recognized backups for missing canonical metadata.
+		std::set<CString> recovered;
+		for (LPCTSTR suffix : backupSuffixes) {
+			for (BOOL bFound = ff.FindFile(searchPath + suffix); bFound;) {
+				bFound = ff.FindNextFile();
+				if (ff.IsDirectory())
+					continue;
+				const CString canonicalName = RemoveFileExtension(ff.GetFileName());
+				if (::GetFileAttributes(tempDir + canonicalName) != INVALID_FILE_ATTRIBUTES ||
+					::GetLastError() != ERROR_FILE_NOT_FOUND)
+					continue;
+				CString key(canonicalName);
+				key.MakeLower();
+				if (recovered.count(key))
+					continue;
+				CPartFile *toadd = new CPartFile();
+				if (toadd->LoadPartFile(tempDir, ff.GetFileName()) != PLR_LOADSUCCESS) {
+					delete toadd;
+					continue;
+				}
+				recovered.insert(key);
+				toadd->SavePartFile(true);
 				++count;
-				filelist.AddTail(toadd);			// to download queue
+				filelist.AddTail(toadd);
 				if (toadd->GetStatus(true) == PS_READY)
-					theApp.sharedfiles->SafeAddKFile(toadd); // part files are always shared files
-				theApp.emuledlg->transferwnd->GetDownloadList()->AddFile(toadd);// show in downloads window
-
+					theApp.sharedfiles->SafeAddKFile(toadd);
+				theApp.emuledlg->transferwnd->GetDownloadList()->AddFile(toadd);
 				AddLogLine(false, GetResString(IDS_RECOVERED_PARTMET), (LPCTSTR)toadd->GetFileName());
-			} else
-				delete toadd;
+			}
 		}
 		ff.Close();
 	}

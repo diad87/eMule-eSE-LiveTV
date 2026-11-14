@@ -739,7 +739,8 @@ bool CPreferences::IsTempFile(const CString &rstrDirectory, const CString &rstrN
 		_T("%u.part") _T("%c"),
 		_T("%u.part.met") _T("%c"),
 		_T("%u.part.met") PARTMET_BAK_EXT _T("%c"),
-		_T("%u.part.met") PARTMET_TMP_EXT _T("%c")
+		_T("%u.part.met") PARTMET_TMP_EXT _T("%c"),
+		_T("%u.part.met") PARTMET_LEGACY_BACKUP_EXT _T("%c")
 	};
 	for (unsigned i = 0; i < _countof(_apszNotSharedExts); ++i) {
 		UINT uNum;

@@ -45,7 +45,8 @@ enum EPartFileStatus
 //#define BUFFER_SIZE_LIMIT 500000 // Max bytes before forcing a flush
 
 #define	PARTMET_BAK_EXT	_T(".bak")
-#define	PARTMET_TMP_EXT	_T(".backup")
+#define	PARTMET_TMP_EXT	_T(".tmp")
+#define	PARTMET_LEGACY_BACKUP_EXT	_T(".backup")
 
 #define STATES_COUNT		17
 
@@ -136,6 +137,7 @@ public:
 	reach::DirectFileKey NativeDirectFileKey() const;
 	static bool RunHashVerdictFenceSelfTest(); // explicit headless selftest only
 	static bool RunPreviewCopySelfTest();
+	static bool RunPartMetReplacementSelfTest();
 	static bool RunHashVerdictAcceptanceSelfTest(const struct PartHashVerdict_Struct&);
 
 	bool	IsPartFile() const							{ return (status != PS_COMPLETE); }

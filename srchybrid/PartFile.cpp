@@ -373,6 +373,75 @@ bool CPartFile::RunPreviewCopySelfTest()
 	}
 }
 
+bool CPartFile::RunPartMetReplacementSelfTest()
+{
+	if (!theApp.m_bReachBindingSelfTest)
+		return false;
+	const CString directory(CString(thePrefs.GetTempDir()) + _T("v93-partmet-replacement\\"));
+	if (!::CreateDirectory(directory, NULL))
+		return false;
+	try {
+		// Use the production serializer and loader with a partially missing file.
+		CPartFile part;
+		part.m_partmetfilename = _T("001.part.met");
+		part.m_fullname = directory + part.m_partmetfilename;
+		part.SetFileName(_T("before.bin"));
+		part.SetFileSize(8);
+		const uchar ed2kHash[16] = {0x2a, 0x3d};
+		part.m_FileIdentifier.SetMD4Hash(ed2kHash);
+		part.AddGap(3, 7);
+		{
+			CFile bytes(directory + _T("001.part"), CFile::modeCreate | CFile::modeWrite | CFile::shareExclusive);
+			bytes.Write("abc", 3);
+			bytes.Close();
+		}
+		if (!part.SavePartFile())
+			return false;
+
+		const CString backup(part.m_fullname + PARTMET_BAK_EXT);
+		const CString staging(part.m_fullname + PARTMET_TMP_EXT);
+		const auto readBytes = [](const CString &path) {
+			CFile file(path, CFile::modeRead | CFile::shareDenyNone);
+			std::vector<BYTE> bytes(static_cast<size_t>(file.GetLength()));
+			if (file.Read(bytes.data(), static_cast<UINT>(bytes.size())) != bytes.size())
+				bytes.clear();
+			return bytes;
+		};
+		const auto before = readBytes(part.m_fullname);
+		if (before.empty() || readBytes(backup) != before)
+			return false;
+
+		// A handle on the staged source allows the writer but denies rename.
+		// The original unlink+rename sequence could delete the target here.
+		HANDLE held = ::CreateFile(staging, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+			NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+		if (held == INVALID_HANDLE_VALUE)
+			return false;
+		CFile heldStaging(held);
+		part.SetFileName(_T("after.bin"));
+		part.MarkPartMetDirty();
+		if (part.SavePartFile() || !part.m_bPartMetDirty || readBytes(part.m_fullname) != before ||
+			readBytes(backup) != before || readBytes(staging).empty())
+			return false;
+		heldStaging.Close();
+
+		if (!part.SavePartFile() || part.m_bPartMetDirty || readBytes(part.m_fullname) == before ||
+			::GetFileAttributes(staging) != INVALID_FILE_ATTRIBUTES)
+			return false;
+		CPartFile restored;
+		const bool opened = restored.LoadPartFile(directory, part.m_partmetfilename) == PLR_LOADSUCCESS;
+		const bool intact = opened && restored.GetFileName() == _T("after.bin") &&
+			restored.GetFileSize() == 8 && memcmp(restored.GetFileHash(), ed2kHash, sizeof ed2kHash) == 0 &&
+			restored.IsCompleteBD(0, 2) && !restored.IsCompleteBD(3, 7);
+		if (opened)
+			restored.m_hpartfile.Close();
+		return intact;
+	} catch (CFileException *error) {
+		error->Delete();
+		return false;
+	}
+}
+
 bool CPartFile::RunHashVerdictAcceptanceSelfTest(const PartHashVerdict_Struct& diskVerdict)
 {
 	if(!theApp.m_bReachBindingSelfTest || diskVerdict.bReadError) return false;
@@ -1206,9 +1275,13 @@ EPartFileLoadResult CPartFile::LoadPartFile(LPCTSTR in_directory, LPCTSTR in_fil
 		}
 	}
 
-	//check if this is a backup
-	if (_tcsicmp(_tcsrchr(m_fullname, _T('.')), PARTMET_TMP_EXT) == 0 || _tcsicmp(_tcsrchr(m_fullname, _T('.')), PARTMET_BAK_EXT) == 0)
+	// Backups store metadata for the same canonical .part file.
+	const LPCTSTR extension = _tcsrchr(m_fullname, _T('.'));
+	if (extension && (_tcsicmp(extension, PARTMET_BAK_EXT) == 0 ||
+		_tcsicmp(extension, PARTMET_LEGACY_BACKUP_EXT) == 0)) {
 		m_fullname = RemoveFileExtension(m_fullname);
+		m_partmetfilename = RemoveFileExtension(m_partmetfilename);
+	}
 
 	// open permanent handle
 	const CString &searchpath(RemoveFileExtension(m_fullname));
@@ -1601,20 +1674,17 @@ bool CPartFile::SavePartFile(bool bDontOverrideBak)
 		return false;
 	}
 
-	// after successfully writing the temporary part.met file...
-	if (_tremove(m_fullname) != 0 && errno != ENOENT) {
+	// Publish complete metadata without unlinking the previous revision.
+	if (!::MoveFileEx(strTmpFile, m_fullname, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+		const DWORD error = ::GetLastError();
+		(void)::DeleteFile(strTmpFile);
 		if (thePrefs.GetVerbose())
-			DebugLogError(_T("Failed to remove \"%s\" - %s"), (LPCTSTR)m_fullname, _tcserror(errno));
-	}
-
-	if (_trename(strTmpFile, m_fullname) != 0) {
-		int iErrno = errno;
-		if (thePrefs.GetVerbose())
-			DebugLogError(_T("Failed to move temporary part.met file \"%s\" to \"%s\" - %s"), (LPCTSTR)strTmpFile, (LPCTSTR)m_fullname, _tcserror(iErrno));
+			DebugLogError(_T("Failed to replace part.met file \"%s\" from \"%s\" - %s"),
+				(LPCTSTR)m_fullname, (LPCTSTR)strTmpFile, (LPCTSTR)GetErrorMessage(error));
 
 		CString strError;
 		strError.Format(GetResString(IDS_ERR_SAVEMET), (LPCTSTR)m_partmetfilename, (LPCTSTR)GetFileName());
-		strError.AppendFormat(_T(" - %s"), _tcserror(iErrno));
+		strError.AppendFormat(_T(" - %s"), (LPCTSTR)GetErrorMessage(error));
 		LogError(_T("%s"), (LPCTSTR)strError);
 		return false;
 	}
@@ -3341,11 +3411,13 @@ BOOL CPartFile::PerformFileComplete()
 		theApp.QueueLogLine(true, sFmt, (LPCTSTR)BAKName);
 	}
 
-	const CString &TMPName(m_fullname + PARTMET_TMP_EXT);
-	if (!_taccess(TMPName, 0) && !::DeleteFile(TMPName)) {
-		CString sFmt(GetResString(IDS_ERR_DELETE));
-		sFmt.AppendFormat(pszErrfmt, (LPCTSTR)GetErrorMessage(::GetLastError()));
-		theApp.QueueLogLine(true, sFmt, (LPCTSTR)TMPName);
+	for (LPCTSTR suffix : {PARTMET_TMP_EXT, PARTMET_LEGACY_BACKUP_EXT}) {
+		const CString temporaryName(m_fullname + suffix);
+		if (!_taccess(temporaryName, 0) && !::DeleteFile(temporaryName)) {
+			CString sFmt(GetResString(IDS_ERR_DELETE));
+			sFmt.AppendFormat(pszErrfmt, (LPCTSTR)GetErrorMessage(::GetLastError()));
+			theApp.QueueLogLine(true, sFmt, (LPCTSTR)temporaryName);
+		}
 	}
 
 	// initialize 'this' part file for being a 'complete' file, this is to be done *before* releasing the file mutex.
@@ -3516,11 +3588,13 @@ void CPartFile::DeletePartFile()
 		LogError(LOG_STATUSBAR, sFmt, (LPCTSTR)BAKName);
 	}
 
-	const CString &TMPName(m_fullname + PARTMET_TMP_EXT);
-	if (!_taccess(TMPName, 0) && !::DeleteFile(TMPName)) {
-		CString sFmt(GetResString(IDS_ERR_DELETE));
-		sFmt.AppendFormat(pszErrfmt, (LPCTSTR)GetErrorMessage(::GetLastError()));
-		LogError(LOG_STATUSBAR, sFmt, (LPCTSTR)TMPName);
+	for (LPCTSTR suffix : {PARTMET_TMP_EXT, PARTMET_LEGACY_BACKUP_EXT}) {
+		const CString temporaryName(m_fullname + suffix);
+		if (!_taccess(temporaryName, 0) && !::DeleteFile(temporaryName)) {
+			CString sFmt(GetResString(IDS_ERR_DELETE));
+			sFmt.AppendFormat(pszErrfmt, (LPCTSTR)GetErrorMessage(::GetLastError()));
+			LogError(LOG_STATUSBAR, sFmt, (LPCTSTR)temporaryName);
+		}
 	}
 
 	delete this;

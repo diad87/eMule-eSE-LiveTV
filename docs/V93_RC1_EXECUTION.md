@@ -44,6 +44,17 @@ cases. Independent GnuTLS rebuilds produced the same SHA-256
 `E964569804BBF514069D027BD99BBDA62CDE4C7029D3DEB6A1B3C809A32C883C`.
 [Win32 dependency notices](../third_party/quic/DISTRIBUTION-Win32.md)
 
+The x64 and Win32 dependency manifests now reproduce across independent
+directories with the pinned toolchains. Win32 hashes stable test receipts
+and retains the timed probe logs in the dependency work directory.
+
+| Qualification case | Local result |
+| --- | --- |
+| F1, high-entropy data and 15 seconds of UDP discard | 1,073,741,824 bytes, six verified parts retained, one upload slot and the original transfer epoch. Both client exits were zero. Source and destination SHA-256 `6728F0CBB20D5794050D5D752FCBC0EDF6ED8B87E9E66F9E4BA9EEA70C826837`. |
+| NC-Q06, application-data stall | `c5c23f9d` on two product processes stopped accepting file data after 8 MiB. Transport ACK and authenticated PONG continued. The downloader reported `QuicNoProgress` at 30,852 ms and retained the accepted disk ranges byte for byte. The uploader held one slot. This case had no authorized alternate route. |
+| AICH recovery and parser bounds | `0d1aa33d` passed on x64 and Win32. Each run exercised 10,000 trees, 2,491 truncations, 512 malformed cases and the `known2.met` compaction lock. Both returned to the original live allocation count and closed from private desktops. |
+| `.part.met` replacement and recovery | `5ab9abd7` held the staging file open to force a replacement failure. The committed metadata and backup remained byte-identical. Startup chose valid committed metadata, recovered `.bak` and legacy `.backup` as applicable, and ignored an unfinished `.tmp`. |
+
 ## Pending exit checks
 
 | Area | Evidence required for the candidate |

@@ -2294,7 +2294,9 @@ inline void RunMultipartTransfer(CDirectReachabilityManager& manager,CUpDownClie
             if(owned->useful_bytes!=lastUseful) {
                 if(control==Control::Slow && lastUsefulMs) largestUsefulGap=(std::max)(largestUsefulGap,now-lastUsefulMs);
                 lastUseful=owned->useful_bytes; lastUsefulMs=now;
-                if(control==Control::Slow && !owned->transfer_verified) ++activeRanges;
+                // The small second part can hash before part 0. The
+                // session-wide VerifiedPart flag is not a part-0 verdict.
+                if(control==Control::Slow && !file.IsComplete(0)) ++activeRanges;
             }
             switch(control) {
             case Control::Start:
@@ -2458,11 +2460,14 @@ inline void RunMultipartTransfer(CDirectReachabilityManager& manager,CUpDownClie
     Require(disk.GetLength()==expected.size() && disk.Read(actual.data(),static_cast<UINT>(actual.size()))==actual.size() &&
         actual==expected,"multipart completed disk exact across part boundary");
     if(watchdogControls) {
+        const auto pacedMs=Now()-acceptanceStarted;
+        Log(_T("REACH_SELFTEST NC-Q07 paced diagnostics: before=%I64u, paced=%I64u, ms=%I64u, pre_hash_samples=%u, max_gap_ms=%I64u, fallbacks=%I64u"),
+            slowPriorUseful,slowBytes,pacedMs,activeRanges,largestUsefulGap,finalProof->fallback_count);
         Require(control==Control::Slow && activeRanges>100 && slowBytes>=expected.size()-slowPriorUseful &&
-            Now()-acceptanceStarted>=1000000 && largestUsefulGap<30000 &&
+            pacedMs>=1000000 && largestUsefulGap<30000 &&
             finalProof->fallback_count==0,"slow accepted ranges preserve the route without waiting for a part hash");
         Log(_T("REACH_SELFTEST NC-Q07 paced file PASS: bytes=%I64u, paced_bytes=%I64u, paced_ms=%I64u, accepted_pre_hash_samples=%u, max_useful_gap_ms=%I64u, hashes=%u, fallback=0"),
-            static_cast<ULONGLONG>(actual.size()),slowBytes,Now()-acceptanceStarted,activeRanges,largestUsefulGap,hashCallbacks);
+            static_cast<ULONGLONG>(actual.size()),slowBytes,pacedMs,activeRanges,largestUsefulGap,hashCallbacks);
     }
 }
 inline void RunLegacyPartialFile(CDirectReachabilityManager& manager,CUpDownClient& client,

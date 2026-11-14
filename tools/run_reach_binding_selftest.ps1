@@ -90,7 +90,7 @@ if($QuicWatchdogControls) {
     $destination=Join-Path $root 'Incoming/cold-binding.bin'
     try {
         $terminal=$process.WaitForExit($TimeoutSeconds*1000)
-        $markers=@(if(Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log | Where-Object { $_ -match 'REACH_SELFTEST NC-Q07 ' } })
+        $markers=@(if(Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log | Where-Object { $_ -match 'REACH_SELFTEST NC-Q07 .* PASS:' } })
         $fileHash=if(Test-Path -LiteralPath $destination -PathType Leaf) { (Get-FileHash -LiteralPath $destination).Hash }
         $exitCode=if($terminal) { $process.ExitCode }
         $pass=$terminal -and $exitCode -eq 0 -and $markers.Count -eq 5 -and

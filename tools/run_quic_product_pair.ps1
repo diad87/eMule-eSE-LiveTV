@@ -48,12 +48,12 @@ if ($HighEntropy) {
         1073741824 { '6728F0CBB20D5794050D5D752FCBC0EDF6ED8B87E9E66F9E4BA9EEA70C826837' }
     }
 } else {
-    $oracleBytes=New-Object byte[] ([Math]::Min($FileBytes,65536))
+    $oracleBytes=New-Object byte[] ([int][Math]::Min([long]$FileBytes,65536L))
     $patternModulus=if($FileBytes -eq 65537){251}else{256}
     $oracleHasher=[Security.Cryptography.SHA256]::Create()
     try {
         for($offset=0L;$offset -lt $FileBytes;) {
-            $count=[int][Math]::Min($oracleBytes.Length,$FileBytes-$offset)
+            $count=[int][Math]::Min([long]$oracleBytes.Length,[long]$FileBytes-$offset)
             if($offset -eq 0 -or $patternModulus -ne 256) {
                 for($i=0;$i -lt $count;$i++){ $oracleBytes[$i]=[byte](($offset+$i) % $patternModulus) }
             }

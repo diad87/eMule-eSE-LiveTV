@@ -332,6 +332,8 @@ test('release dashboard is loopback-only and legacy updates fail closed', () => 
   const webSocketTunnel = read(eseRoot, 'eSE-live', 'ws_tunnel.js');
   const packageScript = read(repoRoot, 'build_package.ps1');
   const buildAll = read(repoRoot, 'tools', 'build_all.ps1');
+  const releaseLayout = read(repoRoot, 'tools', 'release_fingerprint.ps1');
+  const languageTargets = read(repoRoot, 'srchybrid', 'lang', 'Directory.Build.targets');
   const versionResource = read(repoRoot, 'srchybrid', 'res', 'emule.rc2');
   const languageCheck = read(repoRoot, 'tools', 'check_languages.ps1');
   const updateCheck = read(repoRoot, 'tools', 'update_check.ps1');
@@ -385,7 +387,12 @@ test('release dashboard is loopback-only and legacy updates fail closed', () => 
   assert.match(buildAll, /Assert-OfficialHead -Context "after \$Name"/);
   assert.match(buildAll, /Development pipeline complete \(NOT RELEASABLE\)/);
   assert.match(buildAll, /Get-NetTCPConnection[\s\S]{0,500}127\.0\.0\.1/);
-  assert.match(buildAll, /srchybrid\\lang\\x64\\Dynamic/);
+  assert.match(buildAll, /\[ValidateSet\('x64',\s*'Win32'\)\]\[string\]\$Architecture\s*=\s*'x64'/);
+  assert.match(buildAll, /srchybrid\\lang\\\$Architecture\\Dynamic/);
+  assert.match(buildAll, /\/p:Configuration=Dynamic\s+"\/p:Platform=\$Architecture"/);
+  assert.match(releaseLayout, /\$platform\s*=\s*if\s*\(\$win32\)\s*\{\s*'Win32'\s*\}\s*else\s*\{\s*'x64'\s*\}/);
+  assert.match(releaseLayout, /Runtime = Join-Path \$RepoRoot "srchybrid\\\$platform\\Release"/);
+  assert.match(languageTargets, /\.\.\\\$\(Platform\)\\Release\\lang/);
   assert.match(buildAll, /ls-files -- [`\s]+[\r\n]*\s*'srchybrid\/lang\/\*\.vcxproj'/);
   assert.match(buildAll, /Assert-NoReparseTree -Root \$languageGeneratedRoot/);
   assert.match(buildAll, /Write-ReleaseLanguageStamp/);

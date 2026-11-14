@@ -1810,6 +1810,8 @@ static bool RunReachBindingSelfTest()
 	Log(_T("REACH_SELFTEST V140 PASS: actual DCO uTP pending session Close twice detaches before ACK owner cancel drains attempt reservation subscription preserves original; no physical libutp drain proof"));
 	try { for(unsigned variant=0;variant<4;++variant) ese::shared_socket_selftest::RunClassicTcpObservation(manager,variant); }
 	catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: classic TCP observation: %hs"),error.what()); return false; }
+	try { ese::shared_socket_selftest::RunClassicTcpObservation(manager,0,udp); }
+	catch(const std::exception& error) { LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: initial QUIC to observed TCP fallback: %hs"),error.what()); return false; }
 	Log(_T("REACH_SELFTEST V125 PASS: classic outbound real TCP fresh RSA observation TCP-only TTL duplicate stable missing and mismatching own challenge corrupt signature rejected; handlers loopback no public selector file fallback"));
 	Log(_T("REACH_SELFTEST V126 PASS: classic TCP wire HELLOANSWER PUBLICKEY SIGNATURE and duplicate actually parsed fresh RSA observation or rejection; loopback no public selector file fallback"));
 	Log(_T("REACH_SELFTEST V127 PASS: classic TCP capabilities trigger key-and-signature challenge received before peer key then fresh signature observation duplicate TTL stable; loopback no two products public selector fallback"));

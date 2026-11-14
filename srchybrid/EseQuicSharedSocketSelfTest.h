@@ -563,6 +563,10 @@ public:
 		expired=source; expired.count=0; (*expired.peer.expected_user_hash)[0]^=1;
 		check(manager.GatherDirectTcpObservations(expired,client.GetDirectClientLifetime(),now) && expired.count==0);
     }
+    static bool GatherObservedTcp(CDirectReachabilityManager& manager,reach::NativeDirectCandidateSnapshotV1& snapshot,
+        uint64 lifetime,uint64 now) {
+        return theApp.m_bReachBindingSelfTest && manager.GatherDirectTcpObservations(snapshot,lifetime,now);
+    }
     static CClientReqSocket* LegacyConsumerSocket(CDirectReachabilityManager& manager,reach::DirectHandle handle,uint32 route) {
         if(!manager.m_builtinQuicConsumer) return nullptr;
         const auto* entry=manager.m_builtinQuicConsumer->Find(handle,route);
@@ -2333,17 +2337,19 @@ inline void RunMultipartTransfer(CDirectReachabilityManager& manager,CUpDownClie
 inline void RunLegacyPartialFile(CDirectReachabilityManager& manager,CUpDownClient& client,
     SOCKET& remote,reach::DirectHandle handle,const std::function<void()>& pump,bool corrupt=false,
     const std::function<void()>& reconnect={},bool packed=false,
-    const std::function<int(const char*,int)>& streamSend={},const std::function<int(char*,int)>& streamReceive={}) {
+    const std::function<int(const char*,int)>& streamSend={},const std::function<int(char*,int)>& streamReceive={},
+    bool initialFallback=false) {
     const bool utp=static_cast<bool>(streamSend);
     Require(utp==static_cast<bool>(streamReceive) && (!utp || (!corrupt && !reconnect && !packed)),"legacy stream fixture supported mode");
     auto sendBytes=[&](const char* bytes,int size) { return utp?streamSend(bytes,size):send(remote,bytes,size,0); };
     auto receiveBytes=[&](char* bytes,int size) { return utp?streamReceive(bytes,size):recv(remote,bytes,size,0); };
     std::array<BYTE,4097> expected{};
-    for(size_t i=0;i<expected.size();++i) expected[i]=static_cast<BYTE>(i*31+(utp?151:packed?137:reconnect?127:corrupt?113:107));
+    for(size_t i=0;i<expected.size();++i) expected[i]=static_cast<BYTE>(i*31+(initialFallback?191:utp?151:packed?137:reconnect?127:corrupt?113:107));
     std::array<BYTE,16> hash{};
     Require(CKnownFile::CreateHash(expected.data(),static_cast<UINT>(expected.size()),hash.data()),"legacy file MD4");
     CString text; for(const auto b:hash) text.AppendFormat(_T("%02X"),b);
-    CString link; link.Format(_T("ed2k://|file|legacy-partial.bin|4097|%s|/"),(LPCTSTR)text);
+    CString link; link.Format(_T("ed2k://|file|%s|4097|%s|/"),
+        initialFallback ? _T("quic-initial-tcp-fallback.bin") : _T("legacy-partial.bin"),(LPCTSTR)text);
     auto file=std::make_unique<CPartFile>(link);
     struct Cleanup {
         CUpDownClient& client; std::unique_ptr<CPartFile>& file;
@@ -2540,6 +2546,7 @@ inline void RunLegacyPartialFile(CDirectReachabilityManager& manager,CUpDownClie
     std::array<BYTE,4097> completeBytes{};
     Require(completed.GetLength()==4097 && completed.Read(completeBytes.data(),4097)==4097 && completeBytes==expected,
         "legacy complete disk exact after real hash");
+    if(initialFallback) return; // The caller checks the mixed route and elapsed deadlines.
     if(utp) return; // caller records uTP-specific scope, never borrow TCP markers
     if(corrupt) Log(_T("REACH_SELFTEST V120 PASS: TCP corrected4097 same authenticated socket new real hash callback VerifiedPart completed disk exact useful8194; seeded repair reservation no route recovery F1"));
     else Log(_T("REACH_SELFTEST V117 PASS: real TCP final byte PartFile IOCP hash worker callback VerifiedPart and completed4097 disk exact; seeded reservation no corruption recovery mixed race F1"));
@@ -3376,11 +3383,26 @@ inline void RunLegacyUtpStart(CDirectReachabilityManager& manager,uint16 fixture
         !manager.ResolveDirectSubscriber(token) && !client->socket && theApp.clientlist->IsValidClient(client.get()),"owned uTP retirement preserves original");
 }
 
-inline void RunClassicTcpObservation(CDirectReachabilityManager& manager,unsigned variant=0) {
-    Require(variant<=3 && theApp.m_bReachBindingSelfTest && !manager.DirectConnections().Size(),"classic observation explicit fixture");
-    struct RestoreLab { int consent=thePrefs.GetEseNetLabConsent(); bool enabled=thePrefs.GetEseNetLabEnabled();
-        ~RestoreLab() { thePrefs.SetEseNetLabConsent(consent); thePrefs.SetEseNetLabEnabled(enabled); } } restore;
+inline void RunClassicTcpObservation(CDirectReachabilityManager& manager,unsigned variant=0,uint16 fallbackUdpPort=0) {
+    const bool initialFallback=fallbackUdpPort!=0;
+    Require(variant<=3 && (!initialFallback || variant==0) && theApp.m_bReachBindingSelfTest &&
+        !manager.DirectConnections().Size(),"classic observation explicit fixture");
+    struct RestoreLab {
+        bool restoreUdp;
+        int consent=thePrefs.GetEseNetLabConsent();
+        bool enabled=thePrefs.GetEseNetLabEnabled();
+        uint16 port=thePrefs.GetUDPPort();
+        ~RestoreLab() {
+            thePrefs.SetEseNetLabConsent(consent); thePrefs.SetEseNetLabEnabled(enabled);
+            if(restoreUdp) { thePrefs.SetUDPPort(port); theApp.clientudp->Rebind(); }
+        }
+    } restore{initialFallback};
     thePrefs.SetEseNetLabConsent(CPreferences::EseNetLabAccepted); thePrefs.SetEseNetLabEnabled(true);
+    if(initialFallback) {
+        thePrefs.SetUDPPort(fallbackUdpPort);
+        Require(theApp.clientudp->Rebind(),"initial fallback local UDP rebind");
+        manager.TickDirectConnections(); // Establish topology before observing TCP.
+    }
     SOCKET listener=::socket(AF_INET,SOCK_STREAM,IPPROTO_TCP),remote=INVALID_SOCKET;
     struct CloseSockets { SOCKET& listener; SOCKET& remote;
         ~CloseSockets() { if(remote!=INVALID_SOCKET) closesocket(remote); if(listener!=INVALID_SOCKET) closesocket(listener); }
@@ -3391,7 +3413,9 @@ inline void RunClassicTcpObservation(CDirectReachabilityManager& manager,unsigne
     int length=sizeof address; Require(getsockname(listener,reinterpret_cast<sockaddr*>(&address),&length)==0,"classic TCP owned endpoint");
     u_long nonblocking=1; Require(ioctlsocket(listener,FIONBIO,&nonblocking)==0,"classic listener nonblocking");
     auto client=std::make_unique<CUpDownClient>(static_cast<CPartFile*>(nullptr),ntohs(address.sin_port),INADDR_LOOPBACK,0,0,false);
-    std::array<BYTE,16> hash{}; hash[0]=0xA5; hash[14]=static_cast<BYTE>(variant); hash[15]=0x26;
+    std::array<BYTE,16> hash{}; hash[0]=0xA5; hash[14]=static_cast<BYTE>(variant); hash[15]=initialFallback ? 0x27 : 0x26;
+    std::unique_ptr<Identity> quicIdentity;
+    if(initialFallback) quicIdentity=std::make_unique<Identity>();
     client->SetUserHash(hash.data()); theApp.clientlist->AddClient(client.get());
     auto* socket=new CClientReqSocket(client.get()); client->socket=socket;
     struct Cleanup { CDirectReachabilityManager& manager; CUpDownClient& client; CClientReqSocket* socket;
@@ -3400,7 +3424,7 @@ inline void RunClassicTcpObservation(CDirectReachabilityManager& manager,unsigne
             client.socket=nullptr; manager.TickDirectConnections(); }
     } cleanup{manager,*client,socket};
     Require(socket->Create(AF_INET),"classic actual socket Create"); socket->WaitForOnConnect();
-    const auto window=CNativeDirectSelfTestAccess::LegacySocketWindow(*socket);
+    auto window=CNativeDirectSelfTestAccess::LegacySocketWindow(*socket);
     auto pump=[&]() { MSG message{};
         for(unsigned i=0;i<256 && PeekMessage(&message,window,WM_SOCKETEX_TRIGGER,0xBFFF,PM_REMOVE);++i) DispatchMessage(&message);
         manager.TickDirectConnections(); Sleep(1); };
@@ -3430,7 +3454,12 @@ inline void RunClassicTcpObservation(CDirectReachabilityManager& manager,unsigne
         Require(offset==packet.GetRealPacketSize() && done(),"classic identity TCP wire actually processed");
     };
     CSafeMemFile hello; hello.WriteHash16(hash.data()); hello.WriteUInt32(0); hello.WriteUInt16(ntohs(address.sin_port));
-    hello.WriteUInt32(0); hello.WriteUInt32(0); hello.WriteUInt16(0);
+    hello.WriteUInt32(initialFallback ? 1 : 0);
+    if(quicIdentity) {
+        CTag nodeTag(static_cast<uint8>(TAG_ESE_NODE_PUB),static_cast<size_t>(32),quicIdentity->pub.data());
+        nodeTag.WriteTagToFile(hello);
+    }
+    hello.WriteUInt32(0); hello.WriteUInt16(0);
     const auto helloSize=static_cast<uint32>(hello.GetLength()); auto bytes=std::unique_ptr<BYTE[]>(hello.Detach());
     client->SendHelloPacket();
     sendWire(OP_EDONKEYPROT,OP_HELLOANSWER,bytes.get(),helloSize,[&] { return client->Credits()!=nullptr && client->CheckHandshakeFinished(); });
@@ -3496,6 +3525,121 @@ inline void RunClassicTcpObservation(CDirectReachabilityManager& manager,unsigne
     CNativeDirectSelfTestAccess::TestTcpObservation(manager,*client,route);
     sendWire(OP_EMULEPROT,OP_SIGNATURE,signature.data(),signature[0]+1,[&] { return CNativeDirectSelfTestAccess::ClassicParsedSignatures(*socket)==parsedBefore+2; });
     Require(socket->ObservedLegacyTcpCandidate()->expires_monotonic_ms==observed->expires_monotonic_ms,"classic duplicate signature does not refresh observation TTL");
+    if(!initialFallback) return;
+
+    const auto lifetime=client->GetDirectClientLifetime();
+    Require(client->NativeDirectExpectedNode()==quicIdentity->pub &&
+        client->Credits()->GetSecIDKeyLen()==publicPacket[0],"initial fallback uses prior TCP peer and SecureIdent key");
+    reach::NativeDirectCandidateSnapshotV1 tcpEvidence;
+    tcpEvidence.local_generation=manager.GetTopologyGeneration();
+    tcpEvidence.peer.expected_user_hash=hash;
+    Require(CNativeDirectSelfTestAccess::GatherObservedTcp(manager,tcpEvidence,lifetime,Now()) && tcpEvidence.count==1 &&
+        tcpEvidence.candidates[0].route.evidence==reach::DirectEvidence::Observed &&
+        tcpEvidence.candidates[0].route.port==observed->port,"initial fallback uses actual lifetime-bound TCP observation");
+    route.candidate=tcpEvidence.candidates[0].route;
+    route.id=4;
+    route.transport=reach::DirectTcp;
+    socket->Safe_Delete();
+    socket->Close();
+    closesocket(remote); remote=INVALID_SOCKET;
+
+    // Reserve the mixed route plan explicitly. The UDP endpoint is bound so the
+    // stack can send normally. Consume all datagrams without replying from the
+    // first Initial onward, independently of the viable loopback TCP listener.
+    Port silent;
+    struct HostCleanup {
+        CDirectReachabilityManager& manager; uint64 lifetime;
+        ~HostCleanup() {
+            manager.RetireDirectClient(lifetime);
+            manager.TickDirectConnections(); manager.TickDirectConnections();
+            manager.ShutdownDirectHost();
+        }
+    } hostCleanup{manager,lifetime};
+    Require(manager.EnableNativeQuicLab(),"initial fallback native QUIC host");
+    reach::NativeDirectCandidateSnapshotV1 snapshot;
+    snapshot.local_generation=tcpEvidence.local_generation;
+    snapshot.peer.expected_user_hash=hash;
+    snapshot.peer.expected_node_pub=quicIdentity->pub;
+    const auto token=manager.AcquireDirectSubscriber(lifetime,reach::DirectConsumerKind::Download);
+    const auto request=manager.RequestDirectConnection(snapshot,lifetime,1,token).request;
+    const auto handle=request.handle;
+    const auto admitted=manager.DirectConnections().Snapshot(handle);
+    Require(token && request.status==reach::DirectRequestStatus::Created && admitted &&
+        admitted->peer.domain==reach::DirectPeerDomain::NodePublicKey && admitted->peer.identity==quicIdentity->pub,
+        "initial fallback preserves pinned node attempt");
+    const auto quicRoute=Route(silent.endpoint,snapshot.local_generation);
+    Identity nonce;
+    std::array<std::uint8_t,32> localNode{};
+    memcpy(localNode.data(),eSELive::NodeIdentityPub(),localNode.size());
+    auto quicPeer=Config(localNode,quicIdentity->pub,admitted->attempt_id,nonce.pub,false,snapshot.local_generation);
+    memcpy(quicPeer.local.userHash.data(),thePrefs.GetUserHash(),16);
+    udp::Endpoint local;
+    local.address[0]=127; local.address[3]=1; local.port=theApp.clientudp->GetConnectedPort();
+    Require(manager.RegisterDirectQuicRoute(handle,quicRoute,{local,false},quicPeer) &&
+        manager.RegisterDirectLegacyRoute(handle,route),"initial fallback reserves both exact routes");
+    const auto started=Now();
+    Require(manager.ScheduleDirectQuicRoutes(handle,{quicRoute,route}) && manager.HasActiveQuicTransfers() &&
+        !CNativeDirectSelfTestAccess::LegacyConsumerSocket(manager,handle,route.id),"initial QUIC starts before TCP");
+    unsigned dropped=0,initials=0;
+    auto discardQuic=[&] {
+        std::array<BYTE,2048> data{};
+        for(unsigned i=0;i<128;++i) {
+            const int count=recv(silent.socket,reinterpret_cast<char*>(data.data()),static_cast<int>(data.size()),0);
+            if(count==SOCKET_ERROR) { Require(WSAGetLastError()==WSAEWOULDBLOCK,"silent QUIC socket"); break; }
+            ++dropped;
+            if(udp::AcceptQuicInitial(data.data(),static_cast<std::size_t>(count))) ++initials;
+        }
+    };
+    while(Now()<started+5000 && !(socket=CNativeDirectSelfTestAccess::LegacyConsumerSocket(manager,handle,route.id))) {
+        theApp.clientudp->PollQuicIngress(); manager.TickDirectConnections(); discardQuic(); Sleep(1);
+    }
+    const auto tcpStarted=Now();
+    const auto fallback=manager.DirectConnections().Snapshot(handle);
+    Require(socket && socket->client && socket->client!=client.get() && dropped && initials &&
+        tcpStarted-started>=4000 && tcpStarted-started<=4250 && fallback && fallback->fallback_count==1 &&
+        fallback->winner==0 && fallback->useful_bytes==0 && !fallback->transfer_verified &&
+        fallback->reason_count==1 && fallback->reason_chain[0].route_id==quicRoute.id &&
+        (fallback->reason_chain[0].reason==reach::DirectReason::Deadline ||
+         fallback->reason_chain[0].reason==reach::DirectReason::DirectUnreachable),
+        "one timed QUIC failure and one TCP fallback without winner or application data");
+    window=CNativeDirectSelfTestAccess::LegacySocketWindow(*socket);
+    Require(window!=nullptr,"fallback TCP notification window");
+    while(Now()<tcpStarted+1500 && (remote==INVALID_SOCKET || !socket->IsConnected())) {
+        if(remote==INVALID_SOCKET) remote=accept(listener,nullptr,nullptr);
+        pump();
+    }
+    const auto connectedAt=Now();
+    const auto connected=manager.DirectConnections().Snapshot(handle);
+    Require(connectedAt-tcpStarted<=1500 && remote!=INVALID_SOCKET && ioctlsocket(remote,FIONBIO,&nonblocking)==0 && connected &&
+        connected->state==reach::DirectSessionState::Authenticating && !connected->winner && !client->socket &&
+        !socket->HasAuthenticatedDirectConnection(),"fallback real TCP reaches authentication without transfer authority");
+    auto* temporary=socket->client;
+    sendWire(OP_EDONKEYPROT,OP_HELLOANSWER,bytes.get(),helloSize,[&] { return temporary->CheckHandshakeFinished(); });
+    sendWire(OP_EMULEPROT,OP_EMULEINFOANSWER,infoBytes.get(),infoSize,[&] {
+        return temporary->Credits()->m_dwCryptRndChallengeFor!=0;
+    });
+    const auto challenge=temporary->Credits()->m_dwCryptRndChallengeFor;
+    Require(challenge!=wireChallenge && temporary->Credits()->GetSecIDKeyLen()==publicPacket[0] &&
+        !memcmp(temporary->Credits()->GetSecureIdent(),publicPacket.data()+1,publicPacket[0]) &&
+        !socket->HasAuthenticatedDirectConnection() && !client->socket,"fallback must re-prove the same pinned RSA key");
+    target.m_dwCryptRndChallengeFrom=challenge;
+    signature[0]=theApp.clientcredits->CreateSignature(&target,signature.data()+1,200,0,0,&signer);
+    Require(signature[0]>=10,"fallback fresh SecureIdent signature");
+    sendWire(OP_EMULEPROT,OP_SIGNATURE,signature.data(),signature[0]+1,[&] { return client->socket==socket; });
+    const auto readyAt=Now();
+    const auto ready=manager.DirectConnections().Snapshot(handle);
+    Require(readyAt-connectedAt<=5000 && readyAt-started<=15000 && ready &&
+        ready->state==reach::DirectSessionState::Ready && ready->epoch==1 && ready->winner==route.id &&
+        ready->fallback_count==1 && ready->attempt_id==admitted->attempt_id && ready->peer.identity==quicIdentity->pub &&
+        client->NativeDirectExpectedNode()==quicIdentity->pub && socket->HasAuthenticatedDirectConnection() &&
+        client->HasPassedSecureIdent(false) && !ready->useful_bytes && !ready->transfer_verified,
+        "fallback TCP authenticated once before file data");
+    RunLegacyPartialFile(manager,*client,remote,handle,pump,false,{},false,{},{},true);
+    const auto complete=manager.DirectConnections().Snapshot(handle);
+    Require(complete && complete->fallback_count==1 && complete->winner==route.id && complete->epoch==1 &&
+        complete->useful_bytes==4097 && complete->transfer_verified,"single fallback completes exact legacy file");
+    Log(_T("REACH_SELFTEST NC-Q05 mixed-route witness PASS: QUIC Initial discarded, one observed TCP fallback, fresh pinned RSA, hashed 4097-byte file; fallback_ms=%I64u ready_ms=%I64u dropped=%u initials=%u"),
+        tcpStarted-started,readyAt-started,dropped,initials);
 }
 
 inline void RunQuicToTcpFileRecovery(CDirectReachabilityManager& manager,CUpDownClient& client,

@@ -133,6 +133,14 @@ public:
                     inputError_=true;
                     return std::nullopt;
                 }
+                for(unsigned count=0;count<16;++count) {
+                    const auto control=rendezvous->TakeControl(*context,Now());
+                    if(!control) break;
+                    if(!Send(*control)) {
+                        inputError_=true;
+                        return std::nullopt;
+                    }
+                }
             }
             if(offset_==used_) {
                 if(rendezvous && !gnutls_record_check_pending(session_)) {
@@ -230,7 +238,7 @@ bool Serve(const Socket& peer,const ServerIdentity& identity,const Bytes16& epoc
         gnutls_rnd(GNUTLS_RND_NONCE,local.session.data(),local.session.size())<0) return false;
     ChannelCrypto crypto(transport.Session(),identity.identity);
     const auto capabilities=kEseWireServerCapEd2kEnvelope | kEseWireServerCapAtomicPublish |
-        (rendezvous ? kEseWireServerCapRdv2 : 0);
+        (rendezvous ? kEseWireServerCapRdv2 | kEseWireServerCapCrossCallback : 0u);
     AuthSession auth(local,capabilities,true,started);
     EncodedFrame wire;
     for(;;) {
@@ -265,7 +273,8 @@ bool Serve(const Socket& peer,const ServerIdentity& identity,const Bytes16& epoc
         const rdv::SessionContext context{authenticated->epoch,authenticated->session,authenticated->generation};
         Bytes32 digest{}, key{};
         const bool attached=auth.HelloDigest(crypto,digest) && ExportRendezvousKey(transport.Session(),digest,key) &&
-            rendezvous->Attach(context,key,*client,session.Deadline());
+            rendezvous->Attach(context,key,*client,session.Deadline(),
+                (authenticated->selected & kEseWireServerCapCrossCallback)!=0);
         SecureZeroMemory(key.data(),key.size());
         if(!attached) return false;
         registration.listener=rendezvous;
@@ -276,7 +285,25 @@ bool Serve(const Socket& peer,const ServerIdentity& identity,const Bytes16& epoc
         const auto frame=transport.Next(registration.listener,&registration.context);
         if(!frame) return session.LoggedIn() && !transport.InputError();
         Responses responses;
-        if(!session.Handle(*frame,crypto,Now(),responses)) return false;
+        if(registration.listener && registration.listener->Handles(frame->header.type) && session.LoggedIn() &&
+            ClassifyFrame(frame->header,Direction::ClientToServer,Phase::Authenticated)==Disposition::Message) {
+            using Use=ServerSession::RequestUse;
+            const auto use=session.ClaimDeferred(frame->header.request,frame->header.type,Now());
+            const auto code=use==Use::ResourceLimit ? kEseWireServerResourceLimit : kEseWireServerConflict;
+            const auto reply=use==Use::New || use==Use::SameOperation ?
+                registration.listener->Handle(registration.context,*frame,Now()) :
+                std::optional<RendezvousListener::ControlReply>{{kEseWireServerError,true,
+                    {0,static_cast<std::uint8_t>(code),0,0,0,0}}};
+            if(!reply) return false;
+            if(reply->type) {
+                EncodedFrame response;
+                const auto flags=static_cast<std::uint16_t>(kEseWireServerResponse |
+                    (reply->terminal ? kEseWireServerFinal : 0));
+                if(!EncodeFrame({{reply->type,flags,frame->header.request},
+                    {reply->body.data(),reply->body.size()}},response)) return false;
+                responses.push_back(std::move(response));
+            }
+        } else if(!session.Handle(*frame,crypto,Now(),responses)) return false;
         if(registration.listener)
             registration.listener->Update(registration.context,session.LoggedIn() && !session.Closed(),session.Deadline());
         transport.SetDeadline(Now()+3000);

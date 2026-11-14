@@ -59,6 +59,14 @@ void ServerIndex::Deactivate(const Bytes32& node,std::uint64_t generation)
     }
 }
 
+bool ServerIndex::HasPublication(const Bytes32& node,std::uint64_t generation,
+    const std::array<std::uint8_t,24>& key,std::uint64_t now)
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    const auto* entry=Find(node);
+    return entry && entry->generation==generation && entry->lease>now && entry->publication.Contains(key);
+}
+
 std::uint16_t ServerIndex::Publish(const Bytes32& node,std::uint64_t generation,std::uint16_t type,
     ByteView payload,AuthCrypto& crypto,std::uint64_t now,PublishState& state)
 {

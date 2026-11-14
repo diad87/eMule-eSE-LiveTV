@@ -24,6 +24,8 @@ public:
     ServerSession(const ServerSession&) = delete;
     ServerSession& operator=(const ServerSession&) = delete;
     bool Handle(const FrameView&,AuthCrypto&,std::uint64_t now,Responses& output);
+    enum class RequestUse { New, OtherOperation, SameOperation, ResourceLimit };
+    RequestUse ClaimDeferred(const RequestId&,std::uint16_t type,std::uint64_t now);
     bool LoggedIn() const noexcept { return loggedIn_; }
     bool Closed() const noexcept { return closed_; }
     std::uint64_t Deadline() const noexcept { return lease_; }
@@ -41,6 +43,12 @@ private:
     ServerEndpoint endpoint_;
     std::uint64_t lease_ = 0;
     std::vector<Completed> completed_;
+    struct Deferred {
+        RequestId request;
+        std::uint16_t type;
+        std::uint64_t until;
+    };
+    std::vector<Deferred> deferred_;
     ServerIndex& index_;
     const std::uint64_t generation_;
     bool loggedIn_ = false;

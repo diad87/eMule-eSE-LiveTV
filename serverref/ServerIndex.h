@@ -14,6 +14,8 @@ public:
     void Expire(std::uint64_t now);
     void Renew(const Bytes32& node,std::uint64_t generation,std::uint64_t lease);
     void Deactivate(const Bytes32& node,std::uint64_t generation);
+    bool HasPublication(const Bytes32& node,std::uint64_t generation,
+        const std::array<std::uint8_t,24>& key,std::uint64_t now);
     std::uint16_t Publish(const Bytes32& node,std::uint64_t generation,std::uint16_t type,
         ByteView payload,AuthCrypto&,std::uint64_t now,PublishState& state);
     std::optional<std::vector<std::uint8_t>> Hints(const Bytes32& requester,std::uint64_t primaryGeneration,

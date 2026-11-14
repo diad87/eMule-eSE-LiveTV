@@ -5,7 +5,9 @@
 #include "ServerTls.h"
 #include <gnutls/crypto.h>
 #include <atomic>
+#include <algorithm>
 #include <chrono>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -23,6 +25,46 @@ bool Matches(const rdv::SessionContext& left,const rdv::SessionContext& right) n
     return left.epoch==right.epoch && left.session==right.session && left.generation==right.generation;
 }
 
+template<class Bytes>
+bool Nonzero(const Bytes& bytes) noexcept
+{
+    return std::any_of(bytes.begin(),bytes.end(),[](std::uint8_t value) { return value!=0; });
+}
+
+std::uint64_t Read64(const std::uint8_t* input) noexcept
+{
+    std::uint64_t value=0;
+    for(unsigned i=0;i<8;++i) value=(value<<8)|input[i];
+    return value;
+}
+
+std::uint64_t AddTime(std::uint64_t now,std::uint64_t interval) noexcept
+{
+    const auto maximum=(std::numeric_limits<std::uint64_t>::max)();
+    return now>maximum-interval ? maximum : now+interval;
+}
+
+void Append(std::vector<std::uint8_t>& output,std::uint64_t number,unsigned count)
+{
+    for(unsigned i=count;i>0;--i) output.push_back(static_cast<std::uint8_t>(number>>(8*(i-1))));
+}
+
+using Reply=RendezvousListener::ControlReply;
+Reply Error(std::uint16_t code)
+{
+    return {kEseWireServerError,true,{static_cast<std::uint8_t>(code>>8),static_cast<std::uint8_t>(code),0,0,0,0}};
+}
+
+Reply Ack()
+{
+    return {kEseWireServerAck,true,{0,0}};
+}
+
+bool Body(ByteView payload,std::size_t size) noexcept
+{
+    return payload.data && payload.size==size;
+}
+
 class Crypto final : public rdv::Crypto {
 public:
     bool Hmac(const Bytes32& key,ByteView bytes,Bytes32& output) noexcept override
@@ -37,17 +79,57 @@ public:
 }
 
 struct RendezvousListener::Impl {
+    struct Outgoing {
+        std::uint16_t type;
+        RequestId request;
+        bool response;
+        std::vector<std::uint8_t> body;
+        std::uint64_t until=0;
+        std::size_t ttlOffset=0;
+        std::optional<rdv::SessionContext> remote;
+        rdv::Endpoint path{};
+        rdv::Endpoint local{};
+        std::array<std::uint8_t,24> file{};
+        bool remotePublisher=false;
+        std::uint64_t remoteVersion=0,localVersion=0;
+    };
     struct Entry {
-        Entry(const rdv::SessionContext& given,const Bytes32& secret,const ClientHello& client,std::uint64_t until)
+        Entry(const rdv::SessionContext& given,const Bytes32& secret,const ClientHello& client,std::uint64_t until,bool pairing)
             : context(given),key(secret),node(client.node),expiration(until),
-              primary(client.mode==SessionMode::Primary),ledger(context) {}
+              primary(client.mode==SessionMode::Primary),pairing(pairing),ledger(context) {}
         ~Entry() { SecureZeroMemory(key.data(),key.size()); }
         rdv::SessionContext context;
         Bytes32 key,node;
         std::uint64_t expiration;
-        bool primary,loggedIn=false;
+        std::uint64_t endpointVersion=0;
+        bool primary,pairing,loggedIn=false;
         rdv::Session ledger;
         std::optional<rdv::Registration> pending;
+        std::vector<Outgoing> outgoing;
+        struct Receipt { RequestId request; Bytes32 digest; std::uint64_t until; };
+        std::vector<Receipt> consentReceipts;
+    };
+
+    struct Voucher {
+        Bytes32 token;
+        rdv::SessionContext requester,target;
+        std::array<std::uint8_t,24> file;
+        std::uint64_t expires;
+        std::uint64_t retainUntil=0;
+        std::uint8_t purpose;
+        RequestId issuance{};
+        std::array<std::uint8_t,57> requestBody{};
+        enum class State { Available, Pending, Finished } state=State::Available;
+        RequestId request{};
+        std::array<std::uint8_t,72> pairBody{};
+        std::optional<Outgoing> response;
+    };
+
+    struct Pending {
+        Bytes16 transaction,attempt;
+        std::uint64_t generation,deadline,sourceVersion,targetVersion;
+        rdv::Endpoint requesterEndpoint,targetEndpoint;
+        std::size_t voucher;
     };
 
     Impl(ServerIndex& owner,std::uint16_t port) : index(owner)
@@ -94,6 +176,257 @@ struct RendezvousListener::Impl {
             (!entry.primary || index.CurrentPrimary(entry.node,entry.context.generation,now));
     }
 
+    bool Queue(Entry& entry,std::uint16_t type,const RequestId& request,bool response,
+        std::vector<std::uint8_t> body,std::optional<Outgoing>* stored=nullptr,
+        std::uint64_t until=0,std::size_t ttlOffset=0)
+    {
+        if(entry.outgoing.size()>=16) return false;
+        Outgoing queued{type,request,response,std::move(body),until,ttlOffset,std::nullopt,{},{},{},false,0,0};
+        if(stored) *stored=queued;
+        entry.outgoing.push_back(std::move(queued));
+        return true;
+    }
+
+    void FailPair(Pending& pair,std::uint16_t code)
+    {
+        auto& voucher=*vouchers[pair.voucher];
+        voucher.state=Voucher::State::Finished;
+        if(auto* requester=Find(voucher.requester))
+            Queue(*requester,kEseWireServerError,voucher.request,true,Error(code).body,&voucher.response);
+    }
+
+    bool CurrentEndpoint(const Entry& entry,const rdv::Endpoint& endpoint,std::uint64_t now)
+    {
+        const auto current=entry.ledger.Current(endpoint.family,now);
+        return current && rdv::SameEndpoint(current->endpoint,endpoint);
+    }
+
+    void Prune(std::uint64_t now)
+    {
+        for(auto& pair:pending) {
+            if(!pair) continue;
+            auto& voucher=*vouchers[pair->voucher];
+            const auto* from=Find(voucher.requester);
+            const auto* to=Find(voucher.target);
+            if(now>=pair->deadline || now>=voucher.expires) {
+                FailPair(*pair,kEseWireServerExpired);
+            } else if(!from || !to || !Eligible(*from,now) || !Eligible(*to,now) ||
+                from->endpointVersion!=pair->sourceVersion || to->endpointVersion!=pair->targetVersion ||
+                !CurrentEndpoint(*from,pair->requesterEndpoint,now) || !CurrentEndpoint(*to,pair->targetEndpoint,now) ||
+                !index.HasPublication(to->node,to->context.generation,voucher.file,now)) {
+                FailPair(*pair,kEseWireServerTargetGone);
+            } else continue;
+            pair.reset();
+        }
+        for(auto& voucher:vouchers)
+            if(voucher && voucher->state!=Voucher::State::Pending && now>=voucher->retainUntil)
+                voucher.reset();
+    }
+
+    Reply RequestVoucher(Entry& requester,const FrameView& frame,std::uint64_t now)
+    {
+        const auto body=frame.payload;
+        if(!Body(body,57) || (body.data[56]!=1 && body.data[56]!=2)) return Error(kEseWireServerMalformed);
+        Bytes32 targetNode{};
+        std::array<std::uint8_t,24> file{};
+        std::copy_n(body.data,32,targetNode.begin());
+        std::copy_n(body.data+32,24,file.begin());
+        if(targetNode==requester.node || !Nonzero(targetNode) || !Read64(file.data()+16))
+            return Error(kEseWireServerMalformed);
+        Entry* target=nullptr;
+        for(auto& found:entries)
+            if(found && found->node==targetNode && found->primary && found->pairing && Eligible(*found,now)) {
+                target=&*found;
+                break;
+            }
+        if(!target || !index.HasPublication(targetNode,target->context.generation,file,now))
+            return Error(kEseWireServerTargetGone);
+        for(const auto& existing:vouchers) {
+            if(!existing || !Matches(existing->requester,requester.context) || existing->issuance!=frame.header.request) continue;
+            if(!std::equal(existing->requestBody.begin(),existing->requestBody.end(),body.data))
+                return Error(kEseWireServerConflict);
+            std::vector<std::uint8_t> payload(existing->token.begin(),existing->token.end());
+            payload.insert(payload.end(),targetNode.begin(),targetNode.end());
+            if(now>=existing->expires) return Error(kEseWireServerExpired);
+            Append(payload,existing->expires-now,4);
+            return {kEseWireServerVoucher,true,std::move(payload)};
+        }
+        auto available=std::find_if(vouchers.begin(),vouchers.end(),[](const auto& value){ return !value; });
+        if(available==vouchers.end()) return Error(kEseWireServerResourceLimit);
+        Voucher voucher{};
+        voucher.requester=requester.context;
+        voucher.target=target->context;
+        voucher.file=file;
+        voucher.purpose=body.data[56];
+        voucher.issuance=frame.header.request;
+        std::copy_n(body.data,voucher.requestBody.size(),voucher.requestBody.begin());
+        voucher.expires=AddTime(now,30000);
+        voucher.retainUntil=AddTime(now,120000);
+        if(gnutls_rnd(GNUTLS_RND_KEY,voucher.token.data(),voucher.token.size())<0 || !Nonzero(voucher.token))
+            return Error(kEseWireServerResourceLimit);
+        if(std::any_of(vouchers.begin(),vouchers.end(),[&](const auto& prior) {
+            return prior && gnutls_memcmp(prior->token.data(),voucher.token.data(),voucher.token.size())==0;
+        })) return Error(kEseWireServerResourceLimit);
+        std::vector<std::uint8_t> payload(voucher.token.begin(),voucher.token.end());
+        payload.insert(payload.end(),targetNode.begin(),targetNode.end());
+        Append(payload,30000,4);
+        available->emplace(std::move(voucher));
+        return {kEseWireServerVoucher,true,std::move(payload)};
+    }
+
+    Reply StartPair(Entry& requester,const FrameView& frame,std::uint64_t now)
+    {
+        if(!Body(frame.payload,72)) return Error(kEseWireServerMalformed);
+        const auto* bytes=frame.payload.data;
+        for(auto& voucher:vouchers) {
+            if(voucher && Matches(voucher->requester,requester.context) && voucher->issuance==frame.header.request)
+                return Error(kEseWireServerConflict);
+            if(!voucher || voucher->state==Voucher::State::Available ||
+                !Matches(voucher->requester,requester.context) || voucher->request!=frame.header.request) continue;
+            if(!std::equal(voucher->pairBody.begin(),voucher->pairBody.end(),bytes))
+                return Error(kEseWireServerConflict);
+            if(voucher->state==Voucher::State::Finished) {
+                if(!voucher->response || requester.outgoing.size()>=16)
+                    return Error(kEseWireServerResourceLimit);
+                requester.outgoing.push_back(*voucher->response);
+            }
+            return {0,false,{}};
+        }
+        auto item=std::find_if(vouchers.begin(),vouchers.end(),[&](const auto& voucher) {
+            return voucher && Matches(voucher->requester,requester.context) &&
+                gnutls_memcmp(voucher->token.data(),bytes,voucher->token.size())==0;
+        });
+        if(item==vouchers.end()) return Error(kEseWireServerTargetGone);
+        auto& voucher=**item;
+        if(now>=voucher.expires) return Error(kEseWireServerExpired);
+        if(voucher.state!=Voucher::State::Available) return Error(kEseWireServerReplay);
+        auto* target=Find(voucher.target);
+        const auto sourcePath=requester.ledger.Current(4,now);
+        const auto targetPath=target ? target->ledger.Current(4,now) : std::nullopt;
+        if(!target || !sourcePath || !targetPath || !Eligible(*target,now) ||
+            !index.HasPublication(target->node,target->context.generation,voucher.file,now))
+            return Error(kEseWireServerTargetGone);
+        auto available=std::find_if(pending.begin(),pending.end(),[](const auto& value) { return !value; });
+        if(available==pending.end()) return Error(kEseWireServerResourceLimit);
+        Pending pair{};
+        pair.generation=Read64(bytes+48);
+        Bytes16 nonce{};
+        std::copy_n(bytes+32,16,pair.attempt.begin());
+        std::copy_n(bytes+56,16,nonce.begin());
+        if(!pair.generation || !Nonzero(pair.attempt) || !Nonzero(nonce)) return Error(kEseWireServerMalformed);
+        if(gnutls_rnd(GNUTLS_RND_NONCE,pair.transaction.data(),pair.transaction.size())<0 || !Nonzero(pair.transaction))
+            return Error(kEseWireServerResourceLimit);
+        if(std::any_of(pending.begin(),pending.end(),[&](const auto& current) {
+            return current && current->transaction==pair.transaction;
+        })) return Error(kEseWireServerResourceLimit);
+        pair.deadline=(std::min)(AddTime(now,10000),voucher.expires);
+        pair.voucher=static_cast<std::size_t>(item-vouchers.begin());
+        pair.requesterEndpoint=sourcePath->endpoint;
+        pair.targetEndpoint=targetPath->endpoint;
+        pair.sourceVersion=requester.endpointVersion;
+        pair.targetVersion=target->endpointVersion;
+        std::vector<std::uint8_t> query(pair.transaction.begin(),pair.transaction.end());
+        query.insert(query.end(),requester.node.begin(),requester.node.end());
+        query.insert(query.end(),voucher.file.begin(),voucher.file.end());
+        query.push_back(voucher.purpose);
+        Append(query,pair.deadline-now,4);
+        if(!Queue(*target,kEseWireServerConsentQuery,{},false,std::move(query),nullptr,pair.deadline,73))
+            return Error(kEseWireServerResourceLimit);
+        target->outgoing.back().remote=requester.context;
+        target->outgoing.back().path=sourcePath->endpoint;
+        target->outgoing.back().local=targetPath->endpoint;
+        target->outgoing.back().file=voucher.file;
+        target->outgoing.back().remoteVersion=requester.endpointVersion;
+        target->outgoing.back().localVersion=target->endpointVersion;
+        voucher.state=Voucher::State::Pending;
+        voucher.request=frame.header.request;
+        std::copy_n(bytes,voucher.pairBody.size(),voucher.pairBody.begin());
+        available->emplace(pair);
+        return {0,false,{}};
+    }
+
+    std::vector<std::uint8_t> PairResult(const Pending& pair,const Bytes16& attempt,std::uint64_t generation,
+        const Bytes32& peer,const rdv::Endpoint& endpoint,std::uint64_t remaining)
+    {
+        std::vector<std::uint8_t> result(pair.transaction.begin(),pair.transaction.end());
+        result.insert(result.end(),attempt.begin(),attempt.end());
+        Append(result,generation,8);
+        result.insert(result.end(),peer.begin(),peer.end());
+        Append(result,remaining,4);
+        result.push_back(1);
+        result.push_back(4);
+        result.insert(result.end(),endpoint.address.begin(),endpoint.address.begin()+4);
+        Append(result,endpoint.port,2);
+        return result;
+    }
+
+    Reply Consent(Entry& target,const FrameView& frame,std::uint64_t now)
+    {
+        if(!Body(frame.payload,41) || frame.payload.data[16]>1) return Error(kEseWireServerMalformed);
+        Bytes16 transaction{}, attempt{};
+        const auto* bytes=frame.payload.data;
+        std::copy_n(bytes,16,transaction.begin());
+        std::copy_n(bytes+17,16,attempt.begin());
+        const auto generation=Read64(bytes+33);
+        if(bytes[16] && (!generation || !Nonzero(attempt))) return Error(kEseWireServerMalformed);
+        Bytes32 digest{};
+        if(gnutls_hash_fast(GNUTLS_DIG_SHA256,bytes,frame.payload.size,digest.data())<0)
+            return Error(kEseWireServerResourceLimit);
+        target.consentReceipts.erase(std::remove_if(target.consentReceipts.begin(),target.consentReceipts.end(),
+            [now](const Entry::Receipt& receipt) { return now>=receipt.until; }),target.consentReceipts.end());
+        for(const auto& receipt:target.consentReceipts)
+            if(receipt.request==frame.header.request)
+                return receipt.digest==digest ? Ack() : Error(kEseWireServerConflict);
+        if(target.consentReceipts.size()>=32) return Error(kEseWireServerResourceLimit);
+        auto selected=std::find_if(pending.begin(),pending.end(),[&](const auto& pair) {
+            return pair && pair->transaction==transaction && Matches(vouchers[pair->voucher]->target,target.context);
+        });
+        if(selected==pending.end()) return Error(kEseWireServerTargetGone);
+        auto& pair=**selected;
+        auto& voucher=*vouchers[pair.voucher];
+        if(!bytes[16]) FailPair(pair,kEseWireServerNoConsent);
+        else {
+            auto* requester=Find(voucher.requester);
+            const auto from=requester ? requester->ledger.Current(4,now) : std::nullopt;
+            const auto to=target.ledger.Current(4,now);
+            if(!requester || !from || !to || !Eligible(*requester,now) || !Eligible(target,now) ||
+                requester->endpointVersion!=pair.sourceVersion || target.endpointVersion!=pair.targetVersion ||
+                !rdv::SameEndpoint(from->endpoint,pair.requesterEndpoint) || !rdv::SameEndpoint(to->endpoint,pair.targetEndpoint) ||
+                !index.HasPublication(target.node,target.context.generation,voucher.file,now))
+                FailPair(pair,kEseWireServerTargetGone);
+            else if(requester->outgoing.size()>=16 || target.outgoing.size()>=16)
+                return Error(kEseWireServerResourceLimit);
+            else {
+                const auto ttl=(std::min)({std::uint64_t{10000},from->until-now,to->until-now,
+                    requester->expiration-now,target.expiration-now});
+                const auto toRequester=PairResult(pair,pair.attempt,pair.generation,target.node,to->endpoint,ttl);
+                const auto toTarget=PairResult(pair,attempt,generation,requester->node,from->endpoint,ttl);
+                const auto until=AddTime(now,ttl);
+                if(!Queue(*requester,kEseWireServerPairResult,voucher.request,true,toRequester,&voucher.response,until,72) ||
+                    !Queue(target,kEseWireServerPairResult,{},false,toTarget,nullptr,until,72))
+                    return Error(kEseWireServerResourceLimit);
+                requester->outgoing.back().remote=target.context;
+                requester->outgoing.back().path=to->endpoint;
+                requester->outgoing.back().local=from->endpoint;
+                requester->outgoing.back().file=voucher.file;
+                requester->outgoing.back().remotePublisher=true;
+                requester->outgoing.back().remoteVersion=target.endpointVersion;
+                requester->outgoing.back().localVersion=requester->endpointVersion;
+                *voucher.response=requester->outgoing.back();
+                target.outgoing.back().remote=requester->context;
+                target.outgoing.back().path=from->endpoint;
+                target.outgoing.back().local=to->endpoint;
+                target.outgoing.back().file=voucher.file;
+                target.outgoing.back().remoteVersion=requester->endpointVersion;
+                target.outgoing.back().localVersion=target.endpointVersion;
+                voucher.state=Voucher::State::Finished;
+            }
+        }
+        target.consentReceipts.push_back({frame.header.request,digest,AddTime(now,120000)});
+        selected->reset();
+        return Ack();
+    }
+
     bool RefreshSecret(std::uint64_t now)
     {
         if(secrets.Current(now)) return true;
@@ -132,6 +465,13 @@ struct RendezvousListener::Impl {
             if(datagram[8]!=kEseWireRdv2Echo && sent>=32) continue;
             const rdv::Endpoint endpoint{{127,0,0,1},ntohs(source.sin_port),4};
             const auto result=entry->ledger.Receive(view,endpoint,entry->key,secrets,crypto,now);
+            if(result.supersededEndpoint) {
+                if(entry->endpointVersion==(std::numeric_limits<std::uint64_t>::max)()) {
+                    entry->loggedIn=false;
+                    continue;
+                }
+                ++entry->endpointVersion;
+            }
             if(result.status && Eligible(*entry,now)) entry->pending=result.status;
             if(result.challenge) {
                 if(!Eligible(*entry,now)) continue;
@@ -148,6 +488,8 @@ struct RendezvousListener::Impl {
     std::atomic<bool> stop{false};
     std::mutex mutex;
     std::array<std::optional<Entry>,16> entries{};
+    std::array<std::optional<Voucher>,64> vouchers{};
+    std::array<std::optional<Pending>,16> pending{};
     rdv::CookieSecrets secrets;
     Crypto crypto;
     std::uint64_t budgetSecond=0;
@@ -162,13 +504,15 @@ RendezvousListener::~RendezvousListener() = default;
 std::uint16_t RendezvousListener::Port() const noexcept { return impl_->listenPort; }
 
 bool RendezvousListener::Attach(const rdv::SessionContext& context,const Bytes32& key,const ClientHello& client,
-    std::uint64_t expiration)
+    std::uint64_t expiration,bool pairing)
 {
     const std::lock_guard<std::mutex> lock(impl_->mutex);
     if(impl_->Find(context)) return false;
     for(auto& entry:impl_->entries)
         if(!entry) {
-            entry.emplace(context,key,client,expiration);
+            entry.emplace(context,key,client,expiration,pairing);
+            entry->outgoing.reserve(16);
+            entry->consentReceipts.reserve(32);
             return true;
         }
     return false;
@@ -198,5 +542,67 @@ std::optional<rdv::Registration> RendezvousListener::TakeStatus(const rdv::Sessi
     const auto status=entry->pending;
     entry->pending.reset();
     return status && now<status->until ? status : std::nullopt;
+}
+
+bool RendezvousListener::Handles(std::uint16_t type) const noexcept
+{
+    return type==kEseWireServerVoucherGet || type==kEseWireServerPairRequest || type==kEseWireServerConsentReply;
+}
+
+std::optional<Reply> RendezvousListener::Handle(const rdv::SessionContext& context,const FrameView& frame,std::uint64_t now)
+{
+    if(ClassifyFrame(frame.header,Direction::ClientToServer,Phase::Authenticated)!=Disposition::Message) return std::nullopt;
+    const std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->Prune(now);
+    auto* entry=impl_->Find(context);
+    if(!entry || !impl_->Eligible(*entry,now)) return Error(kEseWireServerWrongState);
+    if(!entry->pairing) return Error(kEseWireServerUnsupported);
+    switch(frame.header.type) {
+    case kEseWireServerVoucherGet: return impl_->RequestVoucher(*entry,frame,now);
+    case kEseWireServerPairRequest: return impl_->StartPair(*entry,frame,now);
+    case kEseWireServerConsentReply: return impl_->Consent(*entry,frame,now);
+    default: return Error(kEseWireServerUnsupported);
+    }
+}
+
+std::optional<std::vector<std::uint8_t>> RendezvousListener::TakeControl(const rdv::SessionContext& context,std::uint64_t now)
+{
+    const std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->Prune(now);
+    auto* entry=impl_->Find(context);
+    if(!entry || !impl_->Eligible(*entry,now)) return {};
+    while(!entry->outgoing.empty()) {
+        auto message=std::move(entry->outgoing.front());
+        entry->outgoing.erase(entry->outgoing.begin());
+        if(message.remote) {
+            const auto* remote=impl_->Find(*message.remote);
+            const auto* publisher=message.remotePublisher ? remote : entry;
+            if(!remote || !publisher || !impl_->Eligible(*remote,now) ||
+                remote->endpointVersion!=message.remoteVersion || entry->endpointVersion!=message.localVersion ||
+                !impl_->CurrentEndpoint(*remote,message.path,now) || !impl_->CurrentEndpoint(*entry,message.local,now) ||
+                !impl_->index.HasPublication(publisher->node,publisher->context.generation,message.file,now)) {
+                if(!message.response) continue;
+                message.type=kEseWireServerError;
+                message.body=Error(kEseWireServerTargetGone).body;
+                message.until=0;
+            }
+        }
+        if(message.until) {
+            if(now>=message.until) {
+                if(!message.response) continue;
+                message.type=kEseWireServerError;
+                message.body=Error(kEseWireServerExpired).body;
+            } else {
+                const auto ttl=message.until-now;
+                for(unsigned i=0;i<4;++i)
+                    message.body[message.ttlOffset+i]=static_cast<std::uint8_t>(ttl>>(24-i*8));
+            }
+        }
+        std::vector<std::uint8_t> encoded;
+        const auto flags=static_cast<std::uint16_t>(message.response ? kEseWireServerResponse | kEseWireServerFinal : 0);
+        if(EncodeFrame({{message.type,flags,message.request},{message.body.data(),message.body.size()}},encoded))
+            return encoded;
+    }
+    return {};
 }
 }

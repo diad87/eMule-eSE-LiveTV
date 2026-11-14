@@ -99,6 +99,24 @@ ServerSession::ServerSession(const ClientHello& authenticatedClient,ServerEndpoi
       index_(index),generation_(generation)
 {
     completed_.reserve(CacheEntries);
+    deferred_.reserve(CacheEntries);
+}
+
+ServerSession::RequestUse ServerSession::ClaimDeferred(const RequestId& request,std::uint16_t type,std::uint64_t now)
+{
+    completed_.erase(std::remove_if(completed_.begin(),completed_.end(),
+        [now](const Completed& prior) { return now>=prior.until; }),completed_.end());
+    deferred_.erase(std::remove_if(deferred_.begin(),deferred_.end(),
+        [now](const Deferred& prior) { return now>=prior.until; }),deferred_.end());
+    const auto found=std::find_if(deferred_.begin(),deferred_.end(),
+        [&request](const Deferred& entry) { return entry.request==request; });
+    if(found!=deferred_.end())
+        return found->type==type ? RequestUse::SameOperation : RequestUse::OtherOperation;
+    if(std::any_of(completed_.begin(),completed_.end(),[&request](const Completed& value) { return value.request==request; }))
+        return RequestUse::OtherOperation;
+    if(completed_.size()+deferred_.size()>=CacheEntries) return RequestUse::ResourceLimit;
+    deferred_.push_back({request,type,AddTime(now,CacheMilliseconds)});
+    return RequestUse::New;
 }
 
 ServerSession::~ServerSession()
@@ -130,6 +148,8 @@ bool ServerSession::Handle(const FrameView& frame,AuthCrypto& crypto,std::uint64
     if(!crypto.Hash({request.data(),request.size()},digest)) return false;
     completed_.erase(std::remove_if(completed_.begin(),completed_.end(),
         [now](const Completed& prior) { return now>=prior.until; }),completed_.end());
+    deferred_.erase(std::remove_if(deferred_.begin(),deferred_.end(),
+        [now](const Deferred& prior) { return now>=prior.until; }),deferred_.end());
     const auto found=std::find_if(completed_.begin(),completed_.end(),
         [&frame](const Completed& prior) { return frame.header.request==prior.request; });
     if(found!=completed_.end()) {
@@ -139,7 +159,12 @@ bool ServerSession::Handle(const FrameView& frame,AuthCrypto& crypto,std::uint64
         output.swap(pending);
         return true;
     }
-    if(completed_.size()==CacheEntries) {
+    if(std::any_of(deferred_.begin(),deferred_.end(),[&frame](const Deferred& value) { return value.request==frame.header.request; })) {
+        if(!Error(frame.header.request,kEseWireServerConflict,pending)) return false;
+        output.swap(pending);
+        return true;
+    }
+    if(completed_.size()+deferred_.size()>=CacheEntries) {
         if(!Error(frame.header.request,kEseWireServerResourceLimit,pending)) return false;
         output.swap(pending);
         return true;

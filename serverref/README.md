@@ -34,9 +34,16 @@ and retains publication state for up to sixteen primary identities per server
 epoch. Only a current, authenticated primary makes its committed records
 visible to source queries. Auxiliary sessions can request hints.
 
+Clients that also negotiate CROSS_CALLBACK can use the reference's
+voucher, consent and pairing exchange. Both sides must have a current UDP
+return proof. The target must still publish the requested file. The reference
+sends the verified endpoints only after an explicit consent response.
+The pool allows up to 64 vouchers and 16 pending pairings.
+
 The request cache remains session-local. Unicode search, cross-session
-request replay, a classic plaintext listener, QUIC, and rendezvous pairing
-and consent remain pending. eMule does not connect to this listener yet.
+request replay, a classic plaintext listener, and QUIC remain pending.
+eMule does not connect to this listener yet. The integration test proves
+pairing on a single IPv4 loopback server, without DCO file transfer.
 
 The independent integration test requires a Python environment with
 `pyOpenSSL`. Set `ESE_SERVER_INTEROP_PYTHON` to its Python executable to add

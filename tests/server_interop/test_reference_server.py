@@ -81,6 +81,8 @@ def authenticate(connection, server_pub, mode=0, generation_expected=1, client_k
     client_node = client_key.public_key().public_bytes_raw()
     nonce = bytes(byte ^ generation_expected for byte in range(32))
     expected_caps = 0x15 if rdv is not None else 0x11
+    if rdv is not None and rdv.get("pairing"):
+        expected_caps |= 0x08
     client_hello = struct.pack("!32s32s16sII16sB", nonce, client_node,
                                user_hash, 0x80000000 | expected_caps, 65536, bytes([0x4A] * 16), mode)
     wire = frame(0x01, client_hello)
@@ -249,8 +251,8 @@ def verify_prelogin_silent(context, endpoint):
         no_datagram(owned)  # AUTH completed, but the application has not logged in.
 
 
-def registered_return_path(connection, context, endpoint):
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as owned, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as wrong:
+def established_udp(connection, context, endpoint, owned):
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as wrong:
         for udp in (owned, wrong):
             udp.bind(("127.0.0.1", 0))
             udp.settimeout(0.08)
@@ -285,10 +287,99 @@ def registered_return_path(connection, context, endpoint):
         second = read_frame(connection)
         require(second[:3] == first[:3] and second[3][:8] == expected and
                 0 < struct.unpack("!I", second[3][8:])[0] < first_ttl, "duplicate ECHO does not refresh TTL")
-        disconnect_client(connection)
-        owned.settimeout(0.08)
-        owned.sendto(rdv_packet(context, 1, 3, nonce), endpoint)
-        no_datagram(owned)
+        return nonce
+
+
+def exercise_pairing(requester, target, requester_node, target_node, requester_socket, target_socket, retire_target):
+    file = bytes([0xA1] * 16) + struct.pack("!Q", 4294967400)
+    token_id = (250).to_bytes(16, "big")
+    issue = frame(0x30, target_node + file + b"\x01", token_id)
+    requester.sendall(issue)
+    voucher = read_frame(requester)
+    require(voucher[:3] == (0x31, 3, token_id) and len(voucher[3]) == 68 and voucher[3][32:64] == target_node,
+            "voucher contains target identity and no endpoint")
+    voucher_token = voucher[3][:32]
+    require(any(voucher_token) and 0 < struct.unpack("!I", voucher[3][64:])[0] <= 30000, "voucher bounded expiry")
+    requester.sendall(issue)
+    repeated = read_frame(requester)
+    require(repeated[:3] == voucher[:3] and repeated[3][:64] == voucher[3][:64], "same request reuses one voucher")
+    requester.sendall(frame(0xFE, token_id, token_id))
+    require(read_frame(requester) == (0xFF, 3, token_id, struct.pack("!HI", 10, 0)),
+            "control and ordinary request IDs cannot be reused across operation types")
+    attempt = bytes([0x11] * 16)
+    nonce = bytes([0x22] * 16)
+    generation = 81
+    pair_body = voucher_token + attempt + struct.pack("!Q", generation) + nonce
+    pair_request = (251).to_bytes(16, "big")
+    wrong_id = (252).to_bytes(16, "big")
+    target.sendall(frame(0x32, pair_body, wrong_id))
+    require(read_frame(target) == (0xFF, 3, wrong_id, struct.pack("!HI", 11, 0)),
+            "other TLS session cannot redeem copied voucher")
+    pairing = frame(0x32, pair_body, pair_request)
+    requester.sendall(pairing + pairing)
+    query = read_frame(target)
+    require(query[:3] == (0x33, 0, bytes(16)) and len(query[3]) == 77 and
+            query[3][16:73] == requester_node + file + b"\x01" and
+            0 < struct.unpack("!I", query[3][73:])[0] <= 10000, "one consent query omits endpoint")
+    transaction = query[3][:16]
+    ping(target, 253)
+    target_attempt = bytes([0x33] * 16)
+    target_generation = 19
+    consent_request = (254).to_bytes(16, "big")
+    target.sendall(frame(0x34, transaction + b"\x01" + target_attempt + struct.pack("!Q", target_generation), consent_request))
+    require(read_frame(target) == (0x12, 3, consent_request, bytes(2)), "target receives exactly one consent ACK")
+
+    def result(connection, expected_flags, request_id, expected_attempt, expected_generation, peer, endpoint):
+        response = read_frame(connection)
+        prefix = transaction + expected_attempt + struct.pack("!Q", expected_generation) + peer
+        address = b"\x01\x04" + socket.inet_aton("127.0.0.1") + struct.pack("!H", endpoint.getsockname()[1])
+        require(response[:3] == (0x35, expected_flags, request_id) and response[3][:72] == prefix
+                and 0 < struct.unpack("!I", response[3][72:76])[0] <= 10000 and response[3][76:] == address,
+                "paired response carries only the proved other endpoint and local attempt/generation")
+
+    result(requester, 3, pair_request, attempt, generation, target_node, target_socket)
+    result(target, 0, bytes(16), target_attempt, target_generation, requester_node, requester_socket)
+    requester.sendall(pairing)
+    result(requester, 3, pair_request, attempt, generation, target_node, target_socket)
+    ping(target, 255)
+    replay_id = (256).to_bytes(16, "big")
+    requester.sendall(frame(0x32, pair_body, replay_id))
+    require(read_frame(requester) == (0xFF, 3, replay_id, struct.pack("!HI", 6, 0)),
+            "new request cannot consume used voucher a second time")
+
+    denied_issue = (257).to_bytes(16, "big")
+    requester.sendall(frame(0x30, target_node + file + b"\x01", denied_issue))
+    denied_voucher = read_frame(requester)
+    require(denied_voucher[:3] == (0x31, 3, denied_issue), "independent voucher for denial")
+    denied_pair = (258).to_bytes(16, "big")
+    requester.sendall(frame(0x32, denied_voucher[3][:32] + pair_body[32:], denied_pair))
+    denied_query = read_frame(target)
+    require(denied_query[:3] == (0x33, 0, bytes(16)) and denied_query[3][:16] != transaction, "fresh consent transaction")
+    denied_consent = (259).to_bytes(16, "big")
+    target.sendall(frame(0x34, denied_query[3][:16] + bytes(25), denied_consent))
+    require(read_frame(target) == (0x12, 3, denied_consent, bytes(2))
+            and read_frame(requester) == (0xFF, 3, denied_pair, struct.pack("!HI", 7, 0)),
+            "explicit denial releases no endpoints")
+    ping(target, 260)
+
+    def start_additional(issuance, pairing_id):
+        request_id = issuance.to_bytes(16, "big")
+        requester.sendall(frame(0x30, target_node + file + b"\x01", request_id))
+        token = read_frame(requester)
+        require(token[:3] == (0x31, 3, request_id), "eligible publisher issues requested voucher")
+        pair_id = pairing_id.to_bytes(16, "big")
+        requester.sendall(frame(0x32, token[3][:32] + pair_body[32:], pair_id))
+        require(read_frame(target)[:3] == (0x33, 0, bytes(16)), "one further prompt")
+        return pair_id
+
+    expired = start_additional(261, 262)
+    before = time.monotonic()
+    require(read_frame(requester) == (0xFF, 3, expired, struct.pack("!HI", 5, 0))
+            and 9 < time.monotonic() - before < 12, "no consent expires without releasing endpoints")
+    withdrawn = start_additional(263, 264)
+    retire_target()
+    require(read_frame(requester) == (0xFF, 3, withdrawn, struct.pack("!HI", 11, 0)),
+            "withdrawing target invalidates pending pairing before endpoint disclosure")
 
 
 def main():
@@ -310,7 +401,9 @@ def main():
                 exercise_operations(primary, user_hash, port)
 
                 def exercise_auxiliary(auxiliary):
-                    auxiliary_hash, _ = authenticate(auxiliary, server_pub, mode=1, generation_expected=2)
+                    auxiliary_rdv = {"pairing": True}
+                    auxiliary_hash, auxiliary_node = authenticate(auxiliary, server_pub, mode=1, generation_expected=2,
+                                                                  rdv=auxiliary_rdv)
                     request = bytes([1] * 16)
                     require(len(operation(auxiliary, request, 1, login_command(auxiliary_hash))) == 2,
                             "auxiliary performs restricted authenticated login")
@@ -319,7 +412,7 @@ def main():
                     publish_operation(auxiliary, 22, 0x14, key, 0x15, b"\x00\x01" + primary_node + user_hash)
 
                     def replace_primary(replacement):
-                        rdv_context = {}
+                        rdv_context = {"pairing": True}
                         replacement_hash, replacement_node = authenticate(
                             replacement, server_pub, generation_expected=3, client_key=primary_key, rdv=rdv_context)
                         verify_prelogin_silent(rdv_context, rdv_endpoint)
@@ -328,7 +421,15 @@ def main():
                                 "same verified node reconnects with new primary generation")
                         publish_operation(primary, 24, 0x23, b"", 0xFF, struct.pack("!HI", 13, 0))
                         publish_operation(auxiliary, 23, 0x14, key, 0x15, b"\x00\x01" + primary_node + user_hash)
-                        registered_return_path(replacement, rdv_context, rdv_endpoint)
+                        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as requester_udp, \
+                                socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as target_udp:
+                            established_udp(auxiliary, auxiliary_rdv, rdv_endpoint, requester_udp)
+                            target_nonce = established_udp(replacement, rdv_context, rdv_endpoint, target_udp)
+                            exercise_pairing(auxiliary, replacement, auxiliary_node, replacement_node,
+                                             requester_udp, target_udp, lambda: disconnect_client(replacement))
+                            target_udp.settimeout(0.08)
+                            target_udp.sendto(rdv_packet(rdv_context, 1, 3, target_nonce), rdv_endpoint)
+                            no_datagram(target_udp)
                         publish_operation(auxiliary, 24, 0x14, key, 0x15, b"\x00\x00")
 
                     connect_reference(port, files, ca, replace_primary)

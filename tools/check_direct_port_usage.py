@@ -24,7 +24,8 @@ EXPECTED = {
     "EseKad2IndexPersistenceSelfTest.h": 2,
     "EseKad6IndexHostSelfTest.h": 3,
     "EseKad6PublisherHostSelfTest.h": 1,
-    "EseQuicSharedSocketSelfTest.h": 5,
+    # Includes restoring the fixture's original bind after the classic TCP fallback test.
+    "EseQuicSharedSocketSelfTest.h": 6,
     "FirewallProberV6.cpp": 5,
     "Kad6GatewaySocket.cpp": 1,
     "ListenSocket.cpp": 5,
@@ -63,10 +64,10 @@ def main() -> int:
             failures.append(f"{key}: expected {EXPECTED.get(key, 0)}, found {found.get(key, 0)}")
 
     total = sum(found.values())
-    if total != 64:
-        failures.append(f"total: expected 64, found {total}")
-    if line_count != 63:
-        failures.append(f"lines: expected 63, found {line_count}")
+    if total != 65:
+        failures.append(f"total: expected 65, found {total}")
+    if line_count != 64:
+        failures.append(f"lines: expected 64, found {line_count}")
 
     if failures:
         print("Direct-port inventory drift detected:")

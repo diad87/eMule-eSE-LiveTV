@@ -138,8 +138,7 @@ foreach ($package in $inventory.packages) {
 }
 if ($windows32) {
     $rebuiltGnutls = "$runtimeDirectory/libgnutls-30.dll"
-    if ($manifest.gnutls_rebuilt_sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
-        $manifest.gnutls_rebuilt_sha256 -eq $expectedRuntime[$rebuiltGnutls] -or
+    if ($manifest.gnutls_rebuilt_sha256 -ne 'E964569804BBF514069D027BD99BBDA62CDE4C7029D3DEB6A1B3C809A32C883C' -or
         $manifest.gnutls_source_sha256 -ne 'FFED8EC1BF09C2426D4F14AAE377DE4753B53E537D685E604E99A8B16CA9C97E') {
         throw 'Win32 GnuTLS must be rebuilt from the pinned MSYS2 source.'
     }

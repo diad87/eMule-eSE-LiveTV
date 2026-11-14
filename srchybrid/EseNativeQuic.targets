@@ -10,6 +10,9 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(EseQuicReleaseRoot)'!=''">
+    <ClCompile>
+      <PreprocessorDefinitions>ESE_QUIC_SIGNED_RELEASE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
     <ResourceCompile>
       <PreprocessorDefinitions>ESE_QUIC_SIGNED_RELEASE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>

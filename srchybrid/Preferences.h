@@ -659,6 +659,7 @@ public:
 	static int		m_iEseNetLabAdvancedConsent;	// Punch3/prediction/Kad6 client plane; independent explicit consent.
 	static int		m_iEseNetLabContributionConsent;	// Relay/KRP/Kad6 beta-exit resource contribution; independent explicit consent.
 	static bool		m_bEseNetLabEnabled;	// Immediate cohort kill switch. Effective only after explicit acceptance.
+	static bool		m_bEseDirectQuicOptIn;
 	static bool		m_bEseV9Experimental;	// v9 alpha master opt-in for unvalidated wire capabilities. Default OFF.
 	static bool		m_bEseKad3Rendezvous;	// Secure 3-way Kad rendezvous participation. Separate, default-OFF opt-in.
 	static bool		m_bEseEndgame;			// Endgame mode: race the last outstanding blocks across sources so one slow owner cannot stall the final MB. Default ON.
@@ -1324,6 +1325,8 @@ public:
 	static bool		GetEseNetLabEnabled()				{ return m_bEseNetLabEnabled; }
 	static void		SetEseNetLabEnabled(bool b)			{ m_bEseNetLabEnabled = b && m_iEseNetLabConsent == EseNetLabAccepted; }
 	static bool		IsEseNetLabActive()					{ return m_iEseNetLabConsent == EseNetLabAccepted && m_bEseNetLabEnabled; }
+	static bool		GetEseDirectQuicOptIn() { return m_bEseDirectQuicOptIn; }
+	static void		SetEseDirectQuicOptIn(bool enabled) { m_bEseDirectQuicOptIn = enabled; }
 	static int		GetEseNetLabAdvancedConsent()		{ return m_iEseNetLabAdvancedConsent; }
 	static void		SetEseNetLabAdvancedConsent(int state) {
 		m_iEseNetLabAdvancedConsent = state < EseNetLabUndecided || state > EseNetLabAccepted

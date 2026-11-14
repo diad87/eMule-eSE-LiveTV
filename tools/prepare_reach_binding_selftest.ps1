@@ -94,6 +94,7 @@ $manifest=[ordered]@{schema='ese.v93.reach-binding-lab/1';profile=$target;
     preferences_sha256=(Get-FileHash -LiteralPath (Join-Path $target 'config\preferences.ini')).Hash;
     tcp=$TcpPort;udp=$UdpPort;launch_performed=$false;diagnostic_web_port=$DiagnosticWebPort;
     diagnostic_template_sha256=if($DiagnosticWebPort){(Get-FileHash -LiteralPath (Join-Path $target 'eMule.tmpl')).Hash}else{$null};
+    signed_quic_dependencies=$SignedQuic.IsPresent;
     native_runtime_inputs=$nativeRuntimeInputs;
     arguments=@('--portable','--reach-binding-selftest','--ignoreinstances')}
 [IO.File]::WriteAllText((Join-Path $target 'prepared.json'),($manifest|ConvertTo-Json -Depth 4),[Text.Encoding]::UTF8)

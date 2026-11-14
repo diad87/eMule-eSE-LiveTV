@@ -37,6 +37,7 @@ public:
     Host(QuicSocketPort& port,reach::DirectBufferPool& pool,reach::DirectEventQueue& queue,control::PacketBudget& budget)
         : owner_(port,probe_,pool,queue),controlBudget_(budget) {}
     bool Attach() { return owner_.Attach(); }
+    bool Attached() const noexcept override { return owner_.Attached(); }
     bool ActivateControlService(const std::array<std::uint8_t,32>& local,std::uint64_t owner,std::uint64_t generation) override {
         if(!owner_.Attached() || !probe_.service.Activate(local,owner,generation)) return false;
         serviceOwner_=owner; return true;

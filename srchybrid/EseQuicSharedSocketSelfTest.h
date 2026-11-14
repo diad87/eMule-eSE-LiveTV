@@ -114,6 +114,85 @@ public:
         Log(_T("REACH_SELFTEST V176 PASS: private peer HELLO wire 0xF0 UINT32 bitmap, IPv6 settings and legacy omission"));
     }
 
+#ifdef ESE_QUIC_SIGNED_RELEASE
+    static void CheckProductionQuicOptIn(CDirectReachabilityManager& manager) {
+        auto require=[](bool value) { if(!value) throw std::runtime_error("production QUIC opt-in lifecycle"); };
+        require(theApp.m_bReachBindingSelfTest && theApp.clientudp && theApp.clientudp->GetConnectedPort());
+        const auto consent=thePrefs.GetEseNetLabConsent();
+        const auto netLab=thePrefs.GetEseNetLabEnabled();
+        const auto optIn=thePrefs.GetEseDirectQuicOptIn();
+        const auto ipv6=thePrefs.GetIPv6Mode();
+        struct Restore {
+            CDirectReachabilityManager& manager;
+            int consent;
+            bool netLab,optIn;
+            decltype(thePrefs.GetIPv6Mode()) ipv6;
+            ~Restore() {
+                manager.ShutdownDirectHost();
+                thePrefs.SetEseNetLabConsent(consent);
+                thePrefs.SetEseNetLabEnabled(netLab);
+                thePrefs.SetEseDirectQuicOptIn(optIn);
+                thePrefs.SetIPv6Mode(ipv6);
+                theApp.clientudp->Rebind();
+            }
+        } restore{manager,consent,netLab,optIn,ipv6};
+        auto sync=[&] { manager.SynchronizeProductionQuicHost(manager.MonotonicMilliseconds()); };
+        require(eSELive::NodeIdentityInit() && eSELive::NodeIdentityIsPersistent());
+        thePrefs.SetEseNetLabConsent(CPreferences::EseNetLabAccepted);
+        thePrefs.SetEseNetLabEnabled(true);
+        thePrefs.SetEseDirectQuicOptIn(false);
+        sync();
+        require(!manager.m_quicHost && !manager.DirectQuicDownloadAvailable());
+        thePrefs.SetEseDirectQuicOptIn(true);
+        thePrefs.SetEseNetLabEnabled(false);
+        sync();
+        require(!manager.m_quicHost && !manager.DirectQuicDownloadAvailable());
+        thePrefs.SetEseNetLabEnabled(true);
+        manager.TickDirectConnections();
+        require(!manager.m_quicHost); // explicit self-tests cannot auto-activate from a saved profile
+        sync();
+        require(manager.DirectQuicDownloadAvailable() && manager.m_quicHost->Attached() && !manager.GetKad6ServiceCapabilities());
+        ese::QuicPeerConfig unknown;
+        unknown.persistent=true;
+        const auto crypto=MakeKad6HostCryptoHooks();
+        require(crypto.random_bytes && crypto.random_bytes(unknown.expectedNode.data(),unknown.expectedNode.size()));
+        ese::trust::Record missing;
+        require(manager.LoadDirectQuicPeerTrust(unknown.expectedNode,missing)==ese::trust::LoadResult::Missing &&
+            !manager.ConfigureDirectQuicPeerTrust(unknown,false) && !manager.ConfigureDirectQuicPeerTrust(unknown,true) &&
+            manager.LoadDirectQuicPeerTrust(unknown.expectedNode,missing)==ese::trust::LoadResult::Missing);
+        const auto port=theApp.clientudp->GetConnectedPort();
+        thePrefs.SetIPv6Mode(CPreferences::IPv6AutoMode);
+        require(theApp.clientudp->Rebind() && theApp.clientudp->GetConnectedPort()==port);
+        require(!manager.m_quicHost->Attached() && !manager.DirectQuicDownloadAvailable());
+        sync();
+        require(manager.DirectQuicDownloadAvailable() && manager.m_quicHost->Attached());
+        thePrefs.SetEseDirectQuicOptIn(false);
+        require(!manager.QuicIngressPermitted() && !manager.DirectQuicDownloadAvailable());
+        sync();
+        require(!manager.m_quicHost && !manager.DirectQuicDownloadAvailable() && !manager.GetKad6ServiceCapabilities());
+        require(theApp.clientudp->GetConnectedPort()==port && !theApp.clientudp->HasQuicTransferTimer());
+    }
+    static void UseProductionQuicPolicy(CDirectReachabilityManager& manager) {
+        if(!theApp.m_bReachBindingSelfTest || !manager.m_quicHost || !manager.m_quicHost->Attached())
+            throw std::runtime_error("production QUIC policy test requires an attached test host");
+        thePrefs.SetEseDirectQuicOptIn(true);
+        manager.m_productionQuicState=CDirectReachabilityManager::ProductionQuicState::Attached;
+    }
+    static void CheckProductionQuicOptOut(CDirectReachabilityManager& manager,std::uint64_t owner) {
+        if(!theApp.m_bReachBindingSelfTest || !manager.FindNativeQuicLab(owner) || !manager.HasActiveQuicTransfers())
+            throw std::runtime_error("production QUIC opt-out test requires an active transport");
+        thePrefs.SetEseDirectQuicOptIn(false);
+        if(manager.QuicIngressPermitted() || manager.HasActiveQuicTransfers())
+            throw std::runtime_error("production QUIC opt-out must fence delivery immediately");
+        const auto until=manager.MonotonicMilliseconds()+2000;
+        while(manager.m_quicHost && manager.MonotonicMilliseconds()<until) {
+            manager.SynchronizeProductionQuicHost(manager.MonotonicMilliseconds());
+            if(manager.m_quicHost) Sleep(1);
+        }
+        if(manager.m_quicHost || manager.FindNativeQuicLab(owner) || manager.DirectQuicDownloadAvailable() || manager.DirectConnections().Size())
+            throw std::runtime_error("production QUIC opt-out must retire the attempt, transport and host");
+    }
+#endif
     static uint64 StoredKad6Publications(CDirectReachabilityManager& manager) {
         if(!theApp.m_bReachBindingSelfTest) throw std::runtime_error("publication diagnostic fixture gate");
         return manager.m_kad6StoredPublications;
@@ -3943,7 +4022,7 @@ inline void RunAutomaticQuicRecovery(CDirectReachabilityManager& manager,CUpDown
     }
 }
 
-inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNumber,HelloCase helloCase=HelloCase::Valid,bool fileData=false,bool corruptFileData=false,bool coldIdentity=false,bool serverSide=false,bool firstUse=false,bool automaticHandoff=false,Identity* sharedIdentity=nullptr,bool automaticCaller=false,bool multipart=false,bool productUpload=false,bool packedUpload=false,bool packedDownload=false,bool allPackedDownload=false,bool malformedPacked=false,bool i64Download=false,bool mixedRecovery=false,bool automaticRecovery=false,bool partialRecovery=false) {
+inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNumber,HelloCase helloCase=HelloCase::Valid,bool fileData=false,bool corruptFileData=false,bool coldIdentity=false,bool serverSide=false,bool firstUse=false,bool automaticHandoff=false,Identity* sharedIdentity=nullptr,bool automaticCaller=false,bool multipart=false,bool productUpload=false,bool packedUpload=false,bool packedDownload=false,bool allPackedDownload=false,bool malformedPacked=false,bool i64Download=false,bool mixedRecovery=false,bool automaticRecovery=false,bool partialRecovery=false,bool optOutConnected=false) {
     const bool rejectHello=helloCase!=HelloCase::Valid;
     Require(!mixedRecovery || (fileData && !packedDownload && !corruptFileData && !coldIdentity && !serverSide && !rejectHello && !i64Download),"mixed recovery plain explicit file scope");
     Require(!packedUpload || (productUpload && !serverSide && !rejectHello),"packed upload explicit valid peer scope");
@@ -3954,8 +4033,10 @@ inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNu
     Require(theApp.m_bReachBindingSelfTest && theApp.clientudp && !manager.DirectConnections().Size(),"explicit consumer lab prerequisites");
     struct ProfileRestore {
         int consent=thePrefs.GetEseNetLabConsent(); bool enabled=thePrefs.GetEseNetLabEnabled();
+        bool quicOptIn=thePrefs.GetEseDirectQuicOptIn();
         uint16 port=thePrefs.GetUDPPort();
         ~ProfileRestore() { thePrefs.SetEseNetLabConsent(consent); thePrefs.SetEseNetLabEnabled(enabled);
+            thePrefs.SetEseDirectQuicOptIn(quicOptIn);
             thePrefs.SetUDPPort(port); theApp.clientudp->Rebind(); }
     } restore;
     if(firstUse) {
@@ -3972,6 +4053,7 @@ inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNu
     Require(!automaticRecovery || (automaticCaller && !fileData && !multipart && !rejectHello),"automatic recovery handshake fixture scope");
     Require(!partialRecovery || automaticRecovery,"partial loss requires automatic recovery fixture");
     Require(!multipart || (automaticCaller && fileData && !corruptFileData),"multipart integrated known-pin fixture scope");
+    Require(!optOutConnected || (automaticCaller && !fileData && !automaticRecovery),"opt-out active known-pin fixture scope");
     Require(manager.EnableNativeQuicLab(),"explicit manager host activation");
     Identity freshIdentity,entropy; Identity& identity=sharedIdentity ? *sharedIdentity : freshIdentity;
     Port port(automaticHandoff); Probe probe;
@@ -3982,6 +4064,9 @@ inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNu
         auto host=CreateQuicSessionHost(simulatedPort,manager.DirectBuffers(),manager.DirectEvents(),simulatedBudget);
         Require(manager.AdoptQuicHost(host),"MFC adopts simulated production factory host");
     }
+#ifdef ESE_QUIC_SIGNED_RELEASE
+    if(optOutConnected) CNativeDirectSelfTestAccess::UseProductionQuicPolicy(manager);
+#endif
     class FixtureClient final : public CUpDownClient {
     public:
         FixtureClient(const Identity& identity,bool cold):CUpDownClient(static_cast<CPartFile*>(nullptr),cold?0:4662,cold?0:0x0100007f,0,0,false) {
@@ -4020,7 +4105,7 @@ inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNu
     if(coldIdentity) {
         Require(!fileData || !rejectHello,"cold file requires valid HELLO");
         std::vector<BYTE> coldBytes(multipart?PARTSIZE+4097:4097);
-        for(size_t i=0;i<coldBytes.size();++i) coldBytes[i]=static_cast<BYTE>(i*31+(partialRecovery?173:automaticRecovery?167:multipart?41:automaticCaller?35:automaticHandoff?29:firstUse?23:19));
+        for(size_t i=0;i<coldBytes.size();++i) coldBytes[i]=static_cast<BYTE>(i*31+(optOutConnected?179:partialRecovery?173:automaticRecovery?167:multipart?41:automaticCaller?35:automaticHandoff?29:firstUse?23:19));
         if(corruptFileData) coldBytes[0]^=0x80;
         std::array<BYTE,16> coldHash{};
         if(multipart) { std::array<BYTE,32> parts{}; MultipartHash(coldBytes.data(),parts,coldHash); }
@@ -4636,6 +4721,15 @@ inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNu
     Require(reused && reused->epoch==answered->epoch && reused->winner==answered->winner
         && reused->attempt_id==answered->attempt_id && !reused->useful_bytes && !reused->transfer_verified,
         "repeated TryToConnect preserves owner attempt winner epoch and progress");
+#ifdef ESE_QUIC_SIGNED_RELEASE
+    if(optOutConnected) {
+        CNativeDirectSelfTestAccess::CheckProductionQuicOptOut(manager,CNativeDirectSelfTestAccess::DirectOwner(*originalSocket));
+        Require(client->TakeNativeDirectDownloadTerminal()==reach::DirectReason::Disabled && !client->TakeNativeDirectDownloadTerminal(),
+            "production QUIC opt-out reports one terminal result");
+        Log(_T("REACH_SELFTEST QUIC ACTIVE OPT-OUT PASS: known pinned AUTH completed, opting out immediately fences and drains the owned transport"));
+        return;
+    }
+#endif
     }
     if(automaticRecovery) {
         coldQueueCleanup.registered=false; // this scope owns failure-safe async/completion cleanup

@@ -45,4 +45,6 @@ protected:
 	afx_msg void OnStartPortTest();
 	afx_msg void OnEnKillFocusTCP();
 	afx_msg void OnEnKillFocusUDP();
+	afx_msg void OnImportDirectQuicPeer();
+	afx_msg void OnCopyDirectQuicKey();
 };

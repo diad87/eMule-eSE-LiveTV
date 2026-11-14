@@ -1405,6 +1405,13 @@ static bool RunReachBindingSelfTest()
 	}
 	Log(_T("REACH_SELFTEST V16 PASS: native shared UDP host attach, exclusive ingress, detach and reattach, no sessions"));
 	Log(_T("REACH_SELFTEST V17 PASS: invalid native session admission leaves shared socket bound and host empty"));
+#ifdef ESE_QUIC_SIGNED_RELEASE
+	try { CNativeDirectSelfTestAccess::CheckProductionQuicOptIn(manager); }
+	catch(const std::exception& error) {
+		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: %hs"),error.what()); return false;
+	}
+	Log(_T("REACH_SELFTEST QUIC OPT-IN PASS: default-off, consent, isolated startup, same-port rebind and opt-out"));
+#endif
 	try { ese::shared_socket_selftest::Run(*theApp.clientudp,manager.GetTopologyGeneration()); }
 	catch(const std::exception& error) {
 		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: shared UDP peer: %hs"),error.what());
@@ -1673,7 +1680,19 @@ static bool RunReachBindingSelfTest()
 	Log(_T("REACH_SELFTEST V74 PASS: manager profile unknown key rejects implicit first-use, explicit TOFU persists before HELLO and reconnect configuration reloads known pin without new committer"));
 	try {
 		ese::shared_socket_selftest::Identity sharedPeer;
-		ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,false,false,true,false,true,true,&sharedPeer);
+		ese::shared_socket_selftest::Identity firstUsePeer;
+		ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,false,false,true,false,true,true,&firstUsePeer);
+		ese::trust::Record pin;
+		if(manager.LoadDirectQuicPeerTrust(sharedPeer.pub,pin)!=ese::trust::LoadResult::Missing ||
+			manager.ImportDirectQuicPeerPin(sharedPeer.pub)!=ese::trust::SaveResult::Created ||
+			manager.ImportDirectQuicPeerPin(sharedPeer.pub)!=ese::trust::SaveResult::AlreadyKnown ||
+			manager.LoadDirectQuicPeerTrust(sharedPeer.pub,pin)!=ese::trust::LoadResult::Loaded ||
+			pin.node!=sharedPeer.pub || pin.kind!=ese::trust::Kind::Pinned || pin.version!=1)
+			return fail(_T("explicit QUIC pin import and idempotency"));
+#ifdef ESE_QUIC_SIGNED_RELEASE
+		ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,false,false,true,false,false,true,
+			&sharedPeer,true,false,false,false,false,false,false,false,false,false,false,true);
+#endif
 		ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,false,true,false,false,true,&sharedPeer,true);
 		ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,true,true,false,false,true,&sharedPeer,true);
 		ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,false,true,false,false,true,&sharedPeer,true,true);
@@ -1684,7 +1703,7 @@ static bool RunReachBindingSelfTest()
 		LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: simulated automatic ACK handoff: %hs"),error.what()); return false;
 	}
 	Log(_T("REACH_SELFTEST V75 PASS: simulated namespace signed cookie PROVE ACK4 triggers manager owned handoff without manual route schedule then native AUTH TOFU production HELLO HELLOANSWER; no physical UDP NAT or AskForDownload scheduler"));
-	Log(_T("REACH_SELFTEST V76 PASS: same authenticated peer durable pin second handshake AskForDownload creates single-flight admission then signed ACK4 owned handoff AUTH HELLO HELLOANSWER without explicit BeginOwned or new TOFU; simulated namespace no physical NAT"));
+	Log(_T("REACH_SELFTEST V76 PASS: explicitly imported durable pin, AskForDownload creates single-flight admission then signed ACK4 owned handoff AUTH HELLO HELLOANSWER without explicit BeginOwned or TOFU; simulated namespace no physical NAT"));
 	Log(_T("REACH_SELFTEST V77 PASS: AskForDownload known-pin signed source through ACK4 native AUTH HELLO then same requested PartFile 4097 exact bytes IOCP disk duplicate suppression real hash and completion; simulated namespace single part no physical NAT"));
 	Log(_T("REACH_SELFTEST V78 PASS: production filename answer ACCEPTUPLOADREQ generates exact signed-file OP_REQUESTPARTS and real pending blocks then 4097 byte hash completion over automatic caller QUIC; no manual ReserveDownload simulated single part"));
 	Log(_T("REACH_SELFTEST V79 PASS: owned negotiation enters DS_CONNECTING then HELLOANSWER triggers real filename request signed file ID upload request and requested slot before automatic blocks; no unsolicited file status simulated single part"));

@@ -91,6 +91,22 @@ std::wstring PeerTrustPath(const std::wstring& directory,const std::array<std::u
 	for(const auto byte:node) { path+=L"0123456789abcdef"[byte>>4]; path+=L"0123456789abcdef"[byte&15]; }
 	return path+L".trust"; // Node-only; never IP/user_hash or endpoint-derived trust.
 }
+bool PreparePeerTrustDirectory(const std::wstring& directory)
+{
+	if(directory.empty() || (!CreateDirectoryW(directory.c_str(),nullptr) && GetLastError()!=ERROR_ALREADY_EXISTS))
+		return false;
+	const auto attributes=GetFileAttributesW(directory.c_str());
+	return attributes!=INVALID_FILE_ATTRIBUTES && (attributes&FILE_ATTRIBUTE_DIRECTORY) && !(attributes&FILE_ATTRIBUTE_REPARSE_POINT);
+}
+std::wstring PeerTrustTemporaryPath(const std::wstring& finalPath)
+{
+	std::array<std::uint8_t,16> nonce{};
+	const auto crypto=MakeKad6HostCryptoHooks();
+	if(!crypto.random_bytes || !crypto.random_bytes(nonce.data(),nonce.size()) || !reach::NonzeroIdentity(nonce)) return {};
+	auto temporary=finalPath+L".";
+	for(const auto byte:nonce) { temporary+=L"0123456789abcdef"[byte>>4]; temporary+=L"0123456789abcdef"[byte&15]; }
+	return temporary+L".new";
+}
 bool SameResolutionSource(const ese::discovery::DirectSource& a,const ese::discovery::DirectSource& b) noexcept
 {
 	return a.node==b.node && a.digest==b.digest && a.generation==b.generation && a.serial==b.serial &&
@@ -120,6 +136,20 @@ ese::trust::LoadResult CDirectReachabilityManager::LoadDirectQuicPeerTrust(
 	} catch(...) { return ese::trust::LoadResult::IoError; }
 }
 
+ese::trust::SaveResult CDirectReachabilityManager::ImportDirectQuicPeerPin(const std::array<std::uint8_t,32>& node)
+{
+	AssertMainThread();
+	if(::GetCurrentThreadId()!=m_dwOwnerThreadId || !reach::NonzeroIdentity(node)) return ese::trust::SaveResult::Invalid;
+	try {
+		const auto directory=PeerTrustDirectory();
+		if(!PreparePeerTrustDirectory(directory)) return ese::trust::SaveResult::IoError;
+		const auto path=PeerTrustPath(directory,node);
+		const auto temporary=PeerTrustTemporaryPath(path);
+		if(temporary.empty()) return ese::trust::SaveResult::IoError;
+		return ese::trust::PersistNewRecord(path.c_str(),temporary.c_str(),{node,1,ese::trust::Kind::Pinned});
+	} catch(...) { return ese::trust::SaveResult::IoError; }
+}
+
 bool CDirectReachabilityManager::ConfigureDirectQuicPeerTrust(ese::QuicPeerConfig& peer,bool allowFirstUse)
 {
 	AssertMainThread();
@@ -131,20 +161,13 @@ bool CDirectReachabilityManager::ConfigureDirectQuicPeerTrust(ese::QuicPeerConfi
 		if(result==ese::trust::LoadResult::Loaded) {
 			peer.pin=known.node; peer.hasPin=true; peer.allowFirstUse=false; peer.trustCommitter.reset(); return true;
 		}
-		if(result!=ese::trust::LoadResult::Missing || !allowFirstUse) return false;
+		if(result!=ese::trust::LoadResult::Missing || !allowFirstUse || !theApp.m_bReachBindingSelfTest || UsesProductionQuicPolicy()) return false;
 		const auto directory=PeerTrustDirectory();
-		if(directory.empty()) return false;
-		if(!CreateDirectoryW(directory.c_str(),nullptr) && GetLastError()!=ERROR_ALREADY_EXISTS) return false;
-		const auto attributes=GetFileAttributesW(directory.c_str());
-		if(attributes==INVALID_FILE_ATTRIBUTES || !(attributes&FILE_ATTRIBUTE_DIRECTORY) || (attributes&FILE_ATTRIBUTE_REPARSE_POINT)) return false;
-		std::array<std::uint8_t,16> nonce{};
-		const auto crypto=MakeKad6HostCryptoHooks();
-		if(!crypto.random_bytes || !crypto.random_bytes(nonce.data(),nonce.size()) || !reach::NonzeroIdentity(nonce)) return false;
+		if(!PreparePeerTrustDirectory(directory)) return false;
 		const auto path=PeerTrustPath(directory,peer.expectedNode);
-		auto temporary=path+L".";
-		for(const auto byte:nonce) { temporary+=L"0123456789abcdef"[byte>>4]; temporary+=L"0123456789abcdef"[byte&15]; }
-		temporary+=L".new";
-		auto committer=std::make_shared<ese::trust::FileCommitter>(path,temporary);
+		auto temporary=PeerTrustTemporaryPath(path);
+		if(temporary.empty()) return false;
+		auto committer=std::make_shared<ese::trust::FileCommitter>(path,std::move(temporary));
 		peer.pin={}; peer.hasPin=false; peer.allowFirstUse=true; peer.trustCommitter=std::move(committer); return true;
 	} catch(...) { return false; }
 }
@@ -497,6 +520,7 @@ void CDirectReachabilityManager::TickDirectConnections()
 	AssertMainThread();
 	if (::GetCurrentThreadId() != m_dwOwnerThreadId) return;
 	SynchronizeLocalSocketBindings();
+	if(!theApp.m_bSelfTest) SynchronizeProductionQuicHost(MonotonicMilliseconds());
 	// Lab-only Direct Core tracker; production network changes stay with
 	// the rc.2 mapping lifecycle (CemuleDlg::HandleUPnPNetworkChange).
 	if(thePrefs.IsEseNetLabActive() && m_localNetworkTracker.SampleDue(MonotonicMilliseconds()))
@@ -536,7 +560,7 @@ void CDirectReachabilityManager::TickDirectConnections()
 
 bool CDirectReachabilityManager::HasActiveQuicTransfers() const noexcept
 {
-	return m_quicHost && !m_quicHost->Empty();
+	return m_quicHost && QuicIngressPermitted() && !m_quicHost->Empty();
 }
 
 void CDirectReachabilityManager::PumpQuicTransfers()
@@ -864,7 +888,7 @@ CDirectReachabilityManager::DirectTcpStartResult CDirectReachabilityManager::Beg
 
 bool CDirectReachabilityManager::DirectQuicDownloadAvailable() const noexcept
 {
-	return DirectDownloadAvailable() && m_quicHost &&
+	return DirectDownloadAvailable() && m_quicHost && m_quicHost->Attached() && QuicIngressPermitted() &&
 		eSELive::NodeIdentityIsPersistent() && eSELive::NodeIdentityPub();
 }
 
@@ -881,7 +905,8 @@ bool CDirectReachabilityManager::FailOwnedDirectDownload(reach::DirectHandle han
 bool CDirectReachabilityManager::DirectDownloadAvailable() const noexcept
 {
 	return ::GetCurrentThreadId()==m_dwOwnerThreadId && thePrefs.IsEseNetLabActive() &&
-		m_builtinQuicConsumer && !m_directPump.Busy();
+		m_builtinQuicConsumer && !m_directPump.Busy() &&
+		(m_productionQuicState==ProductionQuicState::Idle ? theApp.m_bReachBindingSelfTest : QuicIngressPermitted());
 }
 
 void CDirectReachabilityManager::PumpDirectQuicDownloadHandoff()
@@ -1155,7 +1180,7 @@ bool CDirectReachabilityManager::TryBeginQueuedKad6Resolution(const std::array<s
     // Ordinary queue processing must not steal an existing resolution or
     // bootstrap. Consent remains the existing opt-in, not a new default.
     if(::GetCurrentThreadId()!=m_dwOwnerThreadId ||
-        !thePrefs.IsEseNetLabActive() || m_directResolution || m_directBootstrapOwner || !m_quicHost ||
+        !thePrefs.IsEseNetLabActive() || m_directResolution || m_directBootstrapOwner || !m_quicHost || !QuicIngressPermitted() ||
         !m_kad6DirectContacts || !eSELive::NodeIdentityIsPersistent() ||
         !GetTopologyGeneration() || !size || size>MAX_EMULE_FILE_SIZE) return false;
     if(!m_queuedKad6Cooldown.Claim(file,MonotonicMilliseconds())) return false;
@@ -1602,7 +1627,7 @@ void CDirectReachabilityManager::RetireDirectUploadAuthorization(UploadControlGr
 
 void CDirectReachabilityManager::PumpDirectUploadAuthorizations()
 {
-	if(m_directPump.Busy()) return;
+	if(m_directPump.Busy() || !QuicIngressPermitted()) return;
 	const auto now=MonotonicMilliseconds();
 	auto eligible=[&](CUpDownClient* client,ese::udp::Endpoint& endpoint) {
 		if(!thePrefs.IsEseNetLabActive() || !m_quicHost || !m_builtinQuicConsumer ||
@@ -1674,7 +1699,7 @@ void CDirectReachabilityManager::PumpDirectUploadAuthorizations()
 
 void CDirectReachabilityManager::PumpDirectControlReplies()
 {
-	if(!m_quicHost) return;
+	if(!m_quicHost || !QuicIngressPermitted()) return;
     SynchronizeKad6IndexService();
 	const auto now=MonotonicMilliseconds();
 	if(m_kad6PublicationSize) {
@@ -1908,9 +1933,8 @@ bool CDirectReachabilityManager::AdoptQuicHost(std::unique_ptr<ese::QuicSessionH
 	return true;
 }
 
-void CDirectReachabilityManager::ShutdownQuicHost()
+void CDirectReachabilityManager::ResetQuicControlState()
 {
-	AssertMainThread();
 	CancelDirectKad6Resolution();
 	CancelDirectControlBootstrap();
 	for(auto& grant:m_uploadControlGrants) RetireDirectUploadAuthorization(grant);
@@ -1918,10 +1942,19 @@ void CDirectReachabilityManager::ShutdownQuicHost()
 	m_directResponders={}; // cookie secret/challenge budget persist across restart
 	for(auto& entry:m_retainedControlDownloads) if(entry.owner) m_directControlSessions->ReleaseDownload(entry.owner);
 	m_retainedControlDownloads={};
-	if (!m_quicHost) return;
-	if (::GetCurrentThreadId() != m_dwOwnerThreadId) std::terminate();
 	*m_directContactRefreshReplies=ese::discovery::ContactRefreshReplies{};
 	*m_directControlSessions=ese::control::Sessions{};
+	RetireKad6IndexService();
+	CancelKad6Publication();
+}
+
+void CDirectReachabilityManager::ShutdownQuicHost()
+{
+	AssertMainThread();
+	if (::GetCurrentThreadId() != m_dwOwnerThreadId) std::terminate();
+	ResetQuicControlState();
+	m_productionQuicState=ProductionQuicState::Idle;
+	if (!m_quicHost) return;
 	m_quicHost->Stop();
 	// Shutdown only: update coordinator state but do not execute network actions.
 	// Draining global events makes room for at most 256*4 retained local events.
@@ -1930,8 +1963,6 @@ void CDirectReachabilityManager::ShutdownQuicHost()
 	PumpDirectEvents();
 	m_quicHost->RetireClosed();
 	if (!m_quicHost->Empty()) std::terminate(); // never destroy pending owners
-    RetireKad6IndexService();
-    CancelKad6Publication();
 	m_quicHost.reset();
 	m_quicOwners = ese::QuicRouteOwners{};
 	m_directPartContributions->Clear();
@@ -1940,13 +1971,82 @@ void CDirectReachabilityManager::ShutdownQuicHost()
 
 bool CDirectReachabilityManager::EnableNativeQuicLab()
 {
+	return theApp.m_bReachBindingSelfTest && AttachNativeQuicHost();
+}
+
+bool CDirectReachabilityManager::ProductionQuicPermitted() const noexcept
+{
+#ifdef ESE_QUIC_SIGNED_RELEASE
+	return thePrefs.IsEseNetLabActive() && thePrefs.GetEseDirectQuicOptIn() && !theApp.IsClosing() &&
+		eSELive::NodeIdentityIsPersistent() && eSELive::NodeIdentityPub() &&
+		theApp.clientudp && theApp.clientudp->GetConnectedPort()!=0;
+#else
+	return false;
+#endif
+}
+
+bool CDirectReachabilityManager::QuicIngressPermitted() const noexcept
+{
+	return !UsesProductionQuicPolicy() ||
+		(m_productionQuicState==ProductionQuicState::Attached && m_quicHost->Attached() && ProductionQuicPermitted());
+}
+
+bool CDirectReachabilityManager::UsesProductionQuicPolicy() const noexcept
+{
+	return m_productionQuicState!=ProductionQuicState::Idle;
+}
+
+void CDirectReachabilityManager::SynchronizeProductionQuicHost(uint64 now)
+{
+	const bool permitted=ProductionQuicPermitted();
+	if(m_productionQuicState==ProductionQuicState::Attached && (!permitted || !m_quicHost->Attached())) {
+		m_productionQuicState=ProductionQuicState::Draining;
+		const auto negotiating=m_directBootstrapDownload;
+		// Forget ownership before pumping callbacks. The consumer keeps its
+		// framers and route records until it accounts for the terminal batch.
+		ResetQuicControlState();
+		m_quicHost->Stop();
+		if(negotiating.generation && m_builtinQuicConsumer) m_builtinQuicConsumer->Fail(negotiating,reach::DirectReason::Disabled);
+	}
+	if(m_productionQuicState==ProductionQuicState::Draining) {
+		if(!permitted) CancelProductionQuicAttemptsForOptOut();
+		m_quicHost->Poll(now);
+		m_directPump.Tick(m_directConsumer.get(),[this] { return PumpDirectEvents(); });
+		if(!m_quicHost->Empty()) return;
+		m_quicHost.reset();
+		m_quicOwners={};
+		m_productionQuicState=ProductionQuicState::Idle;
+		m_nextProductionQuicAttach=0;
+	}
+	if(!permitted || m_quicHost || now<m_nextProductionQuicAttach) return;
+	if(AttachNativeQuicHost()) m_productionQuicState=ProductionQuicState::Attached;
+	else m_nextProductionQuicAttach=now+1000; // owner-thread retry bounded to once per second
+}
+
+void CDirectReachabilityManager::CancelProductionQuicAttemptsForOptOut()
+{
+	if(!m_builtinQuicConsumer) return;
+	for(const auto& entry:m_builtinQuicConsumer->entries_) {
+		if(!entry.occupied || entry.route.transport!=reach::DirectQuic) continue;
+		const auto state=m_directConnections.Snapshot(entry.handle);
+		// A QUIC loser may already have a validated TCP winner. Preserve it.
+		if(state && (!state->winner || state->winner==entry.route.id))
+			m_builtinQuicConsumer->Fail(entry.handle,reach::DirectReason::Disabled);
+	}
+	for(const auto& recovery:m_builtinQuicConsumer->recovery_)
+		if(recovery.handle.generation && recovery.pinnedPeer)
+			m_builtinQuicConsumer->Fail(recovery.handle,reach::DirectReason::Disabled);
+}
+
+bool CDirectReachabilityManager::AttachNativeQuicHost()
+{
 	AssertMainThread();
 	if (::GetCurrentThreadId() != m_dwOwnerThreadId || m_quicHost
 		|| !thePrefs.IsEseNetLabActive() || !eSELive::NodeIdentityIsPersistent()
 		|| theApp.clientudp == NULL || theApp.clientudp->GetConnectedPort() == 0)
 		return false;
 	try {
-		if(!m_directConsumer && !InstallQuicDownloadConsumer()) return false;
+		if(!InstallQuicDownloadConsumer()) return false;
 		auto host = ese::CreateQuicSessionHost(
 			*theApp.clientudp, m_directBuffers, m_directEvents, m_directControlBudget);
 		return AdoptQuicHost(host);
@@ -1961,7 +2061,7 @@ uint64 CDirectReachabilityManager::BeginNativeQuicLab(const ese::NativeQuicConfi
 {
 	AssertMainThread();
 	if (::GetCurrentThreadId() != m_dwOwnerThreadId || !m_quicHost
-		|| !thePrefs.IsEseNetLabActive() || theApp.clientudp == NULL) return 0;
+		|| !thePrefs.IsEseNetLabActive() || !QuicIngressPermitted() || theApp.clientudp == NULL) return 0;
 	const auto attempt = m_directConnections.Snapshot(handle);
 	const auto* node = eSELive::NodeIdentityPub();
 	if (!attempt || !node) return 0;
@@ -2032,6 +2132,7 @@ bool CDirectReachabilityManager::AdoptNativeQuicWinner(uint64 owner, reach::Dire
 {
 	AssertMainThread();
 	if (::GetCurrentThreadId() != m_dwOwnerThreadId || !m_quicHost) return false;
+	if(!QuicIngressPermitted()) return false;
 	const auto attempt = m_directConnections.Snapshot(handle);
 	if (!attempt || attempt->state != reach::DirectSessionState::Ready || !attempt->winner)
 		return false;
@@ -2059,7 +2160,7 @@ const ese::binding::Hello* CDirectReachabilityManager::ValidateNativeQuicDeliver
 	reach::DirectHandle handle, uint32 route, uint64 epoch)
 {
 	AssertMainThread();
-	if (::GetCurrentThreadId() != m_dwOwnerThreadId || !m_quicHost || !thePrefs.IsEseNetLabActive()) return nullptr;
+	if (::GetCurrentThreadId() != m_dwOwnerThreadId || !m_quicHost || !thePrefs.IsEseNetLabActive() || !QuicIngressPermitted()) return nullptr;
 	const auto attempt = m_directConnections.Snapshot(handle);
 	const auto* binding = m_quicOwners.Find(handle, route);
 	if (!attempt || !binding || binding->owner != owner || binding->epoch != epoch ||
@@ -3414,7 +3515,7 @@ bool CDirectReachabilityManager::TryPublishQueuedKad6File(CKnownFile& file)
 {
     AssertMainThread(); auto now=MonotonicMilliseconds();
     if(::GetCurrentThreadId()!=m_dwOwnerThreadId || !thePrefs.IsEseNetLabActive() || !Kademlia::CKademlia::IsKad6Running() ||
-        !m_quicHost || m_kad6PublicationSize || m_directResolution || m_directBootstrapOwner || now<m_nextKad6Publication ||
+        !m_quicHost || !QuicIngressPermitted() || m_kad6PublicationSize || m_directResolution || m_directBootstrapOwner || now<m_nextKad6Publication ||
         !m_kad6DirectContacts || !eSELive::NodeIdentityIsPersistent() || !eSELive::NodeIdentityPub() ||
         !theApp.sharedfiles || theApp.sharedfiles->GetFileByID(file.GetFileHash())!=&file ||
         !file.GetFileSize() || file.GetFileSize()>MAX_EMULE_FILE_SIZE || now>(std::numeric_limits<uint64>::max)()-15000) return false;
@@ -3582,7 +3683,9 @@ void CDirectReachabilityManager::RetireKad6IndexService()
 uint64 CDirectReachabilityManager::GetKad6ServiceCapabilities() const
 {
     ese::discovery::PublicUdpContact contact;
-    return m_kad6IndexOwner && m_kad6IndexTopology==GetTopologyGeneration() &&
+    return m_quicHost && m_quicHost->Attached() && QuicIngressPermitted() &&
+        (theApp.m_bReachBindingSelfTest || thePrefs.IsEseNetLabContributionActive()) &&
+        m_kad6IndexOwner && m_kad6IndexTopology==GetTopologyGeneration() &&
         thePrefs.IsEseNetLabActive() && Kademlia::CKademlia::IsKad6Running() &&
         eSELive::NodeIdentityIsPersistent() && GetVerifiedKad6PublicContact(contact)
         ? ese::discovery::K6_CAP_DIRECT_INDEX_V1 : 0;
@@ -3590,7 +3693,9 @@ uint64 CDirectReachabilityManager::GetKad6ServiceCapabilities() const
 void CDirectReachabilityManager::SynchronizeKad6IndexService()
 {
     ese::discovery::PublicUdpContact contact;
-    if(!m_quicHost || !thePrefs.IsEseNetLabActive() || !Kademlia::CKademlia::IsKad6Running() ||
+    if(!m_quicHost || !QuicIngressPermitted() ||
+        (!theApp.m_bReachBindingSelfTest && !thePrefs.IsEseNetLabContributionActive()) ||
+        !thePrefs.IsEseNetLabActive() || !Kademlia::CKademlia::IsKad6Running() ||
         !eSELive::NodeIdentityIsPersistent() || !eSELive::NodeIdentityPub() || !GetVerifiedKad6PublicContact(contact)) {
         RetireKad6IndexService(); return;
     }

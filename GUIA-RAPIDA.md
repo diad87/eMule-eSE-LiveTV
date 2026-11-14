@@ -35,9 +35,15 @@ En esta candidata el panel, la API y el HLS recibido son solo locales. No abras 
 reenvíes los puertos `4711` o `8080` para acceder desde otro equipo; el acceso
 LAN/remoto queda aplazado.
 
-La primera ejecución muestra una decisión sobre **NetLab**. Actívalo solo si
-quieres participar en mediciones de conectividad. Rechazarlo no impide usar
-eMule ni Live TV.
+**QUIC directo** se activa en **Preferencias → Conexión → Direct QUIC**. Si
+NetLab está desactivado, eMule pide permiso para activarlo al aplicar el cambio.
+El ajuste está disponible en el paquete x64 y viene desactivado.
+
+En cada equipo, pulsa **Copy local key** y comparte la clave pública por un
+canal de confianza. Usa **Pin peer key…** para registrar la clave que has
+verificado con el otro equipo. La transferencia QUIC también necesita una fuente
+firmada con una ruta UDP válida y la autorización de la cola de subida. Puedes
+desactivar QUIC desde la misma casilla.
 
 ## 4. Ver o emitir
 

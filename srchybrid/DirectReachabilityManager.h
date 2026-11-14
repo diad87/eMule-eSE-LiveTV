@@ -42,7 +42,7 @@
 
 namespace ese { namespace discovery { class Kad6ContactCache; } }
 namespace ese { class QuicDownloadConsumer; }
-namespace ese { namespace trust { struct Record; enum class LoadResult; } }
+namespace ese { namespace trust { struct Record; enum class LoadResult; enum class SaveResult; } }
 namespace reach { class DirectRouteDispatch; }
 class CClientReqSocket;
 class CDownloadQueue;
@@ -63,7 +63,7 @@ class CDirectReachabilityManager
 public:
 	CDirectReachabilityManager();
 	~CDirectReachabilityManager();
-	// Factory must use this manager's pool/queue; no automatic activation.
+	// Factory must use this manager's pool and queue.
 	reach::DirectBufferPool& DirectBuffers() noexcept { return m_directBuffers; }
 	bool AdoptQuicHost(std::unique_ptr<ese::QuicSessionHost>& host);
 	void ShutdownQuicHost();
@@ -78,6 +78,7 @@ public:
 	// Explicit preparation-time profile IO; never called implicitly by a tick.
 	bool ConfigureDirectQuicPeerTrust(ese::QuicPeerConfig&,bool allowFirstUse);
 	ese::trust::LoadResult LoadDirectQuicPeerTrust(const std::array<std::uint8_t,32>&,ese::trust::Record&) const;
+	ese::trust::SaveResult ImportDirectQuicPeerPin(const std::array<std::uint8_t,32>&);
 	bool RegisterDirectQuicRoute(reach::DirectHandle,const reach::DirectSessionRoute&,
 		const ese::NativeQuicConfig&,const ese::QuicPeerConfig&);
 	bool ScheduleDirectQuicRoutes(reach::DirectHandle,const std::vector<reach::DirectSessionRoute>&);
@@ -104,7 +105,9 @@ public:
 	DirectTcpStartResult BeginOwnedObservedTcpDownload(reach::DirectHandle);
 	bool FailOwnedDirectDownload(reach::DirectHandle,reach::DirectReason);
 	bool DirectQuicDownloadAvailable() const noexcept;
-	bool DirectDownloadAvailable() const noexcept; // consumer/LAB gate, no UDP or QUIC grant
+	bool DirectDownloadAvailable() const noexcept;
+	bool QuicIngressPermitted() const noexcept;
+	bool UsesProductionQuicPolicy() const noexcept;
 	reach::NativeDirectRoutes SelectOwnedDirectQuicDownloadRoutes(reach::DirectHandle);
 	reach::NativeDirectRoutes SelectOwnedDirectDownloadRoutes(reach::DirectHandle,
 		uint8 enabledTransports=reach::DirectTcp|reach::DirectQuic);
@@ -412,6 +415,14 @@ private:
     std::size_t m_authenticatedProvisionalPeerCount=0;
 	reach::DirectBufferPool m_directBuffers;
 	std::unique_ptr<ese::QuicSessionHost> m_quicHost;
+	enum class ProductionQuicState { Idle, Attached, Draining };
+	ProductionQuicState m_productionQuicState=ProductionQuicState::Idle;
+	uint64 m_nextProductionQuicAttach=0;
+	bool ProductionQuicPermitted() const noexcept;
+	void SynchronizeProductionQuicHost(uint64 now);
+	bool AttachNativeQuicHost();
+	void ResetQuicControlState();
+	void CancelProductionQuicAttemptsForOptOut();
 	ese::QuicRouteOwners m_quicOwners;
 	std::unique_ptr<ese::DirectBatchConsumer> m_directConsumer;
 	ese::QuicDownloadConsumer* m_builtinQuicConsumer=nullptr; // borrowed from m_directConsumer

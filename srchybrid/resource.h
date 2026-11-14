@@ -2436,6 +2436,9 @@
 #define IDC_LIVE_CHUNKS                 3145   // LTEXT "Buffer: N segs · K written"
 #define IDC_LIVE_GRP_DEBUGLOG           3146   // GROUPBOX "Debug log"
 #define IDC_LIVE_DEBUGLOG               3147   // EDIT readonly multi-line log tail
+#define IDC_PREF_DIRECT_QUIC             3148
+#define IDC_PREF_QUIC_IMPORT             3149
+#define IDC_PREF_QUIC_COPY_KEY           3150
 #define IDS_EM_LIVESTREAM               1611
 #define IDS_EM_ESE                      1612   // eSE Server toolbar button label
 

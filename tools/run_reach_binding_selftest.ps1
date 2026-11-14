@@ -22,6 +22,7 @@ if ($manifest.PSObject.Properties.Name -contains 'native_runtime_inputs') {
     $nativeRuntimeInputs=@($manifest.native_runtime_inputs)
 }
 $nativeQuicLab=$nativeRuntimeInputs.Count -gt 0
+$signedQuic=$manifest.PSObject.Properties.Name -contains 'signed_quic_dependencies' -and [bool]$manifest.signed_quic_dependencies
 $diagnosticPort=if($manifest.PSObject.Properties.Name -contains 'diagnostic_web_port'){[int]$manifest.diagnostic_web_port}else{0}
 if ($diagnosticPort -and !$nativeQuicLab) { throw 'The HTTP winner and terminal checks require a native QUIC laboratory profile.' }
 if($diagnosticPort -and ($diagnosticPort -lt 1024 -or $diagnosticPort -gt 65535 -or $diagnosticPort -in @($manifest.tcp,$manifest.udp))) { throw 'Unsafe diagnostic port.' }
@@ -310,7 +311,11 @@ if($terminal) {
             $hasNativeHostMarker=$hasNativeHostMarker -and $logText.Contains('REACH_SELFTEST V73 PASS: cold source without pin through manager host consumer persists TOFU before production HELLO then HELLOANSWER and 4097 byte real PartFile hash completion, explicit first-use fixture')
             $hasNativeHostMarker=$hasNativeHostMarker -and $logText.Contains('REACH_SELFTEST V74 PASS: manager profile unknown key rejects implicit first-use, explicit TOFU persists before HELLO and reconnect configuration reloads known pin without new committer')
             $hasNativeHostMarker=$hasNativeHostMarker -and $logText.Contains('REACH_SELFTEST V75 PASS: simulated namespace signed cookie PROVE ACK4 triggers manager owned handoff without manual route schedule then native AUTH TOFU production HELLO HELLOANSWER; no physical UDP NAT or AskForDownload scheduler')
-            $hasNativeHostMarker=$hasNativeHostMarker -and $logText.Contains('REACH_SELFTEST V76 PASS: same authenticated peer durable pin second handshake AskForDownload creates single-flight admission then signed ACK4 owned handoff AUTH HELLO HELLOANSWER without explicit BeginOwned or new TOFU; simulated namespace no physical NAT')
+            $hasNativeHostMarker=$hasNativeHostMarker -and $logText.Contains('REACH_SELFTEST V76 PASS: explicitly imported durable pin, AskForDownload creates single-flight admission then signed ACK4 owned handoff AUTH HELLO HELLOANSWER without explicit BeginOwned or TOFU; simulated namespace no physical NAT')
+            if($signedQuic) {
+                $hasNativeHostMarker=$hasNativeHostMarker -and $logText.Contains('REACH_SELFTEST QUIC OPT-IN PASS: default-off, consent, isolated startup, same-port rebind and opt-out') -and
+                    $logText.Contains('REACH_SELFTEST QUIC ACTIVE OPT-OUT PASS: known pinned AUTH completed, opting out immediately fences and drains the owned transport')
+            }
             $hasNativeHostMarker=$hasNativeHostMarker -and $logText.Contains('REACH_SELFTEST V77 PASS: AskForDownload known-pin signed source through ACK4 native AUTH HELLO then same requested PartFile 4097 exact bytes IOCP disk duplicate suppression real hash and completion; simulated namespace single part no physical NAT')
             $hasNativeHostMarker=$hasNativeHostMarker -and $logText.Contains('REACH_SELFTEST V78 PASS: production filename answer ACCEPTUPLOADREQ generates exact signed-file OP_REQUESTPARTS and real pending blocks then 4097 byte hash completion over automatic caller QUIC; no manual ReserveDownload simulated single part')
             $hasNativeHostMarker=$hasNativeHostMarker -and $logText.Contains('REACH_SELFTEST V79 PASS: owned negotiation enters DS_CONNECTING then HELLOANSWER triggers real filename request signed file ID upload request and requested slot before automatic blocks; no unsolicited file status simulated single part')

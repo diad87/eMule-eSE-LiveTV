@@ -36,18 +36,14 @@ inline SaveResult ExistingResult(LoadResult result,const Record& existing,const 
 // Complete write + flush + close before non-replacing atomic publication.
 // A concurrent publisher wins without its file being overwritten. Temporary
 // file is deleted only after we successfully created it ourselves.
-inline SaveResult PersistFirstUse(const wchar_t* path,const wchar_t* temporary,
-    const binding::Session& session,const std::array<std::uint8_t,32>& expected) noexcept {
-    if(!path || !*path || !temporary || !*temporary || !_wcsicmp(path,temporary)) return SaveResult::Invalid;
-    const auto* peer=session.BoundPeer();
-    if(!peer || peer->node!=expected) return SaveResult::Invalid;
+inline SaveResult PersistNewRecord(const wchar_t* path,const wchar_t* temporary,const Record& desired) noexcept {
+    if(!path || !*path || !temporary || !*temporary || !_wcsicmp(path,temporary) || !Valid(desired))
+        return SaveResult::Invalid;
     Record existing;
     const auto prior=LoadRecord(path,existing);
-    const Record desired{expected,1,Kind::Tofu};
     if(prior!=LoadResult::Missing) return ExistingResult(prior,existing,desired);
-    const auto prepared=PrepareFirstUse(session,expected,std::nullopt);
     std::array<std::uint8_t,RecordSize> bytes{};
-    if(!prepared || !Encode(*prepared,bytes)) return SaveResult::Invalid;
+    if(!Encode(desired,bytes)) return SaveResult::Invalid;
     HANDLE file=CreateFileW(temporary,GENERIC_WRITE,0,nullptr,CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL|FILE_FLAG_WRITE_THROUGH,nullptr);
     if(file==INVALID_HANDLE_VALUE) return SaveResult::IoError;
@@ -61,6 +57,11 @@ inline SaveResult PersistFirstUse(const wchar_t* path,const wchar_t* temporary,
     // No replacement flag: even if an existing destination appears after our
     // initial load, its trust remains authoritative and unchanged.
     return ExistingResult(LoadRecord(path,existing),existing,desired);
+}
+inline SaveResult PersistFirstUse(const wchar_t* path,const wchar_t* temporary,
+    const binding::Session& session,const std::array<std::uint8_t,32>& expected) noexcept {
+    const auto prepared=PrepareFirstUse(session,expected,std::nullopt);
+    return prepared ? PersistNewRecord(path,temporary,*prepared) : SaveResult::Invalid;
 }
 class FileCommitter final : public Committer {
 public:

@@ -177,6 +177,8 @@ void CClientUDPSocket::PollQuicIngress()
 {
     if (::GetCurrentThreadId() != m_quicOwnerThread || !m_quicIngress || m_quicResetting)
         return;
+    if (theApp.directreachability && !theApp.directreachability->QuicIngressPermitted())
+        return;
     using Clock = std::chrono::steady_clock;
     const auto started = Clock::now();
     const auto now = static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -247,6 +249,8 @@ ese::QuicUdpSendResult CClientUDPSocket::SendQuicDatagram(ese::QuicUdpIngress* o
         m_quicResetting || !bytes || !count || count > 1200 || !peer.port)
         return {QuicUdpSendStatus::Invalid,0};
     if (!m_port || m_hSocket == INVALID_SOCKET)
+        return {QuicUdpSendStatus::Closed,0};
+    if (theApp.directreachability && !theApp.directreachability->QuicIngressPermitted())
         return {QuicUdpSendStatus::Closed,0};
     if (peer.ipv6 && !m_bDualStack)
         return {QuicUdpSendStatus::Failed,WSAEAFNOSUPPORT};
@@ -320,6 +324,8 @@ bool CClientUDPSocket::FeedQuicUdp(const byte* bytes,size_t count,
 {
     if (!m_quicIngress || !count) return false;
     ASSERT(::GetCurrentThreadId() == m_quicOwnerThread);
+    if (theApp.directreachability && !theApp.directreachability->QuicIngressPermitted())
+        return false;
     ese::udp::Endpoint peer;
     peer.ipv6 = address.GetType() == CAddress::IPv6;
     peer.port = port;

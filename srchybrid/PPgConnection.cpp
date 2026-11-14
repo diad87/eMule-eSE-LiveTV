@@ -33,6 +33,10 @@
 #include "LastCommonRouteFinder.h"
 #include "PreferencesDlg.h"
 #include "PPgWebServer.h"
+#include "DirectReachabilityManager.h"
+#include "EsePeerTrustStore.h"
+#include "InputBox.h"
+#include "NodeIdentity.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -68,6 +72,9 @@ BEGIN_MESSAGE_MAP(CPPgConnection, CPropertyPage)
 	ON_BN_CLICKED(IDC_OPENPORTS, OnBnClickedOpenports)
 	ON_BN_CLICKED(IDC_PREF_UPNPONSTART, OnSettingsChange)
 	ON_BN_CLICKED(IDC_PREF_ENABLE_IPV6, OnSettingsChange)   // v0.71 IPv6 Sprint 9
+	ON_BN_CLICKED(IDC_PREF_DIRECT_QUIC, OnSettingsChange)
+	ON_BN_CLICKED(IDC_PREF_QUIC_IMPORT, OnImportDirectQuicPeer)
+	ON_BN_CLICKED(IDC_PREF_QUIC_COPY_KEY, OnCopyDirectQuicKey)
 END_MESSAGE_MAP()
 
 // The capacity edit boxes take Mbit/s, but storage stays in kB/s
@@ -252,6 +259,12 @@ void CPPgConnection::LoadSettings()
 		// IPv6PreferredMode remains available in preferences.ini for users
 		// who want IPv6-first outbound selection.
 		CheckDlgButton(IDC_PREF_ENABLE_IPV6, static_cast<UINT>(thePrefs.IsIPv6Enabled()));
+		CheckDlgButton(IDC_PREF_DIRECT_QUIC, static_cast<UINT>(thePrefs.GetEseDirectQuicOptIn() && thePrefs.IsEseNetLabActive()));
+#ifndef ESE_QUIC_SIGNED_RELEASE
+		GetDlgItem(IDC_PREF_DIRECT_QUIC)->ShowWindow(SW_HIDE);
+		GetDlgItem(IDC_PREF_QUIC_IMPORT)->ShowWindow(SW_HIDE);
+		GetDlgItem(IDC_PREF_QUIC_COPY_KEY)->ShowWindow(SW_HIDE);
+#endif
 
 		//ShowLimitValues(); - will be called in OnLimiterChange()
 		OnLimiterChange();
@@ -404,6 +417,20 @@ BOOL CPPgConnection::OnApply()
 		                              : CPreferences::IPv6OffMode);
 	}
 
+#ifdef ESE_QUIC_SIGNED_RELEASE
+	bool enableQuic=IsDlgButtonChecked(IDC_PREF_DIRECT_QUIC)==BST_CHECKED;
+	if(enableQuic && !thePrefs.IsEseNetLabActive()) {
+		enableQuic=AfxMessageBox(_T("Direct QUIC uses NetLab. Enabling NetLab allows limited network experiments with other consenting peers during transfers. QUIC requires a peer key that you have verified and pinned. Do you want to enable NetLab and direct QUIC?"),
+			MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2)==IDYES;
+		if(enableQuic) {
+			thePrefs.SetEseNetLabConsent(CPreferences::EseNetLabAccepted);
+			thePrefs.ApplyEseNetLabPreferenceState(true);
+			RefreshEseV9PreviewCaps();
+		}
+	}
+	thePrefs.SetEseDirectQuicOptIn(enableQuic);
+#endif
+
 	theApp.scheduler->SaveOriginals();
 
 	SetModified(FALSE);
@@ -417,6 +444,34 @@ BOOL CPPgConnection::OnApply()
 	ChangePorts(2);	//"Test ports" button enable/disable
 
 	return CPropertyPage::OnApply();
+}
+
+void CPPgConnection::OnImportDirectQuicPeer()
+{
+	if(!theApp.directreachability) return;
+	InputBox dialog(this);
+	dialog.SetLabels(_T("Pin a QUIC peer"),_T("Paste the 64-digit public key you verified with your peer."),CString());
+	if(dialog.DoModal()!=IDOK || dialog.WasCancelled()) return;
+	const auto& key=dialog.GetInput();
+	std::array<std::uint8_t,32> node{};
+	const auto keyLength=static_cast<unsigned int>(key.GetLength());
+	if(keyLength!=2*node.size() || key.SpanIncluding(_T("0123456789abcdefABCDEF"))!=key ||
+		!DecodeBase16(key,keyLength,node.data(),static_cast<unsigned int>(node.size())) || !reach::NonzeroIdentity(node)) {
+		AfxMessageBox(_T("Invalid QUIC public key."),MB_OK | MB_ICONWARNING);
+		return;
+	}
+	const auto result=theApp.directreachability->ImportDirectQuicPeerPin(node);
+	if(result==ese::trust::SaveResult::Created || result==ese::trust::SaveResult::AlreadyKnown)
+		AfxMessageBox(_T("The QUIC peer key is saved in this profile."),MB_OK | MB_ICONINFORMATION);
+	else
+		AfxMessageBox(_T("Could not save the QUIC peer key."),MB_OK | MB_ICONWARNING);
+}
+
+void CPPgConnection::OnCopyDirectQuicKey()
+{
+	const auto* key=eSELive::NodeIdentityPub();
+	if(!key || !eSELive::NodeIdentityIsPersistent() || !theApp.CopyTextToClipboard(EncodeBase16(key,32)))
+		AfxMessageBox(_T("Could not copy this client's QUIC public key."),MB_OK | MB_ICONWARNING);
 }
 
 void CPPgConnection::Localize()

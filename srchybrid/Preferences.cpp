@@ -421,6 +421,7 @@ int		CPreferences::m_iEseNetLabConsent;
 int		CPreferences::m_iEseNetLabAdvancedConsent;
 int		CPreferences::m_iEseNetLabContributionConsent;
 bool	CPreferences::m_bEseNetLabEnabled;
+bool	CPreferences::m_bEseDirectQuicOptIn;
 bool	CPreferences::m_bEseV9Experimental;
 bool	CPreferences::m_bEseKad3Rendezvous;
 bool	CPreferences::m_bEseEndgame;
@@ -1919,6 +1920,7 @@ void CPreferences::SavePreferences()
 	ini.WriteInt(_T("EseNetLabAdvancedConsent"), m_iEseNetLabAdvancedConsent, _T("eSE"));
 	ini.WriteInt(_T("EseNetLabContributionConsent"), m_iEseNetLabContributionConsent, _T("eSE"));
 	ini.WriteBool(_T("EseNetLabEnabled"), m_bEseNetLabEnabled, _T("eSE"));
+	ini.WriteBool(_T("EseDirectQuicOptIn"), m_bEseDirectQuicOptIn, _T("eSE"));
 	ini.WriteBool(_T("EseV9Experimental"), m_bEseV9Experimental, _T("eSE"));
 	ini.WriteBool(_T("EseKad3Rendezvous"), m_bEseKad3Rendezvous, _T("eSE"));
 	ini.WriteBool(_T("EseEndgame"), m_bEseEndgame, _T("eSE"));
@@ -2622,6 +2624,7 @@ void CPreferences::LoadPreferences()
 		m_iEseNetLabContributionConsent = EseNetLabUndecided;
 	m_bEseNetLabEnabled = ini.GetBool(_T("EseNetLabEnabled"), false, _T("eSE"))
 		&& m_iEseNetLabConsent == EseNetLabAccepted;
+	m_bEseDirectQuicOptIn = ini.GetBool(_T("EseDirectQuicOptIn"), false, _T("eSE"));
 	// v9 alpha release boundary. This is the master gate for capabilities whose
 	// wire/runtime matrix is not stable yet (bulk, reach-v2, authenticated/strict
 	// tunnels and Kad6). Individual feature prefs remain additional, narrower gates.

@@ -514,7 +514,7 @@ std::optional<reach::DirectReason> CUpDownClient::TakeNativeDirectDownloadTermin
 bool CUpDownClient::ProcessNativeDirectDownload()
 {
 	const bool discoveryOnly=IsNativeDirectDiscoveryOnly();
-	if((!discoveryOnly && !SupportsEseNetLabV1Target()) || socket || !theApp.directreachability || !thePrefs.IsEseNetLabActive()) return false;
+	if((!discoveryOnly && !SupportsEseNetLabV1Target()) || socket || !theApp.directreachability) return false;
 	if(!GetRequestFile() || GetRequestFile()->IsStopped() ||
 		(GetRequestFile()->GetStatus()!=PS_READY && GetRequestFile()->GetStatus()!=PS_EMPTY)) return false;
 	auto& manager=*theApp.directreachability;
@@ -533,23 +533,27 @@ bool CUpDownClient::ProcessNativeDirectDownload()
 		}
 	}
 	if(!manager.DirectDownloadAvailable()) return false;
-	if(!m_directDownloadReask.Allow(now,generation) || (discoveryOnly && !HasCurrentNativeDirectDiscovery(generation,now))) return true;
+	const bool fixture=theApp.m_bReachBindingSelfTest && !manager.UsesProductionQuicPolicy();
+	if(!fixture && m_directDownloadSubscriber) return true; // the direct owner still owes a terminal result
+	if(!fixture && (!manager.DirectQuicDownloadAvailable() || !HasCurrentNativeDirectDiscovery(generation,now))) return discoveryOnly;
+	if(!m_directDownloadReask.Allow(now,generation)) return fixture || discoveryOnly || m_directDownloadSubscriber!=0;
+	if(discoveryOnly && !HasCurrentNativeDirectDiscovery(generation,now)) return true;
 	m_directDownloadReask.Defer(now); // No repeated profile IO/admission on hot scheduler calls.
 	const auto node=NativeDirectExpectedNode();
 	ese::trust::Record trust;
 	// Automatic reasks never choose TOFU on the user's behalf.
-	// Known peers can select observed TCP without reading a QUIC trust profile.
-	// Discovery-only peers retain their existing pre-admission trust requirement.
-	bool trusted=discoveryOnly && node && manager.LoadDirectQuicPeerTrust(*node,trust)==ese::trust::LoadResult::Loaded;
-	if(discoveryOnly && !trusted) return true;
+	// Production requires a current signed offer and a durable pin before
+	// claiming the attempt. Fixture TCP routes can exercise their own evidence.
+	bool trusted=(!fixture || discoveryOnly) && node && manager.LoadDirectQuicPeerTrust(*node,trust)==ese::trust::LoadResult::Loaded;
+	if((!fixture || discoveryOnly) && !trusted) return discoveryOnly;
 	const auto requested=RequestNativeDirectDownload(now+15000);
-	if(requested.request.status!=reach::DirectRequestStatus::Created && requested.request.status!=reach::DirectRequestStatus::Joined) return true;
+	if(requested.request.status!=reach::DirectRequestStatus::Created && requested.request.status!=reach::DirectRequestStatus::Joined) return fixture || discoveryOnly;
 	const auto tcp=manager.BeginOwnedObservedTcpDownload(requested.request.handle);
 	if(tcp!=CDirectReachabilityManager::DirectTcpStartResult::Unavailable) {
 		m_directDownloadReask.Negotiating(tcp==CDirectReachabilityManager::DirectTcpStartResult::Scheduled);
 		return true; // Scheduled TCP owns the attempt; consume terminal before retry.
 	}
-	if(!discoveryOnly) trusted=node && manager.LoadDirectQuicPeerTrust(*node,trust)==ese::trust::LoadResult::Loaded;
+	if(fixture && !discoveryOnly) trusted=node && manager.LoadDirectQuicPeerTrust(*node,trust)==ese::trust::LoadResult::Loaded;
 	if(!trusted) {
 		manager.FailOwnedDirectDownload(requested.request.handle,reach::DirectReason::BootstrapRequired);
 		m_directDownloadReask.Negotiating(false); return true;
@@ -561,8 +565,8 @@ bool CUpDownClient::ProcessNativeDirectDownload()
 	// ConnectionEstablished must start the normal file request after HELLOANSWER.
 	// Gathering alone is not a connection; only an owned negotiation enters this state.
 	if(owner) SetDownloadState(DS_CONNECTING);
-	else if(!discoveryOnly) manager.FailOwnedDirectDownload(requested.request.handle,reach::DirectReason::NoRoute);
-	return true;
+	else if(!fixture || !discoveryOnly) manager.FailOwnedDirectDownload(requested.request.handle,reach::DirectReason::NoRoute);
+	return owner!=0 || fixture || discoveryOnly;
 }
 
 void CUpDownClient::Init()

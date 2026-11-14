@@ -8,6 +8,7 @@
 namespace ese {
 class QuicSessionHost : public QuicHostLifecycle {
 public:
+    virtual bool Attached() const noexcept { return true; } // test hosts may have no shared socket
     virtual bool ActivateControlService(const std::array<std::uint8_t,32>&,std::uint64_t,std::uint64_t) { return false; }
     virtual bool RegisterControlServiceSession(const std::array<std::uint8_t,32>&,const udp::Endpoint&,
         const control::Header&,std::uint64_t,std::uint64_t) { return false; }

@@ -8,6 +8,7 @@
 #include "../../srchybrid/EseQuicSocketOwner.h"
 #include "../../srchybrid/EseQuicHostFactory.h"
 #include "../../srchybrid/EseQuicHostStart.h"
+#include "../../srchybrid/EseQuicProgressWatchdog.h"
 #include "../../srchybrid/EseQuicEd2kWriter.h"
 #include "../../srchybrid/EsePeerTrustStore.h"
 #include "SimulatedQuicPort.h"
@@ -383,7 +384,8 @@ int main(int argc,char** argv) {
         b.corrupt=badAuth;
         pa.loss=pb.loss=argc>1 && std::strcmp(argv[1],"loss")==0;
         pa.block=pb.block=argc>1 && std::strcmp(argv[1],"block")==0;
-        const bool dcoScenario=argc>1 && std::strcmp(argv[1],"dco")==0;
+        const bool selectiveLoss=argc>1 && std::strcmp(argv[1],"selective-loss")==0;
+        const bool dcoScenario=selectiveLoss || (argc>1 && std::strcmp(argv[1],"dco")==0);
         struct ServerDcoState { DirectEventQueue events; DirectCoordinator coordinator; };
         auto serverDco=std::make_unique<ServerDcoState>();
         auto& serverEvents=serverDco->events;
@@ -423,12 +425,16 @@ int main(int argc,char** argv) {
             const std::uint8_t unknown[]={0x40,1,2,3,4,5,6,7,8,9};
             Check(oa.Classify(pb.endpoint,{unknown,sizeof(unknown)},Now()).channel==udp::Channel::Legacy,
                 "unknown fixed-bit packet must remain legacy");
-            const auto deadline=Now()+20000;
-            const std::size_t total=6*1024*1024;
+            const auto deadline=Now()+(selectiveLoss ? 45000 : 20000);
+            const std::size_t total=selectiveLoss ? 8192 : 6*1024*1024;
+            constexpr std::size_t retainedPrefix=4096;
             std::array<std::uint8_t,32768> data{};
             std::size_t sent=0,received=0,reverseSent=0,reverseReceived=0;
             const std::size_t forwardTotal=serverOnly ? 0 : total;
             std::uint64_t pausedAt=0; bool resumed=false,adopted=false;
+            QuicProgressWatchdog progress;
+            std::size_t useful=0,discarded=0;
+            std::uint64_t stallStarted=0,probeSent=0,expired=0;
             while(Now()<deadline) {
                 pa.Deliver(oa); pb.Deliver(ob); oa.Poll(Now()); ob.Poll(Now());
                 if((badAuth || sendFail || tofuFail) && client.Snapshot().closed) break;
@@ -488,15 +494,42 @@ int main(int argc,char** argv) {
                     if(Now()-pausedAt>=200) { server.SetReceiveBudget(4096); resumed=true; }
                 }
                 for(std::size_t i=0;i<p.size;++i) Check(p.data[i]==static_cast<std::uint8_t>((received+i)%251),"payload mismatch");
-                received+=p.size; Check(server.ConsumeReceived(p.size),"consume");
-                if(dcoScenario && p.size) Check(server.ReportUsefulBytes(p.size),"server application-checked payload progress");
+                if(selectiveLoss) {
+                    const auto kept=received>=retainedPrefix ? 0 : (std::min)(retainedPrefix-received,p.size);
+                    useful+=kept;
+                    discarded+=p.size-kept; // encrypted STREAM bytes received, acknowledged and discarded above QUIC
+                    if(kept) {
+                        Check(server.ConsumeReceived(kept) && server.ReportUsefulBytes(kept),"retained application prefix progress");
+                    }
+                    Check(server.ConsumeReceived(p.size-kept),"consume selectively discarded bytes");
+                } else Check(server.ConsumeReceived(p.size),"consume");
+                received+=p.size;
+                if(dcoScenario && !selectiveLoss && p.size) Check(server.ReportUsefulBytes(p.size),"server application-checked payload progress");
                 const auto reverse=client.ReceivedFront();
                 for(std::size_t i=0;i<reverse.size;++i)
                     Check(reverse.data[i]==static_cast<std::uint8_t>((reverseReceived+i+17)%251),"reverse payload mismatch");
                 reverseReceived+=reverse.size; Check(client.ConsumeReceived(reverse.size),"reverse consume");
                 if(dcoScenario && reverse.size) Check(client.ReportUsefulBytes(reverse.size),"client application-checked payload progress");
+                if(selectiveLoss && discarded) {
+                    const auto now=Now();
+                    if(!stallStarted) stallStarted=now;
+                    const auto action=progress.Observe(now,true,server.UsefulReceived(),server.SmoothedRttMs());
+                    if(action==QuicProgressWatchdog::Action::Probe) {
+                        Check(!probeSent && server.RequestLivenessProbe(now),"watchdog sends authenticated liveness probe once");
+                        probeSent=now;
+                    } else if(action==QuicProgressWatchdog::Action::Recover) {
+                        Check(probeSent && now-probeSent>=5000 && !server.LivenessUnresponsive(),
+                            "real authenticated PONG before watchdog recovery");
+                        Check(adopted && server.Ready() && client.Ready() && useful==retainedPrefix &&
+                            server.UsefulReceived()==retainedPrefix && discarded==total-retainedPrefix &&
+                            client.Snapshot().acknowledged_offset==total && reverseReceived==total &&
+                            !server.HasReportedVerifiedPart(),"transport ACK did not count discarded data as application progress");
+                        expired=now;
+                        break;
+                    }
+                }
                 if(received==forwardTotal && reverseReceived==total && client.Snapshot().acknowledged_offset==forwardTotal &&
-                    server.Snapshot().acknowledged_offset==total) break;
+                    server.Snapshot().acknowledged_offset==total && !selectiveLoss) break;
                 // A 1 ms Windows sleep can round to a whole scheduler tick;
                 // yield without throttling this deliberately tiny credit window.
                 std::this_thread::yield();
@@ -527,6 +560,10 @@ int main(int argc,char** argv) {
                     client.Ready(),server.Ready(),pool.Used());
             Check(sent==forwardTotal && received==forwardTotal && client.Snapshot().acknowledged_offset==forwardTotal,"transfer deadline");
             Check(reverseSent==total && reverseReceived==total && server.Snapshot().acknowledged_offset==total,"reverse deadline");
+            if(selectiveLoss) {
+                Check(expired && expired-stallStarted>=30000 && expired-stallStarted<=35000,
+                    "selectively discarded payload expires at the real watchdog deadline");
+            }
             if(dcoScenario) {
                 nativeCoordinator.Advance({0,1},Now(),events.Drain());
                 serverCoordinator.Advance(serverHandle,Now(),serverEvents.Drain());
@@ -534,9 +571,23 @@ int main(int argc,char** argv) {
                 const auto serverState=serverCoordinator.Snapshot(serverHandle);
                 Check(clientState && serverState && clientState->state==DirectSessionState::Transferring
                     && serverState->state==DirectSessionState::Transferring && clientState->useful_bytes==total
-                    && serverState->useful_bytes==forwardTotal && !clientState->transfer_verified
+                    && serverState->useful_bytes==(selectiveLoss ? retainedPrefix : forwardTotal) && !clientState->transfer_verified
                     && !serverState->transfer_verified,"application progress is not verified-part integrity");
-                Check(!client.ReportUsefulBytes(1) && !server.ReportUsefulBytes(1),"no double-counted consumed bytes");
+                Check(!client.ReportUsefulBytes(1) && (selectiveLoss || !server.ReportUsefulBytes(1)),
+                    "no double-counted consumed bytes");
+            }
+            if(selectiveLoss) {
+                server.Close(DirectReason::QuicNoProgress);
+                serverCoordinator.Advance(serverHandle,Now(),serverEvents.Drain());
+                const auto recovery=serverCoordinator.Snapshot(serverHandle);
+                Check(recovery && recovery->state==DirectSessionState::Recovering &&
+                    recovery->reason==DirectReason::QuicNoProgress && recovery->epoch==1 &&
+                    recovery->peer.identity==a.pub && !recovery->winner &&
+                    recovery->useful_bytes==retainedPrefix && !recovery->transfer_verified,
+                    "typed recovery preserves pinned peer and the useful prefix");
+                std::printf("native QUIC selective application loss PASS: acknowledged=%zu useful=%zu discarded=%zu probe_ms=%llu recovery_ms=%llu authenticated PONG received\n",
+                    received,useful,discarded,static_cast<unsigned long long>(probeSent-stallStarted),
+                    static_cast<unsigned long long>(expired-stallStarted));
             }
             Check(!pause || resumed,"pause resume");
             Check(!pa.loss || pa.drops+pb.drops>0,"loss injection");

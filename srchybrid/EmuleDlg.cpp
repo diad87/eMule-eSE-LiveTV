@@ -278,13 +278,13 @@ static void ConfigureEseNetLabConsentAtStartup()
 		&& thePrefs.GetEseNetLabContributionConsent() == CPreferences::EseNetLabUndecided) {
 		const CString notice =
 			_T("Contribucion de recursos beta\r\n\r\n")
-			_T("Activa la prueba de relay Live y Kad6 Beta Exit. El equipo ")
-			_T("puede reenviar trafico limitado de otros participantes beta, consumir ")
-			_T("subida y exponer su IP publica a los peers que utilicen el servicio. ")
+			_T("Activa Kad6 Beta Exit. El equipo puede procesar consultas limitadas ")
+			_T("de otros participantes beta, consumir subida y exponer su IP publica ")
+			_T("a los peers que utilicen el servicio. ")
 			_T("Se aplican cuotas estrictas, limites de tasa y apagado inmediato.\r\n\r\n")
 			_T("Kad6 Beta Exit no habilita ni sustituye el gate estable de salida ")
 			_T("publica.\r\n\r\n")
-			_T("Desea contribuir recursos y activar estas pruebas?");
+			_T("Desea contribuir recursos y activar esta prueba?");
 		thePrefs.SetEseNetLabContributionConsent(
 			AfxMessageBox(notice, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES
 				? CPreferences::EseNetLabAccepted
@@ -2324,12 +2324,6 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				if (thePrefs.IsEseNetLabActive()
 					&& thePrefs.GetUtpHolePunchEnabled() && thePrefs.GetEseKad3Rendezvous())
 					g_uEseCapsRuntime |= ESE_CAP_HOLEPUNCH_RDV;
-				// R.3 buddy relay: advertise relay capability ONLY when we actually accept relay
-				// duty (pref EseRelayAccept, default OFF). A peer seeing this bit may pick us as its
-				// relay buddy; gating on the pref means we advertise only when we will honor an
-				// incoming 0xCF SETUP — so a node that never relays stays byte-identical on the wire.
-				if (thePrefs.GetEseRelayAccept())
-					g_uEseCapsRuntime |= ESE_CAP_LIVE_RELAY;
 				// Re-enable each Kad v2 cap at its phase exit, e.g.:
 				//   if (Kademlia::CKadV2SubscriberPin::Get().IsRepublishingLive())
 				//       g_uEseCapsRuntime |= ESE_CAP_M1_SUBSCRIBER_PIN;

@@ -657,7 +657,7 @@ public:
 	static bool		m_bEnableUtpHolePunch;	// Fase 4: Kill-switch maestro para Hole Punching uTP
 	static int		m_iEseNetLabConsent;	// v9 beta NetLab cohort: 0 undecided, 1 declined, 2 explicitly accepted.
 	static int		m_iEseNetLabAdvancedConsent;	// Punch3/prediction/Kad6 client plane; independent explicit consent.
-	static int		m_iEseNetLabContributionConsent;	// Relay/Kad6 beta-exit resource contribution; independent explicit consent.
+	static int		m_iEseNetLabContributionConsent;	// Separate consent for Kad6 beta-exit resource contribution.
 	static bool		m_bEseNetLabEnabled;	// Immediate cohort kill switch. Effective only after explicit acceptance.
 	static bool		m_bEseDirectQuicOptIn;
 	static bool		m_bEseV9Experimental;	// v9 alpha master opt-in for unvalidated wire capabilities. Default OFF.
@@ -665,13 +665,10 @@ public:
 	static bool		m_bEseEndgame;			// Endgame mode: race the last outstanding blocks across sources so one slow owner cannot stall the final MB. Default ON.
 	static bool		m_bEseAutoKeepalive;	// R.2 auto-activation: when firewalled+Kad-connected, autonomously RequestStart() the Kad keepalive (was /api-only). Default OFF -> dormant-safe.
 	static bool		m_bEseKadV6Tag;			// [eSE v9] root link: emit our public IPv6 as an additive Kad-HELLO tag (TX). Default OFF -> no HELLO wire change until validated.
-	static bool		m_bEseRelayAccept;		// [eSE v9] R.3: act as a relay buddy (accept 0xCF SETUP + serve 0xCE viewers). Default OFF.
-	static bool		m_bEseRelayEgress;		// [eSE v9] R.3: as an unreachable broadcaster, push my stream to a relay buddy. Default OFF.
-	static bool		m_bEseReachSelector;	// [eSE v9] reachability selector: escalate Direct->punch2->punch3->relay on the Live dial. Default OFF.
+	static bool		m_bEseReachSelector;	// Live reachability selector: direct, Punch2 and Punch3. Default OFF.
 	static bool		m_bEseHolePunchPortPredict;	// [eSE v9] anti-CGNAT: birthday-spray REQs across a port window (symmetric NAT / CGNAT). Default OFF.
 	static int		m_iEseHolePunchPortSpread;	// [eSE v9] port-prediction window half-width (ports each side of the observed port). Clamped [0,8].
 	static bool		m_bEseEd2kPunch3;			// [eSE v9] eD2K downloads: escalate to 3-way rendezvous (punch3) when the 2-way punch fails. Default OFF.
-	static int		m_iEseRelayMaxKBps;			// [eSE v9] R.3 hard relay egress byte-budget (KB/s of donated bandwidth). Clamped [64,65536].
 	// [eSE v9] Swarm DVR: dormant reservations, no consumers yet. All default OFF.
 	static bool		m_bEseDvrEnabled;			// [eSE v9] DVR: retain Live history for rewind. Default OFF.
 	static int		m_iEseDvrMinutes;			// [eSE v9] DVR retention window (minutes). Clamped [1,30].
@@ -1347,10 +1344,6 @@ public:
 	static void		SetEseAutoKeepalive(bool b)			{ m_bEseAutoKeepalive = b; }
 	static bool		GetEseKadV6Tag()					{ return m_bEseKadV6Tag; }
 	static void		SetEseKadV6Tag(bool b)				{ m_bEseKadV6Tag = b; }
-	static bool		GetEseRelayAccept()					{ return m_bEseRelayAccept; }
-	static void		SetEseRelayAccept(bool b)			{ m_bEseRelayAccept = b; }
-	static bool		GetEseRelayEgress()					{ return m_bEseRelayEgress; }
-	static void		SetEseRelayEgress(bool b)			{ m_bEseRelayEgress = b; }
 	static bool		GetEseReachSelector()				{ return m_bEseReachSelector; }
 	static void		SetEseReachSelector(bool b)			{ m_bEseReachSelector = b; }
 	static bool		GetEseHolePunchPortPredict()		{ return m_bEseHolePunchPortPredict; }
@@ -1359,8 +1352,6 @@ public:
 	static void		SetEseHolePunchPortSpread(int n)		{ m_iEseHolePunchPortSpread = n; }
 	static bool		GetEseEd2kPunch3()					{ return m_bEseEd2kPunch3; }
 	static void		SetEseEd2kPunch3(bool b)			{ m_bEseEd2kPunch3 = b; }
-	static int		GetEseRelayMaxKBps()				{ return m_iEseRelayMaxKBps; }
-	static void		SetEseRelayMaxKBps(int n)			{ m_iEseRelayMaxKBps = n; }
 	static bool		GetEseDvrEnabled()					{ return m_bEseDvrEnabled; }
 	static void		SetEseDvrEnabled(bool b)			{ m_bEseDvrEnabled = b; }
 	static int		GetEseDvrMinutes()					{ return m_iEseDvrMinutes; }

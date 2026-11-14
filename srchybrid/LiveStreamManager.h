@@ -446,12 +446,6 @@ private:
     LiveStreamInfo      m_broadcastStreamInfo;     // current local broadcaster
     ese::live::LiveChunkWindow m_chunkBuffer;          // received remote chunks
     ese::live::LiveChunkWindow m_broadcastChunkBuffer; // locally produced chunks
-    // R.3 relay egress (gated by pref EseRelayEgress): proactively forward new segments to a
-    // relay buddy when we are an unreachable broadcaster (symmetric NAT/CGNAT).
-    uint32              m_lastRelayedSeq;
-    bool                m_hasRelayedSeq;
-    DWORD               m_dwLastRelaySetup;     // throttle for (re)sending SETUP when no buddy
-
     ese::live::LivePeerSet m_peerSet; // opaque membership; client list owns pointers
     ese::live::LiveStreamSecurity m_streamSecurity;
     ese::live::LiveStreamFanout m_streamFanout;
@@ -560,7 +554,7 @@ private:
     // (ip<<16|port, HOST-order ip) like m_recentDials so it survives the LowID
     // AttachToAlreadyKnown pointer swap. Drives Direct(R.0)->2way-punch->3way-rdv(R.1)
     // ->relay(R.3). Dormant: m_bReachSelectorOn default-OFF AND GetUtpHolePunchEnabled().
-    enum EReachStage { REACH_DIRECT = 0, REACH_PUNCH2 = 1, REACH_PUNCH3 = 2, REACH_RELAY = 3, REACH_DONE = 4 };
+    enum EReachStage { REACH_DIRECT = 0, REACH_PUNCH2 = 1, REACH_PUNCH3 = 2, REACH_DONE = 4 };
     struct ReachState { uint8 stage; DWORD stageEnteredTick; uint16 udpPort; };
     CMap<uint64, uint64, ReachState, ReachState&> m_escalation;   // gated by pref EseReachSelector
 
@@ -623,7 +617,6 @@ private:
 
     // Internal helpers
     void SendBitmapToAll(bool broadcastRole);
-    void RelayPushNewSegments();   // R.3: forward new segments to the active relay buddy (main thread, lock-free)
     void TickReachabilitySelector(DWORD now);   // [eSE v9] reachability escalation (dormant unless m_bReachSelectorOn)
     bool PickRendezvous(uint32 targetIpHost, uint16 targetUdp, uint32& outRipHost, uint16& outRport);
     void RequestMissingSegments();

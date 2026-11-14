@@ -177,11 +177,6 @@ public:
 	static volatile DWORD	m_dwKad3RdvFwd;				// R: FWD relayed to B (after A proved return-routability)
 	static volatile DWORD	m_dwKad3RdvSuccess;			// A received PROCEED: rendezvous signaling reached punch stage
 	// R.3 relay floor (buddy relay) telemetry — incremented via InterlockedIncrement.
-	static volatile DWORD	m_dwRelayReqRecv;			// buddy: OP_LIVE_RELAY_REQ received
-	static volatile DWORD	m_dwRelayAccepted;			// buddy: relay sessions accepted (policy passed)
-	static volatile DWORD	m_dwRelayActive;			// currently active relayed streams (gauge)
-	static volatile DWORD	m_dwRelayBytesFwdKB;		// KB forwarded through us as relay
-	static volatile DWORD	m_dwRelayBudgetDrops;		// [eSE v9] chunks dropped by the hard relay byte-budget (abuse cap)
 	// [eSE v9] reach-cascade OUTCOME telemetry: which stage actually got the source connected.
 	// The selector used to collapse "connected via live socket" and "gave up" into the same
 	// REACH_DONE, so after a 2-3 PC run you could not tell whether Direct, Punch2, Punch3 or Relay
@@ -190,7 +185,6 @@ public:
 	static volatile DWORD	m_dwReachConnDirect;		// source connected while still at stage DIRECT
 	static volatile DWORD	m_dwReachConnPunch2;		// source connected after 2-way punch
 	static volatile DWORD	m_dwReachConnPunch3;		// source connected after 3-way rendezvous
-	static volatile DWORD	m_dwReachConnRelay;			// source connected via the relay floor
 
 private:
 	typedef struct {

@@ -10,7 +10,6 @@
 #include "LivePackets.h"
 #include "LiveRequestRateLimiter.h"
 #include "LiveTunnel.h"        // v8.1 Sprint C — C5 mode handoff (CLiveTunnel)
-#include "LiveBuddyRelay.h"    // R.3 — relay egress (buddy push: StartAsBroadcaster/GetActiveBuddy)
 #include "kademlia/kademlia/KadV2ModeSelector.h"  // v8.1 D3 — fallback policy
 #include "kademlia/kademlia/Kademlia.h"           // Milestone 1 — CKademlia::IsConnected/GetUDPListener
 #include "kademlia/net/KademliaUDPListener.h"     // Milestone 1 — SendEseHolePunchReq (LowID hole-punch)
@@ -174,10 +173,7 @@ bool CLiveStreamManager::GetPinnedPubkey(const uchar streamKey[16], uchar outPub
 }
 
 CLiveStreamManager::CLiveStreamManager()
-    : m_lastRelayedSeq(0)
-    , m_hasRelayedSeq(false)
-    , m_dwLastRelaySetup(0)        // R.3
-    , m_dwLastBitmapSend(0)
+    : m_dwLastBitmapSend(0)
     , m_dwLastViewerBitmapSend(0)
     , m_dwLastHealthCheck(0)
     , m_dwLastStatsSend(0)
@@ -282,12 +278,6 @@ bool CLiveStreamManager::StartBroadcast(const CString& title, const CString& cat
     m_peerSet.ClearDownstreams();
     m_streamFanout.Clear();
     m_streamAnnouncer.ResetKadPublish();
-    // R.3: fresh relay-egress state for this broadcast (clears any stale buddy from a
-    // previous stream so RelayPushNewSegments re-negotiates before pushing).
-    m_lastRelayedSeq = 0;
-    m_hasRelayedSeq = false;
-    m_dwLastRelaySetup = 0;
-    CLiveBuddyRelay::Instance().ResetBroadcasterEgress();
     // Commit active only after every lock-free projection is coherent.
     if (!m_broadcastSession.Start(identity)) {
         SecureZeroMemory(identity.private_key.data(), identity.private_key.size());
@@ -697,7 +687,6 @@ void CLiveStreamManager::StopBroadcast()
     m_broadcastChunkBuffer.Clear();
     m_peerSet.ClearDownstreams();
     m_streamFanout.Clear();
-    CLiveBuddyRelay::Instance().ResetBroadcasterEgress();   // R.3: drop the relay buddy on stop
     if (!m_viewerSession.IsActive()) {
         m_meshManager.ResetSessionPeers();
         m_streamSecurity.ClearTrust();
@@ -3811,13 +3800,6 @@ void CLiveStreamManager::Process()
     // Mesh topology maintenance
     m_meshManager.Process();
 
-    // R.3 egress (dormant unless s_relayEgressEnabled): release the manager lock, then
-    // proactively forward any new segments to the active relay buddy on this (main) thread.
-    // Lock-free by design — WithSegment guards the chunk buffer with its own lock, and
-    // m_streamInfo / the buddy pointer are main-thread-only. Unlock-before-send mirrors the
-    // initial-push pattern (~:1396) so a big relay drain never blocks FeedSegment on m_lock.
-    lock.Unlock();
-    RelayPushNewSegments();
 }
 
 
@@ -3894,66 +3876,6 @@ void CLiveStreamManager::SendBitmapToAll(bool broadcastRole)
     }
 }
 
-// R.3 egress: forward every new immutable segment to the relay buddy.
-// Dormant unless the relay-egress preference is enabled.
-void CLiveStreamManager::RelayPushNewSegments()
-{
-    if (!thePrefs.GetEseRelayEgress() || !m_broadcastSession.IsActive())   // gate: pref EseRelayEgress (default OFF)
-        return;
-    CUpDownClient* buddy = CLiveBuddyRelay::Instance().GetActiveBuddy();
-    if (buddy == NULL) {
-        // No active relay yet — (re)negotiate one (sends SETUP; non-blocking). Throttled so
-        // we don't spam SETUP every tick while a candidate is still connecting / replying.
-        if (GetTickCount() - m_dwLastRelaySetup > 5000) {
-            CLiveBuddyRelay::Instance().StartAsBroadcaster();
-            m_dwLastRelaySetup = GetTickCount();
-        }
-        return;
-    }
-    // Snapshot immutable chunks under manager orchestration, then send unlocked.
-    CArray<Packet*> outBatch;
-    {
-        CSingleLock lock(&m_lock, TRUE);
-        if (!m_broadcastSession.IsActive() || m_broadcastChunkBuffer.GetCount() == 0)
-            return;
-        const ese::live::LiveChunkWindowSnapshot window =
-            m_broadcastChunkBuffer.Snapshot();
-        const uint32 relaySpan =
-            window.newest_sequence - window.oldest_sequence + 1u;
-        for (uint32 offset = 0u; offset < relaySpan; ++offset) {
-            const uint32 seq = window.oldest_sequence + offset;
-            if (m_hasRelayedSeq &&
-                !LiveChunkWindow::IsNewerSequence(seq, m_lastRelayedSeq))
-                continue;
-            Packet* v2 = NULL;
-            m_broadcastChunkBuffer.WithSegment(seq, [&](const LiveChunkRecord& c) {
-                LegacyChunkView legacy(c);
-                if (memcmp(c.stream_key.data(), m_broadcastStreamInfo.streamKey, 16) == 0)
-                    v2 = eSELive::CreateChunkPacketV2(
-                        legacy.Get(),
-                        m_broadcastSession.PrivateKey().data(),
-                        m_broadcastSession.PublicKey().data());
-            });
-            if (v2 == NULL)
-                continue;
-            // RELAY_FWD/CHUNK payload = the V2 record body verbatim: the relay ingests it via
-            // ExitProxyOnWholeChunk and re-emits it to its 0xCE downstream as OP_LIVE_CHUNK_V2.
-            Packet* fwd = eSELive::CreateRelayFwdPacket(CLiveBuddyRelay::RELAY_SUB_CHUNK,
-                              m_broadcastStreamInfo.streamKey,
-                              (const uint8*)v2->pBuffer, v2->size);
-            delete v2;
-            if (fwd != NULL)
-                outBatch.Add(fwd);
-        }
-        m_lastRelayedSeq = window.newest_sequence;
-        m_hasRelayedSeq = true;
-    }   // m_lock released before the socket drain
-    for (INT_PTR i = 0; i < outBatch.GetCount(); ++i) {
-        theStats.AddUpDataOverheadOther(outBatch[i]->size);
-        buddy->SendPacket(outBatch[i], true);   // bVerifyConnection: drops cleanly if the buddy died
-    }
-}
-
 // [eSE v9] R-node auto-picker for the 3-way rendezvous (punch3). Prefer a connected fork
 // peer that ADVERTISED the RDV cap (known-capable); else a verified Kad v6 contact. Returns
 // HOST-order R ip + Kad UDP port. Skips R==target and R==self.
@@ -3981,7 +3903,7 @@ bool CLiveStreamManager::PickRendezvous(uint32 targetIpHost, uint16 /*targetUdp*
 
 // [eSE v9] reachability escalation driver. Per tracked source, after STAGE_TIMEOUT_MS in the
 // current stage with no live socket, advance to the next mechanism: Direct->2way-punch->
-// 3way-rdv->relay. Runs under Process()'s m_lock (control sends are small). Dormant unless
+// 3way-rdv. Runs under Process()'s m_lock (control sends are small). Dormant unless
 // m_bReachSelectorOn. Prunes settled / no-longer-wanted entries.
 void CLiveStreamManager::TickReachabilitySelector(DWORD now)
 {
@@ -3992,9 +3914,7 @@ void CLiveStreamManager::TickReachabilitySelector(DWORD now)
 		return;
     if (!Kademlia::CKademlia::IsConnected() || Kademlia::CKademlia::GetUDPListener() == NULL)
         return;
-    // < 5s/stage so all 4 stages (Direct->punch2->punch3->relay = 18s) complete within one
-    // 20s stall-failover window (~:3028) — every reachability method is tried before failover
-    // re-discovers the source.
+    // Three 4.5s stages fit in the 20s stall-failover window.
     const DWORD STAGE_TIMEOUT_MS = 4500;
     // CMap iteration safety: below we only update the value of the CURRENT (already-present)
     // key via m_escalation[key]=st. operator[] on an EXISTING key returns the node's value ref
@@ -4017,16 +3937,16 @@ void CLiveStreamManager::TickReachabilitySelector(DWORD now)
             if (st.stage != REACH_DONE) {
                 // Record WHICH mechanism actually won at the connect edge (once per source) before
                 // collapsing to DONE, so a 2-3 PC run can attribute the connect to Direct/Punch2/
-                // Punch3/Relay instead of guessing from interleaved logs.
+                // Punch3 instead of guessing from interleaved logs.
                 switch (st.stage) {
                     case REACH_DIRECT: InterlockedIncrement(&CStatistics::m_dwReachConnDirect); break;
                     case REACH_PUNCH2: InterlockedIncrement(&CStatistics::m_dwReachConnPunch2); break;
                     case REACH_PUNCH3: InterlockedIncrement(&CStatistics::m_dwReachConnPunch3); break;
-                    case REACH_RELAY:  InterlockedIncrement(&CStatistics::m_dwReachConnRelay);  break;
+                    case REACH_DONE: break;
                 }
                 LIVE_LOG("REACH", "%S:%u CONNECTED at stage=%s", (LPCWSTR)ipstr(htonl(ipHost)), port,
                     st.stage == REACH_DIRECT ? "DIRECT" : st.stage == REACH_PUNCH2 ? "PUNCH2"
-                    : st.stage == REACH_PUNCH3 ? "PUNCH3" : "RELAY");
+                    : "PUNCH3");
                 st.stage = REACH_DONE; st.stageEnteredTick = now; m_escalation[key] = st;
             }
         }
@@ -4064,21 +3984,9 @@ void CLiveStreamManager::TickReachabilitySelector(DWORD now)
             } else {
                 LIVE_LOG("REACH", "%S:%u PUNCH2->PUNCH3 (no R available)", (LPCWSTR)ipstr(htonl(ipHost)), port);
             }
-        } else if (st.stage == REACH_PUNCH3) {
-            st.stage = REACH_RELAY; st.stageEnteredTick = now;
-            // R.3: route the SUBSCRIBE through an active onion circuit (an exit peer subscribes
-            // on our behalf). Reuses the proven tunnel path; bIP is NET order (cf. :617). If no
-            // circuit, fall through to DONE and let the 20 s stall failover re-discover.
-            eSELive::CLiveTunnel& tun = eSELive::CLiveTunnel::Get();
-            if (tun.ActiveCircuitCount() > 0) {
-                tun.SendLiveSubscribeNoWait(m_streamInfo.streamKey, htonl(ipHost), port, st.udpPort, 0);
-                LIVE_LOG("REACH", "%S:%u PUNCH3->RELAY (tunneled subscribe)", (LPCWSTR)ipstr(htonl(ipHost)), port);
-            } else {
-                st.stage = REACH_DONE;
-                LIVE_LOG("REACH", "%S:%u RELAY skipped (no circuit) -> DONE", (LPCWSTR)ipstr(htonl(ipHost)), port);
-            }
-        } else {   // REACH_RELAY window elapsed -> give up; the failover re-discovers
+        } else {
             st.stage = REACH_DONE;
+            st.stageEnteredTick = now;
         }
         m_escalation[key] = st;
     }

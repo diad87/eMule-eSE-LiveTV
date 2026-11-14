@@ -114,15 +114,9 @@ volatile DWORD	CStatistics::m_dwKad3RdvReqRecv;
 volatile DWORD	CStatistics::m_dwKad3RdvChallengeSent;
 volatile DWORD	CStatistics::m_dwKad3RdvFwd;
 volatile DWORD	CStatistics::m_dwKad3RdvSuccess;
-volatile DWORD	CStatistics::m_dwRelayReqRecv;
-volatile DWORD	CStatistics::m_dwRelayAccepted;
-volatile DWORD	CStatistics::m_dwRelayActive;
-volatile DWORD	CStatistics::m_dwRelayBytesFwdKB;
-volatile DWORD	CStatistics::m_dwRelayBudgetDrops;
 volatile DWORD	CStatistics::m_dwReachConnDirect;
 volatile DWORD	CStatistics::m_dwReachConnPunch2;
 volatile DWORD	CStatistics::m_dwReachConnPunch3;
-volatile DWORD	CStatistics::m_dwReachConnRelay;
 
 
 CStatistics::CStatistics()
@@ -174,15 +168,9 @@ CStatistics::CStatistics()
 	m_dwKad3RdvChallengeSent = 0;
 	m_dwKad3RdvFwd = 0;
 	m_dwKad3RdvSuccess = 0;
-	m_dwRelayReqRecv = 0;
-	m_dwRelayAccepted = 0;
-	m_dwRelayActive = 0;
-	m_dwRelayBytesFwdKB = 0;
-	m_dwRelayBudgetDrops = 0;
 	m_dwReachConnDirect = 0;
 	m_dwReachConnPunch2 = 0;
 	m_dwReachConnPunch3 = 0;
-	m_dwReachConnRelay = 0;
 
 	m_fGlobalDone = 0;
 	m_fGlobalSize = 0;

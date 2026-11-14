@@ -265,7 +265,6 @@ public:
 	bool            SupportsEseHolePunchCookie()  const { return (m_uEseCapabilities & ESE_CAP_HOLEPUNCH_COOKIE) != 0; }
 	bool            SupportsEseHolePunchRdv()     const { return (m_uEseCapabilities & ESE_CAP_HOLEPUNCH_RDV) != 0; }
 	bool            SupportsEseKadKeepalive()     const { return (m_uEseCapabilities & ESE_CAP_KAD_KEEPALIVE) != 0; }
-	bool            SupportsLiveRelay()           const { return (m_uEseCapabilities & ESE_CAP_LIVE_RELAY) != 0; }
 	bool            SupportsEseNetLabV1()         const { return (m_uEseCapabilities & ESE_CAP_NETLAB_V1) != 0; }
 	// Strictly decoded TAG_ESE_REACH metadata obtained with a Kad source result.
 	// It is independent of HELLO capabilities because it must select a route

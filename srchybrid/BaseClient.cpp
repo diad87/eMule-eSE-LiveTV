@@ -26,7 +26,6 @@
 #include "LiveDebugLog.h"
 #include "LiveStreamManager.h"  // v7.1.8 — for OnPeerDisconnected from dtor
 #include "LiveTunnel.h"         // circuit teardown when an adjacent peer disconnects
-#include "LiveBuddyRelay.h"      // R.3 — free relay slot/downstream/buddy on teardown
 #include "emule.h"
 #include "UpDownClient.h"
 #include "FriendList.h"
@@ -792,7 +791,6 @@ CUpDownClient::~CUpDownClient()
 	if (theApp.liveStreamManager != NULL)
 		theApp.liveStreamManager->OnPeerDisconnected(this);
 	eSELive::CLiveTunnel::Get().OnPeerDisconnected(this);
-	CLiveBuddyRelay::Instance().OnPeerDisconnected(this);   // R.3: free relay slot / downstream / buddy
 
 	theApp.clientlist->RemoveClient(this, _T("Destructing client object"));
 

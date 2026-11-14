@@ -332,8 +332,8 @@
 // v0.71 IPv6 Sprint 7 reserves V2 peer list with CAddress payload (vs legacy
 // uint32-only in OP_LIVE_PEER_LIST at 0xCA). Sprint 8 reserves buddy relay.
 #define OP_LIVE_PEER_LIST_V2	0xCD	// <StreamHash 16><Count 2>(<CAddress><Port 2><Score 1>) × Count
-#define OP_LIVE_RELAY_REQ		0xCE	// Sprint 8: viewer asks a v6 buddy to relay
-#define OP_LIVE_RELAY_FWD		0xCF	// Sprint 8: buddy forwards chunks via that link
+#define OP_LIVE_RELAY_REQ		0xCE	// Retired R.3 buddy request. Reserved for compatibility.
+#define OP_LIVE_RELAY_FWD		0xCF	// Retired R.3 buddy data/control. Reserved for compatibility.
 // v8.1.x — chunk fragmentation: split a >1.8MB Live segment into sub-2MB
 // transport fragments to get past eMule's 2MB per-packet cap (EMSocket.cpp:261
 // ERR_TOOBIG). Each fragment carries a slice of the byte-identical inner V2/V1
@@ -569,7 +569,7 @@
 #define ESE_CAP_KAD_KEEPALIVE        0x00010000  // bit 16 -- versioned Kad keepalive support; advertise only while its service is live
 #define ESE_CAP_REACH_V2             0x00020000  // bit 17 -- strict TAG_ESE_REACH v2 codec + route projection
 #define ESE_CAP_TUNNEL_AUTH          0x00040000  // bit 18 -- authenticated tunnel handshake (CREATE/CREATED v2, Ed25519). Advertised only while the persistent node identity is available.
-#define ESE_CAP_LIVE_RELAY           0x00200000  // bit 21 -- R.3 buddy relay egress (broadcaster connect-out + 0xCF SETUP/CHUNK + 0xCE downstream). Advertised iff GetEseRelayAccept() (default OFF) — a node that does not accept relay duty keeps its caps byte-identical to before. bit 20 (0x00100000) is reserved for ESE_CAP_LIVE_BLAKE3 (see CAPABILITIES.csv) — do NOT reuse.
+#define ESE_CAP_LIVE_RELAY           0x00200000  // bit 21: retired R.3 buddy relay. Reserved for compatibility.
 #define ESE_CAP_HOLEPUNCH_COOKIE     0x00080000  // bit 19 -- return-routability cookie for eSE hole-punch (anti-reflection). LOAD-BEARING in the two-tier gate of Process_ESE_HOLEPUNCH_REQ: TIER1 (IP-verified known contact) -> legacy ACK+seed (bit informational here); TIER2 (unknown / known-but-unverified "gray zone") -> stateless 0x65 CHALLENGE ONLY if the sender advertises this bit, else legacy ACK+seed floored by the per-IP token bucket (back-compat: a legacy peer that cannot answer a CHALLENGE keeps its hole-punch). Initiator echoes the cookie in a 38B REQ. See HolePunchCookieCore.h / HolePunchCookie.h.
 #define ESE_CAP_KAD6                 0x01000000  // bit 24 -- Kad6 anonymity/compat gateway service (coarse discovery only; fine-grained K6_CAP_* live in the signed handshake u64, NOT this bitmap). K6-1 advertises it only with a persistent node identity and a non-Direct privacy mode; canonical requests require the signed exit snapshot.
 #define ESE_CAP_TUNNEL_STRICT3       0x02000000  // bit 25 -- authenticated CREATE/EXTEND v3 + iterative 3-hop forwarding. STRICT selects only paths where every signed hop advertises it.

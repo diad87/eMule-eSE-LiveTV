@@ -188,7 +188,6 @@ test('simultaneous broadcast and viewing keep native identities and buffers isol
   const header = read(repoRoot, 'srchybrid', 'LiveStreamManager.h');
   const manager = read(repoRoot, 'srchybrid', 'LiveStreamManager.cpp');
   const tunnel = read(repoRoot, 'srchybrid', 'LiveTunnelCoordinatorMethods.inl');
-  const buddy = read(repoRoot, 'srchybrid', 'LiveBuddyRelay.cpp');
   const mesh = read(repoRoot, 'srchybrid', 'LiveMeshManager.cpp');
 
   assert.match(header, /LiveStreamInfo\s+m_broadcastStreamInfo/);
@@ -231,7 +230,6 @@ test('simultaneous broadcast and viewing keep native identities and buffers isol
   assert.match(manager, /m_broadcastChunkBuffer\.GetNewestSeq\(\) > broadcastNewestBefore/);
   assert.match(manager, /m_chunkBuffer\.GetCount\(\) == 0/);
   assert.match(tunnel, /CopyViewerStreamKey\(viewerKey\)[\s\S]{0,800}BulkSubscribe\(viewerKey\)/);
-  assert.match(buddy, /CopyBroadcastStreamKey\(sk\)/);
 });
 
 test('directory deduplicates canonical stream keys and never reuses a local thumbnail for a remote channel', () => {
@@ -738,6 +736,7 @@ test('v9 capabilities and remote administration fail closed by default', () => {
     read(repoRoot, 'srchybrid', 'WebLiveApiTransferController.cpp')
   ].join('\n');
   const webRoutes = read(repoRoot, 'srchybrid', 'WebRouteTable.cpp');
+  const nativeProject = read(repoRoot, 'srchybrid', 'emule.vcxproj');
   const webStream = read(repoRoot, 'srchybrid', 'WebLiveApiStreamController.cpp');
   const webAuth = read(repoRoot, 'srchybrid', 'WebAuthPolicy.cpp');
   const partFile = read(repoRoot, 'srchybrid', 'PartFile.cpp');
@@ -756,8 +755,10 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(prefsHeader, /IsEseNetLabActive\(\)[\s\S]{0,160}EseNetLabAccepted/);
   assert.match(prefs, /EseKad3Rendezvous"\), false, _T\("eSE"\)/);
   assert.match(prefs, /EseAutoKeepalive"\), false, _T\("eSE"\)/);
-  assert.match(prefs, /EseRelayAccept"\),\s+false, _T\("eSE"\)/);
-  assert.match(prefs, /EseRelayEgress"\),\s+false, _T\("eSE"\)/);
+  assert.doesNotMatch(prefs, /EseRelayAccept|EseRelayEgress/);
+  assert.doesNotMatch(nativeProject, /LiveBuddyRelay\.(cpp|h)/);
+  assert.doesNotMatch(dlg + prober + web, /\|=\s*[^;]*\bESE_CAP_LIVE_RELAY\b/);
+  assert.match(web, /relay_retired/);
   assert.match(prefs, /EseReachSelector"\), false, _T\("eSE"\)/);
   assert.match(prefs, /WriteBool\(_T\("KrpRelayEnabled"\), false, _T\("KRPRelay"\)/);
   assert.match(prefs, /WriteBool\(_T\("KrpRelayKillSwitch"\), true, _T\("KRPRelay"\)/);
@@ -777,7 +778,6 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(dlg, /ApplyEseNetLabPreferenceState\(activateAcceptedLevels\)/);
   assert.match(prefs, /void CPreferences::ApplyEseNetLabPreferenceState\(bool active\)/);
   assert.match(prefs, /SetEseV9Experimental\(advanced\)/);
-  assert.match(prefs, /SetEseRelayAccept\(contribution\)/);
   assert.doesNotMatch(prefsHeader, /(?:Get|Set)KrpRelay/);
   assert.match(prefs, /SetKad6BetaExitOptIn\(contribution\)/);
   assert.doesNotMatch(dlg, /g_uEseCapsRuntime\s*=\s*[^;]*ESE_CAP_TUNNEL_BULK/s);
@@ -1591,8 +1591,6 @@ test('--selftest verifies signed chunk ingest and returns failure to the caller'
   assert.match(preferences, /nRegistrySetting = 2/);
   for (const persistedGate of [
     'EseAutoKeepalive',
-    'EseRelayAccept',
-    'EseRelayEgress',
     'EseReachSelector',
     'EseHolePunchPortPredict',
     'EseEd2kPunch3'

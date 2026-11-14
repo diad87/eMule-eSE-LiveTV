@@ -13,8 +13,8 @@ OP_LIVE_PEER_LIST,0xCA,EMULEPROT-CC,v7.0,stable,none,"<StreamHash 16><Count 2>(<
 OP_LIVE_PONG,0xCB,EMULEPROT-CC,v7.x,stable,none,"<StreamHash 16><PingId 4><Timestamp 8>",additive,srchybrid/Opcodes.h,306
 OP_LIVE_CHUNK_V2,0xCC,EMULEPROT-CC,v7.7.0,stable,none,"<StreamHash 16><SeqNum 4><Ts 4><DataSize 4><Bitrate 2><sha256 32><Sig 64><Data>",additive,srchybrid/Opcodes.h,307
 OP_LIVE_PEER_LIST_V2,0xCD,EMULEPROT-CC,v0.71,reserved,CAP_FORK_IPV6_WIRE,"<StreamHash 16><Count 2>(<CAddress><Port 2><Score 1>)xN",additive,srchybrid/Opcodes.h,310
-OP_LIVE_RELAY_REQ,0xCE,EMULEPROT-CC,v0.71,reserved,CAP_FORK_IPV6_WIRE,"buddy relay request",additive,srchybrid/Opcodes.h,311
-OP_LIVE_RELAY_FWD,0xCF,EMULEPROT-CC,v0.71,reserved,CAP_FORK_IPV6_WIRE,"buddy relay forward",additive,srchybrid/Opcodes.h,312
+OP_LIVE_RELAY_REQ,0xCE,EMULEPROT-CC,v0.71,retired,CAP_FORK_IPV6_WIRE,"R.3 buddy relay request. Ignored in v9.3. Reserved against reuse.",additive,srchybrid/Opcodes.h,335
+OP_LIVE_RELAY_FWD,0xCF,EMULEPROT-CC,v0.71,retired,CAP_FORK_IPV6_WIRE,"R.3 buddy relay data and control. Ignored in v9.3. Reserved against reuse.",additive,srchybrid/Opcodes.h,336
 OP_LIVE_CHANNEL_GOSSIP,0xD0,EMULEPROT-CC,v8.1,experimental,ESE_CAP_GOSSIP_PROTOCOL,"<count u16><channel_pubkey 32>xN",additive,srchybrid/Opcodes.h,327
 OP_LIVE_CHANNEL_REQUEST,0xD1,EMULEPROT-CC,v8.1,experimental,ESE_CAP_GOSSIP_PROTOCOL,"request ChannelRecord",additive,srchybrid/Opcodes.h,328
 OP_LIVE_CHANNEL_ANSWER,0xD2,EMULEPROT-CC,v8.1,experimental,ESE_CAP_GOSSIP_PROTOCOL,"signed ChannelRecord",additive,srchybrid/Opcodes.h,329

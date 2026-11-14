@@ -427,13 +427,10 @@ bool	CPreferences::m_bEseKad3Rendezvous;
 bool	CPreferences::m_bEseEndgame;
 bool	CPreferences::m_bEseAutoKeepalive;	// R.2 auto-activation pref
 bool	CPreferences::m_bEseKadV6Tag;		// [eSE v9] Kad-HELLO v6 tag TX pref
-bool	CPreferences::m_bEseRelayAccept;	// [eSE v9] R.3 relay accept pref
-bool	CPreferences::m_bEseRelayEgress;	// [eSE v9] R.3 relay egress pref
 bool	CPreferences::m_bEseReachSelector;	// [eSE v9] reachability selector pref
 bool	CPreferences::m_bEseHolePunchPortPredict;	// [eSE v9] anti-CGNAT port-prediction pref
 int		CPreferences::m_iEseHolePunchPortSpread;	// [eSE v9] port-prediction window half-width
 bool	CPreferences::m_bEseEd2kPunch3;		// [eSE v9] eD2K punch3 escalation pref
-int		CPreferences::m_iEseRelayMaxKBps;	// [eSE v9] R.3 relay egress byte-budget pref
 bool	CPreferences::m_bEseDvrEnabled;		// [eSE v9] DVR enable (dormant reservation)
 int		CPreferences::m_iEseDvrMinutes;		// [eSE v9] DVR retention window minutes
 int		CPreferences::m_iEseDvrRetentionMB;	// [eSE v9] DVR on-disk budget MB
@@ -1917,13 +1914,10 @@ void CPreferences::SavePreferences()
 	ini.WriteBool(_T("EseEndgame"), m_bEseEndgame, _T("eSE"));
 	ini.WriteBool(_T("EseAutoKeepalive"), m_bEseAutoKeepalive, _T("eSE"));
 	ini.WriteBool(_T("EseKadV6Tag"), m_bEseKadV6Tag, _T("eSE"));
-	ini.WriteBool(_T("EseRelayAccept"), m_bEseRelayAccept, _T("eSE"));
-	ini.WriteBool(_T("EseRelayEgress"), m_bEseRelayEgress, _T("eSE"));
 	ini.WriteBool(_T("EseReachSelector"), m_bEseReachSelector, _T("eSE"));
 	ini.WriteBool(_T("EseHolePunchPortPredict"), m_bEseHolePunchPortPredict, _T("eSE"));
 	ini.WriteInt(_T("EseHolePunchPortSpread"), m_iEseHolePunchPortSpread, _T("eSE"));
 	ini.WriteBool(_T("EseEd2kPunch3"), m_bEseEd2kPunch3, _T("eSE"));
-	ini.WriteInt(_T("EseRelayMaxKBps"), m_iEseRelayMaxKBps, _T("eSE"));
 }
 
 void CPreferences::ResetStatsColor(int index)
@@ -2625,10 +2619,7 @@ void CPreferences::LoadPreferences()
 	m_bEseAutoKeepalive = ini.GetBool(_T("EseAutoKeepalive"), false, _T("eSE"));
 	// [eSE v9] root link TX. DEFAULT FALSE: our HELLO is byte-identical to before until set.
 	m_bEseKadV6Tag = ini.GetBool(_T("EseKadV6Tag"), false, _T("eSE"));
-	// [eSE v9] R.3 relay + reachability selector activation gates. ALL DEFAULT FALSE -> the
-	// relay/selector code is byte-for-byte dormant exactly as before until an operator opts in.
-	m_bEseRelayAccept   = ini.GetBool(_T("EseRelayAccept"),   false, _T("eSE"));
-	m_bEseRelayEgress   = ini.GetBool(_T("EseRelayEgress"),   false, _T("eSE"));
+	// Advanced consent controls the direct reachability selector.
 	m_bEseReachSelector = ini.GetBool(_T("EseReachSelector"), false, _T("eSE"));
 	// Disable legacy KRP settings once, leaving credentials and unrelated preferences intact.
 	if (ini.GetBool(_T("KrpRelayEnabled"), false, _T("KRPRelay")) ||
@@ -2651,13 +2642,6 @@ void CPreferences::LoadPreferences()
 	// ONE 3-way rendezvous attempt via a picked R node before we concede — the same mechanism Live
 	// already uses, extended to the transfer engine.
 	m_bEseEd2kPunch3 = ini.GetBool(_T("EseEd2kPunch3"), false, _T("eSE"));
-	// [eSE v9] R.3 hard relay byte-budget: ceiling on the egress bandwidth we donate as a relay
-	// (KB/s, measured as len*(1+downstream) per chunk). Bounds the free-CDN abuse vector; over
-	// budget we shed load by dropping chunks. Default 4096 KB/s (generous for one relayed stream);
-	// clamp [64,65536]. Only matters when EseRelayAccept is ON.
-	m_iEseRelayMaxKBps = ini.GetInt(_T("EseRelayMaxKBps"), 4096, _T("eSE"));
-	if (m_iEseRelayMaxKBps < 64)    m_iEseRelayMaxKBps = 64;
-	if (m_iEseRelayMaxKBps > 65536) m_iEseRelayMaxKBps = 65536;
 	// [eSE v9] Swarm DVR and channel manifest: dormant reservations.
 	// No consumer reads these yet; they exist so the future implementation lands without
 	// re-touching Preferences. All default OFF/dormant -> zero behavior change. Load-only (no Save),
@@ -2720,8 +2704,6 @@ void CPreferences::ApplyEseNetLabPreferenceState(bool active)
 	if (advanced)
 		SetEseHolePunchPortSpread(4);
 
-	SetEseRelayAccept(contribution);
-	SetEseRelayEgress(contribution);
 	SetKad6BetaExitOptIn(contribution);
 }
 

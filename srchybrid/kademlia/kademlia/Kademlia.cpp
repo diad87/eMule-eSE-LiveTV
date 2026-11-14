@@ -58,7 +58,6 @@ their client on the eMule forum.
 #include "kademlia/kademlia/KadV2TunnelPool.h"
 #include "../../LiveTunnel.h"
 #include "../../LiveBootstrap.h"
-#include "../../LiveBuddyRelay.h"               // R.3: relay floor (buddy relay) for symmetric NAT
 #include "../../KadKeepalive.h"                 // R.2: keepalive pinger
 // v0.71 P3.10 — ServerWnd::UpdateMyInfo periodic refresh
 #include "../../ServerWnd.h"
@@ -322,7 +321,6 @@ void CKademlia::Process()
 				eSELive::CLiveBootstrap::Get().TickMDNS();
 				// CHolePuncher removed 2026-06-14: superseded by the live R.1 rendezvous in
 				// CKademliaUDPListener (InitiateKad3Rendezvous + Process_KADEMLIA3_HOLEPUNCH_*).
-				CLiveBuddyRelay::Instance().Tick(); // R.3: relay floor session health (no-op until increment 2)
 				// R.2 AUTO-ACTIVATION (dormant unless EseAutoKeepalive ini pref is set). This is
 				// the always-on 1 Hz main-thread heartbeat; throttle the firewalled re-check to 5 s.
 				// When ON: RequestStart the keepalive once we are firewalled/LowID + Kad-connected

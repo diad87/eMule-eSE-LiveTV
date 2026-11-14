@@ -27,7 +27,6 @@
 #include "LiveCrypto.h"        // v7.6.0 — StreamKeyMatchesPubkey
 #include "LiveTunnel.h"        // v0.71 P3.4 — OP_LIVE_TUNNEL_CELL dispatch
 #include "LiveCellQueue.h"     // v0.71 P3.4 — CELL_TOTAL_BYTES + CellUnpack
-#include "LiveBuddyRelay.h"    // R.3: relay floor (OP_LIVE_RELAY_FWD dispatch)
 #include "../cryptopp/sha.h"   // v7.7.0 — SHA256 for OP_LIVE_CHUNK_V2 verify
 #include "eMuleAI/Address.h"   // v0.71 IPv6 Sprint 7 — CAddress in PEER_LIST_V2
 #include "UpDownClient.h"
@@ -2588,32 +2587,10 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 					theApp.liveStreamManager->OnPeerDisconnected(client);
 			}
 			break;
-		// R.3 (relay floor) — buddy side. 0xCF = B<->Rel link (setup + chunk push);
-		// 0xCE = V->Rel subscribe (handler lands in R.3 increment 4).
+		// Retired R.3 wire values, reserved for older peers.
 		case OP_LIVE_RELAY_FWD:
-			{
-				if (thePrefs.GetDebugClientTCPLevel() > 0)
-					DebugRecv("OP_LiveRelayFwd", client);
-				theStats.AddDownDataOverheadOther(uRawSize);
-				if (size < 17) break;  // subop(1) + streamKey(16)
-				CSafeMemFile data(packet, size);
-				uint8 subop = data.ReadUInt8();
-				uchar streamKey[16];
-				data.ReadHash16(streamKey);
-				CLiveBuddyRelay::Instance().OnRelayFwd(client, subop, streamKey, (const uint8*)packet + 17, size - 17);
-			}
-			break;
 		case OP_LIVE_RELAY_REQ:
-			{
-				if (thePrefs.GetDebugClientTCPLevel() > 0)
-					DebugRecv("OP_LiveRelayReq", client);
-				theStats.AddDownDataOverheadOther(uRawSize);
-				if (size < 16) break;                       // streamKey(16) [+ viewerHash(16) optional]
-				CSafeMemFile data(packet, size);
-				uchar streamKey[16];
-				data.ReadHash16(streamKey);
-				CLiveBuddyRelay::Instance().OnRelayReq(client, streamKey);
-			}
+			theStats.AddDownDataOverheadOther(uRawSize);
 			break;
 		case OP_LIVE_REQUEST:
 			{

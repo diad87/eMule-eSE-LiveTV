@@ -1095,7 +1095,6 @@
     <ClCompile Include="FirewallProberV6.cpp" />
     <ClCompile Include="KadKeepalive.cpp" />
     <ClCompile Include="HolePunchCookie.cpp" />
-    <ClCompile Include="LiveBuddyRelay.cpp" />
     <ClCompile Include="LiveStreamDlg.cpp" />
     <ClCompile Include="LiveStreamDlgUI.cpp" />
     <ClCompile Include="LiveStreamHandlers.cpp" />
@@ -1563,7 +1562,6 @@
     <ClInclude Include="KadKeepalive.h" />
     <ClInclude Include="HolePunchCookie.h" />
     <ClInclude Include="HolePunchCookieCore.h" />
-    <ClInclude Include="LiveBuddyRelay.h" />
     <ClInclude Include="LivePackets.h" />
     <ClInclude Include="LiveProtocol.h" />
     <ClInclude Include="LiveBroadcastSession.h" />

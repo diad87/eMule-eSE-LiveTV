@@ -478,9 +478,6 @@ void RefreshEseV9PreviewCaps()
         if (CPreferences::GetUtpHolePunchEnabled()
             && CPreferences::GetEseKad3Rendezvous())
             netlab |= static_cast<LONG>(ESE_CAP_HOLEPUNCH_RDV);
-        if (CPreferences::IsEseNetLabContributionActive()
-            && CPreferences::GetEseRelayAccept())
-            netlab |= static_cast<LONG>(ESE_CAP_LIVE_RELAY);
         ::InterlockedOr(caps, netlab);
     }
 

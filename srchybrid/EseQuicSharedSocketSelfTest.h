@@ -4,6 +4,8 @@
 // identity. Only the isolated loopback peer uses an ephemeral signer.
 #include <afxpriv.h>
 #include <chrono>
+#include <deque>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include "ClientUDPSocket.h"
@@ -26,6 +28,7 @@
 #include "ClientCredits.h"
 #include "cryptopp/osrng.h"
 #include "cryptopp/filters.h"
+#include "cryptopp/sha.h"
 #include "DirectReachabilityManager.h"
 #include "EseKad6ServiceCapabilities.h"
 #include "EseQuicDownloadConsumer.h"
@@ -3383,6 +3386,187 @@ inline void RunLegacyUtpStart(CDirectReachabilityManager& manager,uint16 fixture
         !manager.ResolveDirectSubscriber(token) && !client->socket && theApp.clientlist->IsValidClient(client.get()),"owned uTP retirement preserves original");
 }
 
+// Supplement the small fallback regression only in an explicitly selected run.
+// The peer serves standard eD2K frames on the real authenticated TCP socket.
+inline void RunClassicTcpFallbackF1(CDirectReachabilityManager& manager,CUpDownClient& client,SOCKET remote,
+    reach::DirectHandle handle,const std::function<void()>& pump) {
+    constexpr uint32 fileBytes=1u<<30;
+    constexpr uint16 partCount=(fileBytes+PARTSIZE-1)/PARTSIZE;
+    static_assert(PARTSIZE%256==0,"all full parts use the same test pattern");
+    std::vector<BYTE> pattern(PARTSIZE);
+    for(size_t i=0;i<pattern.size();++i) pattern[i]=static_cast<BYTE>(i);
+    std::array<BYTE,16> fullHash{},lastHash{},hash{};
+    Require(CKnownFile::CreateHash(pattern.data(),PARTSIZE,fullHash.data()) &&
+        CKnownFile::CreateHash(pattern.data(),fileBytes%PARTSIZE,lastHash.data()),"TCP F1 deterministic part digests");
+    std::array<BYTE,16*partCount> partHashes{};
+    for(uint16 i=0;i<partCount;++i) {
+        const auto& part=i+1==partCount?lastHash:fullHash;
+        memcpy(partHashes.data()+16*i,part.data(),16);
+    }
+    Require(CKnownFile::CreateHash(partHashes.data(),static_cast<UINT>(partHashes.size()),hash.data()),"TCP F1 link MD4");
+    CString fileId;
+    for(const auto b:hash) fileId.AppendFormat(_T("%02X"),b);
+    constexpr LPCTSTR fileName=_T("quic-tcp-fallback-f1.bin");
+    CString link;
+    link.Format(_T("ed2k://|file|%s|%u|%s|/"),fileName,fileBytes,(LPCTSTR)fileId);
+    auto file=std::make_unique<CPartFile>(link);
+    Require(file->GetFileSize()==fileBytes && file->GetPartCount()==partCount &&
+        (file->GetStatus()==PS_READY || file->GetStatus()==PS_EMPTY),"TCP F1 real PartFile ready");
+    theApp.downloadqueue->AddDownload(file.get(),false);
+    struct Cleanup {
+        CUpDownClient& client; std::unique_ptr<CPartFile>& file;
+        ~Cleanup() {
+            client.ClearDownloadBlockRequests();
+            client.SetRequestFile(nullptr);
+            client.SetDownloadState(DS_NONE);
+            if(file->GetStatus()==PS_COMPLETING || file->GetStatus()==PS_COMPLETE) { file.release(); return; }
+            theApp.emuledlg->transferwnd->GetDownloadList()->RemoveFile(file.get());
+            theApp.downloadqueue->RemoveFile(file.get());
+            if(file->m_iWrites>0 || file->IsPartHashPending()) file.release();
+        }
+    } cleanup{client,file};
+    client.SetRequestFile(file.get());
+    client.SetDownloadState(DS_ONQUEUE);
+    client.SendFileRequest();
+
+    struct Range { uint32 next,end; };
+    std::deque<Range> pending;
+    std::set<std::pair<uint32,uint32>> requests;
+    std::deque<std::vector<char>> output;
+    size_t sent=0;
+    unsigned names=0,statuses=0,hashsets=0,slots=0,hashCallbacks=0;
+    uint64 served=0;
+    bool completed=false;
+    Ed2kFramer framer(manager.DirectBuffers());
+    auto queue=[&](Packet& packet) {
+        Require(output.size()<16,"TCP F1 bounded wire queue");
+        const auto* bytes=packet.GetPacket();
+        output.emplace_back(bytes,bytes+packet.GetRealPacketSize());
+    };
+    auto request=[&](const Ed2kFramer& frame) {
+        if(frame.Header()[0]!=OP_EDONKEYPROT) return;
+        const auto opcode=frame.Header()[5];
+        if(opcode!=OP_REQUESTFILENAME && opcode!=OP_SETREQFILEID && opcode!=OP_HASHSETREQUEST &&
+            opcode!=OP_STARTUPLOADREQ && opcode!=OP_REQUESTPARTS) return;
+        const auto bytes=frame.Payload();
+        Require(bytes.size>=16 && !memcmp(bytes.data,hash.data(),16),"TCP F1 filenames and blocks use the link hash");
+        if(opcode==OP_REQUESTFILENAME) {
+            Require(++names==1,"TCP F1 requested one filename");
+            CSafeMemFile answer(64);
+            answer.WriteHash16(hash.data());
+            answer.WriteString(fileName,client.GetUnicodeSupport());
+            Packet packet(answer,OP_EDONKEYPROT,OP_REQFILENAMEANSWER);
+            queue(packet);
+        } else if(opcode==OP_SETREQFILEID) {
+            Require(++statuses==1,"TCP F1 requested one status");
+            CSafeMemFile answer(18);
+            answer.WriteHash16(hash.data());
+            answer.WriteUInt16(0); // Complete source in legacy eD2K.
+            Packet packet(answer,OP_EDONKEYPROT,OP_FILESTATUS);
+            queue(packet);
+        } else if(opcode==OP_HASHSETREQUEST) {
+            Require(++hashsets==1 && statuses==1,"TCP F1 requested the hashset after status");
+            CSafeMemFile answer(18+static_cast<UINT>(partHashes.size()));
+            answer.WriteHash16(hash.data());
+            answer.WriteUInt16(partCount);
+            answer.Write(partHashes.data(),static_cast<UINT>(partHashes.size()));
+            Packet packet(answer,OP_EDONKEYPROT,OP_HASHSETANSWER);
+            queue(packet);
+        } else if(opcode==OP_STARTUPLOADREQ) {
+            Require(++slots==1 && hashsets==1,"TCP F1 one slot after hashset");
+            Packet packet(OP_ACCEPTUPLOADREQ,0,OP_EDONKEYPROT);
+            queue(packet);
+        } else {
+            Require(slots==1 && bytes.size==40,"TCP F1 request framing and one slot");
+            CSafeMemFile block(const_cast<BYTE*>(bytes.data+16),24);
+            std::array<uint32,3> starts{},ends{};
+            for(auto& start:starts) start=block.ReadUInt32();
+            for(auto& end:ends) end=block.ReadUInt32();
+            for(size_t i=0;i<ends.size() && ends[i];++i) {
+                Require(starts[i]<ends[i] && ends[i]<=fileBytes && ends[i]-starts[i]<=EMBLOCKSIZE*3 &&
+                    pending.size()<36 && requests.size()<16384,"TCP F1 bounded real range request");
+                if(requests.emplace(starts[i],ends[i]).second) pending.push_back({starts[i],ends[i]});
+            }
+        }
+    };
+    const auto deadline=Now()+240000;
+    auto nextProgress=Now()+10000;
+    while(Now()<deadline && !completed) {
+        pump();
+        Require(client.socket && client.socket->HasAuthenticatedDirectConnection(),"TCP F1 retains the authenticated fallback");
+        client.socket->SendControlData(64*1024,0);
+        std::array<BYTE,4096> bytes{};
+        const int read=recv(remote,reinterpret_cast<char*>(bytes.data()),static_cast<int>(bytes.size()),0);
+        Require(read>0 || (read==SOCKET_ERROR && WSAGetLastError()==WSAEWOULDBLOCK),"TCP F1 peer read");
+        for(int offset=0;offset<read;) {
+            size_t consumed=0;
+            const auto status=framer.Feed({bytes.data()+offset,static_cast<size_t>(read-offset)},consumed);
+            Require(consumed && (status==Ed2kFrameStatus::NeedMore || status==Ed2kFrameStatus::Frame),"TCP F1 peer frame");
+            offset+=static_cast<int>(consumed);
+            if(status==Ed2kFrameStatus::Frame) { request(framer); framer.Next(); }
+        }
+        for(unsigned step=0;step<32 && (!output.empty() || !pending.empty());++step) {
+            if(output.empty()) {
+                auto& range=pending.front();
+                const auto within=uint32(range.next%PARTSIZE);
+                const auto count=(std::min)({32768u,range.end-range.next,uint32(PARTSIZE)-within});
+                CSafeMemFile data(24+count);
+                data.WriteHash16(hash.data());
+                data.WriteUInt32(range.next);
+                data.WriteUInt32(range.next+count);
+                data.Write(pattern.data()+within,count);
+                Packet packet(data,OP_EDONKEYPROT,OP_SENDINGPART);
+                queue(packet);
+                range.next+=count;
+                served+=count;
+                if(range.next==range.end) pending.pop_front();
+            }
+            auto& wire=output.front();
+            const auto written=send(remote,wire.data()+sent,static_cast<int>(wire.size()-sent),0);
+            if(written==SOCKET_ERROR && WSAGetLastError()==WSAEWOULDBLOCK) break;
+            Require(written>0,"TCP F1 peer send");
+            sent+=written;
+            if(sent==wire.size()) { sent=0; output.pop_front(); }
+        }
+        if(file->GetStatus()!=PS_COMPLETING && file->GetStatus()!=PS_COMPLETE) file->FlushBuffer();
+        MSG message{};
+        for(const auto id:{TM_PARTHASHED,TM_FINISHEDHASHING,TM_FILECOMPLETED}) {
+            while(PeekMessage(&message,theApp.emuledlg->m_hWnd,id,id,PM_REMOVE)) {
+                if(reinterpret_cast<CPartFile*>(message.lParam)==file.get()) {
+                    if(id==TM_PARTHASHED) ++hashCallbacks;
+                    if(id==TM_FILECOMPLETED) completed=true;
+                }
+                DispatchMessage(&message);
+            }
+        }
+        manager.TickDirectConnections();
+        if(Now()>=nextProgress) {
+            Log(_T("TCP_FALLBACK_F1 progress: served=%I64u written=%I64u hashes=%u requests=%u"),
+                served,file->GetCompletedSize(),hashCallbacks,static_cast<unsigned>(requests.size()));
+            nextProgress=Now()+10000;
+        }
+    }
+    const auto final=manager.DirectConnections().Snapshot(handle);
+    Require(completed && file->GetStatus()==PS_COMPLETE && hashCallbacks>=partCount &&
+        served==fileBytes && final && final->fallback_count==1 && final->epoch==1 &&
+        final->useful_bytes==fileBytes && final->transfer_verified,"TCP F1 exact useful bytes, all parts verified, one fallback");
+    CFile disk(file->GetFilePath(),CFile::modeRead|CFile::shareDenyNone);
+    Require(disk.GetLength()==fileBytes,"TCP F1 exact file length");
+    CryptoPP::SHA256 sha;
+    std::array<BYTE,64*1024> data{};
+    for(uint32 bytes=0;bytes<fileBytes;bytes+=static_cast<uint32>(data.size())) {
+        Require(disk.Read(data.data(),static_cast<UINT>(data.size()))==data.size(),"TCP F1 completed file read");
+        sha.Update(data.data(),data.size());
+    }
+    std::array<BYTE,CryptoPP::SHA256::DIGESTSIZE> digest{};
+    sha.Final(digest.data());
+    CString digestText;
+    for(const auto b:digest) digestText.AppendFormat(_T("%02X"),b);
+    Require(digestText==_T("2C06ADE942EE3F17A048DD1064B2FAB046A4BB95386D8BB41B68DC6711AC2AF3"),"TCP F1 independent SHA-256");
+    Log(_T("TCP_FALLBACK_F1 PASS bytes=%u parts=%u slots=%u fallbacks=%u sha256=%s"),fileBytes,partCount,slots,
+        final->fallback_count,(LPCTSTR)digestText);
+}
+
 inline void RunClassicTcpObservation(CDirectReachabilityManager& manager,unsigned variant=0,uint16 fallbackUdpPort=0) {
     const bool initialFallback=fallbackUdpPort!=0;
     Require(variant<=3 && (!initialFallback || variant==0) && theApp.m_bReachBindingSelfTest &&
@@ -3634,6 +3818,13 @@ inline void RunClassicTcpObservation(CDirectReachabilityManager& manager,unsigne
         client->NativeDirectExpectedNode()==quicIdentity->pub && socket->HasAuthenticatedDirectConnection() &&
         client->HasPassedSecureIdent(false) && !ready->useful_bytes && !ready->transfer_verified,
         "fallback TCP authenticated once before file data");
+    TCHAR f1[2]={};
+    if(GetEnvironmentVariable(_T("ESE_TCP_FALLBACK_F1"),f1,_countof(f1))==1 && f1[0]==_T('1')) {
+        RunClassicTcpFallbackF1(manager,*client,remote,handle,pump);
+        Log(_T("TCP_FALLBACK_F1 timing: fallback_ms=%I64u ready_ms=%I64u dropped=%u initials=%u"),
+            tcpStarted-started,readyAt-started,dropped,initials);
+        return;
+    }
     RunLegacyPartialFile(manager,*client,remote,handle,pump,false,{},false,{},{},true);
     const auto complete=manager.DirectConnections().Snapshot(handle);
     Require(complete && complete->fallback_count==1 && complete->winner==route.id && complete->epoch==1 &&

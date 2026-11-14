@@ -22,11 +22,15 @@ Windows to assign an unused loopback port, printed after the listener is ready.
 ```
 
 The current reference implements the authenticated handshake, eD2K login,
-server identity, empty server list, ping, lease renewal, atomic publication
-and disconnect. The visible publication and request cache are session-local.
-Source hints and search over multiple sessions, cross-session replay,
-a classic plaintext listener, QUIC and RendezvousV2 remain pending.
-eMule does not connect to this listener yet.
+server identity, empty server list, ping, lease renewal, atomic publication,
+source hints and disconnect. It accepts up to sixteen simultaneous sockets
+and retains publication state for up to sixteen primary identities per server
+epoch. Only a current, authenticated primary makes its committed records
+visible to source queries. Auxiliary sessions can request hints.
+
+The request cache remains session-local. Unicode search, cross-session
+request replay, a classic plaintext listener, QUIC and RendezvousV2 remain
+pending. eMule does not connect to this listener yet.
 
 The independent integration test requires a Python environment with
 `pyOpenSSL`. Set `ESE_SERVER_INTEROP_PYTHON` to its Python executable to add

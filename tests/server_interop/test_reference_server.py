@@ -73,10 +73,12 @@ def write_identity(directory):
     return files, certificate.public_bytes(serialization.Encoding.PEM), server_key.public_key()
 
 
-def authenticate(connection, server_pub, mode=0, generation_expected=1):
-    client_key = ed25519.Ed25519PrivateKey.generate()
+def authenticate(connection, server_pub, mode=0, generation_expected=1, client_key=None):
+    client_key = client_key or ed25519.Ed25519PrivateKey.generate()
     user_hash = bytes([0x37] * 16)
-    client_hello = struct.pack("!32s32s16sII16sB", bytes(range(32)), client_key.public_key().public_bytes_raw(),
+    client_node = client_key.public_key().public_bytes_raw()
+    nonce = bytes(byte ^ generation_expected for byte in range(32))
+    client_hello = struct.pack("!32s32s16sII16sB", nonce, client_node,
                                user_hash, 0x80000011, 65536, bytes([0x4A] * 16), mode)
     wire = frame(0x01, client_hello)
     for offset in range(0, len(wire), 7):
@@ -94,7 +96,7 @@ def authenticate(connection, server_pub, mode=0, generation_expected=1):
     server_pub.verify(proof, transcript + b"\x02")
     connection.sendall(frame(0x04, client_key.sign(transcript + b"\x01")))
     require(read_frame(connection) == (0x05, 0, bytes(16), struct.pack("!I", 600)), "ordered AUTH_OK")
-    return user_hash
+    return user_hash, client_node
 
 
 def operation(connection, request, opcode, body=b""):
@@ -148,7 +150,6 @@ def exercise_operations(connection, user_hash, port):
     require(read_frame(connection) == (0xFF, 3, unknown, struct.pack("!HI", 2, 0))
             and read_frame(connection) == (0xFD, 3, ping, nonce), "unknown request is recoverable and does not desynchronize")
     exercise_publication(connection)
-    disconnect_client(connection)
 
 
 def disconnect_client(connection):
@@ -191,7 +192,6 @@ def exercise_publication(connection):
     publish_operation(connection, 32, 0x22, struct.pack("!Q32s", 2, digest), 0xFF, struct.pack("!HI", 13, 0))
     publish_operation(connection, 33, 0x23, b"", 0x24, proposed)
 
-
 def connect_reference(port, files, expected_certificate, callback):
     context = SSL.Context(SSL.TLS_CLIENT_METHOD)
     context.set_min_proto_version(SSL.TLS1_3_VERSION)
@@ -217,28 +217,48 @@ def main():
     require(len(sys.argv) == 2, "usage: test_reference_server.py <ese-server-ref.exe>")
     with tempfile.TemporaryDirectory(prefix="ese-server-ref-") as scratch:
         files, ca, server_pub = write_identity(pathlib.Path(scratch))
-        child = subprocess.Popen([sys.argv[1], "0", *map(str, files), "2"],
+        child = subprocess.Popen([sys.argv[1], "0", *map(str, files), "3"],
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         try:
             match = re.fullmatch(r"LISTENING (\d+)\n", child.stdout.readline())
             require(match is not None, "reference server ready on an owned port")
             port = int(match.group(1))
-            connect_reference(port, files, ca,
-                              lambda connection: exercise_operations(connection, authenticate(connection, server_pub), port))
+            primary_key = ed25519.Ed25519PrivateKey.generate()
 
-            def exercise_auxiliary(connection):
-                user_hash = authenticate(connection, server_pub, mode=1, generation_expected=2)
-                request = bytes([1] * 16)
-                require(len(operation(connection, request, 1, login_command(user_hash))) == 2,
-                        "auxiliary performs restricted authenticated login")
-                publish_operation(connection, 21, 0x23, b"", 0xFF, struct.pack("!HI", 13, 0))
-                disconnect_client(connection)
+            def exercise_primary(primary):
+                user_hash, primary_node = authenticate(primary, server_pub, client_key=primary_key)
+                exercise_operations(primary, user_hash, port)
 
-            connect_reference(port, files, ca, exercise_auxiliary)
+                def exercise_auxiliary(auxiliary):
+                    auxiliary_hash, _ = authenticate(auxiliary, server_pub, mode=1, generation_expected=2)
+                    request = bytes([1] * 16)
+                    require(len(operation(auxiliary, request, 1, login_command(auxiliary_hash))) == 2,
+                            "auxiliary performs restricted authenticated login")
+                    publish_operation(auxiliary, 21, 0x23, b"", 0xFF, struct.pack("!HI", 13, 0))
+                    key = bytes([0xA1] * 16) + struct.pack("!Q", 4294967400)
+                    publish_operation(auxiliary, 22, 0x14, key, 0x15, b"\x00\x01" + primary_node + user_hash)
+
+                    def replace_primary(replacement):
+                        replacement_hash, replacement_node = authenticate(
+                            replacement, server_pub, generation_expected=3, client_key=primary_key)
+                        require(replacement_node == primary_node and replacement_hash == user_hash
+                                and len(operation(replacement, request, 1, login_command(replacement_hash))) == 2,
+                                "same verified node reconnects with new primary generation")
+                        publish_operation(primary, 24, 0x23, b"", 0xFF, struct.pack("!HI", 13, 0))
+                        publish_operation(auxiliary, 23, 0x14, key, 0x15, b"\x00\x01" + primary_node + user_hash)
+                        disconnect_client(replacement)
+                        publish_operation(auxiliary, 24, 0x14, key, 0x15, b"\x00\x00")
+
+                    connect_reference(port, files, ca, replace_primary)
+                    disconnect_client(auxiliary)
+
+                connect_reference(port, files, ca, exercise_auxiliary)
+
+            connect_reference(port, files, ca, exercise_primary)
             stdout, stderr = child.communicate(timeout=5)
-            require(child.returncode == 0 and stdout.strip() == "LOGIN_SESSIONS 2" and not stderr,
-                    "two authenticated sessions reported by reference server")
+            require(child.returncode == 0 and stdout.strip() == "LOGIN_SESSIONS 3" and not stderr,
+                    "three authenticated sessions reported by reference server")
         finally:
             if child.poll() is None:
                 child.kill()

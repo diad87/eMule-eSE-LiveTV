@@ -1,6 +1,6 @@
 #pragma once
 #include "EseServerAuth.h"
-#include "PublicationStore.h"
+#include "ServerIndex.h"
 #include <vector>
 
 namespace ese::server {
@@ -18,8 +18,11 @@ struct ServerEndpoint {
 // Takes no pointers into caller-owned frames after Handle returns.
 class ServerSession {
 public:
-    ServerSession(const ClientHello& authenticatedClient,ServerEndpoint endpoint,const Bytes32& emptyDigest,
-        std::uint64_t now);
+    ServerSession(const ClientHello& authenticatedClient,ServerEndpoint endpoint,ServerIndex&,
+        std::uint64_t generation,std::uint64_t now);
+    ~ServerSession();
+    ServerSession(const ServerSession&) = delete;
+    ServerSession& operator=(const ServerSession&) = delete;
     bool Handle(const FrameView&,AuthCrypto&,std::uint64_t now,Responses& output);
     bool LoggedIn() const noexcept { return loggedIn_; }
     bool Closed() const noexcept { return closed_; }
@@ -38,7 +41,8 @@ private:
     ServerEndpoint endpoint_;
     std::uint64_t lease_ = 0;
     std::vector<Completed> completed_;
-    PublicationStore publication_;
+    ServerIndex& index_;
+    const std::uint64_t generation_;
     bool loggedIn_ = false;
     bool closed_ = false;
 };

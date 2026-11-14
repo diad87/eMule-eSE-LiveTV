@@ -93,11 +93,17 @@ bool ValidateLogin(ByteView input,const Bytes16& expected) noexcept
 }
 }
 
-ServerSession::ServerSession(const ClientHello& authenticatedClient,ServerEndpoint endpoint,const Bytes32& emptyDigest,
-    std::uint64_t now)
-    : client_(authenticatedClient),endpoint_(endpoint),lease_(AddTime(now,LeaseMilliseconds)),publication_(emptyDigest)
+ServerSession::ServerSession(const ClientHello& authenticatedClient,ServerEndpoint endpoint,ServerIndex& index,
+    std::uint64_t generation,std::uint64_t now)
+    : client_(authenticatedClient),endpoint_(endpoint),lease_(AddTime(now,LeaseMilliseconds)),
+      index_(index),generation_(generation)
 {
     completed_.reserve(CacheEntries);
+}
+
+ServerSession::~ServerSession()
+{
+    if(loggedIn_ && client_.mode==SessionMode::Primary) index_.Deactivate(client_.node,generation_);
 }
 
 bool ServerSession::Handle(const FrameView& frame,AuthCrypto& crypto,std::uint64_t now,Responses& output)
@@ -108,6 +114,12 @@ bool ServerSession::Handle(const FrameView& frame,AuthCrypto& crypto,std::uint64
     Responses pending;
     if(now>=lease_) {
         if(!Error(frame.header.request,kEseWireServerExpired,pending)) return false;
+        output.swap(pending);
+        closed_=true;
+        return true;
+    }
+    if(loggedIn_ && client_.mode==SessionMode::Primary && !index_.CurrentPrimary(client_.node,generation_,now)) {
+        if(!Error(frame.header.request,kEseWireServerWrongState,pending)) return false;
         output.swap(pending);
         closed_=true;
         return true;
@@ -139,6 +151,19 @@ bool ServerSession::Handle(const FrameView& frame,AuthCrypto& crypto,std::uint64
         if(!Error(frame.header.request,kEseWireServerUnsupported,pending)) return false;
     } else if(!Dispatch(frame,crypto,now,pending,loggedIn,closed,lease)) return false;
     completed_.push_back({frame.header.request,digest,AddTime(now,CacheMilliseconds),pending});
+    if(loggedIn && !loggedIn_ && client_.mode==SessionMode::Primary) {
+        const auto status=index_.ActivatePrimary(client_,generation_,lease);
+        if(status) {
+            pending.clear();
+            if(!Error(frame.header.request,status,pending)) return false;
+            completed_.back().responses=pending;
+            loggedIn=false;
+        }
+    }
+    if(loggedIn && client_.mode==SessionMode::Primary) {
+        if(closed) index_.Deactivate(client_.node,generation_);
+        else if(lease!=lease_) index_.Renew(client_.node,generation_,lease);
+    }
     loggedIn_=loggedIn;
     closed_=closed;
     lease_=lease;
@@ -163,29 +188,29 @@ bool ServerSession::Dispatch(const FrameView& frame,AuthCrypto& crypto,std::uint
         lease=AddTime(now,LeaseMilliseconds);
         return Reply(request,kEseWireServerSessionRenew,{payload.data(),payload.size()},output);
     }
+    if(frame.header.type==kEseWireServerSourceHintsGet) {
+        std::array<std::uint8_t,24> key{};
+        if(frame.payload.size!=key.size()) return Error(request,kEseWireServerMalformed,output);
+        std::copy_n(frame.payload.data,key.size(),key.begin());
+        const auto hints=index_.Hints(client_.node,client_.mode==SessionMode::Primary ? generation_ : 0, key,now);
+        if(!hints) return Error(request,kEseWireServerWrongState,output);
+        return Reply(request,kEseWireServerSourceHints,{hints->data(),hints->size()},output);
+    }
     if(frame.header.type>=kEseWireServerPubBegin && frame.header.type<=kEseWireServerPubStateGet) {
         if(client_.mode==SessionMode::Auxiliary) return Error(request,kEseWireServerWrongState,output);
-        publication_.Expire(now);
         if(frame.header.type==kEseWireServerPubStateGet) {
-            if(frame.payload.size) return Error(request,kEseWireServerMalformed,output);
-            const auto bytes=EncodePublishState(publication_.State());
+            PublishState visible;
+            const auto status=index_.Publish(client_.node,generation_,frame.header.type,frame.payload,crypto,now,visible);
+            if(status) return Error(request,status,output);
+            const auto bytes=EncodePublishState(visible);
             return Reply(request,kEseWireServerPubState,{bytes.data(),bytes.size()},output);
         }
         // Prepare the success response before mutating staging or the visible
         // publication, so an allocation failure cannot acknowledge lost work.
         const std::uint8_t ack[2]={};
         if(!Reply(request,kEseWireServerAck,{ack,sizeof ack},output)) return false;
-        auto status=kEseWireServerMalformed;
-        if(frame.header.type==kEseWireServerPubBegin) {
-            PublishState desired;
-            if(DecodePublishState(frame.payload,desired)) status=publication_.Begin(desired,now);
-        } else if(frame.header.type==kEseWireServerPubChunk) {
-            status=publication_.Chunk(frame.payload,now);
-        } else {
-            std::uint64_t revision=0;
-            Bytes32 digest{};
-            if(DecodePublishCommit(frame.payload,revision,digest)) status=publication_.Commit(revision,digest,crypto,now);
-        }
+        PublishState ignored;
+        const auto status=index_.Publish(client_.node,generation_,frame.header.type,frame.payload,crypto,now,ignored);
         if(!status) return true;
         output.clear();
         return Error(request,status,output);

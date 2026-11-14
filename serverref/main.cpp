@@ -7,11 +7,15 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <atomic>
+#include <thread>
+#include <utility>
 
 namespace {
 using namespace ese::server;
@@ -42,8 +46,10 @@ struct Runtime {
 
 struct Socket {
     explicit Socket(SOCKET raw) : value(raw) { Require(value!=INVALID_SOCKET,"open or accept a loopback socket"); }
-    ~Socket() { closesocket(value); }
-    const SOCKET value;
+    Socket(Socket&& other) noexcept : value(std::exchange(other.value,INVALID_SOCKET)) {}
+    Socket(const Socket&) = delete;
+    ~Socket() { if(value!=INVALID_SOCKET) closesocket(value); }
+    SOCKET value;
 };
 
 class ServerIdentity {
@@ -174,7 +180,7 @@ bool AuthenticationFailure(TlsChannel& transport)
 }
 
 bool Serve(const Socket& peer,const ServerIdentity& identity,const Bytes16& epoch,std::uint64_t generation,
-    const ServerEndpoint& endpoint)
+    const ServerEndpoint& endpoint,ServerIndex& index)
 {
     TlsChannel transport(peer,identity.credentials);
     if(!transport.Handshake()) return false;
@@ -210,11 +216,9 @@ bool Serve(const Socket& peer,const ServerIdentity& identity,const Bytes16& epoc
     }
     const auto* client=auth.RemoteClient();
     if(!client) return false;
-    Bytes32 emptyDigest{};
-    if(!crypto.Hash({},emptyDigest)) return false;
-    ServerSession session(*client,endpoint,emptyDigest,Now());
+    ServerSession session(*client,endpoint,index,generation,Now());
     while(!session.Closed()) {
-        transport.SetDeadline(session.Deadline());
+        transport.SetDeadline((std::min)(session.Deadline(),Now()+30000));
         const auto frame=transport.Next();
         if(!frame) return session.LoggedIn();
         Responses responses;
@@ -226,6 +230,60 @@ bool Serve(const Socket& peer,const ServerIdentity& identity,const Bytes16& epoc
     gnutls_bye(transport.Session(),GNUTLS_SHUT_WR);
     return session.LoggedIn();
 }
+
+class Connections {
+public:
+    explicit Connections(ServerIndex& index) : index_(index), maintenance_([this] { Maintain(); }) {}
+    ~Connections()
+    {
+        for(auto& slot:slots_) slot.Join();
+        {
+            const std::lock_guard<std::mutex> lock(maintenanceMutex_);
+            stopping_=true;
+        }
+        maintenanceWake_.notify_one();
+        maintenance_.join();
+    }
+    void Add(const Socket& listener,const ServerIdentity& identity,const Bytes16& epoch,
+        std::uint64_t generation,const ServerEndpoint& endpoint,ServerIndex& index)
+    {
+        auto& slot=slots_[(generation-1)%slots_.size()];
+        slot.Join();
+        Socket accepted(accept(listener.value,nullptr,nullptr));
+        slot.thread=std::thread([&,generation,peer=std::move(accepted)] {
+            try {
+                if(Serve(peer,identity,epoch,generation,endpoint,index)) ++completed_;
+            } catch(const std::exception&) {
+                // Malformed/failed individual sessions are disconnected. Do
+                // not log remote data or private material on this path.
+            }
+        });
+    }
+    unsigned Complete()
+    {
+        for(auto& slot:slots_) slot.Join();
+        return completed_.load();
+    }
+private:
+    void Maintain()
+    {
+        std::unique_lock<std::mutex> lock(maintenanceMutex_);
+        while(!maintenanceWake_.wait_for(lock,std::chrono::seconds(1),[this] { return stopping_; }))
+            index_.Expire(Now());
+    }
+
+    struct Slot {
+        std::thread thread;
+        void Join() { if(thread.joinable()) thread.join(); }
+    };
+    std::array<Slot,16> slots_{};
+    std::atomic<unsigned> completed_{0};
+    ServerIndex& index_;
+    std::mutex maintenanceMutex_;
+    std::condition_variable maintenanceWake_;
+    bool stopping_=false;
+    std::thread maintenance_;
+};
 
 unsigned ParseNumber(const char* argument,unsigned maximum)
 {
@@ -272,17 +330,21 @@ int main(int argc,char** argv)
         Require(gnutls_hash_fast(GNUTLS_DIG_SHA256,identity.node.data(),identity.node.size(),digest.data())==0,
             "derive public server identity");
         std::copy_n(digest.begin(),endpoint.identity.size(),endpoint.identity.begin());
+        Bytes32 emptyDigest{};
+        ChannelCrypto hash(nullptr,nullptr);
+        Require(hash.Hash({},emptyDigest),"derive empty publication digest");
+        ServerIndex index(emptyDigest);
+        Connections connections(index);
         std::cout<<"LISTENING "<<endpoint.port<<std::endl;
-        unsigned completed=0;
         for(unsigned attempt=0;attempt<connectionCount;++attempt) {
             fd_set incoming;
             FD_ZERO(&incoming);
             FD_SET(listener.value,&incoming);
             timeval wait{15,0};
             if(select(0,&incoming,nullptr,nullptr,&wait)<=0) break;
-            Socket peer(accept(listener.value,nullptr,nullptr));
-            if(Serve(peer,identity,epoch,std::uint64_t{attempt}+1,endpoint)) ++completed;
+            connections.Add(listener,identity,epoch,std::uint64_t{attempt}+1,endpoint,index);
         }
+        const auto completed=connections.Complete();
         std::cout<<"LOGIN_SESSIONS "<<completed<<std::endl;
         return completed ? 0 : 1;
     } catch(const std::exception& error) {

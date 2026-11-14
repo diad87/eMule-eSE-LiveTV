@@ -22,6 +22,18 @@ bool SameState(const PublishState& left,const PublishState& right) noexcept
 
 PublicationStore::PublicationStore(const Bytes32& emptyDigest) : visible_{0,0,emptyDigest} {}
 
+bool PublicationStore::Contains(const std::array<std::uint8_t,24>& key) const noexcept
+{
+    for(std::size_t offset=0;offset<canonical_.size();) {
+        const auto* record=canonical_.data()+offset;
+        const int compare=std::memcmp(record,key.data(),key.size());
+        if(compare>=0) return compare==0;
+        const auto nameSize=(std::size_t{record[24]}<<8)|record[25];
+        offset+=27+nameSize;
+    }
+    return false;
+}
+
 void PublicationStore::Expire(std::uint64_t now) noexcept
 {
     if(pending_ && now>=pending_->until) pending_.reset();

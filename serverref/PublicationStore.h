@@ -6,6 +6,8 @@ class PublicationStore {
 public:
     explicit PublicationStore(const Bytes32& emptyDigest);
     const PublishState& State() const noexcept { return visible_; }
+    bool Contains(const std::array<std::uint8_t,24>& key) const noexcept;
+    void ClearStaging() noexcept { pending_.reset(); }
     void Expire(std::uint64_t now) noexcept;
     std::uint16_t Begin(const PublishState& desired,std::uint64_t now);
     std::uint16_t Chunk(ByteView payload,std::uint64_t now);

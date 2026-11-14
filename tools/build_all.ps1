@@ -381,10 +381,10 @@ Stage 'package-smoke' {
     }
     Write-Host "Package hashes: $verifiedHashes verified"
     & (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot -RuntimeDir $packageDir
-    if (-not $layout.Dashboard) {
-        & (Join-Path $RepoRoot 'tools\test_win32_release_package.ps1') -Archive $layout.Archive
-        return
+    if ($requiresQuic) {
+        & (Join-Path $RepoRoot 'tools\test_native_release_package.ps1') -Archive $layout.Archive -Architecture $Architecture
     }
+    if (-not $layout.Dashboard) { return }
     $oldTestMode = $env:ESE_TEST_MODE
     $oldPort = $env:ESE_PORT
     $serverProcess = $null

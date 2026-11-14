@@ -391,6 +391,7 @@ test('release dashboard is loopback-only and legacy updates fail closed', () => 
   assert.match(buildAll, /Assert-OfficialHead -Context "after \$Name"/);
   assert.match(buildAll, /Development pipeline complete \(NOT RELEASABLE\)/);
   assert.match(buildAll, /\$dashboardScript = if \(\$requiresQuic\) \{ 'build:release' \} else \{ 'build' \}/);
+  assert.match(buildAll, /if \(\$requiresQuic\) \{\s*& \(Join-Path \$RepoRoot 'tools\\test_native_release_package\.ps1'\) -Archive \$layout\.Archive -Architecture \$Architecture\s*\}\s*if \(-not \$layout\.Dashboard\) \{ return \}/);
   assert.match(buildAll, /Get-NetTCPConnection[\s\S]{0,500}127\.0\.0\.1/);
   assert.match(buildAll, /\[ValidateSet\('x64',\s*'Win32'\)\]\[string\]\$Architecture\s*=\s*'x64'/);
   assert.match(buildAll, /srchybrid\\lang\\\$Architecture\\Dynamic/);

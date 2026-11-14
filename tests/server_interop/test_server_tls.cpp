@@ -319,18 +319,31 @@ void ExerciseApplicationIdentity(gnutls_session_t client,gnutls_session_t server
 
 Handshake Connect(const TestCertificate& serverIdentity,const TlsClientPolicy& policy,
     const Bytes32& transcriptHash,const char* alternativeAlpn=nullptr,bool tls12Only=false,bool trustCertificate=false,
-    AuthVectors* auth=nullptr)
+    AuthVectors* auth=nullptr,bool ipv6=false)
 {
-    Socket listener(socket(AF_INET,SOCK_STREAM,IPPROTO_TCP));
-    sockaddr_in address{};
-    address.sin_family=AF_INET;
-    address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
-    int addressSize=sizeof address;
-    Check(bind(listener.value,reinterpret_cast<sockaddr*>(&address),sizeof address)==0 &&
-        listen(listener.value,1)==0 && getsockname(listener.value,reinterpret_cast<sockaddr*>(&address),&addressSize)==0 &&
-        address.sin_addr.s_addr==htonl(INADDR_LOOPBACK) && address.sin_port!=0,"bind owned IPv4 loopback endpoint");
-    Socket clientSocket(socket(AF_INET,SOCK_STREAM,IPPROTO_TCP));
-    Check(connect(clientSocket.value,reinterpret_cast<const sockaddr*>(&address),sizeof address)==0,"connect owned loopback endpoint");
+    const auto family=ipv6 ? AF_INET6 : AF_INET;
+    Socket listener(socket(family,SOCK_STREAM,IPPROTO_TCP));
+    sockaddr_storage storage{};
+    auto* address=reinterpret_cast<sockaddr*>(&storage);
+    int addressSize=0;
+    if(ipv6) {
+        auto& ipv6Address=*reinterpret_cast<sockaddr_in6*>(&storage);
+        ipv6Address.sin6_family=AF_INET6;
+        ipv6Address.sin6_addr=in6addr_loopback;
+        addressSize=sizeof ipv6Address;
+        constexpr DWORD yes=1;
+        Check(setsockopt(listener.value,IPPROTO_IPV6,IPV6_V6ONLY,reinterpret_cast<const char*>(&yes),sizeof yes)==0,
+            "native IPv6 without address mapping");
+    } else {
+        auto& ipv4=*reinterpret_cast<sockaddr_in*>(&storage);
+        ipv4.sin_family=AF_INET;
+        ipv4.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+        addressSize=sizeof ipv4;
+    }
+    Check(bind(listener.value,address,addressSize)==0 && listen(listener.value,1)==0 &&
+        getsockname(listener.value,address,&addressSize)==0,"bind owned loopback endpoint");
+    Socket clientSocket(socket(family,SOCK_STREAM,IPPROTO_TCP));
+    Check(connect(clientSocket.value,address,addressSize)==0,"connect owned loopback endpoint");
     Socket serverSocket(accept(listener.value,nullptr,nullptr));
     Credentials clientCerts;
     if(trustCertificate) {
@@ -392,9 +405,13 @@ int main(int argc,char** argv)
             first.clientExporter==first.serverExporter && second.clientExporter==second.serverExporter &&
             second.clientProtocol && second.serverProtocol && first.clientExporter!=second.clientExporter,
             "real TLS 1.3 exporters agree on each channel and differ between connections");
+        Check(Connect(valid,pinned,helloDigest,nullptr,false,false,nullptr,true).clientProtocol,
+            "same explicit localhost SPKI policy works on native IPv6 TCP");
         auto wrong=pinned;
         wrong.spkiSha256[0]^=1;
         Check(Connect(valid,wrong,helloDigest).client<0,"wrong SPKI pin fails");
+        Check(Connect(valid,wrong,helloDigest,nullptr,false,true).client<0,
+            "trusted PKIX certificate cannot override a wrong explicit PIN");
         wrong=pinned;
         wrong.host="wrong.local";
         Check(Connect(valid,wrong,helloDigest).client<0,"wrong certificate hostname fails");

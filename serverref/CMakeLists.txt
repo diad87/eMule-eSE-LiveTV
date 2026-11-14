@@ -94,7 +94,10 @@ if(ESE_QUIC_RELEASE_ROOT)
             add_test(NAME server-reference-login COMMAND "${ESE_SERVER_INTEROP_PYTHON}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/../tests/server_interop/test_reference_server.py"
                 "$<TARGET_FILE:ese-server-ref>")
-            set_tests_properties(server-reference-login PROPERTIES TIMEOUT 30)
+            add_test(NAME server-reference-ipv6 COMMAND "${ESE_SERVER_INTEROP_PYTHON}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/../tests/server_interop/test_reference_server.py"
+                "$<TARGET_FILE:ese-server-ref>" ipv6)
+            set_tests_properties(server-reference-login server-reference-ipv6 PROPERTIES TIMEOUT 30)
         endif()
     endif()
 endif()

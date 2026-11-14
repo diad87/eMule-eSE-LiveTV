@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include "RendezvousListener.h"
+#include "LoopbackSockets.h"
 #include "ServerIndex.h"
 #include "ServerTls.h"
 #include <gnutls/crypto.h>
@@ -65,6 +66,28 @@ bool Body(ByteView payload,std::size_t size) noexcept
     return payload.data && payload.size==size;
 }
 
+std::optional<rdv::Endpoint> ObservedEndpoint(const sockaddr_storage& source,int length) noexcept
+{
+    if(source.ss_family==AF_INET && length==sizeof(sockaddr_in)) {
+        const auto& address=*reinterpret_cast<const sockaddr_in*>(&source);
+        if(address.sin_addr.s_addr==htonl(INADDR_LOOPBACK) && address.sin_port)
+            return rdv::Endpoint{{127,0,0,1},ntohs(address.sin_port),4};
+    }
+    if(source.ss_family==AF_INET6 && length==sizeof(sockaddr_in6)) {
+        const auto& address=*reinterpret_cast<const sockaddr_in6*>(&source);
+        if(IN6_IS_ADDR_LOOPBACK(&address.sin6_addr) && address.sin6_port && !address.sin6_scope_id) {
+            rdv::Endpoint endpoint{};
+            endpoint.family=6;
+            endpoint.address.back()=1;
+            endpoint.port=ntohs(address.sin6_port);
+            return endpoint;
+        }
+    }
+    return std::nullopt;
+}
+
+std::size_t FamilyIndex(std::uint8_t family) noexcept { return family==6 ? 1 : 0; }
+
 class Crypto final : public rdv::Crypto {
 public:
     bool Hmac(const Bytes32& key,ByteView bytes,Bytes32& output) noexcept override
@@ -101,10 +124,10 @@ struct RendezvousListener::Impl {
         rdv::SessionContext context;
         Bytes32 key,node;
         std::uint64_t expiration;
-        std::uint64_t endpointVersion=0;
+        std::array<std::uint64_t,2> endpointVersion{};
         bool primary,pairing,loggedIn=false;
         rdv::Session ledger;
-        std::optional<rdv::Registration> pending;
+        std::array<std::optional<rdv::Registration>,2> pending;
         std::vector<Outgoing> outgoing;
         struct Receipt { RequestId request; Bytes32 digest; std::uint64_t until; };
         std::vector<Receipt> consentReceipts;
@@ -132,35 +155,16 @@ struct RendezvousListener::Impl {
         std::size_t voucher;
     };
 
-    Impl(ServerIndex& owner,std::uint16_t port) : index(owner)
+    Impl(ServerIndex& owner,std::uint16_t port) : index(owner),sockets(SOCK_DGRAM,IPPROTO_UDP,port)
     {
-        socketHandle=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
-        if(socketHandle==INVALID_SOCKET) throw std::runtime_error("open reference RendezvousV2 socket");
-        try {
-            sockaddr_in bindAddress{};
-            bindAddress.sin_family=AF_INET;
-            bindAddress.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
-            bindAddress.sin_port=htons(port);
-            int size=sizeof bindAddress;
-            constexpr BOOL exclusive=TRUE;
-            if(setsockopt(socketHandle,SOL_SOCKET,SO_EXCLUSIVEADDRUSE,reinterpret_cast<const char*>(&exclusive),sizeof exclusive)!=0 ||
-                bind(socketHandle,reinterpret_cast<sockaddr*>(&bindAddress),sizeof bindAddress)!=0 ||
-                getsockname(socketHandle,reinterpret_cast<sockaddr*>(&bindAddress),&size)!=0 ||
-                bindAddress.sin_addr.s_addr!=htonl(INADDR_LOOPBACK) || !bindAddress.sin_port ||
-                !RefreshSecret(Now())) throw std::runtime_error("bind reference loopback UDP listener");
-            listenPort=ntohs(bindAddress.sin_port);
-            worker=std::thread([this] { Run(); });
-        } catch(...) {
-            closesocket(socketHandle);
-            throw;
-        }
+        if(!RefreshSecret(Now())) throw std::runtime_error("initialize RendezvousV2 cookie secret");
+        worker=std::thread([this] { Run(); });
     }
 
     ~Impl()
     {
         stop=true;
         worker.join();
-        closesocket(socketHandle);
     }
 
     Entry* Find(const rdv::SessionContext& context) noexcept
@@ -211,7 +215,8 @@ struct RendezvousListener::Impl {
             if(now>=pair->deadline || now>=voucher.expires) {
                 FailPair(*pair,kEseWireServerExpired);
             } else if(!from || !to || !Eligible(*from,now) || !Eligible(*to,now) ||
-                from->endpointVersion!=pair->sourceVersion || to->endpointVersion!=pair->targetVersion ||
+                from->endpointVersion[FamilyIndex(pair->requesterEndpoint.family)]!=pair->sourceVersion ||
+                to->endpointVersion[FamilyIndex(pair->targetEndpoint.family)]!=pair->targetVersion ||
                 !CurrentEndpoint(*from,pair->requesterEndpoint,now) || !CurrentEndpoint(*to,pair->targetEndpoint,now) ||
                 !index.HasPublication(to->node,to->context.generation,voucher.file,now)) {
                 FailPair(*pair,kEseWireServerTargetGone);
@@ -301,8 +306,12 @@ struct RendezvousListener::Impl {
         if(now>=voucher.expires) return Error(kEseWireServerExpired);
         if(voucher.state!=Voucher::State::Available) return Error(kEseWireServerReplay);
         auto* target=Find(voucher.target);
-        const auto sourcePath=requester.ledger.Current(4,now);
-        const auto targetPath=target ? target->ledger.Current(4,now) : std::nullopt;
+        auto sourcePath=requester.ledger.Current(6,now);
+        auto targetPath=target ? target->ledger.Current(6,now) : std::nullopt;
+        if(!sourcePath || !targetPath) {
+            sourcePath=requester.ledger.Current(4,now);
+            targetPath=target ? target->ledger.Current(4,now) : std::nullopt;
+        }
         if(!target || !sourcePath || !targetPath || !Eligible(*target,now) ||
             !index.HasPublication(target->node,target->context.generation,voucher.file,now))
             return Error(kEseWireServerTargetGone);
@@ -323,8 +332,8 @@ struct RendezvousListener::Impl {
         pair.voucher=static_cast<std::size_t>(item-vouchers.begin());
         pair.requesterEndpoint=sourcePath->endpoint;
         pair.targetEndpoint=targetPath->endpoint;
-        pair.sourceVersion=requester.endpointVersion;
-        pair.targetVersion=target->endpointVersion;
+        pair.sourceVersion=requester.endpointVersion[FamilyIndex(sourcePath->endpoint.family)];
+        pair.targetVersion=target->endpointVersion[FamilyIndex(targetPath->endpoint.family)];
         std::vector<std::uint8_t> query(pair.transaction.begin(),pair.transaction.end());
         query.insert(query.end(),requester.node.begin(),requester.node.end());
         query.insert(query.end(),voucher.file.begin(),voucher.file.end());
@@ -336,8 +345,8 @@ struct RendezvousListener::Impl {
         target->outgoing.back().path=sourcePath->endpoint;
         target->outgoing.back().local=targetPath->endpoint;
         target->outgoing.back().file=voucher.file;
-        target->outgoing.back().remoteVersion=requester.endpointVersion;
-        target->outgoing.back().localVersion=target->endpointVersion;
+        target->outgoing.back().remoteVersion=pair.sourceVersion;
+        target->outgoing.back().localVersion=pair.targetVersion;
         voucher.state=Voucher::State::Pending;
         voucher.request=frame.header.request;
         std::copy_n(bytes,voucher.pairBody.size(),voucher.pairBody.begin());
@@ -354,8 +363,9 @@ struct RendezvousListener::Impl {
         result.insert(result.end(),peer.begin(),peer.end());
         Append(result,remaining,4);
         result.push_back(1);
-        result.push_back(4);
-        result.insert(result.end(),endpoint.address.begin(),endpoint.address.begin()+4);
+        result.push_back(endpoint.family);
+        const auto length=endpoint.family==6 ? 16 : 4;
+        result.insert(result.end(),endpoint.address.begin(),endpoint.address.begin()+length);
         Append(result,endpoint.port,2);
         return result;
     }
@@ -387,10 +397,11 @@ struct RendezvousListener::Impl {
         if(!bytes[16]) FailPair(pair,kEseWireServerNoConsent);
         else {
             auto* requester=Find(voucher.requester);
-            const auto from=requester ? requester->ledger.Current(4,now) : std::nullopt;
-            const auto to=target.ledger.Current(4,now);
+            const auto from=requester ? requester->ledger.Current(pair.requesterEndpoint.family,now) : std::nullopt;
+            const auto to=target.ledger.Current(pair.targetEndpoint.family,now);
             if(!requester || !from || !to || !Eligible(*requester,now) || !Eligible(target,now) ||
-                requester->endpointVersion!=pair.sourceVersion || target.endpointVersion!=pair.targetVersion ||
+                requester->endpointVersion[FamilyIndex(pair.requesterEndpoint.family)]!=pair.sourceVersion ||
+                target.endpointVersion[FamilyIndex(pair.targetEndpoint.family)]!=pair.targetVersion ||
                 !rdv::SameEndpoint(from->endpoint,pair.requesterEndpoint) || !rdv::SameEndpoint(to->endpoint,pair.targetEndpoint) ||
                 !index.HasPublication(target.node,target.context.generation,voucher.file,now))
                 FailPair(pair,kEseWireServerTargetGone);
@@ -410,15 +421,15 @@ struct RendezvousListener::Impl {
                 requester->outgoing.back().local=from->endpoint;
                 requester->outgoing.back().file=voucher.file;
                 requester->outgoing.back().remotePublisher=true;
-                requester->outgoing.back().remoteVersion=target.endpointVersion;
-                requester->outgoing.back().localVersion=requester->endpointVersion;
+                requester->outgoing.back().remoteVersion=pair.targetVersion;
+                requester->outgoing.back().localVersion=pair.sourceVersion;
                 *voucher.response=requester->outgoing.back();
                 target.outgoing.back().remote=requester->context;
                 target.outgoing.back().path=from->endpoint;
                 target.outgoing.back().local=to->endpoint;
                 target.outgoing.back().file=voucher.file;
-                target.outgoing.back().remoteVersion=requester->endpointVersion;
-                target.outgoing.back().localVersion=target.endpointVersion;
+                target.outgoing.back().remoteVersion=pair.sourceVersion;
+                target.outgoing.back().localVersion=pair.targetVersion;
                 voucher.state=Voucher::State::Finished;
             }
         }
@@ -441,50 +452,54 @@ struct RendezvousListener::Impl {
         while(!stop) {
             fd_set allowed;
             FD_ZERO(&allowed);
-            FD_SET(socketHandle,&allowed);
+            for(const auto socketHandle:sockets.Handles()) FD_SET(socketHandle,&allowed);
             timeval timeout{0,50000};
             if(select(0,&allowed,nullptr,nullptr,&timeout)<=0) continue;
-            std::array<std::uint8_t,rdv::DatagramSize+1> datagram{};
-            sockaddr_in source{};
-            int length=sizeof source;
-            const auto count=recvfrom(socketHandle,reinterpret_cast<char*>(datagram.data()),
-                static_cast<int>(datagram.size()),0,reinterpret_cast<sockaddr*>(&source),&length);
-            if(stop || count!=rdv::DatagramSize || length!=sizeof source || source.sin_family!=AF_INET ||
-                source.sin_addr.s_addr!=htonl(INADDR_LOOPBACK) || !source.sin_port) continue;
-            const ByteView view{datagram.data(),rdv::DatagramSize};
-            rdv::SessionContext context;
-            if(!rdv::ReadContext(view,context)) continue;
-            const auto now=Now();
-            const std::lock_guard<std::mutex> lock(mutex);
-            auto* entry=Find(context);
-            if(!entry || !Eligible(*entry,now) || !RefreshSecret(now)) continue;
-            const auto second=now/1000;
-            if(second!=budgetSecond) { budgetSecond=second; sent=0; }
-            // Datagram input only, responses never exceed received size.
-            // Publish status only through the TLS owner after return proof.
-            if(datagram[8]!=kEseWireRdv2Echo && sent>=32) continue;
-            const rdv::Endpoint endpoint{{127,0,0,1},ntohs(source.sin_port),4};
-            const auto result=entry->ledger.Receive(view,endpoint,entry->key,secrets,crypto,now);
-            if(result.supersededEndpoint) {
-                if(entry->endpointVersion==(std::numeric_limits<std::uint64_t>::max)()) {
-                    entry->loggedIn=false;
-                    continue;
-                }
-                ++entry->endpointVersion;
+            for(const auto socketHandle:sockets.Handles())
+                if(FD_ISSET(socketHandle,&allowed)) Receive(socketHandle);
+        }
+    }
+
+    void Receive(SOCKET socketHandle)
+    {
+        std::array<std::uint8_t,rdv::DatagramSize+1> datagram{};
+        sockaddr_storage source{};
+        int length=sizeof source;
+        const auto count=recvfrom(socketHandle,reinterpret_cast<char*>(datagram.data()),
+            static_cast<int>(datagram.size()),0,reinterpret_cast<sockaddr*>(&source),&length);
+        if(stop || count!=rdv::DatagramSize) return;
+        const auto endpoint=ObservedEndpoint(source,length);
+        rdv::SessionContext context;
+        const ByteView view{datagram.data(),rdv::DatagramSize};
+        if(!endpoint || !rdv::ReadContext(view,context) || datagram[9]!=endpoint->family) return;
+        const auto now=Now();
+        const std::lock_guard<std::mutex> lock(mutex);
+        auto* entry=Find(context);
+        if(!entry || !Eligible(*entry,now) || !RefreshSecret(now)) return;
+        const auto second=now/1000;
+        if(second!=budgetSecond) { budgetSecond=second; sent=0; }
+        // Both native sockets share the same process budget. Responses are
+        // never larger than the triggering datagrams.
+        if(datagram[8]!=kEseWireRdv2Echo && sent>=32) return;
+        const auto result=entry->ledger.Receive(view,*endpoint,entry->key,secrets,crypto,now);
+        const auto family=FamilyIndex(endpoint->family);
+        if(result.supersededEndpoint) {
+            if(entry->endpointVersion[family]==(std::numeric_limits<std::uint64_t>::max)()) {
+                entry->loggedIn=false;
+                return;
             }
-            if(result.status && Eligible(*entry,now)) entry->pending=result.status;
-            if(result.challenge) {
-                if(!Eligible(*entry,now)) continue;
-                ++sent;
-                sendto(socketHandle,reinterpret_cast<const char*>(result.challenge->data()),
-                    static_cast<int>(result.challenge->size()),0,reinterpret_cast<const sockaddr*>(&source),sizeof source);
-            }
+            ++entry->endpointVersion[family];
+        }
+        if(result.status && Eligible(*entry,now)) entry->pending[family]=result.status;
+        if(result.challenge && Eligible(*entry,now)) {
+            ++sent;
+            sendto(socketHandle,reinterpret_cast<const char*>(result.challenge->data()),
+                static_cast<int>(result.challenge->size()),0,reinterpret_cast<const sockaddr*>(&source),length);
         }
     }
 
     ServerIndex& index;
-    SOCKET socketHandle=INVALID_SOCKET;
-    std::uint16_t listenPort=0;
+    LoopbackSockets sockets;
     std::atomic<bool> stop{false};
     std::mutex mutex;
     std::array<std::optional<Entry>,16> entries{};
@@ -501,7 +516,7 @@ RendezvousListener::RendezvousListener(ServerIndex& index,std::uint16_t port)
     : impl_(std::make_unique<Impl>(index,port)) {}
 RendezvousListener::~RendezvousListener() = default;
 
-std::uint16_t RendezvousListener::Port() const noexcept { return impl_->listenPort; }
+std::uint16_t RendezvousListener::Port() const noexcept { return impl_->sockets.Port(); }
 
 bool RendezvousListener::Attach(const rdv::SessionContext& context,const Bytes32& key,const ClientHello& client,
     std::uint64_t expiration,bool pairing)
@@ -539,9 +554,12 @@ std::optional<rdv::Registration> RendezvousListener::TakeStatus(const rdv::Sessi
     const std::lock_guard<std::mutex> lock(impl_->mutex);
     auto* entry=impl_->Find(context);
     if(!entry || !impl_->Eligible(*entry,now)) return {};
-    const auto status=entry->pending;
-    entry->pending.reset();
-    return status && now<status->until ? status : std::nullopt;
+    for(auto& pending:entry->pending) {
+        const auto status=pending;
+        pending.reset();
+        if(status && now<status->until) return status;
+    }
+    return std::nullopt;
 }
 
 bool RendezvousListener::Handles(std::uint16_t type) const noexcept
@@ -578,7 +596,8 @@ std::optional<std::vector<std::uint8_t>> RendezvousListener::TakeControl(const r
             const auto* remote=impl_->Find(*message.remote);
             const auto* publisher=message.remotePublisher ? remote : entry;
             if(!remote || !publisher || !impl_->Eligible(*remote,now) ||
-                remote->endpointVersion!=message.remoteVersion || entry->endpointVersion!=message.localVersion ||
+                remote->endpointVersion[FamilyIndex(message.path.family)]!=message.remoteVersion ||
+                entry->endpointVersion[FamilyIndex(message.local.family)]!=message.localVersion ||
                 !impl_->CurrentEndpoint(*remote,message.path,now) || !impl_->CurrentEndpoint(*entry,message.local,now) ||
                 !impl_->index.HasPublication(publisher->node,publisher->context.generation,message.file,now)) {
                 if(!message.response) continue;

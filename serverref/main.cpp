@@ -4,6 +4,7 @@
 #include "ServerSession.h"
 #include "ServerTls.h"
 #include "RendezvousListener.h"
+#include "LoopbackSockets.h"
 #include <gnutls/crypto.h>
 #include <algorithm>
 #include <cerrno>
@@ -128,10 +129,13 @@ public:
         if(decoder_.Get() && !decoder_.Consume()) return std::nullopt;
         while(Now()<deadline_) {
             if(rendezvous && context) {
-                const auto status=rendezvous->TakeStatus(*context,Now());
-                if(status && !SendStatus(*status)) {
-                    inputError_=true;
-                    return std::nullopt;
+                for(unsigned family=0;family<2;++family) {
+                    const auto status=rendezvous->TakeStatus(*context,Now());
+                    if(!status) break;
+                    if(!SendStatus(*status)) {
+                        inputError_=true;
+                        return std::nullopt;
+                    }
                 }
                 for(unsigned count=0;count<16;++count) {
                     const auto control=rendezvous->TakeControl(*context,Now());
@@ -174,13 +178,15 @@ private:
         if(now>=status.until) return true;
         const auto ttl=static_cast<std::uint32_t>((std::min)(status.until-now,std::uint64_t{60000}));
         // REG_STATUS contains the family and the complete canonical endpoint.
-        std::array<std::uint8_t,12> body{4,4};
-        std::copy_n(status.endpoint.address.begin(),4,body.begin()+2);
-        body[6]=static_cast<std::uint8_t>(status.endpoint.port>>8);
-        body[7]=static_cast<std::uint8_t>(status.endpoint.port);
-        for(unsigned i=0;i<4;++i) body[8+i]=static_cast<std::uint8_t>(ttl>>(24-i*8));
+        const auto family=status.endpoint.family;
+        const std::size_t size=family==6 ? 16 : 4;
+        std::array<std::uint8_t,24> body{family,family};
+        std::copy_n(status.endpoint.address.begin(),size,body.begin()+2);
+        body[2+size]=static_cast<std::uint8_t>(status.endpoint.port>>8);
+        body[3+size]=static_cast<std::uint8_t>(status.endpoint.port);
+        for(unsigned i=0;i<4;++i) body[size+4+i]=static_cast<std::uint8_t>(ttl>>(24-i*8));
         EncodedFrame wire;
-        return EncodeFrame({{kEseWireServerRegStatus,0,{}},{body.data(),body.size()}},wire) && Send(wire);
+        return EncodeFrame({{kEseWireServerRegStatus,0,{}},{body.data(),size+8}},wire) && Send(wire);
     }
     bool IoTimeout(int option)
     {
@@ -327,12 +333,12 @@ public:
         maintenanceWake_.notify_one();
         maintenance_.join();
     }
-    void Add(const Socket& listener,const ServerIdentity& identity,const Bytes16& epoch,
+    void Add(SOCKET listener,const ServerIdentity& identity,const Bytes16& epoch,
         std::uint64_t generation,const ServerEndpoint& endpoint,ServerIndex& index,RendezvousListener* rendezvous)
     {
         auto& slot=slots_[(generation-1)%slots_.size()];
         slot.Join();
-        Socket accepted(accept(listener.value,nullptr,nullptr));
+        Socket accepted(accept(listener,nullptr,nullptr));
         slot.thread=std::thread([&,generation,rendezvous,peer=std::move(accepted)] {
             try {
                 if(Serve(peer,identity,epoch,generation,endpoint,index,rendezvous)) ++completed_;
@@ -393,22 +399,12 @@ int main(int argc,char** argv)
         identity.Load(argv[2],argv[3],argv[4]);
         Bytes16 epoch{};
         Require(gnutls_rnd(GNUTLS_RND_NONCE,epoch.data(),epoch.size())==0,"generate server epoch");
-        Socket listener(socket(AF_INET,SOCK_STREAM,IPPROTO_TCP));
-        sockaddr_in local{};
-        local.sin_family=AF_INET;
-        local.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
-        local.sin_port=htons(port);
-        int size=sizeof local;
-        constexpr BOOL exclusive=TRUE;
-        Require(setsockopt(listener.value,SOL_SOCKET,SO_EXCLUSIVEADDRUSE,reinterpret_cast<const char*>(&exclusive),sizeof exclusive)==0 &&
-            bind(listener.value,reinterpret_cast<sockaddr*>(&local),sizeof local)==0 &&
-            listen(listener.value,1)==0 &&
-            getsockname(listener.value,reinterpret_cast<sockaddr*>(&local),&size)==0 &&
-            local.sin_addr.s_addr==htonl(INADDR_LOOPBACK) && local.sin_port!=0,
-            "bind the configured IPv4 loopback endpoint");
+        LoopbackSockets listeners(SOCK_STREAM,IPPROTO_TCP,port);
+        for(const auto listener:listeners.Handles())
+            Require(listen(listener,1)==0,"listen on native loopback TLS socket");
         ServerEndpoint endpoint{};
         endpoint.ipv4={127,0,0,1};
-        endpoint.port=ntohs(local.sin_port);
+        endpoint.port=listeners.Port();
         Bytes32 digest{};
         Require(gnutls_hash_fast(GNUTLS_DIG_SHA256,identity.node.data(),identity.node.size(),digest.data())==0,
             "derive public server identity");
@@ -426,10 +422,14 @@ int main(int argc,char** argv)
         for(unsigned attempt=0;attempt<connectionCount;++attempt) {
             fd_set incoming;
             FD_ZERO(&incoming);
-            FD_SET(listener.value,&incoming);
+            for(const auto listener:listeners.Handles()) FD_SET(listener,&incoming);
             timeval wait{15,0};
             if(select(0,&incoming,nullptr,nullptr,&wait)<=0) break;
-            connections.Add(listener,identity,epoch,std::uint64_t{attempt}+1,endpoint,index,rendezvous.get());
+            for(const auto listener:listeners.Handles())
+                if(FD_ISSET(listener,&incoming)) {
+                    connections.Add(listener,identity,epoch,std::uint64_t{attempt}+1,endpoint,index,rendezvous.get());
+                    break;
+                }
         }
         const auto completed=connections.Complete();
         std::cout<<"LOGIN_SESSIONS "<<completed<<std::endl;

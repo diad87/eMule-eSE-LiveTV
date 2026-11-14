@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$RepoRoot = '',
-    [ValidateSet('Core','Integration','All')][string]$Suite = 'All'
+    [ValidateSet('Core','Integration','ArchivedRelay','All')][string]$Suite = 'All'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -112,6 +112,9 @@ if ($Suite -eq 'Core' -or $Suite -eq 'All') {
 
 if ($Suite -eq 'Integration' -or $Suite -eq 'All') {
     Run 'srchybrid standalone tests' { & cmd /d /c (Join-Path $RepoRoot 'srchybrid\tests\make.bat') }
+}
+
+if ($Suite -eq 'ArchivedRelay' -or $Suite -eq 'All') {
     Run 'librelaycore release' { & cmd /d /c (Join-Path $RepoRoot 'librelaycore\make.bat') }
     Run 'librelaycore ASan' {
         $env:RELAY_ASAN = '1'

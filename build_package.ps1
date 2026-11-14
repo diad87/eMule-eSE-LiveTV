@@ -390,11 +390,13 @@ if ($nodesBytes.Length -lt 100 -or $nodesBytes.Length -gt 5MB) { throw 'Pinned n
     'EseHolePunchPortPredict=0',
     'EseEd2kPunch3=0',
     'Kad6PublicExitOptIn=0',
-    'Kad6BetaExitOptIn=0',
-    '[KRPRelay]',
-    'KrpRelayEnabled=0',
-    'KrpRelayKillSwitch=1',
-    'ExperimentalTcpDataPlane=0'
+    'Kad6BetaExitOptIn=0'
+    if (-not $quicManifestSha256) {
+        '[KRPRelay]'
+        'KrpRelayEnabled=0'
+        'KrpRelayKillSwitch=1'
+        'ExperimentalTcpDataPlane=0'
+    }
 ) | Out-File (Join-Path $configDir 'preferences.ini') -Encoding ASCII
 
 Write-Host '[5/7] License, help and release notes'

@@ -155,7 +155,8 @@ class W10LiveApiEvidence(unittest.TestCase):
         self.assertIn("persist_failed", source)
         self.assertIn("loopback required", source)
         self.assertIn("Content-Type: text/html\\r\\n", source)
-        self.assertLess(source.index("port.post_krp_event"), source.index("W10NetlabSnapshot snapshot"))
+        self.assertLess(source.index("port.persist_disable_and_verify"), source.index("W10NetlabSnapshot snapshot"))
+        self.assertNotIn("post_krp_event", source)
 
     def test_m2a_d690a30c862dfafd(self) -> None:
         self.assertEqual(text("WebLiveApiSettingsController", ".cpp").count("M2A_BIND_W10_E9722EA045"), 1)

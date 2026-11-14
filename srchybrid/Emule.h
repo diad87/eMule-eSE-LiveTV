@@ -56,7 +56,6 @@ class CPartHashThread;
 class CCacheNodeList;
 class CCacheDownloadThread;
 class CLiveStreamManager;
-class CRelayClient;
 class CDirectReachabilityManager;
 
 struct SLogItem;
@@ -108,7 +107,6 @@ public:
 	CCacheNodeList		*m_pCacheNodeList;
 	CCacheDownloadThread *m_pCacheDownloadThread;
 	CLiveStreamManager	*liveStreamManager;
-	CRelayClient		*relayclient;
 	CDirectReachabilityManager *directreachability;
 
 

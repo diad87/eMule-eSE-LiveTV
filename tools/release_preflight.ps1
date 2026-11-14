@@ -316,13 +316,16 @@ foreach ($requiredDefault in @(
     'EseEd2kPunch3=0',
     'Kad6PublicExitOptIn=0',
     'Kad6BetaExitOptIn=0',
-    'KrpRelayEnabled=0',
-    'KrpRelayKillSwitch=1',
-    'ExperimentalTcpDataPlane=0',
     'WebUseUPnP=0'
 )) {
     if ($packageScript -notmatch [regex]::Escape($requiredDefault)) {
         Fail "safe package default missing: $requiredDefault"
+    }
+}
+if ($requiresQuic) {
+    $nativeProject = Get-Content -LiteralPath (Join-Path $RepoRoot 'srchybrid\emule.vcxproj') -Raw
+    if ($nativeProject -match '(?i)<ClCompile\s+Include="(?:RelayClient\.cpp|\.\.[\\/](?:librelayclient|librelaycore|relayedge)[\\/])') {
+        Fail 'current native release still compiles retired KRP relay components'
     }
 }
 if ($packageScript -match 'WebServerUseUPnP=1' -or $packageScript -match 'http://www\.gruk\.org') {

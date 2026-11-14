@@ -80,7 +80,6 @@ void EseRecordKad2SoakTimer() {
 #include "LiveStreamManager.h"
 #include "LiveTunnel.h"
 #include "Mod02BuildIdentity.h"
-#include "RelayClient.h"
 #include "DirectReachabilityManager.h"
 #include "natmap/mapping_round_failure.h"
 #include "Splashscreen.h"
@@ -279,8 +278,7 @@ static void ConfigureEseNetLabConsentAtStartup()
 		&& thePrefs.GetEseNetLabContributionConsent() == CPreferences::EseNetLabUndecided) {
 		const CString notice =
 			_T("Contribucion de recursos beta\r\n\r\n")
-			_T("Activa la prueba de relay Live y Kad6 Beta Exit; tambien KRP cuando ")
-			_T("el paquete tenga una cohorte y credenciales configuradas. El equipo ")
+			_T("Activa la prueba de relay Live y Kad6 Beta Exit. El equipo ")
 			_T("puede reenviar trafico limitado de otros participantes beta, consumir ")
 			_T("subida y exponer su IP publica a los peers que utilicen el servicio. ")
 			_T("Se aplican cuotas estrictas, limites de tasa y apagado inmediato.\r\n\r\n")
@@ -516,7 +514,6 @@ BEGIN_MESSAGE_MAP(CemuleDlg, CTrayDialog)
 	ON_MESSAGE(UM_LIVE_WEB_LEAVE, OnLiveWebLeave)
 	ON_MESSAGE(UM_LIVE_HEADLESS_ACTION, OnLiveHeadlessAction)
 	ON_MESSAGE(UM_AUTHENTICATED_WEB_CLOSE, OnAuthenticatedWebClose)
-	ON_MESSAGE(UM_KRP_CLIENT_EVENT, OnKrpClientEvent)
 	ON_MESSAGE(UM_PROCESS_ED2K_LINKS, OnProcessEd2kLinks)
 	ON_MESSAGE(UM_PROCESS_STORED_SEARCHES, OnProcessStoredSearches)
 	ON_MESSAGE(UM_PROCESS_KNOWN_MET_SAVE, OnProcessKnownMetSave)
@@ -992,21 +989,9 @@ BOOL CemuleDlg::OnInitDialog()
 		return FALSE; // Do not give a control default keyboard focus.
 	}
 
-	// Resolve every consent boundary before listeners, KRP and capability
+	// Resolve every consent boundary before listeners and capability
 	// advertising consume the configuration.
 	ConfigureEseNetLabConsentAtStartup();
-
-	// The P4 handshake signs HELLO immediately, so make the persistent identity
-	// available before the relay worker starts. NodeIdentityInit is idempotent;
-	// the normal privacy startup below can safely call it again.
-	if (theApp.relayclient != NULL && CPreferences::GetKrpRelayExperimentalTcp()
-		&& (!eSELive::NodeIdentityInit() || !eSELive::NodeIdentityIsPersistent()))
-		AddDebugLogLine(false, _T("KRP relay: persistent node identity init failed; P4 authentication will remain closed"));
-
-	// Relay initialization occurs only after the HWND exists. Default OFF leaves
-	// classic eMule networking byte-for-byte on its existing path.
-	if (theApp.relayclient != NULL)
-		theApp.relayclient->Initialize(GetSafeHwnd());
 
 	// V2-S07: headless mode can override the WebServer port so multiple
 	// stress instances on the same host expose /api/live/metrics on
@@ -1226,13 +1211,6 @@ LRESULT CemuleDlg::OnAuthenticatedWebClose(WPARAM, LPARAM)
 		try { CLiveDebugLog::Get().TryAppendShutdownStage(
 			LiveShutdownStage::WebClosePostFailed); } catch (...) {}
 	}
-	return 0;
-}
-
-LRESULT CemuleDlg::OnKrpClientEvent(WPARAM, LPARAM)
-{
-	if (theApp.relayclient != NULL && !theApp.IsClosing())
-		theApp.relayclient->ProcessMainThreadEvents();
 	return 0;
 }
 
@@ -3797,12 +3775,6 @@ void CemuleDlg::OnClose()
 	delete theApp.friendlist;				theApp.friendlist = NULL;		// CFriendList::SaveList
 	delete theApp.scheduler;				theApp.scheduler = NULL;
 	delete theApp.ipfilter;					theApp.ipfilter = NULL;			// CIPFilter::SaveToDefaultFile
-	// Stop/join KRP before WebServer releases the process-wide mbedTLS runtime.
-	if (theApp.relayclient != NULL) {
-		theApp.relayclient->Shutdown();
-		delete theApp.relayclient;
-		theApp.relayclient = NULL;
-	}
 	RecordShutdownStage(LiveShutdownStage::NetworkThreadsDeleted);
 	RecordShutdownStage(LiveShutdownStage::WebserverDeleteImminent);
 	delete theApp.webserver;				theApp.webserver = NULL;
@@ -5964,7 +5936,7 @@ bool CemuleDlg::HandleUPnPNetworkChange(
 			advertisement,
 			theApp.serverconnect->IsConnected(),
 			theApp.serverconnect->IsConnecting(),
-			theApp.serverconnect->IsConnectedViaRelay())) {
+			false)) {
 		LogWarning(_T("Network identity changed; reconnecting without the retired endpoint"));
 		if (theApp.serverconnect->IsConnecting())
 			theApp.serverconnect->StopConnectionTry();
@@ -6118,7 +6090,7 @@ bool CemuleDlg::CheckUPnPLease()
 				advertisement,
 				theApp.serverconnect->IsConnected(),
 				theApp.serverconnect->IsConnecting(),
-				theApp.serverconnect->IsConnectedViaRelay())) {
+				false)) {
 			LogWarning(_T("Finite mapping expired; reconnecting without the retired endpoint"));
 			if (theApp.serverconnect->IsConnecting())
 				theApp.serverconnect->StopConnectionTry();
@@ -6289,7 +6261,7 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 					advertisement,
 					theApp.serverconnect->IsConnected(),
 					theApp.serverconnect->IsConnecting(),
-					theApp.serverconnect->IsConnectedViaRelay())) {
+					false)) {
 				LogWarning(_T("Network route changed during mapping; reconnecting without the retired endpoint"));
 				if (theApp.serverconnect->IsConnecting())
 					theApp.serverconnect->StopConnectionTry();
@@ -6468,7 +6440,7 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 				advertisement,
 				theApp.serverconnect->IsConnected(),
 				theApp.serverconnect->IsConnecting(),
-				theApp.serverconnect->IsConnectedViaRelay())) {
+				false)) {
 			LogWarning(_T("Direct reachability endpoint changed or was withdrawn; reconnecting to update the advertised port"));
 			if (theApp.serverconnect->IsConnecting())
 				theApp.serverconnect->StopConnectionTry();
@@ -6505,7 +6477,7 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 			advertisement,
 			theApp.serverconnect->IsConnected(),
 			theApp.serverconnect->IsConnecting(),
-			theApp.serverconnect->IsConnectedViaRelay())) {
+			false)) {
 			LogWarning(_T("TCP-only PCP CGNAT mapping withdrawn before fallback"));
 			if (theApp.serverconnect->IsConnecting())
 				theApp.serverconnect->StopConnectionTry();
@@ -6551,7 +6523,7 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 				advertisement,
 				theApp.serverconnect->IsConnected(),
 				theApp.serverconnect->IsConnecting(),
-				theApp.serverconnect->IsConnectedViaRelay())) {
+				false)) {
 			LogWarning(_T("Mapping lost; reconnecting without the withdrawn endpoint"));
 			if (theApp.serverconnect->IsConnecting())
 				theApp.serverconnect->StopConnectionTry();
@@ -6616,7 +6588,7 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 				advertisement,
 				theApp.serverconnect->IsConnected(),
 				theApp.serverconnect->IsConnecting(),
-				theApp.serverconnect->IsConnectedViaRelay())) {
+				false)) {
 			LogWarning(_T("Direct reachability endpoint changed or was withdrawn; reconnecting to update the advertised port"));
 			if (theApp.serverconnect->IsConnecting())
 				theApp.serverconnect->StopConnectionTry();
@@ -6727,7 +6699,7 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 				advertisement,
 				theApp.serverconnect->IsConnected(),
 				theApp.serverconnect->IsConnecting(),
-				theApp.serverconnect->IsConnectedViaRelay())) {
+				false)) {
 			LogWarning(_T("NAT-PMP mapper reset invalidated direct reachability; reconnecting for fresh evidence"));
 			if (theApp.serverconnect->IsConnecting())
 				theApp.serverconnect->StopConnectionTry();
@@ -6975,7 +6947,7 @@ void CemuleDlg::StopUPnP()
 			advertisement,
 			theApp.serverconnect->IsConnected(),
 			theApp.serverconnect->IsConnecting(),
-			theApp.serverconnect->IsConnectedViaRelay())) {
+			false)) {
 		LogWarning(_T("Automatic mappings disabled; reconnecting without the retired endpoint"));
 		if (theApp.serverconnect->IsConnecting())
 			theApp.serverconnect->StopConnectionTry();

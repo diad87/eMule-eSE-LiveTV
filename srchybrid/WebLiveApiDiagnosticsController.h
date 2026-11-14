@@ -27,7 +27,6 @@ struct W10DebugSnapshot { bool available = false, broadcasting = false, viewing 
 struct W10DiagnosticsResponse { std::string header, body; };
 struct W10DiagnosticsPort {
 	void* context = nullptr;
-	bool (*read_krp_json)(void*, std::string&) = nullptr;
 	bool (*read_preflight)(void*, W10PreflightSnapshot&) = nullptr;
 	bool (*read_metrics)(void*, W10MetricsSnapshot&) = nullptr;
 	void (*read_percentiles)(void*, std::uint32_t&, std::uint32_t&, std::uint32_t&) = nullptr;

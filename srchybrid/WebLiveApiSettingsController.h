@@ -48,7 +48,6 @@ struct W10SettingsPort {
 	void (*request_keepalive)(void*, bool) = nullptr;
 	bool (*persist_disable_and_verify)(void*) = nullptr;
 	bool (*save_preferences)(void*) = nullptr; // true means native save error
-	void (*post_krp_event)(void*) = nullptr;
 	bool (*read_privacy_policy)(void*, W10PrivacySnapshot&) = nullptr;
 	void (*set_privacy_mode)(void*, const std::string&) = nullptr;
 	void (*set_fallback)(void*, const std::string&) = nullptr;

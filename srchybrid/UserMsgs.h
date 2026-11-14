@@ -71,7 +71,7 @@ enum EUserWndMessages
 	// The receiver executes all LiveTV mutations on the main thread.
 	UM_LIVE_HEADLESS_ACTION, //+35
 
-	// P3 KRP worker/timer -> main thread. Carries no object pointer or payload.
+	// Reserved for the retired KRP worker. Keep the following message IDs unchanged.
 	UM_KRP_CLIENT_EVENT, //+36
 
 	// Time-budgeted main-thread work. Each handler processes a small slice and

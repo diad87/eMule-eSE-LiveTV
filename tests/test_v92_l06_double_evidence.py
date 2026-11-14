@@ -102,17 +102,18 @@ class L06DoubleEvidenceHostContract(unittest.TestCase):
                 "void CServerConnect::ConnectionFailed("
             )
         ]
-        self.assertIn("if (!sender->IsRelayRouted()", established)
+        self.assertIn("sender->m_nDirectTopologyGeneration", established)
         idchange = self.server_socket[
             self.server_socket.index("case OP_IDCHANGE:") :
             self.server_socket.index("case OP_SEARCHRESULT:")
         ]
-        self.assertIn("if (!m_bRelayRouted", idchange)
+        self.assertIn("ObserveDirectV4ServerState(", idchange)
+        self.assertNotIn("OnEd2kIdChange(la->clientid, true)", idchange)
         verdict = self.emule[
             self.emule.index("bool CemuleApp::HasVerifiedEd2kHighId()") :
             self.emule.index("bool CemuleApp::IsFirewalled()")
         ]
-        self.assertIn("serverconnect->IsConnectedViaRelay()", verdict)
+        self.assertIn("directreachability->HasVerifiedEd2kReachability()", verdict)
         self.assertIn("return false;", verdict)
 
     def test_duplicate_inbound_never_creates_server_evidence(self) -> None:

@@ -25,7 +25,15 @@ std::string Metrics(const W10MetricsSnapshot& s, int n, std::uint32_t mean, std:
 } // namespace
 
 bool RunW10LiveDiagnosticsApi(const W10DiagnosticsRequest& q, const W10DiagnosticsPort& p, W10DiagnosticsResponse& r) {
-	if (q.operation == W10DiagnosticsOperation::KrpStatus) { if (!p.read_krp_json) return false; if (!p.read_krp_json(p.context,r.body)) r.body="{\"enabled\":false,\"kill_switch\":false,\"display\":\"Low ID\",\"carrier\":\"Disabled\"}"; r.header=H(r.body,"Content-Type: application/json\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n"); return true; }
+	if (q.operation == W10DiagnosticsOperation::KrpStatus) {
+		// Retain the legacy status shape for dashboards and monitoring clients.
+		r.body = R"({"enabled":false,"kill_switch":true,"display":"Low ID","carrier":"Disabled",)"
+			R"("session":"None","lease":"None","ed2k":"LowId","endpoint":"Unknown","kad":"Classic",)"
+			R"("route":"Classic","reason":"Disabled","public_tcp_port":0,"generation":0,"next_retry_ms":0,)"
+			R"("metrics":{"starts":0,"reconnects":0,"events":0,"stale_events":0,"invalid_transitions":0,"disconnects":0,"queue_drops":0}})";
+		r.header = H(r.body, "Content-Type: application/json\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n");
+		return true;
+	}
 	if (q.operation == W10DiagnosticsOperation::ReachStatus) { if (!p.read_reach_json) return false; if (!p.read_reach_json(p.context,r.body)) r.body="{\"schema\":\"ESE_REACH_STATUS_V1\",\"available\":false,\"topology_generation\":0,\"planes\":{}}"; r.header=H(r.body,"Content-Type: application/json\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n"); return true; }
 	if (q.operation == W10DiagnosticsOperation::Preflight) { W10PreflightSnapshot s; if (!p.read_preflight || !p.read_preflight(p.context,s)) return false; r.body=Preflight(s); r.header=Legacy(r.body); return true; }
 	if (q.operation == W10DiagnosticsOperation::Metrics) { if(!p.read_metrics||!p.read_percentiles||!p.read_latency_mean||!p.read_latency_samples||!p.read_kad6_metrics)return false;W10MetricsSnapshot s;if(!p.read_metrics(p.context,s))return false;std::uint32_t p50=0,p95=0,p99=0,mean=0;p.read_percentiles(p.context,p50,p95,p99);mean=p.read_latency_mean(p.context);const int n=p.read_latency_samples(p.context);r.body=Metrics(s,n,mean,p50,p95,p99);try{std::string k;if(!p.read_kad6_metrics(p.context,k))return false;r.body+=k;}catch(...){ }r.header=H(r.body,"Content-Type: text/plain; version=0.0.4; charset=utf-8\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\n");return true; }
@@ -36,7 +44,12 @@ bool RunW10LiveDiagnosticsApi(const W10DiagnosticsRequest& q, const W10Diagnosti
 
 bool RunW10LiveDiagnosticsCharacterizationSelfTest(std::string& f) {
 	struct S { int calls=0,n=0; }; S s; W10DiagnosticsPort p; W10DiagnosticsResponse r; W10DiagnosticsRequest q;
-	q.operation=W10DiagnosticsOperation::KrpStatus;if(RunW10LiveDiagnosticsApi(q,p,r)){f="incomplete-port";return false;}p.read_krp_json=[](void*,std::string&){return false;};RunW10LiveDiagnosticsApi(q,p,r);if(r.body.find("\"carrier\":\"Disabled\"")==std::string::npos||r.header.find("Allow-Origin")!=std::string::npos){f="krp";return false;}
+	q.operation = W10DiagnosticsOperation::KrpStatus;
+	if (!RunW10LiveDiagnosticsApi(q, p, r) ||
+		r.body.find("\"enabled\":false,\"kill_switch\":true") == std::string::npos ||
+		r.body.find("\"carrier\":\"Disabled\"") == std::string::npos ||
+		r.body.find("\"queue_drops\":0") == std::string::npos ||
+		r.header.find("Allow-Origin") != std::string::npos) { f = "krp"; return false; }
 	q.operation=W10DiagnosticsOperation::ReachStatus;if(RunW10LiveDiagnosticsApi(q,p,r)){f="reach incomplete-port";return false;}p.read_reach_json=[](void*,std::string&){return false;};RunW10LiveDiagnosticsApi(q,p,r);if(r.body!="{\"schema\":\"ESE_REACH_STATUS_V1\",\"available\":false,\"topology_generation\":0,\"planes\":{}}"||r.header.find("Content-Type: application/json")==std::string::npos||r.header.find("no-store")==std::string::npos||r.header.find("nosniff")==std::string::npos||r.header.find("Allow-Origin")!=std::string::npos){f="reach fallback";return false;}p.read_reach_json=[](void*,std::string& o){o="{\"pass\":true}";return true;};RunW10LiveDiagnosticsApi(q,p,r);if(r.body!="{\"pass\":true}"||r.header.find("Content-Type: application/json")==std::string::npos||r.header.find("no-store")==std::string::npos||r.header.find("nosniff")==std::string::npos||r.header.find("Allow-Origin")!=std::string::npos){f="reach passthrough";return false;}
 	p.context=&s;p.read_preflight=[](void*,W10PreflightSnapshot& x){x.kad_connected=x.high_id=x.ffmpeg_found=true;x.ffmpeg_path="x\"\n";return true;};q.operation=W10DiagnosticsOperation::Preflight;RunW10LiveDiagnosticsApi(q,p,r);if(r.body.find("\"ready\":true") == std::string::npos||r.body.find("x\\\"\\n")==std::string::npos||r.header.find("Content-Type: text/html\r\n")>r.header.find("Content-Type: application/json")){f="preflight";return false;}
 	p.run_ipv6_echo=[](void*,const W10DiagnosticsRequest& x,W10Ipv6EchoResult& y){y.success=false;y.error="echo_failed";y.target=x.target;y.nonce=x.nonce;y.tcp_port=x.tcp_port;y.udp_port=x.udp_port;y.tcp_bytes=17;y.udp_error=10060;return true;};q.operation=W10DiagnosticsOperation::Ipv6Echo;q.target="2001:db8::1";q.nonce="00112233445566778899aabbccddeeff";q.tcp_port=41001;q.udp_port=41002;RunW10LiveDiagnosticsApi(q,p,r);if(r.header.find("409 Conflict")==std::string::npos||r.body.find("\"target\":\"2001:db8::1\"")==std::string::npos||r.body.find("\"bytes\":17")==std::string::npos||r.body.find("\"error\":10060")==std::string::npos){f="ipv6 echo";return false;}

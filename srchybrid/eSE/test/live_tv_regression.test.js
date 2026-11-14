@@ -728,7 +728,7 @@ test('v9 capabilities and remote administration fail closed by default', () => {
     read(repoRoot, 'srchybrid', 'LiveTunnel.cpp'),
     read(repoRoot, 'srchybrid', 'LiveTunnelReleaseGate.cpp')
   ].join('\n');
-  const relay = read(repoRoot, 'srchybrid', 'RelayClient.cpp');
+  const nativeProject = read(repoRoot, 'srchybrid', 'emule.vcxproj');
   const kadUdp = read(repoRoot, 'srchybrid', 'kademlia', 'net', 'KademliaUDPListener.cpp');
   const web = [
     read(repoRoot, 'srchybrid', 'WebServer.cpp'),
@@ -759,7 +759,9 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(prefs, /EseRelayAccept"\),\s+false, _T\("eSE"\)/);
   assert.match(prefs, /EseRelayEgress"\),\s+false, _T\("eSE"\)/);
   assert.match(prefs, /EseReachSelector"\), false, _T\("eSE"\)/);
-  assert.match(prefs, /KrpRelayEnabled"\), false, _T\("KRPRelay"\)/);
+  assert.match(prefs, /WriteBool\(_T\("KrpRelayEnabled"\), false, _T\("KRPRelay"\)/);
+  assert.match(prefs, /WriteBool\(_T\("KrpRelayKillSwitch"\), true, _T\("KRPRelay"\)/);
+  assert.match(prefs, /WriteBool\(_T\("ExperimentalTcpDataPlane"\), false, _T\("KRPRelay"\)/);
   assert.match(prefs, /EseHolePunchPortPredict"\), false, _T\("eSE"\)/);
   assert.match(prefs, /EseEd2kPunch3"\), false, _T\("eSE"\)/);
   assert.match(prefs, /Kad6PublicExitOptIn"\), false, _T\("eSE"\)/);
@@ -776,8 +778,7 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(prefs, /void CPreferences::ApplyEseNetLabPreferenceState\(bool active\)/);
   assert.match(prefs, /SetEseV9Experimental\(advanced\)/);
   assert.match(prefs, /SetEseRelayAccept\(contribution\)/);
-  assert.match(prefs, /SetKrpRelayEnabled\(krpConfigured\)/);
-  assert.match(prefs, /SetKrpRelayKillSwitch\(!krpConfigured\)/);
+  assert.doesNotMatch(prefsHeader, /(?:Get|Set)KrpRelay/);
   assert.match(prefs, /SetKad6BetaExitOptIn\(contribution\)/);
   assert.doesNotMatch(dlg, /g_uEseCapsRuntime\s*=\s*[^;]*ESE_CAP_TUNNEL_BULK/s);
   assert.match(prober, /uint32 g_uEseCapsRuntime = 0;/);
@@ -797,10 +798,9 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(tunnel, /const std::uint32_t stable = !optIn \? optOut[\s\S]{0,180}const bool enable = stable == ok \|\| beta/);
   assert.match(tunnel, /BuildTestCircuit\(CUpDownClient\* clientHint\)[\s\S]{0,900}GetConnectedSnapshot\(cands, 3, \/\*tunnelOnly=\*\/true\)/);
   assert.doesNotMatch(tunnel, /BuildTestCircuit\(CUpDownClient\* clientHint\)[\s\S]{0,1200}GetConnectedSnapshot\(cands, 3, \/\*tunnelOnly=\*\/false\)/);
-  assert.match(relay, /config\.enabled = thePrefs\.GetKrpRelayEnabled\(\)/);
-  assert.match(relay, /configured == relay::RelayStatus::Ok && config\.enabled && !config\.kill_switch/);
-  assert.match(relay, /if \(!enabled \|\| killSwitch\)[\s\S]{0,240}SetKillSwitch\(true\)/);
-  assert.match(relay, /thePrefs\.GetKrpRelayEnabled\(\)[\s\S]{0,100}GetKrpRelayExperimentalTcp\(\)/);
+  assert.doesNotMatch(nativeProject, /(?:RelayClient\.cpp|librelayclient|librelaycore|relayedge)/);
+  assert.doesNotMatch(dlg, /UM_KRP_CLIENT_EVENT|relayclient/);
+  assert.doesNotMatch(web, /post_krp_event|GetKrpRelayEnabled/);
   assert.match(kadUdp, /Process_KADEMLIA3_PING_REQ[\s\S]{0,500}g_uEseCapsRuntime & ESE_CAP_KAD_KEEPALIVE/);
   assert.match(kadUdp, /Process_KADEMLIA3_PING_REQ[\s\S]{0,900}senderCaps & \(ESE_CAP_NETLAB_V1 \| ESE_CAP_KAD_KEEPALIVE\)/);
   assert.match(kadUdp, /Process_KADEMLIA3_PING_RES[\s\S]{0,300}g_uEseCapsRuntime & ESE_CAP_KAD_KEEPALIVE/);

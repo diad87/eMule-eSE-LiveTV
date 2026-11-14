@@ -240,9 +240,11 @@ class L05FalseHighIdHostContract(unittest.TestCase):
             r"IsLowID\(\)\s*\?\s*_T\(\"low\"\)\s*:\s*_T\(\"high\"\)",
         )
 
-    def test_relay_does_not_fabricate_direct_evidence(self) -> None:
-        self.assertIn("if (!sender->IsRelayRouted()", self.server_connect)
-        self.assertIn("if (!m_bRelayRouted", self.server_socket)
+    def test_native_server_evidence_uses_the_classic_direct_route(self) -> None:
+        self.assertIn("GetAdvertisedTcpPort()", self.server_connect)
+        self.assertIn("Connect(server->GetAddress(), nPort)", self.server_socket)
+        self.assertNotIn("PrepareEd2kServerRoute", self.server_socket)
+        self.assertNotIn("IsTcpDataPlaneReady", self.server_connect)
         manager_api = self.manager_h[
             self.manager_h.index("bool BeginEd2kVerification(") :
             self.manager_h.index("uint64 GetTopologyGeneration()")
@@ -252,16 +254,12 @@ class L05FalseHighIdHostContract(unittest.TestCase):
             self.emule.index("bool CemuleApp::HasVerifiedEd2kHighId()") :
             self.emule.index("bool CemuleApp::IsFirewalled()")
         ]
-        self.assertIn("serverconnect->IsConnectedViaRelay()", verdict)
+        self.assertIn("serverconnect->IsLowID()", verdict)
         self.assertLess(
-            verdict.index("serverconnect->IsConnectedViaRelay()"),
+            verdict.index("serverconnect->IsLowID()"),
             verdict.index("HasVerifiedEd2kReachability()"),
         )
-        relay_guard = verdict[
-            verdict.index("serverconnect->IsConnectedViaRelay()") :
-            verdict.index("HasVerifiedEd2kReachability()")
-        ]
-        self.assertIn("return false;", relay_guard)
+        self.assertIn("return false;", verdict)
 
     def test_same_port_different_address_renewal_is_rejected(self) -> None:
         renewal = self.state[

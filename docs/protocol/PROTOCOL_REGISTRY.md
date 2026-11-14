@@ -93,6 +93,7 @@ Reviewers must compare both namespace and value before reporting a collision.
 | `stable` | Shipped compatibility surface |
 | `experimental` | Implemented but capability/preference gated |
 | `deprecated` | Accepted for compatibility but not used for new traffic |
+| `retired` | Reserved permanently for historical implementations. Current builds do not send or accept it. |
 | `reserved` | Allocated compatibility value |
 
 A reservation is not evidence that a runtime service is enabled or supported.

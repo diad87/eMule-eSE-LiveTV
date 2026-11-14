@@ -27,7 +27,6 @@
 #include <atlimage.h>
 #include "emule.h"
 #include "LiveStreamManager.h"
-#include "RelayClient.h"
 #include "DirectReachabilityManager.h"
 #include "opcodes.h"
 #include "mdump.h"
@@ -289,7 +288,6 @@ CemuleApp::CemuleApp(LPCTSTR lpszAppName)
 	: CWinApp(lpszAppName)
 	, emuledlg()
 	, m_pFirewallOpener()
-	, relayclient()
 	, directreachability()
 	, m_iDfltImageListColorFlags(ILC_COLOR)
 	, m_ullComCtrlVer(MAKEDLLVERULL(4, 0, 0, 0))
@@ -667,7 +665,6 @@ BOOL CemuleApp::InitInstance()
 	webserver = new CWebServer(); // Web Server [kuchin]
 	scheduler = new CScheduler();
 	liveStreamManager = new CLiveStreamManager();
-	relayclient = new CRelayClient();
 
 	// ZZ:UploadSpeedSense -->
 	lastCommonRouteFinder = new LastCommonRouteFinder();
@@ -689,13 +686,6 @@ BOOL CemuleApp::InitInstance()
 		m_pMainWnd = NULL;
 	} else {
 		emuledlg->DoModal();
-	}
-	// Normal OnCancel tears this down before WebServer/TLS. Keep a fallback for
-	// early modal termination paths so no relay worker survives the main window.
-	if (relayclient != NULL) {
-		relayclient->Shutdown();
-		delete relayclient;
-		relayclient = NULL;
 	}
 	if (directreachability != NULL) {
 		directreachability->SaveChangedDirectKad6Contacts(
@@ -1378,8 +1368,6 @@ bool CemuleApp::HasVerifiedEd2kHighId() const
 	if (serverconnect == NULL || !serverconnect->IsConnected()
 		|| serverconnect->IsLowID())
 		return false;
-	if (serverconnect->IsConnectedViaRelay())
-		return false;
 	const bool bDirectMappingVerified = directreachability == NULL
 		|| !directreachability->IsEnabled()
 		|| directreachability->HasVerifiedEd2kReachability();
@@ -1401,8 +1389,7 @@ bool CemuleApp::CanDoCallback(CUpDownClient *client)
 {
 	bool ed2k = theApp.serverconnect->IsConnected();
 	bool eLow = theApp.serverconnect->IsLowID();
-	if (!theApp.serverconnect->IsConnectedViaRelay()
-		&& directreachability != NULL && directreachability->IsEnabled()
+	if (directreachability != NULL && directreachability->IsEnabled()
 		&& !directreachability->HasVerifiedEd2kReachability())
 		eLow = true;
 

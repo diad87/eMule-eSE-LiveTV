@@ -10,7 +10,6 @@
 #include "Log.h"
 #include "LiveDebugLog.h"
 #include "Emule.h"
-#include "RelayClient.h"
 
 #include <algorithm>
 
@@ -1095,13 +1094,8 @@ void StopSSL()
 		mbedtls_ssl_ticket_free(&ticket_ctx);
 		mbedtls_x509_crt_free(&srvcert);
 		mbedtls_pk_free(&pkey);
-		// KRP may share the process-wide PSA/threading runtime. Its carrier is
-		// joined before normal app shutdown, but a runtime WebServer toggle must
-		// not invalidate mbedTLS while that worker is alive.
-		if (theApp.relayclient == NULL || !theApp.relayclient->IsTlsRuntimeInUse()) {
-			mbedtls_psa_crypto_free();
-			mbedtls_threading_free_alt();
-		}
+		mbedtls_psa_crypto_free();
+		mbedtls_threading_free_alt();
 	}
 }
 

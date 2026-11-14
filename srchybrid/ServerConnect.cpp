@@ -34,7 +34,6 @@
 #include "TaskbarNotifier.h"
 #include "Log.h"
 #include "DirectReachabilityManager.h"
-#include "RelayClient.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -119,19 +118,6 @@ void CServerConnect::ConnectToAnyServer(INT_PTR startAt, bool prioSort, bool isA
 
 void CServerConnect::ConnectToServer(CServer *server, bool multiconnect, bool bNoCrypt)
 {
-	if (theApp.relayclient != NULL &&
-		theApp.relayclient->IsTcpDataPlaneEnabled() &&
-		!theApp.relayclient->IsTcpDataPlaneReady()) {
-		LogWarning(_T("KRP relay: waiting for authenticated ACTIVE TCP lease before connecting to eD2K"));
-		connecting = true;
-		singleconnecting = !multiconnect;
-		if (m_idRetryTimer == 0) {
-			m_uStartAutoConnectPos = 0;
-			m_idRetryTimer = ::SetTimer(NULL, 0, 1000, RetryConnectTimer);
-		}
-		theApp.emuledlg->ShowConnectionState();
-		return;
-	}
 	if (!multiconnect) {
 		if (!m_dispatchingCallbackRetry)
 			m_callbackRetry.Reset();
@@ -199,7 +185,7 @@ void CServerConnect::ConnectionEstablished(CServerSocket *sender)
 		}
 
 		// Send login packet
-		if (!sender->IsRelayRouted() && theApp.directreachability != NULL) {
+		if (theApp.directreachability != NULL) {
 			sender->m_nDirectTopologyGeneration =
 				theApp.directreachability->GetTopologyGeneration();
 			SOCKADDR_STORAGE localStorage = {};
@@ -238,9 +224,7 @@ void CServerConnect::ConnectionEstablished(CServerSocket *sender)
 		CSafeMemFile data(256);
 		data.WriteHash16(thePrefs.GetUserHash());
 		data.WriteUInt32(GetClientID());
-		data.WriteUInt16(sender->IsRelayRouted() && theApp.relayclient != NULL
-			? theApp.relayclient->GetAdvertisedTcpPort(theApp.GetAdvertisedTcpPort())
-			: theApp.GetAdvertisedTcpPort());
+		data.WriteUInt16(theApp.GetAdvertisedTcpPort());
 
 		const bool bAdvertiseIPv6Wire = thePrefs.IsIPv6Enabled();
 		UINT tagcount = bAdvertiseIPv6Wire ? 5 : 4;
@@ -485,7 +469,7 @@ VOID CALLBACK CServerConnect::RetryConnectTimer(HWND /*hWnd*/, UINT /*nMsg*/, UI
 
 bool CServerConnect::ScheduleCallbackFallback(CServerSocket* sender, uint64 generation)
 {
-	if (!sender || !sender->cur_server || sender->IsRelayRouted() ||
+	if (!sender || !sender->cur_server ||
 		!connecting || singleconnecting || connected || !thePrefs.IsEseNetLabActive() ||
 		!theApp.directreachability ||
 		generation != theApp.directreachability->GetTopologyGeneration() ||
@@ -724,9 +708,4 @@ bool CServerConnect::AwaitingTestFromIP(uint32 dwIP) const
 bool CServerConnect::IsConnectedObfuscated() const
 {
 	return connectedsocket != NULL && connectedsocket->IsObfusicating();
-}
-
-bool CServerConnect::IsConnectedViaRelay() const
-{
-	return connected && connectedsocket != NULL && connectedsocket->IsRelayRouted();
 }

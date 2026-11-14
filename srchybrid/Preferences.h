@@ -657,7 +657,7 @@ public:
 	static bool		m_bEnableUtpHolePunch;	// Fase 4: Kill-switch maestro para Hole Punching uTP
 	static int		m_iEseNetLabConsent;	// v9 beta NetLab cohort: 0 undecided, 1 declined, 2 explicitly accepted.
 	static int		m_iEseNetLabAdvancedConsent;	// Punch3/prediction/Kad6 client plane; independent explicit consent.
-	static int		m_iEseNetLabContributionConsent;	// Relay/KRP/Kad6 beta-exit resource contribution; independent explicit consent.
+	static int		m_iEseNetLabContributionConsent;	// Relay/Kad6 beta-exit resource contribution; independent explicit consent.
 	static bool		m_bEseNetLabEnabled;	// Immediate cohort kill switch. Effective only after explicit acceptance.
 	static bool		m_bEseDirectQuicOptIn;
 	static bool		m_bEseV9Experimental;	// v9 alpha master opt-in for unvalidated wire capabilities. Default OFF.
@@ -668,16 +668,6 @@ public:
 	static bool		m_bEseRelayAccept;		// [eSE v9] R.3: act as a relay buddy (accept 0xCF SETUP + serve 0xCE viewers). Default OFF.
 	static bool		m_bEseRelayEgress;		// [eSE v9] R.3: as an unreachable broadcaster, push my stream to a relay buddy. Default OFF.
 	static bool		m_bEseReachSelector;	// [eSE v9] reachability selector: escalate Direct->punch2->punch3->relay on the Live dial. Default OFF.
-	// KRP relay client; independent from the Live/Buddy relay above.
-	static bool		m_bKrpRelayEnabled;
-	static bool		m_bKrpRelayKillSwitch;
-	static CString	m_strKrpRelayEndpointHost;
-	static uint16	m_uKrpRelayEndpointPort;
-	static CString	m_strKrpRelayExpectedServerName;
-	static CString	m_strKrpRelayCaBundlePath;
-	static bool		m_bKrpRelayAllowAnyServer;
-	static bool		m_bKrpRelayExperimentalTcp;
-	static CString	m_strKrpRelayAuthTokenPath;
 	static bool		m_bEseHolePunchPortPredict;	// [eSE v9] anti-CGNAT: birthday-spray REQs across a port window (symmetric NAT / CGNAT). Default OFF.
 	static int		m_iEseHolePunchPortSpread;	// [eSE v9] port-prediction window half-width (ports each side of the observed port). Clamped [0,8].
 	static bool		m_bEseEd2kPunch3;			// [eSE v9] eD2K downloads: escalate to 3-way rendezvous (punch3) when the 2-way punch fails. Default OFF.
@@ -1361,18 +1351,6 @@ public:
 	static void		SetEseRelayAccept(bool b)			{ m_bEseRelayAccept = b; }
 	static bool		GetEseRelayEgress()					{ return m_bEseRelayEgress; }
 	static void		SetEseRelayEgress(bool b)			{ m_bEseRelayEgress = b; }
-	static bool		GetKrpRelayEnabled()				{ return m_bKrpRelayEnabled; }
-	static void		SetKrpRelayEnabled(bool b)			{ m_bKrpRelayEnabled = b; }
-	static bool		GetKrpRelayKillSwitch()			{ return m_bKrpRelayKillSwitch; }
-	static void		SetKrpRelayKillSwitch(bool b)		{ m_bKrpRelayKillSwitch = b; }
-	static const CString& GetKrpRelayEndpointHost()		{ return m_strKrpRelayEndpointHost; }
-	static uint16	GetKrpRelayEndpointPort()			{ return m_uKrpRelayEndpointPort; }
-	static const CString& GetKrpRelayExpectedServerName()	{ return m_strKrpRelayExpectedServerName; }
-	static const CString& GetKrpRelayCaBundlePath()		{ return m_strKrpRelayCaBundlePath; }
-	static bool		GetKrpRelayAllowAnyServer()			{ return m_bKrpRelayAllowAnyServer; }
-	static bool		GetKrpRelayExperimentalTcp()		{ return m_bKrpRelayExperimentalTcp; }
-	static void		SetKrpRelayExperimentalTcp(bool b)	{ m_bKrpRelayExperimentalTcp = b; }
-	static const CString& GetKrpRelayAuthTokenPath()	{ return m_strKrpRelayAuthTokenPath; }
 	static bool		GetEseReachSelector()				{ return m_bEseReachSelector; }
 	static void		SetEseReachSelector(bool b)			{ m_bEseReachSelector = b; }
 	static bool		GetEseHolePunchPortPredict()		{ return m_bEseHolePunchPortPredict; }

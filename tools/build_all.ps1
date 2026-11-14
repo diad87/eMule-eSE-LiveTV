@@ -208,6 +208,9 @@ Stage 'emule' {
 
 Stage 'tests-integration' {
     & (Join-Path $RepoRoot 'tools\run_alpha_tests.ps1') -RepoRoot $RepoRoot -Suite Integration
+    if (-not $requiresQuic) {
+        & (Join-Path $RepoRoot 'tools\run_alpha_tests.ps1') -RepoRoot $RepoRoot -Suite ArchivedRelay
+    }
 }
 
 Stage 'cleanup-libutp' {

@@ -430,15 +430,6 @@ bool	CPreferences::m_bEseKadV6Tag;		// [eSE v9] Kad-HELLO v6 tag TX pref
 bool	CPreferences::m_bEseRelayAccept;	// [eSE v9] R.3 relay accept pref
 bool	CPreferences::m_bEseRelayEgress;	// [eSE v9] R.3 relay egress pref
 bool	CPreferences::m_bEseReachSelector;	// [eSE v9] reachability selector pref
-bool	CPreferences::m_bKrpRelayEnabled;
-bool	CPreferences::m_bKrpRelayKillSwitch;
-CString	CPreferences::m_strKrpRelayEndpointHost;
-uint16	CPreferences::m_uKrpRelayEndpointPort;
-CString	CPreferences::m_strKrpRelayExpectedServerName;
-CString	CPreferences::m_strKrpRelayCaBundlePath;
-bool	CPreferences::m_bKrpRelayAllowAnyServer;
-bool	CPreferences::m_bKrpRelayExperimentalTcp;
-CString	CPreferences::m_strKrpRelayAuthTokenPath;
 bool	CPreferences::m_bEseHolePunchPortPredict;	// [eSE v9] anti-CGNAT port-prediction pref
 int		CPreferences::m_iEseHolePunchPortSpread;	// [eSE v9] port-prediction window half-width
 bool	CPreferences::m_bEseEd2kPunch3;		// [eSE v9] eD2K punch3 escalation pref
@@ -1933,15 +1924,6 @@ void CPreferences::SavePreferences()
 	ini.WriteInt(_T("EseHolePunchPortSpread"), m_iEseHolePunchPortSpread, _T("eSE"));
 	ini.WriteBool(_T("EseEd2kPunch3"), m_bEseEd2kPunch3, _T("eSE"));
 	ini.WriteInt(_T("EseRelayMaxKBps"), m_iEseRelayMaxKBps, _T("eSE"));
-	ini.WriteBool(_T("KrpRelayEnabled"), m_bKrpRelayEnabled, _T("KRPRelay"));
-	ini.WriteBool(_T("KrpRelayKillSwitch"), m_bKrpRelayKillSwitch, _T("KRPRelay"));
-	ini.WriteString(_T("EndpointHost"), m_strKrpRelayEndpointHost, _T("KRPRelay"));
-	ini.WriteInt(_T("EndpointPort"), m_uKrpRelayEndpointPort, _T("KRPRelay"));
-	ini.WriteString(_T("ExpectedServerName"), m_strKrpRelayExpectedServerName, _T("KRPRelay"));
-	ini.WriteString(_T("CaBundlePath"), m_strKrpRelayCaBundlePath, _T("KRPRelay"));
-	ini.WriteBool(_T("AllowAnyConnectedServer"), m_bKrpRelayAllowAnyServer, _T("KRPRelay"));
-	ini.WriteBool(_T("ExperimentalTcpDataPlane"), m_bKrpRelayExperimentalTcp, _T("KRPRelay"));
-	ini.WriteString(_T("AuthTokenPath"), m_strKrpRelayAuthTokenPath, _T("KRPRelay"));
 }
 
 void CPreferences::ResetStatsColor(int index)
@@ -2648,29 +2630,14 @@ void CPreferences::LoadPreferences()
 	m_bEseRelayAccept   = ini.GetBool(_T("EseRelayAccept"),   false, _T("eSE"));
 	m_bEseRelayEgress   = ini.GetBool(_T("EseRelayEgress"),   false, _T("eSE"));
 	m_bEseReachSelector = ini.GetBool(_T("EseReachSelector"), false, _T("eSE"));
-	// P3 KRP client. Enabling it without an explicit endpoint, verified server
-	// name and CA bundle fails closed in CRelayClient.
-	m_bKrpRelayEnabled = ini.GetBool(_T("KrpRelayEnabled"), false, _T("KRPRelay"));
-	m_bKrpRelayKillSwitch = ini.GetBool(_T("KrpRelayKillSwitch"), false, _T("KRPRelay"));
-	m_strKrpRelayEndpointHost = ini.GetString(_T("EndpointHost"), _T(""), _T("KRPRelay"));
-	m_strKrpRelayEndpointHost.Trim();
-	int krpPort = ini.GetInt(_T("EndpointPort"), 443, _T("KRPRelay"));
-	if (krpPort < 1 || krpPort > 65535) krpPort = 443;
-	m_uKrpRelayEndpointPort = static_cast<uint16>(krpPort);
-	m_strKrpRelayExpectedServerName = ini.GetString(_T("ExpectedServerName"), _T(""), _T("KRPRelay"));
-	m_strKrpRelayExpectedServerName.Trim();
-	m_strKrpRelayCaBundlePath = ini.GetString(_T("CaBundlePath"), _T(""), _T("KRPRelay"));
-	m_strKrpRelayCaBundlePath.Trim();
-	if (!m_strKrpRelayCaBundlePath.IsEmpty() && ::PathIsRelative(m_strKrpRelayCaBundlePath))
-		m_strKrpRelayCaBundlePath =
-			GetMuleDirectory(EMULE_EXECUTABLEDIR) + m_strKrpRelayCaBundlePath;
-	m_bKrpRelayAllowAnyServer = ini.GetBool(_T("AllowAnyConnectedServer"), false, _T("KRPRelay"));
-	m_bKrpRelayExperimentalTcp = ini.GetBool(_T("ExperimentalTcpDataPlane"), false, _T("KRPRelay"));
-	m_strKrpRelayAuthTokenPath = ini.GetString(_T("AuthTokenPath"), _T(""), _T("KRPRelay"));
-	m_strKrpRelayAuthTokenPath.Trim();
-	if (!m_strKrpRelayAuthTokenPath.IsEmpty() && ::PathIsRelative(m_strKrpRelayAuthTokenPath))
-		m_strKrpRelayAuthTokenPath =
-			GetMuleDirectory(EMULE_EXECUTABLEDIR) + m_strKrpRelayAuthTokenPath;
+	// Disable legacy KRP settings once, leaving credentials and unrelated preferences intact.
+	if (ini.GetBool(_T("KrpRelayEnabled"), false, _T("KRPRelay")) ||
+		!ini.GetBool(_T("KrpRelayKillSwitch"), true, _T("KRPRelay")) ||
+		ini.GetBool(_T("ExperimentalTcpDataPlane"), false, _T("KRPRelay"))) {
+		ini.WriteBool(_T("KrpRelayEnabled"), false, _T("KRPRelay"));
+		ini.WriteBool(_T("KrpRelayKillSwitch"), true, _T("KRPRelay"));
+		ini.WriteBool(_T("ExperimentalTcpDataPlane"), false, _T("KRPRelay"));
+	}
 	// [eSE v9] anti-CGNAT port prediction ("birthday spray"). DEFAULT OFF -> the punch fires a
 	// single REQ at the observed port exactly as before. When ON, it also sprays a small window of
 	// ports (helps symmetric NAT / CGNAT that randomizes the external port). Spread clamped [0,8]
@@ -2755,14 +2722,6 @@ void CPreferences::ApplyEseNetLabPreferenceState(bool active)
 
 	SetEseRelayAccept(contribution);
 	SetEseRelayEgress(contribution);
-	const bool krpConfigured = contribution
-		&& !m_strKrpRelayEndpointHost.IsEmpty()
-		&& !m_strKrpRelayExpectedServerName.IsEmpty()
-		&& !m_strKrpRelayCaBundlePath.IsEmpty()
-		&& !m_strKrpRelayAuthTokenPath.IsEmpty();
-	SetKrpRelayEnabled(krpConfigured);
-	SetKrpRelayKillSwitch(!krpConfigured);
-	SetKrpRelayExperimentalTcp(krpConfigured);
 	SetKad6BetaExitOptIn(contribution);
 }
 

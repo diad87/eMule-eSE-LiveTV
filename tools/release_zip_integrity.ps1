@@ -46,6 +46,7 @@ function New-DeterministicReleaseZip {
         [Parameter(Mandatory = $true)][DateTimeOffset]$Timestamp
     )
     Assert-ReleaseZipNoReparseTree -Root $SourceDirectory
+    Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $source = (Resolve-Path -LiteralPath $SourceDirectory).Path.TrimEnd('\')
     [string[]]$paths = @(Get-ChildItem -LiteralPath $source -Recurse -File -Force | ForEach-Object {

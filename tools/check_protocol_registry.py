@@ -30,6 +30,7 @@ TUNNEL_H = ROOT / "srchybrid" / "LiveTunnel.h"
 TUNNEL_FRAMING_H = ROOT / "srchybrid" / "LiveTunnelFraming.h"
 KRP_CONTROL_H = ROOT / "librelaycore" / "include" / "relay" / "krp_control.h"
 ESE_WIRE_H = ROOT / "srchybrid" / "EseWireProtocol.h"
+ESE_SERVER_WIRE_H = ROOT / "srchybrid" / "EseServerWire.h"
 KAD6_SERVICE_H = ROOT / "srchybrid" / "EseKad6ServiceCapabilities.h"
 KAD6_HEADERS = (
     ROOT / "libkad6" / "include" / "kad6" / "kad6_search.h",
@@ -46,6 +47,10 @@ PRIVATE_TAG_ALIASES = {
     "CT_PEER_FORK_CAPABILITIES": "ESE-PRIVATE-PEER-HELLO",
     "CT_SERVER_FORK_CAPABILITIES": "ESE-PRIVATE-V1-SERVER-LOGIN",
 }
+
+REGISTRY_FILES = ("OPCODES.csv", "TAGS.csv", "CAPABILITIES.csv", "TUNNEL_SERVICES.csv",
+                  "KRP_MESSAGES.csv", "KAD6_MESSAGES.csv", "ESE_WIRE.csv",
+                  "SERVER_MESSAGES.csv", "SERVER_CAPABILITIES.csv", "RDV2_MESSAGES.csv")
 
 # A symbol in code is "fork-owned" (and therefore must be registered) when its
 # name matches one of these. Everything else is classic/upstream and ignored.
@@ -88,7 +93,8 @@ def norm(v: str, kind="number"):
 def parse_code():
     """Return {name: (value:int|str, file:str, line:int)} for selected fork symbols."""
     out = {}
-    for path in (OPCODES_H, TUNNEL_H, TUNNEL_FRAMING_H, KRP_CONTROL_H, ESE_WIRE_H, KAD6_SERVICE_H, *KAD6_HEADERS):
+    for path in (OPCODES_H, TUNNEL_H, TUNNEL_FRAMING_H, KRP_CONTROL_H, ESE_WIRE_H,
+                 ESE_SERVER_WIRE_H, KAD6_SERVICE_H, *KAD6_HEADERS):
         if not path.exists():
             print(f"  ! cannot read {path}", file=sys.stderr)
             continue
@@ -111,8 +117,7 @@ def parse_code():
 
 def load_registry():
     rows = []
-    for csv_name in ("OPCODES.csv", "TAGS.csv", "CAPABILITIES.csv", "TUNNEL_SERVICES.csv",
-                     "KRP_MESSAGES.csv", "KAD6_MESSAGES.csv", "ESE_WIRE.csv"):
+    for csv_name in REGISTRY_FILES:
         p = PROTO / csv_name
         if not p.exists():
             print(f"  ! missing registry file {p}", file=sys.stderr)
@@ -142,7 +147,12 @@ def main():
         else:
             seen[key] = r["name"]
 
-    by_name = {r["name"]: r for r in reg}
+    by_name = {}
+    for r in reg:
+        if r["name"] in by_name:
+            errors.append(f"DUPLICATE NAME   {r['name']} in {r['_src']}")
+        else:
+            by_name[r["name"]] = r
     for name, namespace in PRIVATE_TAG_ALIASES.items():
         aliases = [row for row in reg if row["name"] == name]
         if (len(aliases) != 1 or aliases[0]["_src"] != "TAGS.csv"

@@ -1,0 +1,13 @@
+{
+  "specification": "docs/V9.3_IMPLEMENTATION_SPECIFICATION.md §D.4 and §D.11",
+  "case_id": "DS-03",
+  "provenance": "Hand-authored network-order byte vectors from the specification",
+  "sha256_format": "decoded wire bytes",
+  "sha256": {
+    "bad_length.hex": "81a357f31c9ee34bfaf1de25a101984c5b124b5dd368eac63de3b9a35ee6a733",
+    "ping.hex": "347b576c442bec47e5344082598da197e76283992c5e326cbc8348cb1deb3e8c",
+    "pong.hex": "c02c79216b4c8e7fe045635cf90dcb89d923d79f9fff82be330a517a6b077aa6",
+    "unknown.hex": "452c7365645b0cc643ecd927d72935550c0339b8e831073b15bc507c52ce3397",
+    "unsupported.hex": "4ffa5ad2b670652a65593f61bded04af11756a3283eee4f852caa8372fa49fbc"
+  }
+}

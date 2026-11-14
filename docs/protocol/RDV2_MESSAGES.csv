@@ -1,0 +1,8 @@
+name,value_kind,value,namespace,status,format,capability_gate,file
+kEseWireRdv2ExporterLabel,string,EXPORTER-eSE-rdv2-v1,ESE-RDV2-EXPORTER,experimental,TLS exporter label without terminator,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireRdv2Magic,string,ESERDV2\0,ESE-RDV2-MAGIC,experimental,Seven ASCII bytes followed by NUL,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireRdv2CookieDomain,string,ESE-RDV-COOKIE/1,ESE-RDV2-COOKIE-DOMAIN,experimental,Cookie domain followed by NUL,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireRdv2Register,number,1,ESE-RDV2/1,experimental,Register direction C>S fixed 140 bytes,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireRdv2Challenge,number,2,ESE-RDV2/1,experimental,Challenge direction S>C fixed 140 bytes,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireRdv2Echo,number,3,ESE-RDV2/1,experimental,Echo direction C>S fixed 140 bytes,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireRdv2Keepalive,number,4,ESE-RDV2/1,experimental,Keepalive direction C>S fixed 140 bytes,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h

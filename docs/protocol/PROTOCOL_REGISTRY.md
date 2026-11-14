@@ -20,12 +20,15 @@ work, never an allocation, endorsement or claim of ownership.
 | [`KAD6_MESSAGES.csv`](KAD6_MESSAGES.csv) | Kad6 inner message identifiers |
 | [`KRP_MESSAGES.csv`](KRP_MESSAGES.csv) | Relay-control message identifiers |
 | [`ESE_WIRE.csv`](ESE_WIRE.csv) | Owned magic, ALPN, signature domains and peer-profile constants |
+| [`SERVER_MESSAGES.csv`](SERVER_MESSAGES.csv) | Local ESE-SERVER/1 messages, flags, errors and transport identifiers |
+| [`SERVER_CAPABILITIES.csv`](SERVER_CAPABILITIES.csv) | Capability bits negotiated by ESE-SERVER/1 |
+| [`RDV2_MESSAGES.csv`](RDV2_MESSAGES.csv) | Local ESE-RDV2/1 datagram identifiers |
 | [`EXTERNAL_INTEROP_CATALOG.csv`](EXTERNAL_INTEROP_CATALOG.csv) | Observed third-party contracts, commits, compatibility verdicts and send gates; non-authoritative |
 
 Legacy rows default to `value_kind=number`; `TAGS.csv` also permits explicit
 `string` identifiers. String values use C/Python-compatible escapes for magic
 bytes (for example `\x00ESECTL1`), never the implicit C string terminator.
-The checker inspects EseWireProtocol.h and compares decoded values. Collision
+The checker inspects the wire headers and compares decoded values. Collision
 keys include namespace and value kind; string tags do not allocate classic
 numeric slots. `design` means no receiver/emitter is enabled by this declaration.
 Transport, discovery and advertising behavior is verified by runtime fixtures.
@@ -41,8 +44,7 @@ CSVs until eSE implements and legitimately owns that surface.
 
 ## Ownership boundary
 
-- `OPCODES.csv`, `TAGS.csv`, `CAPABILITIES.csv`, `TUNNEL_SERVICES.csv`,
-  `KAD6_MESSAGES.csv` and `KRP_MESSAGES.csv` form the governed eSE-owned set.
+- The registry files for owned protocols form the governed eSE set.
 - `EXTERNAL_INTEROP_CATALOG.csv` is an observational compatibility ledger.
 - Narrative documents and forum posts allocate nothing.
 - The same numeric value may be an exact alias, a different dialect, a real

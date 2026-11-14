@@ -1,0 +1,50 @@
+name,value_kind,value,namespace,status,format,capability_gate,file
+kEseWireServerAlpn,string,ese-server/1,ESE-SERVER-ALPN,experimental,ALPN exact bytes,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerMagic,string,ESES,ESE-SERVER-MAGIC,experimental,Four-byte frame prefix,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerExporterLabel,string,EXPORTER-eSE-server-v1,ESE-SERVER-EXPORTER,experimental,TLS exporter label without terminator,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerAuthDomain,string,ESE-SERVER-AUTH/1,ESE-SERVER-AUTH-DOMAIN,experimental,Signature domain followed by NUL,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerClientHello,number,0x0001,ESE-SERVER/1,experimental,C>S CLIENT_HELLO nonce32 node32 user_hash16 caps32 max_frame32 boot16 mode8,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerServerHello,number,0x0002,ESE-SERVER/1,experimental,S>C SERVER_HELLO nonce32 node32 epoch16 session16 generation64 selected32 max_frame32 lease32,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerServerProof,number,0x0003,ESE-SERVER/1,experimental,S>C SERVER_PROOF signature64,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerClientProof,number,0x0004,ESE-SERVER/1,experimental,C>S CLIENT_PROOF signature64,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerAuthOk,number,0x0005,ESE-SERVER/1,experimental,S>C AUTH_OK lease_seconds32,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerSessionRenew,number,0x0006,ESE-SERVER/1,experimental,C<>S SESSION_RENEW request empty and response lease_seconds32,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerEd2kCommand,number,0x0010,ESE-SERVER/1,experimental,C>S ED2K_COMMAND E3 opcode8 length32 body,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerEd2kEvent,number,0x0011,ESE-SERVER/1,experimental,S>C ED2K_EVENT E3 opcode8 length32 body,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerAck,number,0x0012,ESE-SERVER/1,experimental,S>C ACK status16=0,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerSourceHintsGet,number,0x0014,ESE-SERVER/1,experimental,C>S SOURCE_HINTS_GET hash16 size64,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerSourceHints,number,0x0015,ESE-SERVER/1,experimental,S>C SOURCE_HINTS count16 up to 128 followed by node32 user_hash16 pairs,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerPubBegin,number,0x0020,ESE-SERVER/1,experimental,C>S PUB_BEGIN revision64 total_records32 digest32,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerPubChunk,number,0x0021,ESE-SERVER/1,experimental,C>S PUB_CHUNK revision64 chunk_index32 count16 records,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerPubCommit,number,0x0022,ESE-SERVER/1,experimental,C>S PUB_COMMIT revision64 digest32,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerPubStateGet,number,0x0023,ESE-SERVER/1,experimental,C>S PUB_STATE_GET empty,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerPubState,number,0x0024,ESE-SERVER/1,experimental,S>C PUB_STATE revision64 total_records32 digest32,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerVoucherGet,number,0x0030,ESE-SERVER/1,experimental,C>S VOUCHER_GET target32 hash16 size64 purpose8,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerVoucher,number,0x0031,ESE-SERVER/1,experimental,S>C VOUCHER voucher32 target32 ttl_ms32,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerPairRequest,number,0x0032,ESE-SERVER/1,experimental,C>S PAIR_REQUEST voucher32 attempt16 topology64 nonce16,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerConsentQuery,number,0x0033,ESE-SERVER/1,experimental,S>C CONSENT_QUERY transaction16 requester32 hash16 size64 purpose8 ttl_ms32,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerConsentReply,number,0x0034,ESE-SERVER/1,experimental,C>S CONSENT_REPLY transaction16 accept8 attempt16 topology64,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerPairResult,number,0x0035,ESE-SERVER/1,experimental,S>C PAIR_RESULT transaction16 attempt16 generation64 node32 ttl_ms32 count8 endpoints,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerRegStatus,number,0x0036,ESE-SERVER/1,experimental,S>C REG_STATUS family8 observed endpoint ttl_ms32,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerProbeRequest,number,0x0040,ESE-SERVER/1,experimental,C>S PROBE_REQUEST probe16 nonce32 topology64 family8 port16,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerProbeResult,number,0x0041,ESE-SERVER/1,experimental,S>C PROBE_RESULT probe16 status8 ttl_ms32,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerProbeReady,number,0x0042,ESE-SERVER/1,experimental,S>C PROBE_READY probe16 observed endpoint ttl_ms32,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerProbeArm,number,0x0043,ESE-SERVER/1,experimental,C>S PROBE_ARM probe16,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerPong,number,0x00FD,ESE-SERVER/1,experimental,S>C PONG nonce16,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerPing,number,0x00FE,ESE-SERVER/1,experimental,C>S PING nonce16,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerError,number,0x00FF,ESE-SERVER/1,experimental,S>C ERROR code16 retry_after_ms32,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerMalformed,number,1,ESE-SERVER/1-ERROR,experimental,Malformed,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerUnsupported,number,2,ESE-SERVER/1-ERROR,experimental,Unsupported,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerAuthRequired,number,3,ESE-SERVER/1-ERROR,experimental,AuthRequired,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerAuthFailed,number,4,ESE-SERVER/1-ERROR,experimental,AuthFailed,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerExpired,number,5,ESE-SERVER/1-ERROR,experimental,Expired,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerReplay,number,6,ESE-SERVER/1-ERROR,experimental,Replay,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerNoConsent,number,7,ESE-SERVER/1-ERROR,experimental,NoConsent,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerRateLimit,number,8,ESE-SERVER/1-ERROR,experimental,RateLimit,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerResourceLimit,number,9,ESE-SERVER/1-ERROR,experimental,ResourceLimit,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerConflict,number,10,ESE-SERVER/1-ERROR,experimental,Conflict,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerTargetGone,number,11,ESE-SERVER/1-ERROR,experimental,TargetGone,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerFiltered,number,12,ESE-SERVER/1-ERROR,experimental,Filtered,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerWrongState,number,13,ESE-SERVER/1-ERROR,experimental,WrongState,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerResponse,number,0x0001,ESE-SERVER/1-FLAGS,experimental,Correlated response,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerFinal,number,0x0002,ESE-SERVER/1-FLAGS,experimental,Last fragment or terminal error,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h

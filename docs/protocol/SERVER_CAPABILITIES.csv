@@ -1,0 +1,7 @@
+name,value_kind,value,namespace,status,format,capability_gate,file
+kEseWireServerCapEd2kEnvelope,number,0x00000001,CAP-SERVER/1,experimental,Mandatory ED2K_ENVELOPE,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerCapIpv6EnodeV1,number,0x00000002,CAP-SERVER/1,experimental,IPV6_ENODE_V1,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerCapRdv2,number,0x00000004,CAP-SERVER/1,experimental,RDV2,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerCapCrossCallback,number,0x00000008,CAP-SERVER/1,experimental,CROSS_CALLBACK requires RDV2,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerCapAtomicPublish,number,0x00000010,CAP-SERVER/1,experimental,Mandatory ATOMIC_PUBLISH,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h
+kEseWireServerCapIpv6Connectback,number,0x00000020,CAP-SERVER/1,experimental,IPV6_CONNECTBACK requires IPV6_ENODE_V1,codec or reserved constants only - no emitter,srchybrid/EseServerWire.h

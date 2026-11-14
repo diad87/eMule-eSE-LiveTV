@@ -17,6 +17,7 @@ public:
     virtual void RetireControlService(std::uint64_t) {}
     virtual bool ExpectControlBootstrap(const std::array<std::uint8_t,32>&,
         const std::array<std::uint8_t,32>&,const udp::Endpoint&,std::uint64_t,std::uint64_t) { return false; }
+    virtual bool RefreshControlBootstrap(std::uint64_t,std::uint64_t) { return false; }
     virtual bool ExpectControlReply(const control::Header&,std::uint8_t,const udp::Endpoint&,
         std::uint64_t,std::uint64_t) { return false; }
     virtual void RemoveControlReplies(std::uint64_t) {}

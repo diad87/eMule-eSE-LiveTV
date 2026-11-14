@@ -4986,8 +4986,10 @@ inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNu
     if(serverSide) for(const bool pendingConsent : {true,false}) {
         const auto previousControlSessions=manager.DirectControlSessions();
         const auto rejectedPolicies=manager.RejectedDirectQuicPreparationPolicies();
-        const auto until=Now()+2000;
-        const auto responder=manager.ExpectDirectControlBootstrap(identity.pub,port.endpoint,until);
+        const auto now=Now();
+        const auto until=now+2000;
+        const auto originalResponderDeadline=pendingConsent?now+700:until;
+        const auto responder=manager.ExpectDirectControlBootstrap(identity.pub,port.endpoint,originalResponderDeadline);
         Require(responder && !manager.AuthorizeDirectQuicControlResponder(responder,admitted.request.handle,route.id+1),
             "server consent rejects absent route");
         auto changedNode=identity.pub; changedNode[0]^=0x80;
@@ -5020,7 +5022,9 @@ inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNu
         destination.sin_addr.s_addr=htonl(INADDR_LOOPBACK); destination.sin_port=htons(local.port);
         while(Now()<until && initiator.State()!=control::InitiatorState::Ready) {
             const auto pending=initiator.Pending(Now());
-            if(pending.size) {
+            // Send the signed PROVE after the original listener deadline.
+            if(pending.size && (!pendingConsent || initiator.State()!=control::InitiatorState::Prove ||
+                Now()>originalResponderDeadline)) {
                 Require(sendto(port.socket,reinterpret_cast<const char*>(pending.data),static_cast<int>(pending.size),0,
                     reinterpret_cast<const sockaddr*>(&destination),sizeof(destination))==static_cast<int>(pending.size),
                     "server consent actual UDP request");
@@ -5054,6 +5058,7 @@ inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNu
                 manager.DirectConnections().Size()==1 && existingRoutes && existingRoutes->size()==1 &&
                 (*existingRoutes)[0].candidate.expires_monotonic_ms==route.candidate.expires_monotonic_ms,
                 "pending PROVE loopback rejection creates no attempt or replacement route and renews no lease");
+            Log(_T("REACH_SELFTEST control responder refresh PASS: original listen deadline crossed authenticated PROVE matched and signed no-route ACK"));
         }
         manager.CancelDirectControlResponder(responder);
         // Isolate the rejected preparation fixture from the independent V71

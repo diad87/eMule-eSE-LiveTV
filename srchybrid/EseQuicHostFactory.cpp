@@ -59,6 +59,9 @@ public:
         std::uint64_t owner,std::uint64_t until) override {
         return owner_.Attached() && probe_.routes.AddBootstrap(local,expected,peer,owner,ControlNow(),until);
     }
+    bool RefreshControlBootstrap(std::uint64_t owner,std::uint64_t until) override {
+        return owner_.Attached() && probe_.routes.RefreshBootstrap(owner,ControlNow(),until);
+    }
     void Stop() override { probe_.routes.Reset(); probe_.service.Reset(); serviceOwner_=0; owner_.Stop(); }
     void Poll(std::uint64_t now) override { probe_.routes.Advance(now); owner_.Poll(now); }
     bool ExpectControlReply(const control::Header& request,std::uint8_t reply,const udp::Endpoint& peer,

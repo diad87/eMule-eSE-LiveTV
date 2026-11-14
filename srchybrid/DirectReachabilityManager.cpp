@@ -52,6 +52,8 @@
 #endif
 
 namespace {
+constexpr uint64 kDirectQuicBootstrapMs=1500;
+
 const char* ReachGateStateName(natmap::ReachabilityState state)
 {
 	switch (state) {
@@ -858,8 +860,8 @@ uint64 CDirectReachabilityManager::BeginOwnedDirectQuicDownloadWithTrust(reach::
         auto peer=PrepareDirectQuicDownloadPolicy(handle,allowFirstUse,prepared);
         if(!peer) return 0;
         const auto preparedNow=MonotonicMilliseconds();
-        if(preparedNow>(std::numeric_limits<uint64>::max)()-1500) return 0;
-		const auto owner=BeginDirectQuicDownloadBootstrap(handle,endpoint,preparedNow+1500);
+        if(preparedNow>(std::numeric_limits<uint64>::max)()-kDirectQuicBootstrapMs) return 0;
+		const auto owner=BeginDirectQuicDownloadBootstrap(handle,endpoint,preparedNow+kDirectQuicBootstrapMs);
 		if(!owner) continue;
         if(m_directBootstrapDownload.slot==handle.slot && m_directBootstrapDownload.generation==handle.generation &&
             peer->local.attempt==m_directBootstrapContext.attempt && peer->expectedNode==m_directBootstrapPeer &&
@@ -1772,10 +1774,23 @@ void CDirectReachabilityManager::PumpDirectControlReplies()
 					if(valid) {
 						ese::control::Probe probe; ese::control::Challenge challenge;
 						ese::control::Envelope issued;
+						auto challengeUntil=responder->deadline;
+						// A consented PROBE near the end of the listen window still
+						// gets one full handshake window on the same live owner.
+						if(responder->dataSubscriber && !responder->challenge.Issued() &&
+							now<=(std::numeric_limits<uint64>::max)()-kDirectQuicBootstrapMs)
+							challengeUntil=(std::max)(challengeUntil,now+kDirectQuicBootstrapMs);
 						valid=ese::control::Decode(envelope.payload,envelope.payloadSize,probe) &&
 							ese::control::ParseUntrusted(response.bytes.data(),response.size,issued) &&
 							ese::control::Decode(issued.payload,issued.payloadSize,challenge) &&
-							responder->challenge.Remember(envelope.header,probe,challenge,now,responder->deadline);
+							responder->challenge.Remember(envelope.header,probe,challenge,now,challengeUntil);
+						if(valid && challengeUntil>responder->deadline) {
+							const auto consent=m_directSubscribers->Resolve(responder->dataSubscriber);
+							valid=consent && !consent->terminal_reason &&
+								m_quicHost->RefreshControlBootstrap(responder->owner,challengeUntil);
+							if(valid) responder->deadline=challengeUntil;
+							else responder->challenge.Clear();
+						}
 					}
 				} else if(envelope.header.type==ese::wire::kEseWireUdpProve) {
 					ese::control::Prove proof;

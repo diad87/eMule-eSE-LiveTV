@@ -23,6 +23,13 @@ public:
         if(!free) return false;
         *free={local,expected,peer,owner,until}; return true;
     }
+    bool RefreshBootstrap(std::uint64_t owner,std::uint64_t now,std::uint64_t until) noexcept {
+        if(!Advance(now) || !owner || until<=now || until-now>2000) return false;
+        for(auto& entry:bootstrap_) if(entry.owner==owner && until>entry.until) {
+            entry.until=until; return true;
+        }
+        return false;
+    }
     bool Add(const Header& request,std::uint8_t reply,const udp::Endpoint& peer,
         std::uint64_t owner,std::uint64_t now,std::uint64_t until) noexcept {
         if(!Advance(now) || !owner || !peer.port || !KnownType(reply) || !request.generation ||

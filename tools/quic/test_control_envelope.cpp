@@ -107,6 +107,17 @@ int main() {
         endpoint.port=17; Check(!routes.AddBootstrap(local,remote,endpoint,17,102,2100));
         Check(routes.Advance(2100) && routes.AddBootstrap(local,remote,endpoint,17,2100,4100));
         routes.Reset(); Check(routes.Inspect(packet.bytes.data(),packet.size,endpoint,2100,owner)==ese::udp::Match::Invalid);
+        Check(routes.AddBootstrap(local,remote,endpoint,17,2100,4100));
+        Check(!routes.RefreshBootstrap(17,3000,5001));
+        Check(!routes.RefreshBootstrap(18,3000,5000));
+        Check(routes.RefreshBootstrap(17,3000,5000));
+        Check(routes.Inspect(packet.bytes.data(),packet.size,endpoint,4100,owner)==ese::udp::Match::Valid && owner==17);
+        Check(routes.Inspect(packet.bytes.data(),packet.size,other,4100,owner)==ese::udp::Match::Invalid && !owner);
+        Check(!routes.RefreshBootstrap(17,5000,6000));
+        Check(routes.Inspect(packet.bytes.data(),packet.size,endpoint,5000,owner)==ese::udp::Match::Invalid && !owner);
+        Check(routes.AddBootstrap(local,remote,endpoint,19,5000,6500));
+        routes.Remove(19);
+        Check(!routes.RefreshBootstrap(19,5100,7000));
     }
     {
         std::array<std::uint8_t,40> packet{};

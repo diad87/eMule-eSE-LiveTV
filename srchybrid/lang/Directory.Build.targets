@@ -5,7 +5,7 @@
   -->
   <ItemDefinitionGroup Condition="'$(Platform)'=='Win32'">
     <Link>
-      <AdditionalOptions>/Brepro %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/Brepro /PDBALTPATH:%_PDB% %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
   <Target Name="CopyLanguageNextToEmule" AfterTargets="Build" Condition="'$(Platform)'=='x64' Or '$(Platform)'=='Win32'">

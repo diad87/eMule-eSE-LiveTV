@@ -156,6 +156,13 @@ $cmake = Join-Path $vsRoot 'Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/b
 if ((& $cmake --version | Select-Object -First 1) -ne "cmake version $($lock.toolchain.cmake_version)") {
     throw 'CMake version differs from the dependency lock.'
 }
+$msbuild = Join-Path $vsRoot 'MSBuild/Current/Bin/MSBuild.exe'
+$cryptoBuild = Join-Path $work 'probe-cryptopp'
+Invoke-Checked $msbuild @((Join-Path $repo 'cryptopp/cryptlib.vcxproj'),'/t:Build','/nologo','/m:2',
+    '/p:Configuration=Release','/p:Platform=Win32',"/p:PlatformToolset=$($lock.toolchain.toolset)",
+    "/p:VCToolsVersion=$($lock.toolchain.msvc_tools_version)","/p:WindowsTargetPlatformVersion=$($lock.toolchain.windows_sdk)",
+    "/p:OutDir=$cryptoBuild/out/","/p:IntDir=$cryptoBuild/obj/") 'probe-cryptopp'
+$cryptoLibrary = Join-Path $cryptoBuild 'out/cryptlib.lib'
 $ngtcp2 = Join-Path $work "ngtcp2-$($lock.ngtcp2.version)"
 $build = Join-Path $work 'build-Win32'
 $probe = Join-Path $work 'probe'
@@ -173,7 +180,8 @@ Invoke-Checked $cmake (@('-S',$ngtcp2,'-B',$build) + $compiler + $flags + @(
     "-DGNUTLS_INCLUDE_DIR=$include","-DGNUTLS_LIBRARY=$import")) 'ngtcp2-configure'
 Invoke-Checked $cmake @('--build',$build,'--config','Release','--target','ngtcp2','ngtcp2_crypto_gnutls','--parallel','3') 'ngtcp2-build'
 Invoke-Checked $cmake (@('-S',(Join-Path $PSScriptRoot 'quic'),'-B',$probe) + $compiler + @(
-    "-DNGTCP2_SOURCE=$ngtcp2","-DNGTCP2_BUILD=$build","-DGNUTLS_INCLUDE=$include","-DGNUTLS_IMPORT=$import")) 'probe-configure'
+    "-DNGTCP2_SOURCE=$ngtcp2","-DNGTCP2_BUILD=$build","-DGNUTLS_INCLUDE=$include","-DGNUTLS_IMPORT=$import",
+    "-DESE_CRYPTO_LIBRARY=$cryptoLibrary")) 'probe-configure'
 Invoke-Checked $cmake @('--build',$probe,'--config','Release','--target','quic_dependency_smoke','quic_loopback','native_quic_loopback','--parallel','3') 'probe-build'
 Copy-Item -LiteralPath (Join-Path $build 'lib/Release/ngtcp2.dll'),(Join-Path $build 'crypto/gnutls/Release/ngtcp2_crypto_gnutls.dll') -Destination $runtime
 Copy-Item -LiteralPath @(Get-ChildItem -LiteralPath $runtime -File | Select-Object -ExpandProperty FullName) -Destination $probeRuntime

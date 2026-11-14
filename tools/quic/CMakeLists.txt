@@ -122,7 +122,9 @@ if(CMAKE_SIZEOF_VOID_P EQUAL 8)
 else()
   set(ESE_CRYPTO_ARCH Win32)
 endif()
-target_link_libraries(quic_loopback PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cryptopp/${ESE_CRYPTO_ARCH}/Output/Release/cryptlib.lib")
+set(ESE_CRYPTO_LIBRARY "${CMAKE_CURRENT_SOURCE_DIR}/../../cryptopp/${ESE_CRYPTO_ARCH}/Output/Release/cryptlib.lib"
+  CACHE FILEPATH "Crypto++ library for the standalone QUIC probes")
+target_link_libraries(quic_loopback PRIVATE "${ESE_CRYPTO_LIBRARY}")
 set_property(TARGET quic_loopback PROPERTY CXX_STANDARD 17)
 target_include_directories(quic_loopback PRIVATE
   "${NGTCP2_SOURCE}/lib/includes" "${NGTCP2_BUILD}/lib/includes"
@@ -166,7 +168,7 @@ set_tests_properties(native_quic_tofu native_quic_tofu_failure PROPERTIES TIMEOU
 set_tests_properties(native_quic_dco PROPERTIES TIMEOUT 30)
 set_property(TARGET native_quic_loopback PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_link_libraries(native_quic_loopback PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/../../cryptopp/${ESE_CRYPTO_ARCH}/Output/Release/cryptlib.lib"
+  "${ESE_CRYPTO_LIBRARY}"
   "${NGTCP2_BUILD}/lib/Release/ngtcp2.lib"
   "${NGTCP2_BUILD}/crypto/gnutls/Release/ngtcp2_crypto_gnutls.lib"
   "${GNUTLS_IMPORT}" ws2_32)
@@ -177,7 +179,7 @@ add_executable(test_control_envelope test_control_envelope.cpp)
 add_executable(test_node_binding_crypto test_node_binding_crypto.cpp
   ../../srchybrid/EseChannelBinding.cpp ../../srchybrid/EseNodeBindingCrypto.cpp ../../srchybrid/LiveCrypto.cpp)
 target_compile_definitions(test_node_binding_crypto PRIVATE ESE_LIVECRYPTO_STANDALONE_TEST)
-target_link_libraries(test_node_binding_crypto PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cryptopp/${ESE_CRYPTO_ARCH}/Output/Release/cryptlib.lib")
+target_link_libraries(test_node_binding_crypto PRIVATE "${ESE_CRYPTO_LIBRARY}")
 set_property(TARGET test_node_binding_crypto PROPERTY CXX_STANDARD 17)
 set_property(TARGET test_node_binding_crypto PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_test(NAME node_binding_crypto COMMAND test_node_binding_crypto)

@@ -1,7 +1,9 @@
 param([Parameter(Mandatory=$true)][string]$ProfileRoot,
       [ValidateRange(1,1550)][int]$TimeoutSeconds=150,
-      [switch]$QuicWatchdogControls)
+      [switch]$QuicWatchdogControls,
+      [switch]$QuicStallCooldown)
 $ErrorActionPreference='Stop'
+if ($QuicWatchdogControls -and $QuicStallCooldown) { throw 'Select one watchdog fixture.' }
 if ($QuicWatchdogControls -and !$PSBoundParameters.ContainsKey('TimeoutSeconds')) { $TimeoutSeconds=1550 }
 if (!$QuicWatchdogControls -and $TimeoutSeconds -gt 180) { throw 'The normal observation limit is 180 seconds.' }
 . (Join-Path $PSScriptRoot 'start_v93_detached_process.ps1')
@@ -27,7 +29,7 @@ if ($manifest.PSObject.Properties.Name -contains 'native_runtime_inputs') {
 $nativeQuicLab=$nativeRuntimeInputs.Count -gt 0
 $signedQuic=$manifest.PSObject.Properties.Name -contains 'signed_quic_dependencies' -and [bool]$manifest.signed_quic_dependencies
 $diagnosticPort=if($manifest.PSObject.Properties.Name -contains 'diagnostic_web_port'){[int]$manifest.diagnostic_web_port}else{0}
-if($QuicWatchdogControls -and (!$nativeQuicLab -or $diagnosticPort)) { throw 'Watchdog controls require the native QUIC profile with diagnostic HTTP disabled.' }
+if(($QuicWatchdogControls -or $QuicStallCooldown) -and (!$nativeQuicLab -or $diagnosticPort)) { throw 'Watchdog tests require the native QUIC profile with diagnostic HTTP disabled.' }
 if ($diagnosticPort -and !$nativeQuicLab) { throw 'The HTTP winner and terminal checks require a native QUIC laboratory profile.' }
 if($diagnosticPort -and ($diagnosticPort -lt 1024 -or $diagnosticPort -gt 65535 -or $diagnosticPort -in @($manifest.tcp,$manifest.udp))) { throw 'Unsafe diagnostic port.' }
 if($diagnosticPort -and (Get-FileHash -LiteralPath (Join-Path $root 'eMule.tmpl')).Hash -ne $manifest.diagnostic_template_sha256) { throw 'Diagnostic template changed.' }
@@ -77,7 +79,7 @@ $started=[ordered]@{schema='ese.v93.reach-binding-started/1';started_utc=[DateTi
 [IO.File]::WriteAllText((Join-Path $root 'started.json'),($started|ConvertTo-Json -Depth 4),[Text.Encoding]::UTF8)
 $previousWatchdogMode=$env:ESE_QUIC_WATCHDOG_SELFTEST
 try {
-    $env:ESE_QUIC_WATCHDOG_SELFTEST=if ($QuicWatchdogControls) { '1' } else { $null }
+    $env:ESE_QUIC_WATCHDOG_SELFTEST=if ($QuicWatchdogControls) { '1' } elseif ($QuicStallCooldown) { '2' } else { $null }
     $process=Start-V93DetachedProcess -FilePath $exe -ArgumentList $arguments -WorkingDirectory $root
 } finally { $env:ESE_QUIC_WATCHDOG_SELFTEST=$previousWatchdogMode }
 # The launcher retains the exact process handle. This is only an observation
@@ -85,24 +87,28 @@ try {
 [IO.File]::WriteAllText((Join-Path $root 'process-id.txt'),[string]$process.Id,[Text.Encoding]::UTF8)
 $diagnosticSamples=0; $diagnosticFailures=0; $diagnosticWinner=$false; $diagnosticTerminal=$false
 $diagnosticSequences=[Collections.Generic.HashSet[string]]::new()
-if($QuicWatchdogControls) {
+if($QuicWatchdogControls -or $QuicStallCooldown) {
     $log=Join-Path $root 'logs/eMule.log'
     $destination=Join-Path $root 'Incoming/cold-binding.bin'
     try {
         $terminal=$process.WaitForExit($TimeoutSeconds*1000)
-        $markers=@(if(Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log | Where-Object { $_ -match 'REACH_SELFTEST NC-Q07 .* PASS:' } })
+        $pattern=if($QuicStallCooldown) { 'REACH_SELFTEST NC-Q06 cooldown PASS:' } else { 'REACH_SELFTEST NC-Q07 .* PASS:' }
+        $markers=@(if(Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log | Where-Object { $_ -match $pattern } })
         $fileHash=if(Test-Path -LiteralPath $destination -PathType Leaf) { (Get-FileHash -LiteralPath $destination).Hash }
         $exitCode=if($terminal) { $process.ExitCode }
-        $pass=$terminal -and $exitCode -eq 0 -and $markers.Count -eq 5 -and
-            $fileHash -eq 'FF15AD966A78BEB2447E6E24B494D7CE6753AF2A386A78F31219A27EF152A250'
-        $result=[ordered]@{schema='ese.v93.quic-watchdog-controls/1';profile=$root;desktop=$process.Desktop;pid=$process.Id;
+        $scenarioPass=if($QuicStallCooldown) { $markers.Count -eq 1 } else {
+            $markers.Count -eq 5 -and $fileHash -eq 'FF15AD966A78BEB2447E6E24B494D7CE6753AF2A386A78F31219A27EF152A250'
+        }
+        $pass=$terminal -and $exitCode -eq 0 -and $scenarioPass
+        $schema=if($QuicStallCooldown) { 'ese.v93.quic-stall-cooldown/1' } else { 'ese.v93.quic-watchdog-controls/1' }
+        $result=[ordered]@{schema=$schema;profile=$root;desktop=$process.Desktop;pid=$process.Id;
             exe_sha256=$manifest.executable_sha256;native_runtime_inputs=$nativeRuntimeInputs;
             terminal=$terminal;observed_exit_code=$exitCode;markers=$markers;file_sha256=$fileHash;
             verdict=if(!$terminal){'RUNNING'}elseif($pass){'PASS'}else{'FAIL'}}
         $json=$result | ConvertTo-Json -Depth 5
         [IO.File]::WriteAllText((Join-Path $root 'runtime-evidence.json'),$json,[Text.Encoding]::UTF8)
         Write-Output $json
-        if(!$pass) { throw 'Watchdog control evidence did not pass.' }
+        if(!$pass) { throw 'Watchdog test evidence did not pass.' }
     } finally { $process.Dispose() }
     return
 }

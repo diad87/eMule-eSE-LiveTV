@@ -1284,8 +1284,19 @@ static bool RunReachBindingSelfTest(bool tcpFallbackF1)
 	}
 #ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
 	TCHAR watchdogControls[2]{};
-	if (::GetEnvironmentVariable(_T("ESE_QUIC_WATCHDOG_SELFTEST"),watchdogControls,_countof(watchdogControls))==1 &&
-		watchdogControls[0]==_T('1')) {
+	const auto watchdogSize=::GetEnvironmentVariable(_T("ESE_QUIC_WATCHDOG_SELFTEST"),watchdogControls,_countof(watchdogControls));
+	if (watchdogSize==1 && watchdogControls[0]==_T('2')) {
+		if (!eSELive::NodeIdentityInit() || !eSELive::NodeIdentityIsPersistent())
+			return fail(_T("watchdog cooldown persistent identity"));
+		try {
+			ese::shared_socket_selftest::RunConsumer(manager,udp,ese::shared_socket_selftest::HelloCase::Valid,true,false,false,
+				false,false,false,nullptr,false,false,false,false,false,false,false,false,true,false,false,false,false,true);
+		} catch(const std::exception& error) {
+			LogError(LOG_STATUSBAR,_T("REACH_SELFTEST FAIL: stalled QUIC cooldown: %hs"),error.what()); return false;
+		}
+		return true;
+	}
+	if (watchdogSize==1 && watchdogControls[0]==_T('1')) {
 		ese::shared_socket_selftest::Identity peer;
 		if (!eSELive::NodeIdentityInit() || !eSELive::NodeIdentityIsPersistent() ||
 			manager.ImportDirectQuicPeerPin(peer.pub)!=ese::trust::SaveResult::Created)

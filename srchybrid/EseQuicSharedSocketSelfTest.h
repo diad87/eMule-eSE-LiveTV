@@ -502,6 +502,45 @@ public:
         const auto& intent=manager.m_builtinQuicConsumer->recovery_[handle.slot];
         return intent.handle.slot==handle.slot && intent.handle.generation==handle.generation && intent.epoch==epoch;
     }
+    static void TestStalledQuicCooldown(CDirectReachabilityManager& manager,reach::DirectHandle handle,
+        const reach::DirectCoordinatorSnapshot& previous,ese::QuicTransport& transport) {
+        auto check=[](bool good) { if(!good) throw std::runtime_error("stalled QUIC reselection cooldown"); };
+        auto* consumer=manager.m_builtinQuicConsumer;
+        check(theApp.m_bReachBindingSelfTest && consumer && manager.DirectQuicDownloadAvailable());
+        const auto* entry=consumer->Find(handle,previous.winner);
+        check(entry && entry->route.transport==reach::DirectQuic && entry->peer.hasPin &&
+            entry->peer.expectedNode==previous.peer.identity && entry->peer.local.attempt==previous.attempt_id);
+        const auto prepared=entry->peer;
+        const auto topology=previous.topology_generation;
+        const auto before=manager.MonotonicMilliseconds();
+        check(!consumer->QuicCoolingDown(prepared.expectedNode,topology,before));
+        // Feed the typed close from the authenticated transport through the
+        // normal action pump. Keep recovery staged while inspecting policy.
+        transport.Close(reach::DirectReason::QuicNoProgress);
+        check(manager.m_directPump.Tick(consumer,[&] { return manager.PumpDirectEvents(); }));
+        const auto after=manager.MonotonicMilliseconds();
+        const auto recovery=manager.DirectConnections().Snapshot(handle);
+        check(recovery && recovery->state==reach::DirectSessionState::Recovering &&
+            recovery->reason==reach::DirectReason::QuicNoProgress && recovery->epoch==previous.epoch &&
+            recovery->peer.identity==previous.peer.identity && recovery->useful_bytes==previous.useful_bytes);
+        const auto& intent=consumer->recovery_[handle.slot];
+        check(intent.quicStalled && !intent.pinnedPeer && intent.epoch==previous.epoch);
+        const auto record=std::find_if(consumer->quicCooldowns_.begin(),consumer->quicCooldowns_.end(),[&](const auto& slot) {
+            return slot.topology==topology && slot.node==prepared.expectedNode;
+        });
+        check(record!=consumer->quicCooldowns_.end() && record->until>=before+600000 && record->until<=after+600000);
+        auto other=prepared.expectedNode; other[0]^=1;
+        check(consumer->QuicCoolingDown(prepared.expectedNode,topology,record->until-1) &&
+            !consumer->QuicCoolingDown(prepared.expectedNode,topology,record->until) &&
+            !consumer->QuicCoolingDown(prepared.expectedNode,topology+1,after) &&
+            !consumer->QuicCoolingDown(other,topology,after));
+        check(!manager.PrepareDirectQuicDownloadPolicy(handle,false,&prepared) &&
+            manager.BeginOwnedDirectQuicRecovery(handle,prepared)==0);
+        const auto unchanged=manager.DirectConnections().Snapshot(handle);
+        check(unchanged && unchanged->state==recovery->state && unchanged->epoch==previous.epoch &&
+            unchanged->highest_route_id==previous.highest_route_id && unchanged->useful_bytes==previous.useful_bytes);
+        Log(_T("REACH_SELFTEST NC-Q06 cooldown PASS: authenticated stalled QUIC closes through host action pump, same pinned peer route cannot restart, ten-minute boundary and topology verified with explicit clock samples"));
+    }
     static void TestPinnedOwnedRecovery(CDirectReachabilityManager& manager,reach::DirectHandle handle) {
         auto check=[](bool good) { if(!good) throw std::runtime_error("pinned owned QUIC recovery policy fence"); };
         check(theApp.m_bReachBindingSelfTest && manager.m_builtinQuicConsumer &&
@@ -3968,7 +4007,7 @@ inline void RunClassicTcpObservation(CDirectReachabilityManager& manager,unsigne
 }
 
 inline void RunQuicToTcpFileRecovery(CDirectReachabilityManager& manager,CUpDownClient& client,
-    CPartFile& file,reach::DirectHandle handle,const std::array<BYTE,4097>& expected,QuicTransport& oldTransport) {
+    CPartFile& file,reach::DirectHandle handle,const std::array<BYTE,4097>& expected,QuicTransport& oldTransport,bool cooldownCheck) {
     CNativeDirectSelfTestAccess::TestRecoveryFileStates();
     Require(CNativeDirectSelfTestAccess::RecoveryFileEligible(&file),"actual partial file eligible for recovery");
     const auto before=manager.DirectConnections().Snapshot(handle);
@@ -3976,6 +4015,11 @@ inline void RunQuicToTcpFileRecovery(CDirectReachabilityManager& manager,CUpDown
         file.IsCompleteBD(0,4095) && file.GetTotalGapSizeInPart(0)==1,"mixed recovery real partial prerequisites");
     const auto oldSource=manager.SnapshotDirectPartContributions(file.NativeDirectFileKey(),0,1);
     Require(oldSource.size()==1 && oldSource[0].source.kind==reach::DirectPartOwnerKind::Quic,"mixed initial QUIC provenance");
+    if(cooldownCheck) {
+        CNativeDirectSelfTestAccess::TestStalledQuicCooldown(manager,handle,*before,oldTransport);
+        Require(file.IsCompleteBD(0,4095) && file.GetTotalGapSizeInPart(0)==1,"stalled route keeps accepted disk bytes");
+        return;
+    }
     // Explicit local transport failure, not a claim of physical NAT/loss testing.
     oldTransport.Close(reach::DirectReason::DirectUnreachable);
     HWND tcpWindow=nullptr;
@@ -4497,9 +4541,10 @@ inline void RunAutomaticQuicRecovery(CDirectReachabilityManager& manager,CUpDown
     }
 }
 
-inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNumber,HelloCase helloCase=HelloCase::Valid,bool fileData=false,bool corruptFileData=false,bool coldIdentity=false,bool serverSide=false,bool firstUse=false,bool automaticHandoff=false,Identity* sharedIdentity=nullptr,bool automaticCaller=false,bool multipart=false,bool productUpload=false,bool packedUpload=false,bool packedDownload=false,bool allPackedDownload=false,bool malformedPacked=false,bool i64Download=false,bool mixedRecovery=false,bool automaticRecovery=false,bool partialRecovery=false,bool optOutConnected=false,bool watchdogControls=false) {
+inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNumber,HelloCase helloCase=HelloCase::Valid,bool fileData=false,bool corruptFileData=false,bool coldIdentity=false,bool serverSide=false,bool firstUse=false,bool automaticHandoff=false,Identity* sharedIdentity=nullptr,bool automaticCaller=false,bool multipart=false,bool productUpload=false,bool packedUpload=false,bool packedDownload=false,bool allPackedDownload=false,bool malformedPacked=false,bool i64Download=false,bool mixedRecovery=false,bool automaticRecovery=false,bool partialRecovery=false,bool optOutConnected=false,bool watchdogControls=false,bool cooldownCheck=false) {
     const bool rejectHello=helloCase!=HelloCase::Valid;
     Require(!watchdogControls || (multipart && automaticCaller && fileData),"watchdog controls use actual multipart download");
+    Require(!cooldownCheck || mixedRecovery,"watchdog cooldown uses the owned recovery fixture");
     Require(!mixedRecovery || (fileData && !packedDownload && !corruptFileData && !coldIdentity && !serverSide && !rejectHello && !i64Download),"mixed recovery plain explicit file scope");
     Require(!packedUpload || (productUpload && !serverSide && !rejectHello),"packed upload explicit valid peer scope");
     Require(!packedDownload || (fileData && !coldIdentity && !corruptFileData && !serverSide && !automaticCaller && !multipart),"packed download explicit file scope");
@@ -5481,7 +5526,7 @@ inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNu
         Require(diskState && diskState->useful_bytes==4096 && !diskState->transfer_verified,
             "disk write alone is not integrity verification");
         disk.Close();
-        if(mixedRecovery) RunQuicToTcpFileRecovery(manager,*client,*file,admitted.request.handle,expected,*receiver);
+        if(mixedRecovery) RunQuicToTcpFileRecovery(manager,*client,*file,admitted.request.handle,expected,*receiver,cooldownCheck);
         else {
         Require(theApp.m_pPartHashThread && theApp.m_pPartHashThread->IsRunning(),"production hash worker running");
         CSafeMemFile lastData(25); lastData.WriteHash16(file->GetFileHash());

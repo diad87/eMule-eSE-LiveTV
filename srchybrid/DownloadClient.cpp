@@ -820,6 +820,13 @@ void CUpDownClient::CreateBlockRequests(int blockCount)
 	delete[] toadd;
 }
 
+bool CUpDownClient::HasQueuedDownloadBlocks() const
+{
+	for (POSITION pos=m_PendingBlocks_list.GetHeadPosition(); pos!=NULL;)
+		if (m_PendingBlocks_list.GetNext(pos)->fQueued) return true;
+	return false;
+}
+
 void CUpDownClient::SendBlockRequests()
 {
 	m_dwLastBlockReceived = ::GetTickCount();

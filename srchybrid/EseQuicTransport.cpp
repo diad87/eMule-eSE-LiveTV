@@ -125,10 +125,28 @@ bool QuicTransport::RequestClose(std::uint16_t code) {
     if(closing_) return DecodeCloseReason(code)==closeReason_ && exchange_->QueueClose(code);
     if(!Ready() || !exchange_->QueueClose(code)) return false;
     closeReason_=DecodeCloseReason(code);
-    closeThrough_=controlSubmitted_+exchange_->Pending().size;
+    closeThrough_=exchange_->OutputEnd();
     closeStartedMs_=runtime_->NowMs(); closing_=true;
     SetReceiveBudget(0);
     return !closed_;
+}
+bool QuicTransport::RequestLivenessProbe(std::uint64_t now) noexcept
+{
+    constexpr std::uint64_t intervalMs=5000;
+    if(!Ready() || pingDeadlineMs_ || (lastPingMs_ && (now<lastPingMs_ || now-lastPingMs_<intervalMs)) ||
+        pingId_==(std::numeric_limits<std::uint64_t>::max)() ||
+        now>(std::numeric_limits<std::uint64_t>::max)()-intervalMs) return false;
+    std::array<std::uint8_t,binding::LivenessSize> payload{};
+    const auto id=pingId_+1;
+    for(unsigned i=0;i<8;++i) payload[i]=static_cast<std::uint8_t>(id>>(56-8*i));
+    if(!runtime_->RandomBytes(payload.data()+8,16) ||
+        !exchange_->QueueLiveness(wire::kEseWireControlPing,payload)) return false;
+    pendingPing_=payload;
+    pingId_=id;
+    lastPingMs_=now;
+    pingDeadlineMs_=now+intervalMs;
+    livenessUnresponsive_=false;
+    return true;
 }
 void QuicTransport::FinishShutdown() {
     if(!closed_ || shutdown_ || inRuntime_ || receivingControl_) return;
@@ -160,6 +178,10 @@ void QuicTransport::Poll(std::uint64_t now) {
     FlushEvents();
     if(!started_) return;
     if(!closed_) {
+        if(pingDeadlineMs_ && (now<lastPingMs_ || now>=pingDeadlineMs_)) {
+            pingDeadlineMs_=0;
+            livenessUnresponsive_=true;
+        }
         if(closing_ && (now<closeStartedMs_ || now-closeStartedMs_>=1000)) Close(closeReason_);
         if(!exchange_ && now>=startedMs_ && now-startedMs_>=4000) Close(reach::DirectReason::Deadline);
         if(exchange_) { exchange_->Tick(now); CheckBinding(); }
@@ -203,6 +225,7 @@ bool QuicTransport::Acknowledged(std::int64_t stream,std::uint64_t offset,std::u
     if(stream==0) {
         if(offset>controlAcknowledged_ || offset>controlSubmitted_ || bytes>controlSubmitted_-offset) return false;
         controlAcknowledged_=(std::max)(controlAcknowledged_,offset+bytes);
+        if(!exchange_ || !exchange_->AcknowledgedThrough(controlAcknowledged_)) return false;
         if(closing_ && controlAcknowledged_>=closeThrough_) Close(closeReason_);
         return true;
     }
@@ -254,6 +277,21 @@ static reach::DirectReason DecodeCloseReason(std::uint16_t code) noexcept {
     return reason;
 }
 bool QuicTransport::Frame(std::uint8_t type,const std::uint8_t* payload,std::size_t size) noexcept {
+    if(type==wire::kEseWireControlPing || type==wire::kEseWireControlPong) {
+        if(size!=binding::LivenessSize || !payload) return false;
+        if(closing_) return true;
+        const auto now=runtime_->NowMs();
+        if(type==wire::kEseWireControlPong) {
+            if(pingDeadlineMs_ && now<pingDeadlineMs_ &&
+                std::equal(pendingPing_.begin(),pendingPing_.end(),payload)) pingDeadlineMs_=0;
+            return true; // Delayed or uncorrelated acknowledgements never advance the file.
+        }
+        if(lastPongMs_ && (now<lastPongMs_ || now-lastPongMs_<1000)) return true;
+        std::array<std::uint8_t,binding::LivenessSize> reply{};
+        std::copy_n(payload,size,reply.begin());
+        if(exchange_->QueueLiveness(wire::kEseWireControlPong,reply)) lastPongMs_=now;
+        return true;
+    }
     if(type!=wire::kEseWireControlClose || size!=2 || !payload) return false;
     const auto code=static_cast<std::uint16_t>((static_cast<unsigned>(payload[0])<<8)|payload[1]);
     // Emit only; do not destroy the exchange while its Receive is on the stack.

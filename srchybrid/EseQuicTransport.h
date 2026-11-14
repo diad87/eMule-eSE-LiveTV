@@ -33,6 +33,8 @@ public:
     virtual void SetReadBudget(std::size_t bytes) = 0;
     virtual void Shutdown() noexcept = 0;
     virtual bool QueueDatagram(const udp::Endpoint&,reach::DirectByteView) { return false; }
+    virtual std::uint64_t SmoothedRttMs() const noexcept { return 0; }
+    virtual bool RandomBytes(std::uint8_t*,std::size_t) noexcept { return false; }
 };
 struct QuicPeerConfig {
     binding::Hello local;
@@ -70,6 +72,10 @@ public:
     // Best-effort authenticated CLOSE. Owner must keep polling until Retirable.
     // Immediate Close remains available for faults, kill switches and shutdown.
     bool RequestClose(std::uint16_t wireReason);
+    bool RequestLivenessProbe(std::uint64_t now) noexcept;
+    bool LivenessUnresponsive() const noexcept { return livenessUnresponsive_; }
+    std::uint64_t SmoothedRttMs() const noexcept { return runtime_->SmoothedRttMs(); }
+    std::uint64_t UsefulReceived() const noexcept { return reportedUsefulBytes_; }
     reach::DirectTransportSnapshot Snapshot() const override;
     void Poll(std::uint64_t nowMs);
     reach::DirectByteView ReceivedFront() const { return buffers_.ReceiveFront(); }
@@ -128,9 +134,12 @@ private:
     std::uint64_t reportedUsefulBytes_=0;
     std::uint64_t reportedUsefulWireBytes_=0;
     std::uint64_t controlAcknowledged_=0,closeThrough_=0,closeStartedMs_=0;
+    std::array<std::uint8_t,binding::LivenessSize> pendingPing_{};
+    std::uint64_t pingId_=0,lastPingMs_=0,pingDeadlineMs_=0,lastPongMs_=0;
     reach::DirectReason closeReason_=reach::DirectReason::None;
     bool closing_=false;
     bool verifiedPartReported_=false;
+    bool livenessUnresponsive_=false;
     bool started_=false,closed_=false,shutdown_=false,inRuntime_=false,receivingControl_=false,authenticated_=false,adopted_=false;
 };
 }

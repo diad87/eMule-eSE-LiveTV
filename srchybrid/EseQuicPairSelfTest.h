@@ -34,9 +34,11 @@ inline bool Run() {
     const CString root=rootText,address=addressText;
     const bool interrupt=GetPrivateProfileInt(_T("Pair"),_T("Interrupt"),0,ini)!=0;
     const UINT networkLossMs=GetPrivateProfileInt(_T("Pair"),_T("NetworkLossMs"),0,ini);
+    const bool expectStall=GetPrivateProfileInt(_T("Pair"),_T("ExpectStall"),0,ini)!=0;
     const bool productCadence=GetPrivateProfileInt(_T("Pair"),_T("ProductCadence"),0,ini)!=0;
     const bool recovery=interrupt || networkLossMs!=0;
     Require(!networkLossMs || (!interrupt && networkLossMs>=1000 && networkLossMs<=45000),"pair bounded exclusive silent network loss");
+    Require(!expectStall || networkLossMs==45000,"pair sustained loss fixture");
     Require((root.Left(7).CompareNoCase(_T("D:\\tmp\\"))==0 || root.Left(7).CompareNoCase(_T("C:\\tmp\\"))==0) && address==thePrefs.GetBindAddr(),"pair fresh tmp private bind");
     const auto peerTcp=static_cast<uint16>(GetPrivateProfileInt(_T("Pair"),_T("PeerTcp"),0,ini));
     const auto peerUdp=static_cast<uint16>(GetPrivateProfileInt(_T("Pair"),_T("PeerUdp"),0,ini));
@@ -214,6 +216,14 @@ inline bool Run() {
         while(!manager.HasPendingDirectUpload(client->GetDirectClientLifetime()) && Now()<grantUntil) pump();
         Require(manager.HasPendingDirectUpload(client->GetDirectClientLifetime()),"pair normal upload bridge armed");
         const BYTE ready=1; publish(_T("upload.ready"),&ready,1);
+        if(expectStall) {
+            wait(_T("download.stalled"),60000);
+            Require(uploadInterrupted && observedUpload>=67108864 && theApp.clientudp->PairUdpLossDrops(),
+                "pair sender observed sustained loss after useful upload");
+            Log(_T("QUIC_PAIR STALL_UPLOAD PASS bytes=%I64u drops=%I64u"),
+                observedUpload,theApp.clientudp->PairUdpLossDrops());
+            return true;
+        }
         wait(_T("download.complete"),large?transferBudget:30000);
         Require(observedUpload>=fixtureBytes,"pair actual product uploader sent payload");
         if(recovery) {
@@ -298,6 +308,20 @@ inline bool Run() {
             // file below, not the live-transfer pointer during PS_COMPLETING.
             if(interrupted && (download->GetStatus()==PS_READY || download->GetStatus()==PS_EMPTY)) {
                 const auto record=manager.ResolveDirectSubscriber(subscriber);
+                if(expectStall && record && record->terminal_reason) {
+                    const auto elapsed=Now()-lossStarted;
+                    Require(*record->terminal_reason==reach::DirectReason::QuicNoProgress &&
+                        elapsed>=28000 && elapsed<=34000 && lossPlateau && !recovered &&
+                        theApp.clientudp->PairUdpLossDrops() && download->GetCompletedSize()>=completedBefore,
+                        "pair sustained no-progress terminal without fallback route");
+                    for(const auto part:preservedParts)
+                        Require(download->IsCompleteBD(part),"pair stalled file keeps verified parts");
+                    Log(_T("QUIC_PAIR STALL_DOWNLOAD PASS elapsed_ms=%I64u preserved_parts=%u drops=%I64u"),
+                        elapsed,static_cast<unsigned>(preservedParts.size()),theApp.clientudp->PairUdpLossDrops());
+                    const BYTE marker=1;
+                    publish(_T("download.stalled"),&marker,1);
+                    return true;
+                }
                 const auto state=record && record->attempt ? manager.DirectConnections().Snapshot(*record->attempt) : std::nullopt;
                 Require(before && record && !record->terminal_reason && state && state->attempt_id==before->attempt_id &&
                     state->handle.slot==before->handle.slot && state->handle.generation==before->handle.generation &&

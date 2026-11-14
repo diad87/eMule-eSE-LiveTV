@@ -4431,6 +4431,11 @@ uint32 CPartFile::WriteToBuffer(uint64 transize, const BYTE *data, uint64 start,
 	return static_cast<uint32>(lenData);
 }
 
+bool CPartFile::HasDownloadDiskBackpressure() const
+{
+	return m_iWrites > 0 && m_nTotalBufferData >= thePrefs.GetFileBufferSize() * 2ull;
+}
+
 void CPartFile::FlushBuffer(bool bForceICH, bool bNoAICH, bool bSyncHash)
 {
 	m_nLastBufferFlushTime = ::GetTickCount();

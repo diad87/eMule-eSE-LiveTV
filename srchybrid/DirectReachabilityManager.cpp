@@ -754,6 +754,8 @@ std::optional<ese::QuicPeerConfig> CDirectReachabilityManager::PrepareDirectQuic
         !attempt || attempt->peer.domain!=reach::DirectPeerDomain::NodePublicKey ||
         (attempt->state!=reach::DirectSessionState::Gathering && attempt->state!=reach::DirectSessionState::Recovering) ||
         attempt->topology_generation!=GetTopologyGeneration()) return std::nullopt;
+    if(m_builtinQuicConsumer->QuicCoolingDown(attempt->peer.identity,
+        attempt->topology_generation,MonotonicMilliseconds())) return std::nullopt;
 	ese::QuicPeerConfig peer; peer.persistent=true; peer.expectedNode=attempt->peer.identity;
 	peer.local.role=0; peer.local.caps=1; peer.local.attempt=attempt->attempt_id;
 	peer.local.topologyGeneration=GetTopologyGeneration(); peer.sessionEpoch=attempt->epoch;

@@ -599,6 +599,7 @@ public:
 	CString			GetUploadStateDisplayString() const;
 
 	LPCTSTR			DbgGetDownloadState() const;
+	bool			HasQueuedDownloadBlocks() const;
 	LPCTSTR			DbgGetUploadState() const;
 	LPCTSTR			DbgGetKadState() const;
 	CString			DbgGetClientInfo(bool bFormatIP = false) const;

@@ -71,6 +71,15 @@ public:
     }
     ~NativeRuntime() override { Shutdown(); if(global_) gnutls_global_deinit(); }
     std::uint64_t NowMs() const noexcept override { return TimeNs()/NGTCP2_MILLISECONDS; }
+    std::uint64_t SmoothedRttMs() const noexcept override {
+        if(!conn_) return 0;
+        ngtcp2_conn_info info{};
+        ngtcp2_conn_get_conn_info2(conn_,&info);
+        return info.smoothed_rtt/NGTCP2_MILLISECONDS;
+    }
+    bool RandomBytes(std::uint8_t* output,std::size_t size) noexcept override {
+        return gnutls_rnd(GNUTLS_RND_RANDOM,output,size)==0;
+    }
     binding::Crypto& Crypto() noexcept override { return *this; }
     bool Hash(const std::uint8_t* p,std::size_t n,std::array<std::uint8_t,32>& out) noexcept override {
         return gnutls_hash_fast(GNUTLS_DIG_SHA256,p,n,out.data())==0;
@@ -156,6 +165,9 @@ private:
             if(stream==0) {
                 const auto r=self.io_->Received(stream,{p,n});
                 if(r.status!=reach::DirectIoStatus::Accepted || r.accepted!=n) return NGTCP2_ERR_CALLBACK_FAILURE;
+                if(ngtcp2_conn_extend_max_stream_offset(self.conn_,stream,n)!=0)
+                    return NGTCP2_ERR_CALLBACK_FAILURE;
+                ngtcp2_conn_extend_max_offset(self.conn_,n);
             } else {
                 self.dataStreamOpen_=true;
                 std::size_t accepted=0;
@@ -227,6 +239,7 @@ private:
         ngtcp2_settings settings; ngtcp2_settings_default(&settings); settings.initial_ts=TimeNs();
         settings.max_tx_udp_payload_size=1200;
         ngtcp2_transport_params params; ngtcp2_transport_params_default(&params);
+        params.max_idle_timeout=60 * NGTCP2_SECONDS;
         params.initial_max_streams_bidi=config_.server ? 2 : 0; params.initial_max_streams_uni=0;
         params.initial_max_stream_data_bidi_local=params.initial_max_stream_data_bidi_remote=4096;
         params.initial_max_data=8192;

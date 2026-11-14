@@ -67,8 +67,8 @@ kEseWireControlAuth,number,2,ESE-PEER1-CONTROL,experimental,AUTH payload65,LAB_O
 kEseWireControlClose,number,3,ESE-PEER1-CONTROL,experimental,CLOSE payload2; reason semantics pending,LAB_ONLY+NODE_BOUND; receiver only,srchybrid/EseWireProtocol.h
 kEseWireControlCreditRequest,number,4,ESE-PEER1-CONTROL,design,CREDIT_REQUEST,READY+REMOTE_CREDIT; receiver pending,srchybrid/EseWireProtocol.h
 kEseWireControlCreditReport,number,5,ESE-PEER1-CONTROL,design,CREDIT_REPORT,READY+REMOTE_CREDIT; receiver pending,srchybrid/EseWireProtocol.h
-kEseWireControlPing,number,6,ESE-PEER1-CONTROL,design,PING,READY; receiver pending,srchybrid/EseWireProtocol.h
-kEseWireControlPong,number,7,ESE-PEER1-CONTROL,design,PONG,READY; receiver pending,srchybrid/EseWireProtocol.h
+kEseWireControlPing,number,6,ESE-PEER1-CONTROL,experimental,PING,READY; 8-byte request ID and 16-byte nonce,srchybrid/EseWireProtocol.h
+kEseWireControlPong,number,7,ESE-PEER1-CONTROL,experimental,PONG,READY; exact matching PING payload,srchybrid/EseWireProtocol.h
 kEseWireControlDvlEnable,number,8,ESE-PEER1-CONTROL,design,DVL_ENABLE,READY+DVL_PROFILE; receiver pending,srchybrid/EseWireProtocol.h
 kEseWireControlDvlAck,number,9,ESE-PEER1-CONTROL,design,DVL_ACK,READY+DVL_PROFILE; receiver pending,srchybrid/EseWireProtocol.h
 kEseWireControlDvlDisable,number,10,ESE-PEER1-CONTROL,design,DVL_DISABLE,READY+DVL_PROFILE; receiver pending,srchybrid/EseWireProtocol.h

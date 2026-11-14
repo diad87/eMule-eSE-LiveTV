@@ -14,6 +14,13 @@ slot. Both processes ran on private Windows desktops. The x64 distribution
 dependency recipe passed its nine ABI and transport tests with the signed
 sources and packages. [Dependency notices](../third_party/quic/DISTRIBUTION.md)
 
+The clean x64 build at `a134acb0` passed Core, Integration, ZIP integrity,
+dashboard and FFmpeg smoke. The extracted binary passed portable self-test,
+reachability, and the 1 GiB transfer with 15 seconds of UDP discard.
+The signed dependency data is pinned by the same manifest used by the build
+and packaged next to the executable. This is a local qualification package.
+Subsequent runtime changes are qualified against their own executable hashes.
+
 ## Pending exit checks
 
 | Area | Evidence required for the candidate |

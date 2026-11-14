@@ -10,6 +10,7 @@ param(
     [ValidateSet(65537,1048576,1073741824)][int]$FileBytes=65537,
     [switch]$Interrupt,
     [ValidateSet(0,1000,5000,15000,30000,45000)][int]$NetworkLossMs=0,
+    [switch]$ExpectStall,
     [switch]$HighresTimer,
     [switch]$ProductCadence,
     [switch]$HighEntropy,
@@ -19,6 +20,7 @@ $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'start_v93_detached_process.ps1')
 if($Interrupt -and $FileBytes -ne 1073741824){throw 'Interruption requires the 1 GiB fixture.'}
 if($NetworkLossMs -and ($Interrupt -or $FileBytes -ne 1073741824)){throw 'Silent network loss requires F1 and cannot request transport Close.'}
+if($ExpectStall -and $NetworkLossMs -ne 45000){throw 'A 45-second loss window is required for the no-route stall case.'}
 $fixtureName=if($FileBytes -eq 65537){'pair-small.bin'}elseif($FileBytes -eq 1048576){'pair-f2.bin'}else{'pair-f1.bin'}
 if($FileBytes -eq 1073741824 -and !$PSBoundParameters.ContainsKey('TimeoutSeconds')) { $TimeoutSeconds=1100 }
 $patternModulus=$null
@@ -75,6 +77,7 @@ for($n=0;$n -lt 2;$n++) {
     $pairPath=Join-Path $profile 'config/quic-pair.ini'
     $pairIni+="Interrupt=$([int]$Interrupt.IsPresent)`r`n"
     $pairIni+="NetworkLossMs=$NetworkLossMs`r`n"
+    $pairIni+="ExpectStall=$([int]$ExpectStall.IsPresent)`r`n"
     $pairIni+="ProductCadence=$([int]$ProductCadence.IsPresent)`r`n"
     $pairIni+="HighEntropy=$([int]$HighEntropy.IsPresent)`r`n"
     [IO.File]::WriteAllText($pairPath,$pairIni,[Text.Encoding]::ASCII)
@@ -107,7 +110,9 @@ for($n=0;$n -lt 2;$n++) {
     $text=if(Test-Path -LiteralPath $log){[IO.File]::ReadAllText($log)}else{''}
     $role=if($n -eq 0){'upload'}else{'download'}
     $exitCode=if($processes[$n].HasExited){$processes[$n].ExitCode}else{$null}
-    $marker=$text.Contains("QUIC_PAIR PASS role=$role bytes=$FileBytes MD4=")
+    $marker=if($ExpectStall){$text.Contains("QUIC_PAIR STALL_$($role.ToUpperInvariant()) PASS ")}else{
+        $text.Contains("QUIC_PAIR PASS role=$role bytes=$FileBytes MD4=")
+    }
     if ($HighEntropy) { $marker=$marker -and $text.Contains('QUIC_PAIR FIXTURE high_entropy=1') }
     if($ProductCadence) {
         $marker=$marker -and $text.Contains('QUIC_PAIR CADENCE product=1') -and
@@ -118,7 +123,11 @@ for($n=0;$n -lt 2;$n++) {
         $marker=$marker -and $text.Contains($recoveryMarker)
     }
     $roleDrops=$null
-    if($NetworkLossMs) {
+    if($ExpectStall) {
+        $drops=[regex]::Match($text,("QUIC_PAIR STALL_{0} PASS [^\r\n]*\bdrops=(\d+)\b" -f $role.ToUpperInvariant()))
+        $marker=$marker -and $drops.Success
+        if($drops.Success){$roleDrops=[UInt64]::Parse($drops.Groups[1].Value);$lossDrops+=$roleDrops}
+    } elseif($NetworkLossMs) {
         $lossMarker=if($n -eq 0){"QUIC_PAIR NETWORK_LOSS_UPLOAD PASS milliseconds=$NetworkLossMs "}else{"QUIC_PAIR NETWORK_LOSS_DOWNLOAD PASS milliseconds=$NetworkLossMs "}
         $marker=$marker -and $text.Contains($lossMarker)
         $dropMatches=[regex]::Matches($text,('QUIC_PAIR NETWORK_LOSS_{0} PASS milliseconds={1} [^\r\n]*\bdrops=(\d+)\b' -f $role.ToUpperInvariant(),$NetworkLossMs))
@@ -133,7 +142,13 @@ $incoming=Join-Path $profiles[1] "Incoming/$fixtureName"
 $source=Join-Path $profiles[0] "Temp/$fixtureName"
 $sourceSha=if(Test-Path -LiteralPath $source){(Get-FileHash -LiteralPath $source).Hash}else{$null}
 $receivedSha=if(Test-Path -LiteralPath $incoming){(Get-FileHash -LiteralPath $incoming).Hash}else{$null}
-$pass=$pass -and $sourceSha -and $receivedSha -and ($sourceSha -eq $expectedSha) -and ($receivedSha -eq $expectedSha) -and ((Get-Item -LiteralPath $incoming).Length -eq $FileBytes)
+if($ExpectStall) {
+    $pass=$pass -and ($sourceSha -eq $expectedSha) -and !$receivedSha -and
+        (Test-Path -LiteralPath (Join-Path $root 'download.stalled'))
+} else {
+    $pass=$pass -and $sourceSha -and $receivedSha -and ($sourceSha -eq $expectedSha) -and
+        ($receivedSha -eq $expectedSha) -and ((Get-Item -LiteralPath $incoming).Length -eq $FileBytes)
+}
 $result=[ordered]@{schema='ese.v93.quic-product-pair/1';scope='Two real product processes on an explicitly enrolled exact RFC1918 same-host /32; not WAN/NAT or zero-trust discovery acceptance';terminal=$terminal;verdict=if(!$terminal){'RUNNING'}elseif($pass){'PASS'}else{'FAIL'};architecture=$Architecture;address=$Address;interface=$InterfaceId;prepared=$prepared;runs=$runs;bytes=65537;source_sha256=$sourceSha;received_sha256=$receivedSha;md4=if(Test-Path -LiteralPath (Join-Path $root 'download.complete')){([BitConverter]::ToString([IO.File]::ReadAllBytes((Join-Path $root 'download.complete')))).Replace('-','')}else{$null}}
 $result.bytes=$FileBytes
 $result.signed_quic_dependencies=$SignedQuic.IsPresent
@@ -147,6 +162,7 @@ $result.product_cadence_requested=$ProductCadence.IsPresent
 $result.profile_debug_to_disk_requested=$DiagnosticVerbose.IsPresent
 $result.timer_scope='Existing application preference in a fresh portable lab profile; no clock scaling or transfer/recovery deadline changes'
 $result.interruption_requested=$Interrupt.IsPresent
+$result.stall_without_alternate_route_expected=$ExpectStall.IsPresent
 $result.silent_udp_loss_ms=$NetworkLossMs
 $result.silent_udp_dropped_datagrams=$lossDrops
 $result.silent_udp_loss_scope='Pair-only exact endpoint outbound/inbound datagram discard; real timers and QUIC, no Close injection; not physical adapter/router failure'

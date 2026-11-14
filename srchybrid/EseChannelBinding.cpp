@@ -1,6 +1,7 @@
 #include "EseChannelBinding.h"
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 namespace ese { namespace binding {
 namespace {
@@ -134,10 +135,15 @@ ControlExchange::ControlExchange(const Hello& h,const std::array<std::uint8_t,32
     std::array<std::uint8_t,HelloSize> hello{};
     if(session_.LocalHello(hello)) Append(wire::kEseWireControlHello,hello.data(),hello.size());
 }
-void ControlExchange::Append(std::uint8_t type,const std::uint8_t* p,std::size_t n) noexcept {
+bool ControlExchange::Append(std::uint8_t type,const std::uint8_t* p,std::size_t n) noexcept {
+    if(n+5 > output_.size()-(size_-acknowledged_) ||
+        n+5 > (std::numeric_limits<std::uint64_t>::max)()-size_) return false;
     const auto length=static_cast<std::uint32_t>(n+1);
-    for(unsigned i=0;i<4;++i) output_[size_++]=static_cast<std::uint8_t>(length>>(24-8*i));
-    output_[size_++]=type; std::copy_n(p,n,output_.begin()+size_); size_+=n;
+    for(unsigned i=0;i<4;++i)
+        output_[size_++ % output_.size()]=static_cast<std::uint8_t>(length>>(24-8*i));
+    output_[size_++ % output_.size()]=type;
+    for(std::size_t i=0;i<n;++i) output_[size_++ % output_.size()]=p[i];
+    return true;
 }
 bool ControlExchange::Fail(Failure f) noexcept {
     if(error_==Failure::None) error_=f;
@@ -145,25 +151,42 @@ bool ControlExchange::Fail(Failure f) noexcept {
 }
 ControlBytes ControlExchange::Pending() const noexcept {
     if(Error()!=Failure::None || submitted_==size_) return {};
-    return {output_.data()+submitted_,size_-submitted_};
+    const auto begin=static_cast<std::size_t>(submitted_ % output_.size());
+    return {output_.data()+begin,static_cast<std::size_t>((std::min)(
+        size_-submitted_,static_cast<std::uint64_t>(output_.size()-begin)))};
+}
+bool ControlExchange::QueueLiveness(std::uint8_t type,
+    const std::array<std::uint8_t,LivenessSize>& payload) noexcept
+{
+    if(!Ready() || closeReason_ ||
+        (type!=wire::kEseWireControlPing && type!=wire::kEseWireControlPong)) return false;
+    // Keep room for a CLOSE even if the peer never acknowledges liveness.
+    constexpr std::size_t frameSize=LivenessSize+5;
+    if(size_-acknowledged_ + frameSize + 7 > output_.size()) return false;
+    return Append(type,payload.data(),payload.size());
 }
 bool ControlExchange::QueueClose(std::uint16_t reason) noexcept {
     if(!Ready() || reason<wire::kEseWireCloseNoCandidate ||
         reason>wire::kEseWireCloseLegacyCallbackUnavailable) return false;
     if(closeReason_) return closeReason_==reason;
     const std::uint8_t payload[]={static_cast<std::uint8_t>(reason>>8),static_cast<std::uint8_t>(reason)};
-    Append(wire::kEseWireControlClose,payload,sizeof(payload));
+    if(!Append(wire::kEseWireControlClose,payload,sizeof(payload))) return false;
     closeReason_=reason;
     return true;
 }
-bool ControlExchange::SubmittedThrough(std::size_t offset) noexcept {
+bool ControlExchange::SubmittedThrough(std::uint64_t offset) noexcept {
     if(Error()!=Failure::None) return false;
     if(offset<submitted_ || offset>size_) return Fail(Failure::WrongState);
     submitted_=offset;
-    if(authQueued_ && !authSent_ && submitted_==size_) {
+    if(authEnd_ && !authSent_ && submitted_>=authEnd_) {
         if(!session_.AuthSent()) return false;
         authSent_=true;
     }
+    return true;
+}
+bool ControlExchange::AcknowledgedThrough(std::uint64_t offset) noexcept {
+    if(offset<acknowledged_ || offset>submitted_) return false;
+    acknowledged_=offset;
     return true;
 }
 bool ControlExchange::Receive(Crypto& crypto,const std::uint8_t* p,std::size_t n,ControlSink* sink) noexcept {
@@ -180,7 +203,8 @@ bool ControlExchange::Receive(Crypto& crypto,const std::uint8_t* p,std::size_t n
             if(!session_.RemoteHello(payload,length)) return false;
             std::array<std::uint8_t,AuthSize> auth{};
             if(!session_.LocalAuth(crypto,auth)) return false;
-            Append(wire::kEseWireControlAuth,auth.data(),auth.size()); authQueued_=true;
+            if(!Append(wire::kEseWireControlAuth,auth.data(),auth.size())) return Fail(Failure::WrongState);
+            authEnd_=size_;
         } else if(type==wire::kEseWireControlAuth) {
             if(!session_.RemoteAuth(crypto,payload,length)) return false;
         } else {

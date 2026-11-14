@@ -5,6 +5,7 @@
 #include "ClientList.h"
 #include "UpDownClient.h"
 #include "ListenSocket.h"
+#include "Log.h"
 #include "UploadBandwidthThrottler.h"
 #include "ClientCredits.h"
 #include "UploadQueue.h"
@@ -264,10 +265,20 @@ void QuicDownloadConsumer::Batch(const reach::DirectCoordinatorBatch& batch) {
         auto& intent=recovery_[batch.handle.slot];
         if(!Same(intent.handle,batch.handle) || intent.epoch!=recoveryState->epoch) {
             intent={}; intent.handle=batch.handle; intent.epoch=recoveryState->epoch;
-            for(const auto& entry:entries_) if(entry.occupied && Same(entry.handle,batch.handle) &&
-                entry.route.transport==reach::DirectQuic && entry.epoch==recoveryState->epoch &&
-                entry.peer.persistent && entry.peer.hasPin && !entry.peer.allowFirstUse && !entry.peer.trustCommitter) {
-                intent.pinnedPeer=entry.peer; break;
+            for(const auto& action:batch.actions) if(action.type==reach::DirectActionType::Close) {
+                const auto* entry=Find(batch.handle,action.route_id);
+                if(!entry || entry->route.transport!=reach::DirectQuic || entry->epoch!=recoveryState->epoch)
+                    continue;
+                if(action.reason==reach::DirectReason::QuicNoProgress) {
+                    intent.quicStalled=true;
+                    const auto now=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count());
+                    CooldownQuic(*entry,now);
+                } else if(entry->peer.persistent && entry->peer.hasPin &&
+                    !entry->peer.allowFirstUse && !entry->peer.trustCommitter) {
+                    intent.pinnedPeer=entry->peer;
+                }
+                break;
             }
         }
     }
@@ -303,7 +314,15 @@ void QuicDownloadConsumer::Batch(const reach::DirectCoordinatorBatch& batch) {
             if(!e->owner) {
                 e->peer.sessionEpoch=action.session_epoch;
                 e->owner=manager_.BeginNativeQuicLab(e->native,e->peer,e->handle,e->route);
-                if(!e->owner) { Fail(batch.handle,reach::DirectReason::DirectUnreachable); return; }
+                if(!e->owner) {
+                    // One unavailable adapter must not cancel a separately
+                    // authorized fallback. No transport owns this route.
+                    const auto state=manager_.DirectConnections().Snapshot(e->handle);
+                    if(!state || manager_.DirectEvents().TryPush({e->handle,state->topology_generation,e->route.id,1,
+                        action.session_epoch,reach::DirectEventType::Closed,0,reach::DirectReason::DirectUnreachable})
+                        !=reach::DirectEnqueueStatus::Accepted)
+                        Fail(batch.handle,reach::DirectReason::ResourceLimit);
+                }
             }
             break;
         case reach::DirectActionType::Attach:
@@ -350,6 +369,10 @@ void QuicDownloadConsumer::PumpOwnedRecovery() noexcept {
             auto pending=intent; intent={}; // single use before any Start/callback
             const auto result=BeginObservedTcp(pending.handle);
             if(result==TcpStartResult::Unavailable) {
+                if(pending.quicStalled) {
+                    Fail(pending.handle,reach::DirectReason::QuicNoProgress);
+                    continue;
+                }
                 const auto now=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count());
                 if(pending.pinnedPeer && now>=pending.nextQuicProbeMs) {
@@ -391,6 +414,55 @@ QuicDownloadConsumer::TcpStartResult QuicDownloadConsumer::BeginObservedTcp(reac
         return TcpStartResult::Scheduled;
     } catch(...) { Fail(handle,reach::DirectReason::ResourceLimit); return TcpStartResult::Failed; }
 }
+bool QuicDownloadConsumer::QuicCoolingDown(const std::array<std::uint8_t,32>& node,
+    std::uint64_t topology,std::uint64_t now) const noexcept
+{
+    return std::any_of(quicCooldowns_.begin(),quicCooldowns_.end(),[&](const auto& slot) {
+        return slot.topology==topology && slot.until>now && slot.node==node;
+    });
+}
+
+void QuicDownloadConsumer::CooldownQuic(const Entry& entry,std::uint64_t now) noexcept
+{
+    constexpr std::uint64_t cooldownMs=600000;
+    const auto topology=entry.route.candidate.topology_generation;
+    auto* soonest=&quicCooldowns_.front();
+    for(auto& value:quicCooldowns_) {
+        if(value.topology!=topology || value.until<=now || value.node==entry.peer.expectedNode) {
+            soonest=&value;
+            break;
+        }
+        if(value.until<soonest->until) soonest=&value;
+    }
+    *soonest={entry.peer.expectedNode,topology,now+cooldownMs};
+}
+
+void QuicDownloadConsumer::CheckQuicProgress(Entry& entry)
+{
+    const auto now=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    if(now<entry.nextProgressSampleMs) return;
+    entry.nextProgressSampleMs=now+1000;
+    auto* transport=manager_.FindNativeQuicLab(entry.owner);
+    if(!transport || !transport->Ready()) return;
+    const auto* file=entry.client->GetRequestFile();
+    const auto transportState=transport->Snapshot();
+    const bool waitingForDownload=!entry.native.server && entry.client->GetDownloadState()==DS_DOWNLOADING &&
+        CanResumeFile(file) && entry.client->HasQueuedDownloadBlocks() && !file->HasDownloadDiskBackpressure();
+    // Pending upload frames already exist in the throttled QUIC send window.
+    // Queue membership alone is not pending payload or evidence of a stall.
+    const bool waitingForUpload=entry.native.server && entry.client->GetUploadState()==US_UPLOADING &&
+        transportState.tx_buffered && entry.client->GetQueueSessionUploadAdded()!=0;
+    const auto progress=entry.native.server ? transportState.acknowledged_offset : transport->UsefulReceived();
+    const auto action=entry.progress.Observe(now,waitingForDownload || waitingForUpload,progress,transport->SmoothedRttMs());
+    if(action==QuicProgressWatchdog::Action::Probe) transport->RequestLivenessProbe(now);
+    else if(action==QuicProgressWatchdog::Action::Recover) {
+        DebugLogWarning(_T("QUIC application progress expired (control timeout=%u)"),
+            static_cast<unsigned>(transport->LivenessUnresponsive()));
+        transport->Close(reach::DirectReason::QuicNoProgress);
+    }
+}
+
 void QuicDownloadConsumer::Poll() noexcept {
     if(std::this_thread::get_id()!=thread_) std::terminate();
     for(auto& e:entries_) if(e.occupied) {
@@ -422,6 +494,7 @@ void QuicDownloadConsumer::Poll() noexcept {
                         // or send around its bandwidth policy.
                         theApp.uploadBandwidthThrottler->QueueForSendingControlPacket(e.socket,true);
                     }
+                    if(e.occupied && !e.closing) CheckQuicProgress(e);
                 }
             }
             if(e.closing && (!e.owner || manager_.ReleaseNativeQuicLab(e.owner))) {

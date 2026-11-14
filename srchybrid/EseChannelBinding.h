@@ -9,6 +9,7 @@
 namespace ese { namespace binding {
 constexpr std::size_t HelloSize = 110;
 constexpr std::size_t AuthSize = 65;
+constexpr std::size_t LivenessSize = 24;
 constexpr std::size_t MaxControlLength = 4096;
 constexpr std::uint32_t KnownCaps = wire::kEseWireCapQuicStream | wire::kEseWireCapDvlProfile | wire::kEseWireCapRemoteCredit;
 struct Hello {
@@ -87,8 +88,8 @@ public:
     // Borrowed payload only for this call; the sink must copy if retaining it.
     virtual bool Frame(std::uint8_t,const std::uint8_t*,std::size_t) noexcept = 0;
 };
-// Owns the initial HELLO/AUTH stream, retaining stable send storage until
-// destruction (including after submission/ACK). No network allocations.
+// Owns the control stream. A submitted byte stays at the same address
+// until acknowledged. Absolute offsets are retained across ring wrap.
 class ControlExchange {
 public:
     ControlExchange(const Hello&,const std::array<std::uint8_t,32>& expectedNode,
@@ -99,7 +100,10 @@ public:
     bool Receive(Crypto&,const std::uint8_t*,std::size_t,ControlSink* = nullptr) noexcept;
     ControlBytes Pending() const noexcept;
     // Cumulative contiguous offset accepted by the QUIC stream writer.
-    bool SubmittedThrough(std::size_t) noexcept;
+    bool SubmittedThrough(std::uint64_t) noexcept;
+    bool AcknowledgedThrough(std::uint64_t) noexcept;
+    std::uint64_t OutputEnd() const noexcept { return size_; }
+    bool QueueLiveness(std::uint8_t type,const std::array<std::uint8_t,LivenessSize>&) noexcept;
     // One authenticated CLOSE, stored alongside HELLO/AUTH until destruction.
     // Retry with the same reason is idempotent; no heap or borrowed TX storage.
     bool QueueClose(std::uint16_t wireReason) noexcept;
@@ -111,13 +115,13 @@ public:
     std::uint32_t SelectedCaps() const noexcept { return Ready() ? session_.SelectedCaps() : 0; }
 private:
     bool Fail(Failure) noexcept;
-    void Append(std::uint8_t,const std::uint8_t*,std::size_t) noexcept;
+    bool Append(std::uint8_t,const std::uint8_t*,std::size_t) noexcept;
     Session session_;
     ControlReader reader_;
-    std::array<std::uint8_t,HelloSize+AuthSize+10+7> output_{};
-    std::size_t size_=0,submitted_=0;
+    std::array<std::uint8_t,512> output_{};
+    std::uint64_t size_=0,submitted_=0,acknowledged_=0,authEnd_=0;
     Failure error_=Failure::None;
-    bool authQueued_=false,authSent_=false;
+    bool authSent_=false;
     std::uint16_t closeReason_=0;
 };
 } }

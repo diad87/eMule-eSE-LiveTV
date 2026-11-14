@@ -5,6 +5,7 @@
 #include "EseNativeQuicRuntime.h"
 #include "EseEd2kFramer.h"
 #include "EseQuicEd2kWriter.h"
+#include "EseQuicProgressWatchdog.h"
 #include <functional>
 #include <thread>
 class CDirectReachabilityManager;
@@ -62,6 +63,8 @@ private:
         CClientReqSocket* socket=nullptr;
         std::unique_ptr<Ed2kFramer> reader;
         std::shared_ptr<QuicEd2kWriter> writer;
+        QuicProgressWatchdog progress;
+        std::uint64_t nextProgressSampleMs=0;
     };
     Entry* Find(reach::DirectHandle,std::uint32_t);
     bool Live(const Entry&) const;
@@ -71,6 +74,10 @@ private:
     void Close(Entry&,reach::DirectReason) noexcept;
     void Batch(const reach::DirectCoordinatorBatch&);
     void Fail(reach::DirectHandle,reach::DirectReason);
+    void CheckQuicProgress(Entry&);
+    void CooldownQuic(const Entry&,std::uint64_t now) noexcept;
+    bool QuicCoolingDown(const std::array<std::uint8_t,32>& node,
+        std::uint64_t topology,std::uint64_t now) const noexcept;
     const std::thread::id thread_;
     CDirectReachabilityManager& manager_;
     TerminalSink terminal_;
@@ -80,7 +87,13 @@ private:
     struct RecoveryIntent {
         reach::DirectHandle handle; std::uint64_t epoch=0,nextQuicProbeMs=0;
         std::optional<QuicPeerConfig> pinnedPeer; // prepared before polling, scoped to this wire attempt
+        bool quicStalled=false;
     };
     std::array<RecoveryIntent,256> recovery_{}; // value-only, bounded by DCO slots
+    struct Cooldown {
+        std::array<std::uint8_t,32> node{};
+        std::uint64_t topology=0,until=0;
+    };
+    std::array<Cooldown,256> quicCooldowns_{};
 };
 }

@@ -4,6 +4,7 @@
 #include "../../srchybrid/EseEd2kFramer.h"
 #include "../../srchybrid/EseQuicEd2kPump.h"
 #include "../../srchybrid/EseQuicEd2kWriter.h"
+#include "../../srchybrid/EseQuicProgressWatchdog.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -32,6 +33,10 @@ struct FakeRuntime final : QuicRuntime {
     FakeCrypto crypto; QuicIo* io=nullptr; std::uint64_t now=10;
     bool handshake=true,earlyBulk=false,inside=false; unsigned shutdown=0;
     std::uint64_t NowMs() const noexcept override { return now; }
+    bool RandomBytes(std::uint8_t* bytes,std::size_t n) noexcept override {
+        std::memset(bytes,0x5a,n);
+        return true;
+    }
     binding::Crypto& Crypto() noexcept override { return crypto; }
     bool Start(const DirectSessionRoute&,QuicIo& sink) override { io=&sink; return true; }
     void Poll(std::uint64_t value) override {
@@ -59,7 +64,77 @@ static void Move(QuicTransport& from,QuicTransport& to,std::int64_t stream) {
     const auto p=from.Pending(stream); Check(p.size>0); Check(from.Submitted(stream,p.size));
     const auto r=to.Received(stream,p); Check(r.status==DirectIoStatus::Accepted && r.accepted==p.size);
 }
+static void ProgressAndLiveness() {
+    using Action=QuicProgressWatchdog::Action;
+    QuicProgressWatchdog watchdog;
+    Check(watchdog.Observe(1000,true,1,0)==Action::None);
+    Check(watchdog.Observe(15999,true,1,0)==Action::None);
+    Check(watchdog.Observe(16000,true,1,0)==Action::Probe);
+    Check(watchdog.Observe(16001,true,1,0)==Action::None);
+    Check(watchdog.Observe(20000,false,1,0)==Action::None);
+    Check(watchdog.Observe(70000,true,1,0)==Action::None);
+    Check(watchdog.Observe(84999,true,1,0)==Action::None);
+    Check(watchdog.Observe(85000,true,1,0)==Action::Probe);
+    Check(watchdog.Observe(90000,true,2,3000)==Action::None);
+    Check(watchdog.Observe(113999,true,2,3000)==Action::None);
+    Check(watchdog.Observe(114000,true,2,3000)==Action::Probe);
+    Check(watchdog.Observe(137999,true,2,3000)==Action::None);
+    Check(watchdog.Observe(138000,true,2,3000)==Action::Recover);
+
+    DirectBufferPool pool;
+    auto clientEvents=std::make_unique<DirectEventQueue>();
+    auto serverEvents=std::make_unique<DirectEventQueue>();
+    QuicTransport client(Config(false),std::make_unique<FakeRuntime>(),pool,*clientEvents);
+    QuicTransport server(Config(true),std::make_unique<FakeRuntime>(),pool,*serverEvents);
+    Check(client.Start({0,1},Route()) && server.Start({1,1},Route()));
+    Check(!client.RequestLivenessProbe(10));
+    client.Poll(10);
+    server.Poll(10);
+    Move(client,server,0);
+    Move(server,client,0);
+    Move(client,server,0);
+    Check(client.Ready() && server.Ready());
+    Check(client.Acknowledged(0,0,185) && server.Acknowledged(0,0,185));
+    std::uint64_t offset=185;
+    // Exercise rate limits and repeated ring wrap with live ACK and no useful bytes.
+    for(std::uint64_t i=1;i<=25;++i) {
+        const auto now=1+5000*i;
+        client.Poll(now);
+        server.Poll(now);
+        Check(client.RequestLivenessProbe(now) && !client.RequestLivenessProbe(now));
+        std::array<std::uint8_t,29> frame{};
+        std::size_t used=0;
+        while(const auto next=client.Pending(0).size) {
+            const auto p=client.Pending(0);
+            Check(used+next<=frame.size());
+            std::memcpy(frame.data()+used,p.data,next);
+            Move(client,server,0);
+            used+=next;
+        }
+        Check(used==29 && frame[3]==25 && frame[4]==6 && frame[12]==i && frame[13]==0x5a);
+        Check(client.Acknowledged(0,offset,29));
+        used=0;
+        while(const auto next=server.Pending(0).size) {
+            const auto p=server.Pending(0);
+            Check(used+next<=frame.size());
+            frame[4]=7;
+            Check(std::memcmp(frame.data()+used,p.data,next)==0);
+            Move(server,client,0);
+            used+=next;
+        }
+        Check(used==29 && server.Acknowledged(0,offset,29));
+        Check(!client.LivenessUnresponsive() && client.UsefulReceived()==0);
+        offset+=29;
+    }
+    client.Poll(130001);
+    Check(client.RequestLivenessProbe(130001));
+    client.Poll(135001);
+    Check(client.LivenessUnresponsive() && client.Ready());
+    client.Close(DirectReason::Disabled);
+    server.Close(DirectReason::Disabled);
+}
 int main() {
+    ProgressAndLiveness();
     for(const auto result : {trust::CommitResult::Stored,trust::CommitResult::PersistenceFailed,trust::CommitResult::PinChanged}) {
         struct TrustPolicy final : trust::Committer {
             trust::CommitResult result; QuicTransport* transport=nullptr; unsigned calls=0;

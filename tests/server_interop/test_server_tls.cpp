@@ -50,79 +50,18 @@ struct Session {
     ~Session() { gnutls_deinit(value); }
 };
 
-struct Datum {
-    gnutls_datum_t value{};
-    ~Datum() { gnutls_free(value.data); }
-};
-
 struct ApplicationKey {
     gnutls_privkey_t key=nullptr;
     Bytes32 node{};
     ApplicationKey()
     {
         Check(gnutls_privkey_init(&key)==0,"application key handle");
-        try {
-            gnutls_pubkey_t raw=nullptr;
-            Check(gnutls_pubkey_init(&raw)==0,"application public key handle");
-            struct PublicKey { gnutls_pubkey_t value; ~PublicKey() { gnutls_pubkey_deinit(value); } } pub{raw};
-            Datum x,y;
-            gnutls_ecc_curve_t curve{};
-            Check(gnutls_privkey_generate(key,GNUTLS_PK_EDDSA_ED25519,0,0)==0 &&
-                gnutls_pubkey_import_privkey(pub.value,key,0,0)==0 &&
-                gnutls_pubkey_export_ecc_raw2(pub.value,&curve,&x.value,&y.value,GNUTLS_EXPORT_FLAG_NO_LZ)==0 &&
-                curve==GNUTLS_ECC_CURVE_ED25519 && x.value.size==node.size(),"export Ed25519 application public key");
-            std::copy_n(x.value.data,node.size(),node.begin());
-        } catch(...) {
+        if(gnutls_privkey_generate(key,GNUTLS_PK_EDDSA_ED25519,0,0)<0 || !ReadEd25519Identity(key,node)) {
             gnutls_privkey_deinit(key);
-            throw;
+            throw std::runtime_error("export Ed25519 application public key");
         }
     }
     ~ApplicationKey() { gnutls_privkey_deinit(key); }
-};
-
-template<class Bytes>
-gnutls_datum_t View(const Bytes& bytes) noexcept
-{
-    return {const_cast<unsigned char*>(bytes.data()),static_cast<unsigned int>(bytes.size())};
-}
-
-class ChannelCrypto final : public AuthCrypto {
-public:
-    ChannelCrypto(gnutls_session_t session,const ApplicationKey& identity)
-        : session_(session), identity_(identity) {}
-    bool Hash(ByteView bytes,Bytes32& output) noexcept override
-    {
-        return gnutls_hash_fast(GNUTLS_DIG_SHA256,bytes.data,bytes.size,output.data())==0;
-    }
-    bool Export(const Bytes32& digest,Bytes32& output) noexcept override
-    {
-        return ExportServerAuth(session_,digest,output);
-    }
-    bool Sign(const AuthTranscript& transcript,Signature& output) noexcept override
-    {
-        const auto bytes=View(transcript);
-        Datum signature;
-        if(gnutls_privkey_sign_data2(identity_.key,GNUTLS_SIGN_EDDSA_ED25519,0,&bytes,&signature.value)<0 ||
-            signature.value.size!=output.size()) return false;
-        std::copy_n(signature.value.data,output.size(),output.begin());
-        return true;
-    }
-    static bool VerifySignature(const Bytes32& node,const AuthTranscript& transcript,const Signature& signature) noexcept
-    {
-        gnutls_pubkey_t publicKey=nullptr;
-        if(gnutls_pubkey_init(&publicKey)<0) return false;
-        struct PublicKey { gnutls_pubkey_t value; ~PublicKey() { gnutls_pubkey_deinit(value); } } key{publicKey};
-        const auto x=View(node),bytes=View(transcript),sig=View(signature);
-        return gnutls_pubkey_import_ecc_raw(key.value,GNUTLS_ECC_CURVE_ED25519,&x,nullptr)==0 &&
-            gnutls_pubkey_verify_data2(key.value,GNUTLS_SIGN_EDDSA_ED25519,0,&bytes,&sig)==0;
-    }
-    bool Verify(const Bytes32& node,const AuthTranscript& transcript,const Signature& signature) noexcept override
-    {
-        return VerifySignature(node,transcript,signature);
-    }
-private:
-    gnutls_session_t session_;
-    const ApplicationKey& identity_;
 };
 
 void CheckAuthVectors(const std::filesystem::path& directory)
@@ -305,7 +244,7 @@ struct AuthVectors {
 void ExerciseApplicationIdentity(gnutls_session_t client,gnutls_session_t server,AuthVectors& vectors)
 {
     const auto& [clientKey,serverKey,clientHello,serverHello,recordedProof]=vectors;
-    ChannelCrypto clientCrypto(client,clientKey), serverCrypto(server,serverKey);
+    ChannelCrypto clientCrypto(client,clientKey.key), serverCrypto(server,serverKey.key);
     AuthSession nonPersistent(clientHello,serverKey.node,false,0);
     AuthSession expired(clientHello,serverKey.node,true,0);
     WireBytes rejected;

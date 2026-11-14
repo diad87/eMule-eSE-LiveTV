@@ -4,6 +4,7 @@
 #include <BaseTsd.h>
 using ssize_t = SSIZE_T; // Signed size type expected by the MinGW GnuTLS header.
 #endif
+#include <gnutls/abstract.h>
 #include <gnutls/gnutls.h>
 #include <string>
 
@@ -24,4 +25,19 @@ bool IsServerTls(gnutls_session_t) noexcept;
 // Call only after gnutls_handshake returns success. An exporter is not itself
 // application identity.
 bool ExportServerAuth(gnutls_session_t,const Bytes32& helloDigest,Bytes32& exporter) noexcept;
+
+bool ReadEd25519Identity(gnutls_privkey_t,Bytes32& node) noexcept;
+class ChannelCrypto final : public AuthCrypto {
+public:
+    ChannelCrypto(gnutls_session_t session,gnutls_privkey_t identity) noexcept
+        : session_(session), identity_(identity) {}
+    bool Hash(ByteView,Bytes32&) noexcept override;
+    bool Export(const Bytes32&,Bytes32&) noexcept override;
+    bool Sign(const AuthTranscript&,Signature&) noexcept override;
+    bool Verify(const Bytes32&,const AuthTranscript&,const Signature&) noexcept override;
+    static bool VerifySignature(const Bytes32&,const AuthTranscript&,const Signature&) noexcept;
+private:
+    gnutls_session_t session_;
+    gnutls_privkey_t identity_;
+};
 }

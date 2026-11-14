@@ -48,17 +48,32 @@ if(ESE_QUIC_RELEASE_ROOT)
         target_compile_options(ese_server_tls PRIVATE /W4 /WX)
     endif()
 
+    add_executable(ese-server-ref main.cpp ServerSession.cpp)
+    target_link_libraries(ese-server-ref PRIVATE ese_server_tls ws2_32)
+    if(MSVC)
+        target_compile_options(ese-server-ref PRIVATE /W4 /WX)
+    endif()
+    file(GLOB runtime_dlls "${ESE_QUIC_RELEASE_ROOT}/runtime-x64/*.dll")
+    add_custom_command(TARGET ese-server-ref POST_BUILD COMMAND ${CMAKE_COMMAND} -E
+        copy_if_different ${runtime_dlls} "$<TARGET_FILE_DIR:ese-server-ref>")
+
     if(BUILD_TESTING)
         add_executable(test_server_tls ../tests/server_interop/test_server_tls.cpp)
         target_link_libraries(test_server_tls PRIVATE ese_server_tls ws2_32)
         if(MSVC)
             target_compile_options(test_server_tls PRIVATE /W4 /WX)
         endif()
-        file(GLOB runtime_dlls "${ESE_QUIC_RELEASE_ROOT}/runtime-x64/*.dll")
         add_custom_command(TARGET test_server_tls POST_BUILD COMMAND ${CMAKE_COMMAND} -E
             copy_if_different ${runtime_dlls} "$<TARGET_FILE_DIR:test_server_tls>")
         add_test(NAME server-tls-loopback COMMAND test_server_tls
             "${CMAKE_CURRENT_SOURCE_DIR}/../tests/fixtures/server_interop/auth")
         set_tests_properties(server-tls-loopback PROPERTIES TIMEOUT 30)
+        set(ESE_SERVER_INTEROP_PYTHON "" CACHE FILEPATH "Python with pyOpenSSL for the independent reference test")
+        if(ESE_SERVER_INTEROP_PYTHON)
+            add_test(NAME server-reference-login COMMAND "${ESE_SERVER_INTEROP_PYTHON}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/../tests/server_interop/test_reference_server.py"
+                "$<TARGET_FILE:ese-server-ref>")
+            set_tests_properties(server-reference-login PROPERTIES TIMEOUT 30)
+        endif()
     endif()
 endif()

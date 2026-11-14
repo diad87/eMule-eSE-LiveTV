@@ -3,6 +3,7 @@
 #include <ws2tcpip.h>
 #include "ServerSession.h"
 #include "ServerTls.h"
+#include "RendezvousListener.h"
 #include <gnutls/crypto.h>
 #include <algorithm>
 #include <cerrno>
@@ -104,6 +105,7 @@ public:
     ~TlsChannel() { gnutls_deinit(session_); }
     gnutls_session_t Session() const noexcept { return session_; }
     void SetDeadline(std::uint64_t end) noexcept { deadline_=end; }
+    bool InputError() const noexcept { return inputError_; }
     bool Handshake()
     {
         SetDeadline(Now()+10000);
@@ -121,11 +123,27 @@ public:
         }
         return true;
     }
-    std::optional<FrameView> Next()
+    std::optional<FrameView> Next(RendezvousListener* rendezvous=nullptr,const rdv::SessionContext* context=nullptr)
     {
         if(decoder_.Get() && !decoder_.Consume()) return std::nullopt;
         while(Now()<deadline_) {
+            if(rendezvous && context) {
+                const auto status=rendezvous->TakeStatus(*context,Now());
+                if(status && !SendStatus(*status)) {
+                    inputError_=true;
+                    return std::nullopt;
+                }
+            }
             if(offset_==used_) {
+                if(rendezvous && !gnutls_record_check_pending(session_)) {
+                    fd_set input;
+                    FD_ZERO(&input);
+                    FD_SET(socket_.value,&input);
+                    timeval interval{0,50000};
+                    const auto ready=select(0,&input,nullptr,nullptr,&interval);
+                    if(ready==0) continue;
+                    if(ready<0) return std::nullopt;
+                }
                 const auto count=gnutls_record_recv(session_,input_.data(),input_.size());
                 if(count<=0) return std::nullopt;
                 offset_=0;
@@ -134,11 +152,28 @@ public:
             const auto fed=decoder_.Feed({input_.data()+offset_,used_-offset_});
             offset_+=fed.consumed;
             if(fed.state==DecodeState::Ready) return decoder_.Get();
-            if(fed.state!=DecodeState::Reading) return std::nullopt;
+            if(fed.state!=DecodeState::Reading) {
+                inputError_=true;
+                return std::nullopt;
+            }
         }
         return std::nullopt;
     }
 private:
+    bool SendStatus(const rdv::Registration& status)
+    {
+        const auto now=Now();
+        if(now>=status.until) return true;
+        const auto ttl=static_cast<std::uint32_t>((std::min)(status.until-now,std::uint64_t{60000}));
+        // REG_STATUS contains the family and the complete canonical endpoint.
+        std::array<std::uint8_t,12> body{4,4};
+        std::copy_n(status.endpoint.address.begin(),4,body.begin()+2);
+        body[6]=static_cast<std::uint8_t>(status.endpoint.port>>8);
+        body[7]=static_cast<std::uint8_t>(status.endpoint.port);
+        for(unsigned i=0;i<4;++i) body[8+i]=static_cast<std::uint8_t>(ttl>>(24-i*8));
+        EncodedFrame wire;
+        return EncodeFrame({{kEseWireServerRegStatus,0,{}},{body.data(),body.size()}},wire) && Send(wire);
+    }
     bool IoTimeout(int option)
     {
         const auto now=Now();
@@ -168,6 +203,7 @@ private:
     FrameDecoder decoder_;
     std::array<std::uint8_t,4096> input_{};
     size_t offset_=0,used_=0;
+    bool inputError_=false;
 };
 
 bool AuthenticationFailure(TlsChannel& transport)
@@ -180,7 +216,7 @@ bool AuthenticationFailure(TlsChannel& transport)
 }
 
 bool Serve(const Socket& peer,const ServerIdentity& identity,const Bytes16& epoch,std::uint64_t generation,
-    const ServerEndpoint& endpoint,ServerIndex& index)
+    const ServerEndpoint& endpoint,ServerIndex& index,RendezvousListener* rendezvous)
 {
     TlsChannel transport(peer,identity.credentials);
     if(!transport.Handshake()) return false;
@@ -193,7 +229,9 @@ bool Serve(const Socket& peer,const ServerIdentity& identity,const Bytes16& epoc
     if(gnutls_rnd(GNUTLS_RND_NONCE,local.nonce.data(),local.nonce.size())<0 ||
         gnutls_rnd(GNUTLS_RND_NONCE,local.session.data(),local.session.size())<0) return false;
     ChannelCrypto crypto(transport.Session(),identity.identity);
-    AuthSession auth(local,kEseWireServerCapEd2kEnvelope | kEseWireServerCapAtomicPublish,true,started);
+    const auto capabilities=kEseWireServerCapEd2kEnvelope | kEseWireServerCapAtomicPublish |
+        (rendezvous ? kEseWireServerCapRdv2 : 0);
+    AuthSession auth(local,capabilities,true,started);
     EncodedFrame wire;
     for(;;) {
         switch(auth.State()) {
@@ -215,14 +253,32 @@ bool Serve(const Socket& peer,const ServerIdentity& identity,const Bytes16& epoc
         break;
     }
     const auto* client=auth.RemoteClient();
-    if(!client) return false;
+    const auto* authenticated=auth.NegotiatedServer();
+    if(!client || !authenticated) return false;
     ServerSession session(*client,endpoint,index,generation,Now());
+    struct Registration {
+        RendezvousListener* listener=nullptr;
+        rdv::SessionContext context;
+        ~Registration() { if(listener) listener->Remove(context); }
+    } registration;
+    if(rendezvous && (authenticated->selected & kEseWireServerCapRdv2)) {
+        const rdv::SessionContext context{authenticated->epoch,authenticated->session,authenticated->generation};
+        Bytes32 digest{}, key{};
+        const bool attached=auth.HelloDigest(crypto,digest) && ExportRendezvousKey(transport.Session(),digest,key) &&
+            rendezvous->Attach(context,key,*client,session.Deadline());
+        SecureZeroMemory(key.data(),key.size());
+        if(!attached) return false;
+        registration.listener=rendezvous;
+        registration.context=context;
+    }
     while(!session.Closed()) {
         transport.SetDeadline((std::min)(session.Deadline(),Now()+30000));
-        const auto frame=transport.Next();
-        if(!frame) return session.LoggedIn();
+        const auto frame=transport.Next(registration.listener,&registration.context);
+        if(!frame) return session.LoggedIn() && !transport.InputError();
         Responses responses;
         if(!session.Handle(*frame,crypto,Now(),responses)) return false;
+        if(registration.listener)
+            registration.listener->Update(registration.context,session.LoggedIn() && !session.Closed(),session.Deadline());
         transport.SetDeadline(Now()+3000);
         for(const auto& response:responses)
             if(!transport.Send(response)) return false;
@@ -245,14 +301,14 @@ public:
         maintenance_.join();
     }
     void Add(const Socket& listener,const ServerIdentity& identity,const Bytes16& epoch,
-        std::uint64_t generation,const ServerEndpoint& endpoint,ServerIndex& index)
+        std::uint64_t generation,const ServerEndpoint& endpoint,ServerIndex& index,RendezvousListener* rendezvous)
     {
         auto& slot=slots_[(generation-1)%slots_.size()];
         slot.Join();
         Socket accepted(accept(listener.value,nullptr,nullptr));
-        slot.thread=std::thread([&,generation,peer=std::move(accepted)] {
+        slot.thread=std::thread([&,generation,rendezvous,peer=std::move(accepted)] {
             try {
-                if(Serve(peer,identity,epoch,generation,endpoint,index)) ++completed_;
+                if(Serve(peer,identity,epoch,generation,endpoint,index,rendezvous)) ++completed_;
             } catch(const std::exception&) {
                 // Malformed/failed individual sessions are disconnected. Do
                 // not log remote data or private material on this path.
@@ -298,8 +354,8 @@ unsigned ParseNumber(const char* argument,unsigned maximum)
 int main(int argc,char** argv)
 {
     try {
-        if(argc!=6) {
-            std::cerr<<"Usage: ese-server-ref <loopback-port> <certificate-pem> <tls-key-pem> <node-key-pem> <connection-count>\n";
+        if(argc!=6 && argc!=7) {
+            std::cerr<<"Usage: ese-server-ref <loopback-port> <certificate-pem> <tls-key-pem> <node-key-pem> <connection-count> [rdv-udp-port]\n";
             return 2;
         }
         Runtime runtime;
@@ -334,15 +390,19 @@ int main(int argc,char** argv)
         ChannelCrypto hash(nullptr,nullptr);
         Require(hash.Hash({},emptyDigest),"derive empty publication digest");
         ServerIndex index(emptyDigest);
+        auto rendezvous=argc==7 ? std::make_unique<RendezvousListener>(index,
+            static_cast<std::uint16_t>(ParseNumber(argv[6],65535))) : nullptr;
         Connections connections(index);
-        std::cout<<"LISTENING "<<endpoint.port<<std::endl;
+        std::cout<<"LISTENING "<<endpoint.port;
+        if(rendezvous) std::cout<<" RDV "<<rendezvous->Port();
+        std::cout<<std::endl;
         for(unsigned attempt=0;attempt<connectionCount;++attempt) {
             fd_set incoming;
             FD_ZERO(&incoming);
             FD_SET(listener.value,&incoming);
             timeval wait{15,0};
             if(select(0,&incoming,nullptr,nullptr,&wait)<=0) break;
-            connections.Add(listener,identity,epoch,std::uint64_t{attempt}+1,endpoint,index);
+            connections.Add(listener,identity,epoch,std::uint64_t{attempt}+1,endpoint,index,rendezvous.get());
         }
         const auto completed=connections.Complete();
         std::cout<<"LOGIN_SESSIONS "<<completed<<std::endl;

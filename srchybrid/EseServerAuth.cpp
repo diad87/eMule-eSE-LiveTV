@@ -129,16 +129,31 @@ bool AuthSession::InTime(std::uint64_t now) noexcept
     return state_!=AuthState::Failed && now>=started_ && now-started_<10000;
 }
 
-bool AuthSession::PrepareTranscript(AuthCrypto& crypto,AuthRole role,AuthTranscript& output) const noexcept
+bool AuthSession::HashHellos(AuthCrypto& crypto,Bytes32& digest) const noexcept
 {
     std::array<std::uint8_t,ClientHelloBytes{}.size()+ServerHelloBytes{}.size()> hellos{};
     const auto cursor=std::copy(clientBytes_.begin(),clientBytes_.end(),hellos.begin());
     std::copy(serverBytes_.begin(),serverBytes_.end(),cursor);
+    return crypto.Hash({hellos.data(),hellos.size()},digest);
+}
+
+bool AuthSession::PrepareTranscript(AuthCrypto& crypto,AuthRole role,AuthTranscript& output) const noexcept
+{
     Bytes32 digest{}, exporter{};
-    if(!crypto.Hash({hellos.data(),hellos.size()},digest) || !crypto.Export(digest,exporter))
+    if(!HashHellos(crypto,digest) || !crypto.Export(digest,exporter))
         return false;
     output=BuildAuthTranscript(exporter,digest,role);
     return true;
+}
+
+const ServerHello* AuthSession::NegotiatedServer() const noexcept
+{
+    return state_==AuthState::Authenticated ? &server_ : nullptr;
+}
+
+bool AuthSession::HelloDigest(AuthCrypto& crypto,Bytes32& digest) const noexcept
+{
+    return state_==AuthState::Authenticated && HashHellos(crypto,digest);
 }
 
 bool AuthSession::MakeNext(std::uint64_t now,AuthCrypto& crypto,std::vector<std::uint8_t>& wire)

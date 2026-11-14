@@ -61,11 +61,14 @@ public:
     bool Receive(std::uint64_t now,AuthCrypto&,const FrameView&);
     const ClientHello* RemoteClient() const noexcept;
     const ServerHello* RemoteServer() const noexcept;
+    const ServerHello* NegotiatedServer() const noexcept;
+    bool HelloDigest(AuthCrypto&,Bytes32&) const noexcept;
 
 private:
     bool InTime(std::uint64_t now) noexcept;
     bool Fail() noexcept { state_=AuthState::Failed; return false; }
     bool PrepareTranscript(AuthCrypto&,AuthRole,AuthTranscript&) const noexcept;
+    bool HashHellos(AuthCrypto&,Bytes32&) const noexcept;
 
     AuthRole role_;
     AuthState state_;

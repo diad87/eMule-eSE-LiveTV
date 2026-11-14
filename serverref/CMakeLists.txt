@@ -62,7 +62,7 @@ if(ESE_QUIC_RELEASE_ROOT)
         target_compile_options(ese_server_tls PRIVATE /W4 /WX)
     endif()
 
-    add_executable(ese-server-ref main.cpp ServerSession.cpp ServerIndex.cpp PublicationStore.cpp)
+    add_executable(ese-server-ref main.cpp ServerSession.cpp ServerIndex.cpp PublicationStore.cpp RendezvousListener.cpp)
     target_link_libraries(ese-server-ref PRIVATE ese_server_tls ws2_32)
     if(MSVC)
         target_compile_options(ese-server-ref PRIVATE /W4 /WX)

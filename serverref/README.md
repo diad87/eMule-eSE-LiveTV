@@ -21,6 +21,12 @@ Windows to assign an unused loopback port, printed after the listener is ready.
 & D:/tmp/ese-server-ref-build/Release/ese-server-ref.exe 0 certificate.pem tls-key.pem node-key.pem 1
 ```
 
+Append the explicit UDP port to enable RendezvousV2 on IPv4 loopback. Passing
+`0` as the final argument asks Windows to assign the UDP port as well. The
+server prints `RDV <port>` alongside the TLS port when both listeners are
+ready. UDP return proof is bound to a logged-in TLS session that selected RDV2.
+The verified observed endpoint and its remaining lease arrive over TLS.
+
 The current reference implements the authenticated handshake, eD2K login,
 server identity, empty server list, ping, lease renewal, atomic publication,
 source hints and disconnect. It accepts up to sixteen simultaneous sockets
@@ -29,8 +35,8 @@ epoch. Only a current, authenticated primary makes its committed records
 visible to source queries. Auxiliary sessions can request hints.
 
 The request cache remains session-local. Unicode search, cross-session
-request replay, a classic plaintext listener, QUIC and RendezvousV2 remain
-pending. eMule does not connect to this listener yet.
+request replay, a classic plaintext listener, QUIC, and rendezvous pairing
+and consent remain pending. eMule does not connect to this listener yet.
 
 The independent integration test requires a Python environment with
 `pyOpenSSL`. Set `ESE_SERVER_INTEROP_PYTHON` to its Python executable to add

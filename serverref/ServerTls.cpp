@@ -107,6 +107,14 @@ bool ExportServerAuth(gnutls_session_t session,const Bytes32& helloDigest,Bytes3
             reinterpret_cast<char*>(exporter.data()))==0;
 }
 
+bool ExportRendezvousKey(gnutls_session_t session,const Bytes32& helloDigest,Bytes32& key) noexcept
+{
+    return IsServerTls(session) &&
+        gnutls_prf_rfc5705(session,sizeof(kEseWireRdv2ExporterLabel)-1,kEseWireRdv2ExporterLabel,
+            helloDigest.size(),reinterpret_cast<const char*>(helloDigest.data()),key.size(),
+            reinterpret_cast<char*>(key.data()))==0;
+}
+
 bool ReadEd25519Identity(gnutls_privkey_t identity,Bytes32& node) noexcept
 {
     PublicKey key;

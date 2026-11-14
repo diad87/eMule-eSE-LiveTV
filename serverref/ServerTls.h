@@ -25,6 +25,7 @@ bool IsServerTls(gnutls_session_t) noexcept;
 // Call only after gnutls_handshake returns success. An exporter is not itself
 // application identity.
 bool ExportServerAuth(gnutls_session_t,const Bytes32& helloDigest,Bytes32& exporter) noexcept;
+bool ExportRendezvousKey(gnutls_session_t,const Bytes32& helloDigest,Bytes32& key) noexcept;
 
 bool ReadEd25519Identity(gnutls_privkey_t,Bytes32& node) noexcept;
 class ChannelCrypto final : public AuthCrypto {

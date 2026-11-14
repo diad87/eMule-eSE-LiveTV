@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import hmac
 import pathlib
 import re
 import socket
@@ -11,6 +12,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
@@ -73,20 +75,21 @@ def write_identity(directory):
     return files, certificate.public_bytes(serialization.Encoding.PEM), server_key.public_key()
 
 
-def authenticate(connection, server_pub, mode=0, generation_expected=1, client_key=None):
+def authenticate(connection, server_pub, mode=0, generation_expected=1, client_key=None, rdv=None):
     client_key = client_key or ed25519.Ed25519PrivateKey.generate()
     user_hash = bytes([0x37] * 16)
     client_node = client_key.public_key().public_bytes_raw()
     nonce = bytes(byte ^ generation_expected for byte in range(32))
+    expected_caps = 0x15 if rdv is not None else 0x11
     client_hello = struct.pack("!32s32s16sII16sB", nonce, client_node,
-                               user_hash, 0x80000011, 65536, bytes([0x4A] * 16), mode)
+                               user_hash, 0x80000000 | expected_caps, 65536, bytes([0x4A] * 16), mode)
     wire = frame(0x01, client_hello)
     for offset in range(0, len(wire), 7):
         connection.sendall(wire[offset:offset + 7])
     kind, flags, request, server_hello = read_frame(connection)
     require((kind, flags, request) == (0x02, 0, bytes(16)), "canonical SERVER_HELLO")
     nonce, node, epoch, session, generation, chosen, maximum, lease = struct.unpack("!32s32s16s16sQIII", server_hello)
-    require((node, generation, chosen, maximum, lease) == (server_pub.public_bytes_raw(), generation_expected, 0x11, 65536, 600)
+    require((node, generation, chosen, maximum, lease) == (server_pub.public_bytes_raw(), generation_expected, expected_caps, 65536, 600)
             and all(any(value) for value in (nonce, epoch, session)), "expected descriptor and selected capabilities")
     digest = hashlib.sha256(client_hello + server_hello).digest()
     exporter = connection.export_keying_material(b"EXPORTER-eSE-server-v1", 32, digest)
@@ -96,6 +99,9 @@ def authenticate(connection, server_pub, mode=0, generation_expected=1, client_k
     server_pub.verify(proof, transcript + b"\x02")
     connection.sendall(frame(0x04, client_key.sign(transcript + b"\x01")))
     require(read_frame(connection) == (0x05, 0, bytes(16), struct.pack("!I", 600)), "ordered AUTH_OK")
+    if rdv is not None:
+        rdv.update(epoch=epoch, session=session, generation=generation,
+                   key=connection.export_keying_material(b"EXPORTER-eSE-rdv2-v1", 32, digest))
     return user_hash, client_node
 
 
@@ -213,17 +219,90 @@ def connect_reference(port, files, expected_certificate, callback):
         callback(connection)
 
 
+def rdv_packet(context, kind, sequence, nonce, cookie=bytes(32)):
+    prefix = struct.pack("!8sBBH16s16sQQ16s32s", b"ESERDV2\0", kind, 4, 0, context["epoch"],
+                         context["session"], context["generation"], sequence, nonce, cookie)
+    return prefix + hmac.digest(context["key"], prefix, "sha256")
+
+
+def ping(connection, sequence):
+    token = sequence.to_bytes(16, "big")
+    connection.sendall(frame(0xFE, token, token))
+    require(read_frame(connection) == (0xFD, 3, token, token), "no unexpected TLS notification before PONG")
+
+
+def no_datagram(udp):
+    try:
+        udp.recvfrom(512)
+    except TimeoutError:
+        return
+    raise RuntimeError("unexpected UDP reply")
+
+
+def verify_prelogin_silent(context, endpoint):
+    nonce = bytes(range(1, 17))
+    request = rdv_packet(context, 1, 1, nonce)
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as owned:
+        owned.bind(("127.0.0.1", 0))
+        owned.settimeout(0.08)
+        owned.sendto(request, endpoint)
+        no_datagram(owned)  # AUTH completed, but the application has not logged in.
+
+
+def registered_return_path(connection, context, endpoint):
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as owned, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as wrong:
+        for udp in (owned, wrong):
+            udp.bind(("127.0.0.1", 0))
+            udp.settimeout(0.08)
+        nonce = bytes(range(1, 17))
+        request = rdv_packet(context, 1, 1, nonce)
+        bad = request[:-1] + bytes([request[-1] ^ 1])
+        for rejected in (request[:-1], request + b"\0", bad):
+            owned.sendto(rejected, endpoint)
+        no_datagram(owned)
+        ping(connection, 140)
+        owned.sendto(request, endpoint)
+        owned.settimeout(2)
+        challenge, sender = owned.recvfrom(512)
+        require(sender == endpoint and len(challenge) == 140 and challenge[8] == 2
+                and challenge[:8] == b"ESERDV2\0" and challenge[9:76] == request[9:76]
+                and any(challenge[76:108]) and hmac.compare_digest(challenge[108:], hmac.digest(context["key"], challenge[:108], "sha256")),
+                "exact authenticated one-to-one RDV2 challenge")
+        ping(connection, 141)
+        echo = rdv_packet(context, 3, 2, nonce, challenge[76:108])
+        wrong.sendto(echo, endpoint)
+        no_datagram(wrong)
+        ping(connection, 142)  # no REG_STATUS from the other local port
+        owned.sendto(echo, endpoint)
+        first = read_frame(connection)
+        expected = struct.pack("!BB4sH", 4, 4, socket.inet_aton("127.0.0.1"), owned.getsockname()[1])
+        require(first[:3] == (0x36, 0, bytes(16)) and len(first[3]) == 12 and first[3][:8] == expected,
+                "same-port ECHO reports observed endpoint over TLS only")
+        first_ttl = struct.unpack("!I", first[3][8:])[0]
+        require(55000 < first_ttl <= 60000, "bounded UDP lease")
+        time.sleep(0.12)
+        owned.sendto(echo, endpoint)
+        second = read_frame(connection)
+        require(second[:3] == first[:3] and second[3][:8] == expected and
+                0 < struct.unpack("!I", second[3][8:])[0] < first_ttl, "duplicate ECHO does not refresh TTL")
+        disconnect_client(connection)
+        owned.settimeout(0.08)
+        owned.sendto(rdv_packet(context, 1, 3, nonce), endpoint)
+        no_datagram(owned)
+
+
 def main():
     require(len(sys.argv) == 2, "usage: test_reference_server.py <ese-server-ref.exe>")
     with tempfile.TemporaryDirectory(prefix="ese-server-ref-") as scratch:
         files, ca, server_pub = write_identity(pathlib.Path(scratch))
-        child = subprocess.Popen([sys.argv[1], "0", *map(str, files), "3"],
+        child = subprocess.Popen([sys.argv[1], "0", *map(str, files), "3", "0"],
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         try:
-            match = re.fullmatch(r"LISTENING (\d+)\n", child.stdout.readline())
+            match = re.fullmatch(r"LISTENING (\d+) RDV (\d+)\n", child.stdout.readline())
             require(match is not None, "reference server ready on an owned port")
             port = int(match.group(1))
+            rdv_endpoint = ("127.0.0.1", int(match.group(2)))
             primary_key = ed25519.Ed25519PrivateKey.generate()
 
             def exercise_primary(primary):
@@ -240,14 +319,16 @@ def main():
                     publish_operation(auxiliary, 22, 0x14, key, 0x15, b"\x00\x01" + primary_node + user_hash)
 
                     def replace_primary(replacement):
+                        rdv_context = {}
                         replacement_hash, replacement_node = authenticate(
-                            replacement, server_pub, generation_expected=3, client_key=primary_key)
+                            replacement, server_pub, generation_expected=3, client_key=primary_key, rdv=rdv_context)
+                        verify_prelogin_silent(rdv_context, rdv_endpoint)
                         require(replacement_node == primary_node and replacement_hash == user_hash
                                 and len(operation(replacement, request, 1, login_command(replacement_hash))) == 2,
                                 "same verified node reconnects with new primary generation")
                         publish_operation(primary, 24, 0x23, b"", 0xFF, struct.pack("!HI", 13, 0))
                         publish_operation(auxiliary, 23, 0x14, key, 0x15, b"\x00\x01" + primary_node + user_hash)
-                        disconnect_client(replacement)
+                        registered_return_path(replacement, rdv_context, rdv_endpoint)
                         publish_operation(auxiliary, 24, 0x14, key, 0x15, b"\x00\x00")
 
                     connect_reference(port, files, ca, replace_primary)

@@ -22,6 +22,7 @@
 #include "UpDownClient.h"
 #include "DownloadQueue.h"
 #include "PartFile.h"
+#include "PartHashThread.h"
 #include "ed2kLink.h"
 #include "SearchFile.h"
 #include "ClientList.h"
@@ -358,8 +359,22 @@ bool CDownloadQueue::IsFileExisting(const uchar *fileid, bool bLogWarnings) cons
 	return true;
 }
 
+void CDownloadQueue::ApplyPartHashVerdict(CPartFile *file,const PartHashVerdict_Struct& verdict)
+{
+	if (!theApp.IsClosing() && IsPartFile(file))
+		file->ProcessPartHashVerdict(verdict);
+}
+
 void CDownloadQueue::Process()
 {
+	if (theApp.m_pPartHashThread) {
+		for (unsigned i=0;i<64;++i) {
+			auto result=theApp.m_pPartHashThread->TakeUndelivered();
+			if (!result.verdict)
+				break;
+			ApplyPartHashVerdict(result.file,*result.verdict);
+		}
+	}
 	RetireExpiredDirectKad6Sources();
 	if(theApp.directreachability) theApp.directreachability->RetireInactiveQueuedKad6Resolution(*this);
 	if(theApp.directreachability) theApp.directreachability->ConsumeDirectKad6DownloadSources(*this);

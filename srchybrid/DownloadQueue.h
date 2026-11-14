@@ -109,6 +109,7 @@ public:
 	~CDownloadQueue();
 
 	void	Process();
+	void ApplyPartHashVerdict(CPartFile *file,const struct PartHashVerdict_Struct& verdict);
 	bool AdoptDirectKad6Discovery(const ese::discovery::ResolvedKad6Candidate& candidate,bool allowNewSource=true);
 	unsigned RetireExpiredDirectKad6Sources();
 	void	Init();

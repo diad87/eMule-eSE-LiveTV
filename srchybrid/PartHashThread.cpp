@@ -21,6 +21,7 @@
 #include "KnownFile.h"
 #include "OtherFunctions.h"
 #include "Log.h"
+#include <algorithm>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -60,6 +61,8 @@ void CPartHashThread::EndThread()
 	m_Run = 0;
 	m_eventWakeUp.SetEvent();
 	m_eventThreadEnded.Lock();
+	CSingleLock lock(&m_lockQueue,TRUE);
+	m_undelivered.clear();
 }
 
 UINT CPartHashThread::RunInternal()
@@ -92,9 +95,26 @@ UINT CPartHashThread::RunInternal()
 void CPartHashThread::ProcessJob(const PartHashJob_Struct *pJob)
 {
 	auto verdict=ComputeJob(*pJob);
-	if(theApp.emuledlg && ::IsWindow(theApp.emuledlg->m_hWnd) &&
-		theApp.emuledlg->PostMessage(TM_PARTHASHED,(WPARAM)verdict.get(),(LPARAM)pJob->pFile))
+	if(theApp.IsClosing() || !theApp.emuledlg || !::IsWindow(theApp.emuledlg->m_hWnd))
+		return;
+	const bool defer=pJob->deferNotificationInSelfTest && theApp.m_bReachBindingSelfTest;
+	if(!defer && theApp.emuledlg->PostMessage(TM_PARTHASHED,(WPARAM)verdict.get(),(LPARAM)pJob->pFile)) {
 		verdict.release();
+		return;
+	}
+	// A full Windows message queue must not strand this part's pending hash.
+	CSingleLock lock(&m_lockQueue,TRUE);
+	m_undelivered.push_back({pJob->pFile,std::move(verdict)});
+}
+
+UndeliveredPartHash CPartHashThread::TakeUndelivered()
+{
+	CSingleLock lock(&m_lockQueue,TRUE);
+	if (m_undelivered.empty())
+		return {};
+	auto result=std::move(m_undelivered.front());
+	m_undelivered.pop_front();
+	return result;
 }
 
 std::unique_ptr<PartHashVerdict_Struct> CPartHashThread::ComputeJob(const PartHashJob_Struct& job)
@@ -155,5 +175,7 @@ void CPartHashThread::CancelFile(const CPartFile *pFile)
 			delete pJob;
 		}
 	}
+	m_undelivered.erase(std::remove_if(m_undelivered.begin(),m_undelivered.end(),
+		[pFile](const UndeliveredPartHash& item) { return item.file==pFile; }),m_undelivered.end());
 	m_lockQueue.Unlock();
 }

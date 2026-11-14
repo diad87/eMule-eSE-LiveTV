@@ -1957,6 +1957,24 @@ static bool RunReachBindingSelfTest(bool tcpFallbackF1)
 			delivered->fileLifetime!=job.fileLifetime || delivered->uGen!=job.uGen ||
 			memcmp(delivered->aMD4Hash,expected,16)) return fail(_T("queued worker digest and identity delivery"));
 		if(!CPartFile::RunHashVerdictAcceptanceSelfTest(*delivered)) return fail(_T("PartFile valid and corrupt disk verdict acceptance"));
+
+		CPartHashThread recoveryWorker;
+		StopWorker stopRecovery{recoveryWorker};
+		if (!recoveryWorker.IsRunning()) return fail(_T("hash retry worker thread start"));
+		job.deferNotificationInSelfTest=true;
+		auto retryJob=std::make_unique<PartHashJob_Struct>(job);
+		recoveryWorker.QueueJob(retryJob.get()); retryJob.release();
+		UndeliveredPartHash retried;
+		const DWORD retryStarted=::GetTickCount();
+		while (!retried.verdict && static_cast<DWORD>(::GetTickCount()-retryStarted)<5000) {
+			retried=recoveryWorker.TakeUndelivered();
+			if (!retried.verdict) ::Sleep(10);
+		}
+		if (retried.file!=&lifetimeFile || !retried.verdict || retried.verdict->bReadError ||
+			retried.verdict->fileLifetime!=job.fileLifetime || retried.verdict->uGen!=job.uGen ||
+			memcmp(retried.verdict->aMD4Hash,expected,16) || recoveryWorker.TakeUndelivered().verdict)
+			return fail(_T("undelivered hash notification stays available exactly once"));
+		Log(_T("REACH_SELFTEST hash notification recovery PASS: computed disk verdict retains owner and generation for queue delivery"));
 	}
 	Log(_T("REACH_SELFTEST V11 PASS: production disk hash job, identity and truncated range rejection, not async callback acceptance"));
 	Log(_T("REACH_SELFTEST V12 PASS: real hash worker queue and window-message delivery, not PartFile verdict acceptance"));
@@ -3348,11 +3366,10 @@ LRESULT CemuleDlg::OnImportPart(WPARAM wParam, LPARAM lParam)
 // eSE H1: verdict of an asynchronously hashed completed part (CPartHashThread)
 LRESULT CemuleDlg::OnPartHashed(WPARAM wParam, LPARAM lParam)
 {
-	PartHashVerdict_Struct *pVerdict = reinterpret_cast<PartHashVerdict_Struct*>(wParam);
+	const std::unique_ptr<PartHashVerdict_Struct> verdict(reinterpret_cast<PartHashVerdict_Struct*>(wParam));
 	CPartFile *partfile = reinterpret_cast<CPartFile*>(lParam);
-	if (!theApp.IsClosing() && theApp.downloadqueue && theApp.downloadqueue->IsPartFile(partfile)) // could have been cancelled
-		partfile->ProcessPartHashVerdict(*pVerdict);
-	delete pVerdict;
+	if (verdict && theApp.downloadqueue)
+		theApp.downloadqueue->ApplyPartHashVerdict(partfile,*verdict);
 	return 0;
 }
 

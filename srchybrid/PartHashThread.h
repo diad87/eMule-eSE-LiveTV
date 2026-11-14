@@ -18,6 +18,7 @@
 
 #include "SHAHashSet.h"
 #include "OtherFunctions.h" // MDX_DIGEST_SIZE
+#include <deque>
 #include <memory>
 
 class CPartFile;
@@ -41,6 +42,7 @@ struct PartHashJob_Struct
 	bool bComputeAICH;
 	bool bAICHLeftBranch;
 	bool bNoAICH;
+	bool deferNotificationInSelfTest = false;
 };
 
 struct PartHashVerdict_Struct
@@ -55,6 +57,11 @@ struct PartHashVerdict_Struct
 	bool bReadError;
 };
 
+struct UndeliveredPartHash {
+	CPartFile *file = nullptr;
+	std::unique_ptr<PartHashVerdict_Struct> verdict;
+};
+
 class CPartHashThread
 {
 public:
@@ -67,6 +74,7 @@ public:
 	void	EndThread();		//lets the job in flight finish, discards the queue, joins
 	void	QueueJob(PartHashJob_Struct *pJob);			//main thread only
 	void	CancelFile(const CPartFile *pFile);			//main thread only; purges queued (not in-flight) jobs
+	UndeliveredPartHash TakeUndelivered();			// main thread only
 	static std::unique_ptr<PartHashVerdict_Struct> ComputeJob(const PartHashJob_Struct&);
 
 private:
@@ -75,6 +83,7 @@ private:
 	void	ProcessJob(const PartHashJob_Struct *pJob);
 
 	CTypedPtrList<CPtrList, PartHashJob_Struct*> m_Queue;
+	std::deque<UndeliveredPartHash> m_undelivered;
 	CCriticalSection m_lockQueue;
 	CEvent	m_eventWakeUp;
 	CEvent	m_eventThreadEnded;

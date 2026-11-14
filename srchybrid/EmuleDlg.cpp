@@ -2014,9 +2014,19 @@ void CemuleDlg::RunHeadlessAction() noexcept
 			}
 			bool passed=false;
 			try {
-				if (theApp.m_strQuicPairSelfTestRole.IsEmpty())
+				if (theApp.m_strQuicPairSelfTestRole.IsEmpty()) {
+#ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
+					TCHAR fallback[2]={};
+					if (GetEnvironmentVariable(_T("ESE_TCP_FALLBACK_F1"),fallback,_countof(fallback))==1 && fallback[0]==_T('1')) {
+						if (!thePrefs.GetBindAddrA() || strcmp(thePrefs.GetBindAddrA(),"127.0.0.1") || !theApp.clientudp ||
+							!theApp.clientudp->GetConnectedPort() || !theApp.directreachability || thePrefs.DoAutoConnect() || thePrefs.IsUPnPEnabled())
+							throw std::runtime_error("unsafe TCP fallback fixture binding");
+						ese::shared_socket_selftest::RunClassicTcpObservation(*theApp.directreachability,0,theApp.clientudp->GetConnectedPort(),true);
+						passed=true;
+					} else
+#endif
 					passed = RunReachBindingSelfTest();
-				else {
+				} else {
 #ifdef ESE_NATIVE_QUIC_LAB_AVAILABLE
 					passed = ese::pair_selftest::Run();
 #else

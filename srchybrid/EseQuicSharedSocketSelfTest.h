@@ -3567,9 +3567,9 @@ inline void RunClassicTcpFallbackF1(CDirectReachabilityManager& manager,CUpDownC
         final->fallback_count,(LPCTSTR)digestText);
 }
 
-inline void RunClassicTcpObservation(CDirectReachabilityManager& manager,unsigned variant=0,uint16 fallbackUdpPort=0) {
+inline void RunClassicTcpObservation(CDirectReachabilityManager& manager,unsigned variant=0,uint16 fallbackUdpPort=0,bool fullFile=false) {
     const bool initialFallback=fallbackUdpPort!=0;
-    Require(variant<=3 && (!initialFallback || variant==0) && theApp.m_bReachBindingSelfTest &&
+    Require(variant<=3 && (!initialFallback || variant==0) && (!fullFile || initialFallback) && theApp.m_bReachBindingSelfTest &&
         !manager.DirectConnections().Size(),"classic observation explicit fixture");
     struct RestoreLab {
         bool restoreUdp;
@@ -3818,8 +3818,7 @@ inline void RunClassicTcpObservation(CDirectReachabilityManager& manager,unsigne
         client->NativeDirectExpectedNode()==quicIdentity->pub && socket->HasAuthenticatedDirectConnection() &&
         client->HasPassedSecureIdent(false) && !ready->useful_bytes && !ready->transfer_verified,
         "fallback TCP authenticated once before file data");
-    TCHAR f1[2]={};
-    if(GetEnvironmentVariable(_T("ESE_TCP_FALLBACK_F1"),f1,_countof(f1))==1 && f1[0]==_T('1')) {
+    if(fullFile) {
         RunClassicTcpFallbackF1(manager,*client,remote,handle,pump);
         Log(_T("TCP_FALLBACK_F1 timing: fallback_ms=%I64u ready_ms=%I64u dropped=%u initials=%u"),
             tcpStarted-started,readyAt-started,dropped,initials);
@@ -4110,20 +4109,26 @@ inline void RunAutomaticQuicRecovery(CDirectReachabilityManager& manager,CUpDown
             "partial loss epoch1 accepted disk range with gap1");
         CFile disk(file->GetFilePath(),CFile::modeRead|CFile::shareDenyNone); std::array<BYTE,4096> bytes{};
         Require(disk.Read(bytes.data(),4096)==4096 && !memcmp(bytes.data(),expected.data(),4096),"partial loss epoch1 disk exact");
-        // Real elapsed idle for Control/1, while authenticated duplicate data
-        // keeps the QUIC path alive. No synthetic ledger timestamps or TTL
-        // renewal: the already accepted range must not count twice.
+        // Wait for the Control/1 record to expire while the peer holds the
+        // downloader on queue. An active slot with withheld data belongs to
+        // the independent application progress watchdog test.
+        Packet release(OP_OUTOFPARTREQS,0,OP_EDONKEYPROT);
+        Require(oldWriter->Queue({reinterpret_cast<const std::uint8_t*>(release.GetPacket()),release.GetRealPacketSize()}).status==
+            reach::DirectIoStatus::Accepted,"control idle peer releases upload slot");
+        const auto releaseDeadline=Now()+8000;
+        while(Now()<releaseDeadline && client.GetDownloadState()!=DS_ONQUEUE) { pump(); Sleep(1); }
+        Require(client.GetDownloadState()==DS_ONQUEUE && !client.HasQueuedDownloadBlocks(),"control idle has no expected file data");
         const auto idleStart=Now(); auto nextKeepalive=idleStart;
         while(Now()-idleStart<65000) {
             if(Now()>=nextKeepalive) {
-                Require(oldWriter->Queue({reinterpret_cast<const std::uint8_t*>(packet.GetPacket()),packet.GetRealPacketSize()}).status==reach::DirectIoStatus::Accepted,
-                    "control idle duplicate keepalive queued");
-                nextKeepalive=Now()+5000;
+                Require(oldPeerTransport.RequestLivenessProbe(Now()),"control idle authenticated keepalive queued");
+                nextKeepalive=Now()+10000;
             }
             pump();
             const auto state=manager.DirectConnections().Snapshot(handle);
             Require(state && state->state==reach::DirectSessionState::Transferring && state->epoch==1 &&
-                state->useful_bytes==4096 && client.GetRequestFile()==file && client.Credits()==credits && client.socket,
+                !state->fallback_count && state->useful_bytes==4096 && client.GetDownloadState()==DS_ONQUEUE &&
+                client.GetRequestFile()==file && client.Credits()==credits && client.socket,
                 "control idle preserves authenticated download and useful range");
             Sleep(1);
         }
@@ -4133,7 +4138,7 @@ inline void RunAutomaticQuicRecovery(CDirectReachabilityManager& manager,CUpDown
             "control session really expired after65s while data path survived");
         Require(!remoteSessions.Current(node,localPort.Endpoint(),expired,Now()),
             "remote original control session expired after65s too");
-        Log(_T("REACH_SELFTEST V149 IDLE: real65s Control/1 expired authenticated QUIC duplicate keepalive useful4096 unchanged"));
+        Log(_T("REACH_SELFTEST V149 IDLE: real65s Control/1 expired while on queue, authenticated QUIC keepalive, useful4096 unchanged"));
     }
     const auto before=manager.DirectConnections().Snapshot(handle);
     const auto preLossReceipt=manager.SnapshotDirectPartContributions(file->NativeDirectFileKey(),0,1);

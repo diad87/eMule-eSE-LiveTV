@@ -35,10 +35,12 @@ inline bool Run() {
     const bool interrupt=GetPrivateProfileInt(_T("Pair"),_T("Interrupt"),0,ini)!=0;
     const UINT networkLossMs=GetPrivateProfileInt(_T("Pair"),_T("NetworkLossMs"),0,ini);
     const bool expectStall=GetPrivateProfileInt(_T("Pair"),_T("ExpectStall"),0,ini)!=0;
+    const bool resumePartial=GetPrivateProfileInt(_T("Pair"),_T("ResumePartial"),0,ini)!=0;
     const bool productCadence=GetPrivateProfileInt(_T("Pair"),_T("ProductCadence"),0,ini)!=0;
     const bool recovery=interrupt || networkLossMs!=0;
     Require(!networkLossMs || (!interrupt && networkLossMs>=1000 && networkLossMs<=45000),"pair bounded exclusive silent network loss");
     Require(!expectStall || networkLossMs==45000,"pair sustained loss fixture");
+    Require(!resumePartial || !recovery,"pair resume runs on a healthy network");
     Require((root.Left(7).CompareNoCase(_T("D:\\tmp\\"))==0 || root.Left(7).CompareNoCase(_T("C:\\tmp\\"))==0) && address==thePrefs.GetBindAddr(),"pair fresh tmp private bind");
     const auto peerTcp=static_cast<uint16>(GetPrivateProfileInt(_T("Pair"),_T("PeerTcp"),0,ini));
     const auto peerUdp=static_cast<uint16>(GetPrivateProfileInt(_T("Pair"),_T("PeerUdp"),0,ini));
@@ -149,10 +151,19 @@ inline bool Run() {
     std::array<std::uint8_t,trust::RecordSize> pin{};
     Require(trust::Encode(trust::Record{node,1,trust::Kind::Pinned},pin),"pair explicit pin encoding");
     const CString pinPath=trustDir+_T("\\")+nodeHex+_T(".trust");
-    HANDLE pinFile=CreateFile(pinPath,GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL|FILE_FLAG_WRITE_THROUGH,nullptr);
-    Require(pinFile!=INVALID_HANDLE_VALUE,"pair no overwrite existing pin"); DWORD written=0;
-    const bool stored=WriteFile(pinFile,pin.data(),static_cast<DWORD>(pin.size()),&written,nullptr) && written==pin.size() && FlushFileBuffers(pinFile);
-    const bool closed=CloseHandle(pinFile)!=FALSE; Require(stored && closed,"pair durable pin publication");
+    if(resumePartial) {
+        trust::Record persisted;
+        Require(trust::LoadRecord(pinPath,persisted)==trust::LoadResult::Loaded &&
+            persisted.node==node && persisted.kind==trust::Kind::Pinned,"pair restart preserved durable peer pin");
+    } else {
+        HANDLE pinFile=CreateFile(pinPath,GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL|FILE_FLAG_WRITE_THROUGH,nullptr);
+        Require(pinFile!=INVALID_HANDLE_VALUE,"pair no overwrite existing pin");
+        DWORD written=0;
+        const bool stored=WriteFile(pinFile,pin.data(),static_cast<DWORD>(pin.size()),&written,nullptr) &&
+            written==pin.size() && FlushFileBuffers(pinFile);
+        const bool closed=CloseHandle(pinFile)!=FALSE;
+        Require(stored && closed,"pair durable pin publication");
+    }
     udp::Endpoint endpoint; memcpy(endpoint.address.data(),&ip,4); endpoint.port=peerUdp;
     const UINT fixtureBytes=GetPrivateProfileInt(_T("Pair"),_T("FileBytes"),65537,ini);
     Require(fixtureBytes==65537 || fixtureBytes==1048576 || fixtureBytes==1073741824,"pair supported fixture size");
@@ -225,7 +236,10 @@ inline bool Run() {
             return true;
         }
         wait(_T("download.complete"),large?transferBudget:30000);
-        Require(observedUpload>=fixtureBytes,"pair actual product uploader sent payload");
+        // The downloader independently checks its restored bitmap and the first
+        // requests under the new stream. Upload counters include retransmits.
+        Require(resumePartial ? observedUpload>0 : observedUpload>=fixtureBytes,
+            "pair actual product uploader sent requested payload");
         if(recovery) {
             const auto record=CNativeDirectSelfTestAccess::PairSubscriber(manager,clientLifetime);
             const auto state=record && record->attempt ? manager.DirectConnections().Snapshot(*record->attempt) : std::nullopt;
@@ -255,12 +269,37 @@ inline bool Run() {
           Require(disk.GetLength()==md4.size() && disk.Read(md4.data(),static_cast<UINT>(md4.size()))==md4.size(),"pair source ed2k hashset root"); }
         CString hash; for(const auto byte:md4) hash.AppendFormat(_T("%02X"),byte);
         CString link; link.Format(_T("ed2k://|file|%s|%u|%s|/"),(LPCTSTR)fixtureName,fixtureBytes,(LPCTSTR)hash);
-        download=new CPartFile(link); theApp.downloadqueue->AddDownload(download,false);
+        std::vector<UINT> persistedParts;
+        uint64 persistedBytes=0;
+        if(resumePartial) {
+            // This is the normal startup load path including .met validation
+            // and backup recovery. The profile contains only the fixture part.
+            theApp.downloadqueue->Init();
+            download=theApp.downloadqueue->GetFileByID(md4.data());
+            Require(download && download->GetFileSize()==fixtureBytes,"pair startup found the exact partial file");
+            // Copying a partial file across runs can trigger the normal
+            // timestamp safety check. Wait for its real hash worker and verdict.
+            const auto hashDeadline=Now()+60000;
+            while((download->GetStatus()==PS_WAITINGFORHASH || download->GetStatus()==PS_HASHING) &&
+                Now()<hashDeadline) pump();
+            Require(download->GetStatus()==PS_READY || download->GetStatus()==PS_EMPTY,
+                "pair startup validated the partial file");
+            persistedBytes=download->GetCompletedSize();
+            for(UINT part=0;part<download->GetPartCount();++part)
+                if(download->IsCompleteBD(part)) persistedParts.push_back(part);
+            Require(persistedParts.size()>=6 && persistedBytes>=6*uint64{PARTSIZE} && persistedBytes<fixtureBytes,
+                "pair startup restored six complete verified parts");
+            Log(_T("QUIC_PAIR RESTART_LOAD PASS persisted_parts=%u persisted_bytes=%I64u"),
+                static_cast<unsigned>(persistedParts.size()),persistedBytes);
+        } else {
+            download=new CPartFile(link);
+            theApp.downloadqueue->AddDownload(download,false);
+        }
         client->SetRequestFile(download); download->srclist.AddTail(client); client->SetDownloadState(DS_ONQUEUE);
         wait(_T("upload.ready"));
         Require(client->ProcessNativeDirectDownload() && client->GetNativeDirectDownloadSubscriber(),"pair normal downloader admission");
         const auto until=Now()+transferBudget; uint64 nextFlush=0;
-        bool interrupted=false,recovered=false;
+        bool interrupted=false,recovered=false,resumedFromProfile=false;
         uint64 lossStarted=0,lossFloor=0; bool lossPlateau=false;
         std::optional<reach::DirectCoordinatorSnapshot> before;
         const auto subscriber=client->GetNativeDirectDownloadSubscriber();
@@ -269,6 +308,16 @@ inline bool Run() {
         while(Now()<until && download->GetStatus()!=PS_COMPLETE) {
             pump();
             if(Now()>=nextFlush && (download->GetStatus()==PS_READY || download->GetStatus()==PS_EMPTY)) { download->FlushBuffer(); nextFlush=Now()+200; }
+            if(resumePartial && !resumedFromProfile && download->GetCompletedSize()>persistedBytes) {
+                const auto record=manager.ResolveDirectSubscriber(subscriber);
+                const auto state=record && record->attempt ? manager.DirectConnections().Snapshot(*record->attempt) : std::nullopt;
+                Require(state && state->winner && state->epoch==1 && state->useful_bytes<=fixtureBytes-persistedBytes &&
+                    CNativeDirectSelfTestAccess::PairRequestsExcludeParts(*client,persistedParts),
+                    "pair new session requests only missing ranges of the durable file");
+                resumedFromProfile=true;
+                Log(_T("QUIC_PAIR RESTART_RESUME PASS new_epoch=1 persisted_parts=%u"),
+                    static_cast<unsigned>(persistedParts.size()));
+            }
             if(recovery && !interrupted && download->GetCompletedSize()>=67108864) {
                 const auto record=manager.ResolveDirectSubscriber(subscriber);
                 before=record && record->attempt ? manager.DirectConnections().Snapshot(*record->attempt) : std::nullopt;
@@ -351,6 +400,7 @@ inline bool Run() {
         }
         Require(!recovery || (interrupted && recovered),"pair interruption and automatic recovery occurred");
         Require(download->GetStatus()==PS_COMPLETE,"pair product MD4 worker completed file");
+        Require(!resumePartial || resumedFromProfile,"pair loaded file resumed from missing ranges");
         CFile disk(download->GetFilePath(),CFile::modeRead|CFile::shareDenyNone);
         Require(disk.GetLength()==fixtureBytes,"pair completed exact disk length");
         std::vector<BYTE> expectedChunk(highEntropy ? chunk.size() : 0);

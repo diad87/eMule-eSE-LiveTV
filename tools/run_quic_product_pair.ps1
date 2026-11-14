@@ -11,6 +11,7 @@ param(
     [switch]$Interrupt,
     [ValidateSet(0,1000,5000,15000,30000,45000)][int]$NetworkLossMs=0,
     [switch]$ExpectStall,
+    [string]$ResumeFrom = '',
     [switch]$HighresTimer,
     [switch]$ProductCadence,
     [switch]$HighEntropy,
@@ -21,6 +22,9 @@ $ErrorActionPreference='Stop'
 if($Interrupt -and $FileBytes -ne 1073741824){throw 'Interruption requires the 1 GiB fixture.'}
 if($NetworkLossMs -and ($Interrupt -or $FileBytes -ne 1073741824)){throw 'Silent network loss requires F1 and cannot request transport Close.'}
 if($ExpectStall -and $NetworkLossMs -ne 45000){throw 'A 45-second loss window is required for the no-route stall case.'}
+if($ResumeFrom -and ($FileBytes -ne 1073741824 -or $Interrupt -or $NetworkLossMs -or $ExpectStall)) {
+    throw 'Resume requires a completed stall fixture and healthy F1 network.'
+}
 $fixtureName=if($FileBytes -eq 65537){'pair-small.bin'}elseif($FileBytes -eq 1048576){'pair-f2.bin'}else{'pair-f1.bin'}
 if($FileBytes -eq 1073741824 -and !$PSBoundParameters.ContainsKey('TimeoutSeconds')) { $TimeoutSeconds=1100 }
 $patternModulus=$null
@@ -60,12 +64,49 @@ if(!(Get-NetIPAddress -InterfaceIndex $InterfaceId -AddressFamily IPv4 | Where-O
 $tcpPorts=@(49501,49511); $udpPorts=@(49502,49512)
 if(Get-NetTCPConnection -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in $tcpPorts }) { throw 'Pair TCP ports already occupied.' }
 if(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in $udpPorts }) { throw 'Pair UDP ports already occupied.' }
+$resumeEvidence=$null
+$resumeRoot=''
+if($ResumeFrom) {
+    $resumeRoot=(Resolve-Path -LiteralPath $ResumeFrom).Path
+    if(!$resumeRoot.StartsWith('D:\tmp\',[StringComparison]::OrdinalIgnoreCase) -and
+       !$resumeRoot.StartsWith('C:\tmp\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid stall profile root.' }
+    $resumeEvidence=Get-Content -LiteralPath (Join-Path $resumeRoot 'pair-evidence.json') -Raw | ConvertFrom-Json
+    if($resumeEvidence.verdict -ne 'PASS' -or !$resumeEvidence.terminal -or
+       !$resumeEvidence.stall_without_alternate_route_expected -or $resumeEvidence.source_sha256 -ne $expectedSha -or
+       $resumeEvidence.address -ne $Address -or $resumeEvidence.interface -ne $InterfaceId) {
+        throw 'Resume must use the matching locally stalled fixture.'
+    }
+}
 $null=New-Item -ItemType Directory -Path $root
 $profiles=@(); $prepared=@()
 for($n=0;$n -lt 2;$n++) {
     $role=if($n -eq 0){'upload'}else{'download'}
     $profile=Join-Path $root $role
     & (Join-Path $PSScriptRoot 'prepare_reach_binding_selftest.ps1') -Executable $Executable -ProfileRoot $profile -NativeDependencyRoot $NativeDependencyRoot -NativeArchitecture $Architecture -SignedQuic:$SignedQuic -TcpPort $tcpPorts[$n] -UdpPort $udpPorts[$n]
+    if($resumeRoot) {
+        $previous=Join-Path $resumeRoot $role
+        $peerRole=if($n -eq 0){'download'}else{'upload'}
+        $previousPeerIdentity=[IO.File]::ReadAllBytes((Join-Path $resumeRoot "$peerRole.identity"))
+        if($previousPeerIdentity.Length -ne 48) { throw 'Invalid previous peer identity.' }
+        $pinName=([BitConverter]::ToString($previousPeerIdentity,0,32)).Replace('-','').ToLowerInvariant()+'.trust'
+        $pinDir=Join-Path $profile 'config/peer_trust'
+        $null=New-Item -ItemType Directory -Path $pinDir
+        Copy-Item -LiteralPath (Join-Path $previous "config/peer_trust/$pinName") -Destination $pinDir
+        Copy-Item -LiteralPath (Join-Path $previous 'config/node_identity.dat') -Destination (Join-Path $profile 'config')
+        Copy-Item -LiteralPath (Join-Path $previous 'config/cryptkey.dat') -Destination (Join-Path $profile 'config')
+        if($n -eq 1) {
+            $parts=@(Get-ChildItem -LiteralPath (Join-Path $previous 'Temp') -File -Filter '*.part')
+            if($parts.Count -ne 1 -or $parts[0].Name -notmatch '^\d+\.part$') { throw 'Expected one owned partial download.' }
+            $tempDir=New-Item -ItemType Directory -Path (Join-Path $profile 'Temp')
+            foreach($extension in @('','.met','.met.bak')) {
+                $inputFile=Get-Item -LiteralPath ($parts[0].FullName+$extension)
+                if($inputFile.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Partial file is a reparse point.' }
+                $destination=Join-Path $tempDir.FullName $inputFile.Name
+                Copy-Item -LiteralPath $inputFile.FullName -Destination $destination
+                [IO.File]::SetLastWriteTimeUtc($destination,$inputFile.LastWriteTimeUtc)
+            }
+        }
+    }
     $preferences=Join-Path $profile 'config/preferences.ini'
     $content=[IO.File]::ReadAllText($preferences).Replace('BindAddr=127.0.0.1',"BindAddr=$Address")
     # Explicit isolated LAN test rate; do not inherit the fresh-profile 80/90 KiB/s defaults.
@@ -78,6 +119,7 @@ for($n=0;$n -lt 2;$n++) {
     $pairIni+="Interrupt=$([int]$Interrupt.IsPresent)`r`n"
     $pairIni+="NetworkLossMs=$NetworkLossMs`r`n"
     $pairIni+="ExpectStall=$([int]$ExpectStall.IsPresent)`r`n"
+    $pairIni+="ResumePartial=$([int][bool]$resumeRoot)`r`n"
     $pairIni+="ProductCadence=$([int]$ProductCadence.IsPresent)`r`n"
     $pairIni+="HighEntropy=$([int]$HighEntropy.IsPresent)`r`n"
     [IO.File]::WriteAllText($pairPath,$pairIni,[Text.Encoding]::ASCII)
@@ -101,6 +143,11 @@ try {
 $deadline=[DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 do {
     if(@($processes | Where-Object { !$_.HasExited }).Count -eq 0) { break }
+    if(@($processes | Where-Object { $_.HasExited -and $_.ExitCode -ne 0 }).Count -gt 0) {
+        foreach($process in $processes) { if(!$process.HasExited){ $process.StopIncompleteLaunch() } }
+        foreach($process in $processes) { $null=$process.WaitForExit(2000) }
+        break
+    }
     Start-Sleep -Milliseconds 250
 } while([DateTime]::UtcNow -lt $deadline)
 $terminal=@($processes | Where-Object { !$_.HasExited }).Count -eq 0
@@ -114,6 +161,10 @@ for($n=0;$n -lt 2;$n++) {
         $text.Contains("QUIC_PAIR PASS role=$role bytes=$FileBytes MD4=")
     }
     if ($HighEntropy) { $marker=$marker -and $text.Contains('QUIC_PAIR FIXTURE high_entropy=1') }
+    if($resumeRoot -and $n -eq 1) {
+        $marker=$marker -and $text.Contains('QUIC_PAIR RESTART_LOAD PASS ') -and
+            $text.Contains('QUIC_PAIR RESTART_RESUME PASS ')
+    }
     if($ProductCadence) {
         $marker=$marker -and $text.Contains('QUIC_PAIR CADENCE product=1') -and
             $text -match 'QUIC_PAIR POLL polls=[1-9]\d* '
@@ -163,6 +214,7 @@ $result.profile_debug_to_disk_requested=$DiagnosticVerbose.IsPresent
 $result.timer_scope='Existing application preference in a fresh portable lab profile; no clock scaling or transfer/recovery deadline changes'
 $result.interruption_requested=$Interrupt.IsPresent
 $result.stall_without_alternate_route_expected=$ExpectStall.IsPresent
+$result.resume_evidence_sha256=if($resumeRoot){(Get-FileHash -LiteralPath (Join-Path $resumeRoot 'pair-evidence.json')).Hash}else{$null}
 $result.silent_udp_loss_ms=$NetworkLossMs
 $result.silent_udp_dropped_datagrams=$lossDrops
 $result.silent_udp_loss_scope='Pair-only exact endpoint outbound/inbound datagram discard; real timers and QUIC, no Close injection; not physical adapter/router failure'

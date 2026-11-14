@@ -148,6 +148,8 @@ target_include_directories(native_quic_loopback PRIVATE ../../libreach/include
 target_compile_definitions(native_quic_loopback PRIVATE ESE_LIVECRYPTO_STANDALONE_TEST ESE_NATIVE_QUIC_LAB_AVAILABLE ESE_CONTROL_CRYPTO_STANDALONE)
 set_property(TARGET native_quic_loopback PROPERTY CXX_STANDARD 17)
 add_test(NAME native_quic_dco COMMAND native_quic_loopback dco)
+add_test(NAME native_quic_copied_cid COMMAND native_quic_loopback copied-cid)
+set_tests_properties(native_quic_copied_cid PROPERTIES TIMEOUT 10)
 add_test(NAME native_quic_selective_loss COMMAND native_quic_loopback selective-loss)
 set_tests_properties(native_quic_selective_loss PROPERTIES TIMEOUT 50)
 add_test(NAME native_quic_simulated COMMAND native_quic_loopback simulated)

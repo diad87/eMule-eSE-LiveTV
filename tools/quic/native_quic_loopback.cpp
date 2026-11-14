@@ -55,6 +55,12 @@ struct Port final : QuicSocketPort {
     bool loss=false,block=false,failSend=false;
     unsigned sends=0,retries=0,drops=0;
     std::vector<std::uint8_t> blocked;
+    struct Datagram {
+        std::array<std::uint8_t,1200> bytes{};
+        std::size_t size=0;
+        DirectByteView View() const { return {bytes.data(),size}; }
+    };
+    Datagram* divertShort=nullptr;
     Probe probe; QuicUdpIngress* ingress=nullptr;
     unsigned classified=0,initials=0;
     Port() {
@@ -89,29 +95,42 @@ struct Port final : QuicSocketPort {
         }
         ++sends;
         if(loss && sends%10==0) { ++drops; return true; }
+        if(divertShort && (p.data[0]&0xc0)==0x40 && p.size<=divertShort->bytes.size()) {
+            std::copy_n(p.data,p.size,divertShort->bytes.begin());
+            divertShort->size=p.size;
+            divertShort=nullptr;
+            return true;
+        }
         sockaddr_in address{}; address.sin_family=AF_INET; address.sin_port=htons(peer.port);
         std::memcpy(&address.sin_addr,peer.address.data(),4);
         return sendto(socket,reinterpret_cast<const char*>(p.data),static_cast<int>(p.size),0,
             reinterpret_cast<sockaddr*>(&address),sizeof(address))==static_cast<int>(p.size);
     }
+    std::size_t ReceiveOne(std::uint8_t* bytes,std::size_t capacity,udp::Endpoint& peer) {
+        sockaddr_in source{}; int size=sizeof(source);
+        const int n=recvfrom(socket,reinterpret_cast<char*>(bytes),static_cast<int>(capacity),0,
+            reinterpret_cast<sockaddr*>(&source),&size);
+        if(n==SOCKET_ERROR) { Check(WSAGetLastError()==WSAEWOULDBLOCK,"recvfrom"); return 0; }
+        Check(n>0,"nonempty QUIC datagram");
+        std::memcpy(peer.address.data(),&source.sin_addr,4); peer.port=ntohs(source.sin_port);
+        return static_cast<std::size_t>(n);
+    }
     void Deliver(QuicSocketOwner& owner) {
         std::array<std::uint8_t,65536> packet{};
         for(unsigned i=0;i<128;++i) {
-            sockaddr_in source{}; int size=sizeof(source);
-            int n=recvfrom(socket,reinterpret_cast<char*>(packet.data()),static_cast<int>(packet.size()),0,
-                reinterpret_cast<sockaddr*>(&source),&size);
-            if(n<0) { Check(WSAGetLastError()==WSAEWOULDBLOCK,"recvfrom"); break; }
-            udp::Endpoint peer; std::memcpy(peer.address.data(),&source.sin_addr,4); peer.port=ntohs(source.sin_port);
-            const auto decision=owner.Classify(peer,{packet.data(),static_cast<std::size_t>(n)},Now());
+            udp::Endpoint peer;
+            const auto n=ReceiveOne(packet.data(),packet.size(),peer);
+            if(!n) break;
+            const auto decision=owner.Classify(peer,{packet.data(),n},Now());
             Check(decision.channel==udp::Channel::Quic && decision.owner==1 && owner.Current(decision),"QUIC demux");
             ++classified;
             if(decision.newInitial) {
                 ++initials;
                 auto wrong=peer; ++wrong.port;
-                Check(owner.Classify(wrong,{packet.data(),static_cast<std::size_t>(n)},Now()).channel==udp::Channel::Legacy,
+                Check(owner.Classify(wrong,{packet.data(),n},Now()).channel==udp::Channel::Legacy,
                     "unexpected endpoint must not claim Initial");
             }
-            Check(ingress && ingress->Receive(peer,{packet.data(),static_cast<std::size_t>(n)}),"registered ingress datagram claim");
+            Check(ingress && ingress->Receive(peer,{packet.data(),n}),"registered ingress datagram claim");
         }
     }
 };
@@ -126,6 +145,113 @@ static DirectSessionRoute Route(const Port& peer) {
     r.candidate.address=peer.endpoint.address; r.candidate.port=peer.endpoint.port;
     r.candidate.transport_mask=DirectQuic; r.candidate.topology_generation=7;
     r.candidate.expires_monotonic_ms=Now()+30000; return r;
+}
+static void RunCopiedCid() {
+    auto events=std::make_unique<DirectEventQueue>();
+    DirectBufferPool pool;
+    Identity a,b;
+    Port pa,pb,other;
+    auto oa=std::make_unique<QuicSocketOwner>(pa,pa.probe,pool,*events);
+    auto ob=std::make_unique<QuicSocketOwner>(pb,pb.probe,pool,*events);
+    Check(oa->Attach() && ob->Attach(),"copied CID ingress attachment");
+    auto retire=[&] {
+        oa->Stop(); ob->Stop();
+        events->Drain(); oa->Poll(Now()); ob->Poll(Now());
+        oa->Release(1); ob->Release(1);
+    };
+    try {
+        const DirectHandle clientHandle{0,1},serverHandle{1,1};
+        Check(oa->Begin({pa.endpoint,false},Config(a,b,false),clientHandle,Route(pb),&a)==1 &&
+            ob->Begin({pb.endpoint,true},Config(b,a,true),serverHandle,Route(pa),&b)==1,"copied CID pair start");
+        auto& client=*oa->Find(1);
+        auto& server=*ob->Find(1);
+        client.SetReceiveBudget(4096); server.SetReceiveBudget(4096);
+        auto pump=[&] {
+            pa.Deliver(*oa); pb.Deliver(*ob); oa->Poll(Now()); ob->Poll(Now());
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        };
+        const auto deadline=Now()+7000;
+        while(Now()<deadline && !(client.Ready() && server.Ready())) pump();
+        Check(client.AdoptWinner(clientHandle,3,1) && server.AdoptWinner(serverHandle,3,1),"copied CID authenticated winners");
+
+        const std::uint8_t warmup=0x83;
+        Check(client.Send({&warmup,1}).accepted==1,"copied CID warmup send");
+        while(Now()<deadline && client.Snapshot().acknowledged_offset!=1) pump();
+        const auto first=server.ReceivedFront();
+        Check(first.size==1 && first.data[0]==warmup && server.ConsumeReceived(first.size) &&
+            client.Snapshot().acknowledged_offset==1,"copied CID warmup control");
+        const auto settled=Now()+100;
+        while(Now()<settled) pump();
+        events->Drain();
+
+        std::array<std::uint8_t,512> expected{};
+        for(std::size_t i=0;i<expected.size();++i) expected[i]=static_cast<std::uint8_t>(i*17u+3u);
+        Port::Datagram genuine;
+        pa.divertShort=&genuine;
+        Check(client.Send({expected.data(),expected.size()}).accepted==expected.size(),"copied CID data send");
+        while(Now()<deadline && !genuine.size) {
+            oa->Poll(Now());
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        Check(genuine.size>expected.size(),"capture fresh protected application datagram");
+        auto forged=genuine;
+        forged.bytes[forged.size-1]^=0x80;
+        Check(other.endpoint.port!=pa.endpoint.port && other.endpoint.port!=pb.endpoint.port,"independent UDP source port");
+        Check(other.Send(pb.endpoint,forged.View()) && other.Send(pb.endpoint,genuine.View()),"inject copied CID and protected replay");
+        for(const auto& injected : {forged,genuine}) {
+            Port::Datagram packet; udp::Endpoint source;
+            while(Now()<deadline && !packet.size) {
+                packet.size=pb.ReceiveOne(packet.bytes.data(),packet.bytes.size(),source);
+                if(!packet.size) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            Check(source==other.endpoint && packet.size==injected.size && packet.bytes==injected.bytes,"verify actual UDP source and payload");
+            const auto demux=ob->Classify(source,packet.View(),Now());
+            Check(demux.channel==udp::Channel::Quic && demux.owner==1 && !demux.newInitial && ob->Current(demux),
+                "copied CID is recognized only by demux");
+            Check(ob->Receive(source,packet.View()) && !server.ReceiveDatagram(source,packet.View()),
+                "claim copied CID without legacy fallback, reject alternate source at transport");
+        }
+        // Hold the original client idle so no retransmission can mask the injection.
+        const auto observeUntil=Now()+200;
+        while(Now()<observeUntil) {
+            ob->Poll(Now()); pa.Deliver(*oa);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        Port::Datagram response; udp::Endpoint source;
+        Check(!other.ReceiveOne(response.bytes.data(),response.bytes.size(),source),"no datagram returned to unbound source");
+        const auto* route=server.BoundRoute();
+        const auto* peer=server.BoundPeer();
+        Check(server.ReceivedFront().size==0 && client.Snapshot().acknowledged_offset==1 &&
+            route && route->candidate.address==pa.endpoint.address && route->candidate.port==pa.endpoint.port &&
+            route->candidate.topology_generation==7 && peer && peer->node==a.pub &&
+            server.AllowsDelivery(serverHandle,3,1) && !server.AllowsDelivery(serverHandle,3,2),
+            "alternate source does not change route, pinned identity, epoch or application state");
+        const auto heldEvents=events->Drain();
+        Check(std::none_of(heldEvents.begin(),heldEvents.end(),[](const DirectSessionEvent& event) {
+            return event.type==DirectEventType::Authenticated || event.type==DirectEventType::Closed;
+        }),"injection does not emit authentication or terminal events");
+
+        // Reuse the exact protected packet from the established socket before
+        // allowing client timers to run. Its application bytes prove it was fresh.
+        Check(pa.Send(pb.endpoint,genuine.View()),"replay original from its bound endpoint");
+        while(Now()<deadline && !server.ReceivedFront().size) {
+            pb.Deliver(*ob); ob->Poll(Now());
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        const auto data=server.ReceivedFront();
+        Check(data.size==expected.size() && std::equal(expected.begin(),expected.end(),data.data),"original path delivers exact data");
+        std::array<std::uint8_t,CryptoPP::SHA256::DIGESTSIZE> digest{};
+        CryptoPP::SHA256().CalculateDigest(digest.data(),data.data,data.size);
+        Check(server.ConsumeReceived(data.size),"original path consumes exact data");
+        while(Now()<deadline && client.Snapshot().acknowledged_offset!=expected.size()+1) pump();
+        Check(client.Snapshot().acknowledged_offset==expected.size()+1 && server.AllowsDelivery(serverHandle,3,1),"original path ACK and epoch");
+        retire();
+        Check(oa->Empty() && ob->Empty() && pool.Used()==0,"copied CID retirement and accounted buffers");
+        std::printf("native QUIC copied CID PASS: 2 alternate-source packets rejected, 0 application bytes and 0 UDP replies on alternate path, original port=%u alternate port=%u route=3 topology=7 epoch=1, %zu exact bytes and ACK from original path sha256=",
+            static_cast<unsigned>(pa.endpoint.port),static_cast<unsigned>(other.endpoint.port),expected.size());
+        for(const auto byte:digest) std::printf("%02x",static_cast<unsigned>(byte));
+        std::printf("\n");
+    } catch(...) { retire(); throw; }
 }
 // Actual native TLS/exporter/Ed25519 over a memory-only datagram namespace.
 // Logical globally shaped addresses are NOT physical return-path evidence.
@@ -307,6 +433,7 @@ int main(int argc,char** argv) {
     struct WinsockLifetime { ~WinsockLifetime() { WSACleanup(); } } winsockLifetime;
     int result=1;
     try {
+        if(argc==2 && std::strcmp(argv[1],"copied-cid")==0) { RunCopiedCid(); return 0; }
         if(argc>1 && std::strcmp(argv[1],"simulated")==0) { RunSimulatedNative(); return 0; }
         if(argc==3 && std::strcmp(argv[1],"virtual-path")==0) {
             const auto supported={ "ipv4-mtu1100","ipv4-mtu1200","ipv4-mtu1280","udp-payload1200",

@@ -70,6 +70,7 @@ private:
     bool Live(const Entry&) const;
     bool Attach(Entry&,std::uint64_t);
     bool StartLegacy(Entry&,std::uint64_t);
+    TcpStartResult BeginFreshTcp(reach::DirectHandle,std::uint64_t epoch) noexcept;
     void StopOutput(Entry&) noexcept;
     void Close(Entry&,reach::DirectReason) noexcept;
     void Batch(const reach::DirectCoordinatorBatch&);

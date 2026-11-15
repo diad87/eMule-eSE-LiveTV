@@ -17,6 +17,7 @@
 #include "Preferences.h"
 #include "DownloadQueue.h"
 #include "ClientList.h"
+#include "ClientCredits.h"
 #include "updownclient.h"
 #include "ClientUDPSocket.h"
 #include "ListenSocket.h"
@@ -366,6 +367,158 @@ bool CDirectReachabilityManager::RecordDirectTcpObservation(CClientReqSocket& so
 	return true;
 }
 
+void CDirectReachabilityManager::RememberDirectQuicRecoveryIdentity(uint64 owner,
+    reach::DirectHandle handle,uint32 route,uint64 epoch)
+{
+    AssertMainThread();
+    if(::GetCurrentThreadId()!=m_dwOwnerThreadId || handle.slot>=m_directTcpRecoveryIdentities.size() ||
+        !theApp.clientlist || !theApp.clientcredits) return;
+    const auto* bound=ValidateNativeQuicDelivery(owner,handle,route,epoch);
+    const auto state=m_directConnections.Snapshot(handle);
+    const auto lifetime=DirectTransferClientLifetime(handle);
+    auto* client=lifetime ? theApp.clientlist->FindClientByLifetime(*lifetime) : nullptr;
+    auto* file=client ? client->GetRequestFile() : nullptr;
+    if(!bound || !state || state->peer.domain!=reach::DirectPeerDomain::NodePublicKey ||
+        state->peer.identity!=bound->node || !client || !file ||
+        !HasDirectTransferSubscription(*lifetime,handle) ||
+        !client->MatchesNativeDirectBoundIdentity(bound->node,bound->userHash)) return;
+    auto& identity=m_directTcpRecoveryIdentities[handle.slot];
+    // This association is captured only while the signed QUIC binding is live,
+    // never reconstructed later from a HELLO claim or an address match.
+    identity={}; identity.handle=handle; identity.lifetime=*lifetime;
+    identity.topology=state->topology_generation; identity.epoch=epoch;
+    identity.file=file->NativeDirectFileKey(); identity.fileSize=file->GetFileSize();
+    identity.node=bound->node; identity.userHash=bound->userHash;
+    auto* credit=client->Credits();
+    if(!credit) credit=theApp.clientcredits->FindCredit(identity.userHash.data());
+    const auto* verified=credit ? credit->GetDataStruct() : nullptr;
+    // GetSecIDKeyLen also exposes keys which have NEVER passed SecureIdent.
+    // Only the verified, persistent credit field may seed recovery continuity.
+    if(verified && verified->nKeySize && verified->nKeySize<=identity.verifiedKey.size() &&
+        !memcmp(verified->abyKey,identity.userHash.data(),identity.userHash.size())) {
+        identity.verifiedKeySize=verified->nKeySize;
+        memcpy(identity.verifiedKey.data(),verified->abySecureIdent,verified->nKeySize);
+    }
+}
+
+bool CDirectReachabilityManager::CurrentDirectTcpRecoveryIdentity(const DirectTcpRecoveryIdentity& identity) const
+{
+    if(!identity.handle.generation || !identity.lifetime || !identity.verifiedKeySize ||
+        identity.verifiedKeySize>identity.verifiedKey.size() || identity.topology!=GetTopologyGeneration() ||
+        !theApp.clientlist || !theApp.clientcredits || !thePrefs.IsEseNetLabActive()) return false;
+    const auto state=m_directConnections.Snapshot(identity.handle);
+    const auto lifetime=DirectTransferClientLifetime(identity.handle);
+    auto* client=theApp.clientlist->FindClientByLifetime(identity.lifetime);
+    auto* file=client ? client->GetRequestFile() : nullptr;
+    if(!state || state->state==reach::DirectSessionState::Failed || state->state==reach::DirectSessionState::Cancelled ||
+        state->peer.domain!=reach::DirectPeerDomain::NodePublicKey || state->peer.identity!=identity.node ||
+        state->topology_generation!=identity.topology || !lifetime || *lifetime!=identity.lifetime ||
+        !HasDirectTransferSubscription(identity.lifetime,identity.handle) || !client || !file || file->IsStopped() ||
+        (file->GetStatus()!=PS_READY && file->GetStatus()!=PS_EMPTY) ||
+        !client->MatchesNativeDirectBoundIdentity(identity.node,identity.userHash)) return false;
+    const auto fileKey=file->NativeDirectFileKey();
+    if(fileKey.lifetime!=identity.file.lifetime || fileKey.hash!=identity.file.hash || file->GetFileSize()!=identity.fileSize) return false;
+    auto* credit=client->Credits();
+    if(!credit) credit=theApp.clientcredits->FindCredit(identity.userHash.data());
+    const auto* verified=credit ? credit->GetDataStruct() : nullptr;
+    return verified &&
+        !memcmp(verified->abyKey,identity.userHash.data(),identity.userHash.size()) &&
+        ese::MatchesVerifiedTcpRecoveryKey(identity.verifiedKey.data(),identity.verifiedKeySize,
+            verified->abySecureIdent,verified->nKeySize);
+}
+
+CDirectReachabilityManager::TcpRecoveryPreparation
+CDirectReachabilityManager::PrepareDirectTcpRecoveryAuthentication(reach::DirectHandle handle,uint64 epoch)
+{
+    AssertMainThread();
+    TcpRecoveryPreparation result;
+    if(::GetCurrentThreadId()!=m_dwOwnerThreadId || !m_builtinQuicConsumer || m_directPump.Busy() ||
+        !theApp.clientlist || handle.slot>=m_directTcpRecoveryIdentities.size()) return result;
+    const auto state=m_directConnections.Snapshot(handle);
+    if(!state || state->state!=reach::DirectSessionState::Recovering || state->epoch!=epoch) return result;
+    if(state->topology_generation!=GetTopologyGeneration()) {
+        result.status=TcpRecoveryPreparationStatus::StaleTopology; return result;
+    }
+    auto& identity=m_directTcpRecoveryIdentities[handle.slot];
+    if(identity.handle.generation!=handle.generation || identity.epoch!=epoch ||
+        !CurrentDirectTcpRecoveryIdentity(identity)) {
+        result.status=TcpRecoveryPreparationStatus::NoAuthenticatedIdentity; return result;
+    }
+    auto* client=theApp.clientlist->FindClientByLifetime(identity.lifetime);
+    if(!client || client->socket || identity.authentication.Route()) return result; // one bounded handshake per recovery
+    const auto now=MonotonicMilliseconds();
+    if(now>(std::numeric_limits<uint64>::max)()-15000) return result;
+    const auto snapshot=client->NativeDirectCandidates(identity.topology,now+15000);
+    if(snapshot.count>snapshot.candidates.size() || !snapshot.peer.expected_node_pub ||
+        *snapshot.peer.expected_node_pub!=identity.node || !snapshot.peer.expected_user_hash ||
+        *snapshot.peer.expected_user_hash!=identity.userHash) {
+        result.status=TcpRecoveryPreparationStatus::NoAuthenticatedIdentity; return result;
+    }
+    const auto id=state->NextRouteId(1);
+    if(!id) return result;
+    result.status=TcpRecoveryPreparationStatus::NoCandidate;
+    for(std::size_t i=0;i<snapshot.count;++i) {
+        const auto& candidate=snapshot.candidates[i].route;
+        // Classic SecureIdent has no IPv6 binding. The existing explicit LAN
+        // policy is not widened by recovery; only ordinary public TCP is used.
+        if(!candidate.id || candidate.kind!=reach::DirectKind::DirectV4 || candidate.family!=4 ||
+            !candidate.port || !(candidate.transport_mask&reach::DirectTcp) ||
+            candidate.evidence!=reach::DirectEvidence::Advertised || candidate.scope!=reach::DirectScope::Global ||
+            candidate.interface_id || candidate.topology_generation!=identity.topology || candidate.expires_monotonic_ms<=now ||
+            std::any_of(candidate.address.begin()+4,candidate.address.end(),[](uint8 b) {return b!=0;})) continue;
+        uint32 address=0; memcpy(&address,candidate.address.data(),4);
+        if(!CAddress::FromIPv4NetworkOrder(address).IsUsablePublic()) continue;
+        reach::DirectSessionRoute authentication{id,candidate,reach::DirectTcp,true};
+        authentication.candidate.transport_mask=reach::DirectTcp;
+        // Keep Advertised. The ordinary route selector still rejects it;
+        // this permission admits only the quarantined authentication adapter.
+        if(!identity.authentication.Issue(handle,identity.lifetime,epoch,authentication,now)) {
+            result.status=TcpRecoveryPreparationStatus::Unavailable; return result;
+        }
+        result.route=authentication; result.status=TcpRecoveryPreparationStatus::Ready;
+        return result;
+    }
+    return result;
+}
+
+bool CDirectReachabilityManager::ClaimDirectTcpRecoveryAuthentication(CClientReqSocket& socket,
+    reach::DirectHandle handle,const reach::DirectSessionRoute& route,uint64 epoch)
+{
+    AssertMainThread();
+    if(::GetCurrentThreadId()!=m_dwOwnerThreadId || handle.slot>=m_directTcpRecoveryIdentities.size() ||
+        !socket.client || !socket.client->HasIsolatedDirectRouteCredits() || !socket.client->Credits()) return false;
+    auto& identity=m_directTcpRecoveryIdentities[handle.slot];
+    if(identity.handle.generation!=handle.generation || identity.epoch!=epoch ||
+        !CurrentDirectTcpRecoveryIdentity(identity)) return false;
+    const auto* isolated=socket.client->Credits()->GetDataStruct();
+    if(!isolated ||
+        memcmp(isolated->abyKey,identity.userHash.data(),identity.userHash.size()) ||
+        !ese::MatchesVerifiedTcpRecoveryKey(identity.verifiedKey.data(),identity.verifiedKeySize,
+            isolated->abySecureIdent,isolated->nKeySize)) return false;
+    return identity.authentication.Claim(handle,identity.lifetime,GetTopologyGeneration(),epoch,route,
+        socket.client->GetDirectClientLifetime(),MonotonicMilliseconds());
+}
+
+bool CDirectReachabilityManager::ValidateDirectTcpRecoveryAuthentication(CClientReqSocket& socket,bool adopting) const
+{
+    AssertMainThread();
+    const auto handle=socket.m_legacyDirectHandle;
+    if(::GetCurrentThreadId()!=m_dwOwnerThreadId || handle.slot>=m_directTcpRecoveryIdentities.size() ||
+        !socket.client || !socket.client->HasIsolatedDirectRouteCredits() || !socket.client->Credits()) return false;
+    const auto& identity=m_directTcpRecoveryIdentities[handle.slot];
+    const auto state=m_directConnections.Snapshot(handle);
+    if(!state || identity.handle.generation!=handle.generation || !identity.authentication.Route() ||
+        identity.epoch!=socket.m_legacyDirectEpoch || identity.authentication.Route()->id!=socket.m_legacyDirectRoute ||
+        !CurrentDirectTcpRecoveryIdentity(identity) || !socket.MatchesLegacyDirectEndpoint()) return false;
+    if(!identity.authentication.Allows(handle,identity.lifetime,GetTopologyGeneration(),state->epoch,
+        socket.client->GetDirectClientLifetime(),state->state,state->winner,MonotonicMilliseconds(),adopting)) return false;
+    const auto* verified=socket.client->Credits()->GetDataStruct();
+    return verified &&
+        !memcmp(verified->abyKey,identity.userHash.data(),identity.userHash.size()) &&
+        ese::MatchesVerifiedTcpRecoveryKey(identity.verifiedKey.data(),identity.verifiedKeySize,
+            verified->abySecureIdent,verified->nKeySize);
+}
+
 bool CDirectReachabilityManager::QueueAuthenticatedProvisionalPeer(CClientReqSocket& socket)
 {
     AssertMainThread();
@@ -485,6 +638,12 @@ bool CDirectReachabilityManager::RetainDirectControlDownload(reach::DirectHandle
 {
 	AssertMainThread();
 	PruneDirectControlDownloads();
+    for(auto& identity:m_directTcpRecoveryIdentities) if(identity.handle.generation) {
+        const auto state=m_directConnections.Snapshot(identity.handle);
+        if(!state || identity.topology!=GetTopologyGeneration() ||
+            state->state==reach::DirectSessionState::Failed || state->state==reach::DirectSessionState::Cancelled)
+            identity={};
+    }
 	const auto state=m_directConnections.Snapshot(handle);
 	const auto lifetime=DirectTransferClientLifetime(handle);
 	if(!state || !lifetime || state->state==reach::DirectSessionState::Failed ||
@@ -662,6 +821,7 @@ void CDirectReachabilityManager::ShutdownDirectHost()
 	*m_directControlSessions=ese::control::Sessions{};
 	m_directConsumer.reset(); // release framers before their session RX pools
 	m_builtinQuicConsumer=nullptr;
+	m_directTcpRecoveryIdentities={};
 	ShutdownQuicHost();
 }
 
@@ -2126,6 +2286,9 @@ bool CDirectReachabilityManager::ReleaseNativeQuicAttempt(reach::DirectHandle ha
 	AssertMainThread();
 	if (::GetCurrentThreadId() != m_dwOwnerThreadId) return false;
 	if(!ese::ReleaseQuicAttempt(m_directConnections, m_quicOwners, m_directEvents, handle)) return false;
+	if(handle.slot<m_directTcpRecoveryIdentities.size() &&
+		m_directTcpRecoveryIdentities[handle.slot].handle.generation==handle.generation)
+		m_directTcpRecoveryIdentities[handle.slot]={};
 	m_directPartContributions->DiscardHandle(handle);
 	for(auto& pending:*m_pendingDirectVerifications)
 		if(pending.source.handle.slot==handle.slot && pending.source.handle.generation==handle.generation) pending={};
@@ -2137,6 +2300,9 @@ bool CDirectReachabilityManager::ReleaseDirectAttempt(reach::DirectHandle handle
 	AssertMainThread();
 	if (::GetCurrentThreadId()!=m_dwOwnerThreadId || m_quicOwners.HasHandle(handle)) return false;
 	if(!ese::ReleaseDirectAttempt(m_directConnections,dispatch,m_directEvents,handle)) return false;
+	if(handle.slot<m_directTcpRecoveryIdentities.size() &&
+		m_directTcpRecoveryIdentities[handle.slot].handle.generation==handle.generation)
+		m_directTcpRecoveryIdentities[handle.slot]={};
 	m_directPartContributions->DiscardHandle(handle);
 	for(auto& pending:*m_pendingDirectVerifications)
 		if(pending.source.handle.slot==handle.slot && pending.source.handle.generation==handle.generation) pending={};
@@ -2418,6 +2584,7 @@ void CDirectReachabilityManager::RetireDirectClient(uint64 lifetime) noexcept
 	AssertMainThread();
 	if(::GetCurrentThreadId()!=m_dwOwnerThreadId) std::terminate();
 	for(auto& entry:m_directTcpObservations) if(entry.lifetime==lifetime) entry={};
+	for(auto& identity:m_directTcpRecoveryIdentities) if(identity.lifetime==lifetime) identity={};
 	while(const auto record=m_directSubscribers->FindLifetime(lifetime)) {
 		if(record->attempt) {
 			// Acquire is fenced while any retirement is pending. Thus every

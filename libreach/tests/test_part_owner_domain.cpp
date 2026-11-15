@@ -41,7 +41,34 @@ int main() {
     if(reach::ForEachAcceptedPart(start,end,2,partSize,[&](std::uint32_t,std::uint32_t) { ++calls; return true; }) || calls)
         return 8; // invalid aggregate must cause no partial attribution
     records.Clear();
+    // A handover changes delivery authority, not the bytes already attributed
+    // to a part. Retiring QUIC must leave the new TCP contributor and other
+    // pending parts intact. Verify the real ledger without any network fixture.
+    auto tcp=quic; tcp.kind=reach::DirectPartOwnerKind::Legacy; ++tcp.epoch;
+    if(!records.Record(file,0,quic,100) || !records.Record(file,0,tcp,200) ||
+        !records.Record(file,1,tcp,17)) return 9;
+    const auto mixed=records.Snapshot(file,0,2);
+    const auto partial=records.Snapshot(file,1,3);
+    if(mixed.size()!=2 || partial.size()!=1) return 10;
+    auto stolen=mixed[0]; stolen.source=tcp;
+    if(records.TakeVerified(stolen,2,reach::PartVerification::Verified)) return 11;
+    if(records.DiscardSource(quic)!=1 || records.Size()!=2 ||
+        records.TakeVerified(mixed[0],2,reach::PartVerification::Verified)) return 12;
+    const auto accepted=records.TakeVerified(mixed[1],2,reach::PartVerification::Verified);
+    if(!accepted || accepted->source.kind!=reach::DirectPartOwnerKind::Legacy ||
+        accepted->source.epoch!=tcp.epoch || accepted->bytes!=200) return 13;
+    // An accepted value-owned proof survives retirement. Pending unverified
+    // provenance is retired separately and cannot later credit a reused epoch.
+    if(records.DiscardSource(tcp)!=1 || records.Size()!=0 || accepted->bytes!=200 ||
+        accepted->hash_generation!=2 || records.TakeVerified(partial[0],3,reach::PartVerification::Verified)) return 14;
+    ++tcp.epoch;
+    if(!records.Record(file,1,tcp,17) ||
+        records.TakeVerified(partial[0],3,reach::PartVerification::Verified)) return 15;
+    const auto replacement=records.Snapshot(file,1,4);
+    if(replacement.size()!=1 || replacement[0].source.epoch!=tcp.epoch ||
+        !records.TakeVerified(replacement[0],4,reach::PartVerification::Verified)) return 16;
     std::puts("part provenance 64bit: PASS (4GiB crossing, part split, verified receipt and invalid-range atomicity)");
     std::puts("part owner domains: PASS (colliding scalar identities separated; invalid domain rejected)");
+    std::puts("part recovery ownership: PASS (retired epoch fenced, other contributors retained, verified proof value preserved)");
     return 0;
 }

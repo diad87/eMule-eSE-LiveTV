@@ -245,6 +245,7 @@ bool CClientReqSocket::AttachDirectWriter(uint64 owner, reach::DirectHandle hand
 	if(address.IsNull() || !BindDirectWriter(writer)) return false;
 	m_directPeerOwner=owner; m_directPeerHandle=handle; m_directPeerRoute=route;
 	m_directPeerEpoch=epoch; m_directPeerAddress=address;
+	manager.RememberDirectQuicRecoveryIdentity(owner,handle,route,epoch);
 	if(epoch>1 && client->GetRequestFile()) {
 		// Adoption fences the previous stream's block reservations and inflater.
 		// Accepted PartFile ranges and disk/hash work remain owned by the file;
@@ -498,6 +499,10 @@ bool CClientReqSocket::RegisterLegacyDirectRoute(reach::DirectHandle handle,cons
 		if(pinned && pinned->GetSecIDKeyLen() && (client->Credits()->GetSecIDKeyLen()!=pinned->GetSecIDKeyLen() ||
 			memcmp(client->Credits()->GetSecureIdent(),pinned->GetSecureIdent(),pinned->GetSecIDKeyLen()))) return false;
 	}
+	if(route.recovery_authentication) {
+		if(!manager.ClaimDirectTcpRecoveryAuthentication(*this,handle,route,epoch)) return false;
+		m_legacyRecoveryAuthentication=true;
+	}
 	m_legacyDirectHandle=handle; m_legacyDirectRoute=route.id; m_legacyDirectEpoch=epoch;
 	m_legacyDirectGeneration=state->topology_generation; m_legacyDirectLifetime=lifetime;
 	m_legacyTransferLifetime=transferLifetime;
@@ -554,6 +559,8 @@ void CClientReqSocket::CaptureClassicDirectTcpEndpoint()
 
 void CClientReqSocket::RememberClassicDirectChallenge(uint32 challenge)
 {
+	if(m_legacyRecoveryAuthentication && !m_legacySecureIdentReported)
+		m_legacySecureIdentChallenge=challenge;
 	if(!m_legacyDirectRoute && m_classicDirectTcpCandidate && client &&
 		client->GetDirectClientLifetime()==m_classicDirectTcpLifetime && !m_classicDirectVerified)
 		m_classicDirectChallenge=challenge;
@@ -583,6 +590,12 @@ bool CClientReqSocket::ReportLegacyDirectRouteEvent(reach::DirectEventType type,
 
 void CClientReqSocket::NotifyLegacySecureIdentResult(bool verified)
 {
+	if(m_directPeerOwner && verified && theApp.directreachability) {
+		// The signed binding plus an actual SecureIdent result on its owned
+		// stream establishes cross-transport continuity; a HELLO alone cannot.
+		theApp.directreachability->RememberDirectQuicRecoveryIdentity(m_directPeerOwner,
+			m_directPeerHandle,m_directPeerRoute,m_directPeerEpoch);
+	}
 	if(!m_legacyDirectRoute) {
 		if(!m_classicDirectTcpCandidate || !client || !client->Credits() || m_classicDirectVerified ||
 			!m_classicDirectChallenge || m_classicDirectChallenge!=client->Credits()->m_dwCryptRndChallengeFor ||
@@ -603,6 +616,14 @@ void CClientReqSocket::NotifyLegacySecureIdentResult(bool verified)
 		client->GetDirectClientLifetime()!=m_legacyDirectLifetime ||
 		memcmp(client->GetUserHash(),m_legacyExpectedHash->data(),16)) return;
 	if(verified && !client->HasPassedSecureIdent(false)) return;
+    if(m_legacyRecoveryAuthentication && (!m_legacySecureIdentChallenge || !client->Credits() ||
+        m_legacySecureIdentChallenge!=client->Credits()->m_dwCryptRndChallengeFor ||
+        !theApp.directreachability->ValidateDirectTcpRecoveryAuthentication(*this,false))) {
+        if(ReportLegacyDirectRouteEvent(reach::DirectEventType::AuthenticationFailed,reach::DirectReason::IdentityMismatch)) {
+            m_legacySecureIdentReported=true; m_legacySecureIdentVerified=false;
+        }
+        return;
+    }
     if(verified && !theApp.directreachability->QueueAuthenticatedProvisionalPeer(*this)) {
         if(ReportLegacyDirectRouteEvent(reach::DirectEventType::AuthenticationFailed,reach::DirectReason::ResourceLimit)) {
             m_legacySecureIdentReported=true; m_legacySecureIdentVerified=false;
@@ -629,6 +650,8 @@ bool CClientReqSocket::AdoptLegacyDirectRoute(reach::DirectHandle handle,uint32 
 	if(!state || state->state!=reach::DirectSessionState::Ready || state->winner!=route || state->epoch!=epoch ||
 		state->topology_generation!=m_legacyDirectGeneration ||
 		theApp.directreachability->GetTopologyGeneration()!=m_legacyDirectGeneration) return false;
+	if(m_legacyRecoveryAuthentication &&
+		!theApp.directreachability->ValidateDirectTcpRecoveryAuthentication(*this,true)) return false;
 	if(client->HasIsolatedDirectRouteCredits()) {
 		auto* transfer=theApp.clientlist->FindClientByLifetime(m_legacyTransferLifetime);
 		if(!transfer || transfer==client || transfer->socket || transfer->HasIsolatedDirectRouteCredits() ||

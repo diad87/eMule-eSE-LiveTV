@@ -29,6 +29,7 @@
 #include "EseControlEnvelope.h"
 #include "EseControlBootstrap.h"
 #include "EseQuicRouteOwners.h"
+#include "EseTcpRecoveryAuthorization.h"
 #include "EseDirectBatchConsumer.h"
 #include "reach/direct_transport.h"
 #include "kad6/kad6_records.h"
@@ -86,6 +87,17 @@ public:
 	bool RegisterPreparedDirectLegacyRoute(reach::DirectHandle,const reach::DirectSessionRoute&,CClientReqSocket&,uint64 epoch);
 	bool RegisterDirectLegacyRoute(reach::DirectHandle,const reach::DirectSessionRoute&);
 	bool RecordDirectTcpObservation(CClientReqSocket&);
+    // A recovery candidate permits only an isolated SecureIdent handshake.
+    // Its advertised endpoint never becomes observed merely by opening TCP.
+    enum class TcpRecoveryPreparationStatus { Ready, NoCandidate, NoAuthenticatedIdentity, StaleTopology, Unavailable };
+    struct TcpRecoveryPreparation {
+        TcpRecoveryPreparationStatus status=TcpRecoveryPreparationStatus::Unavailable;
+        std::optional<reach::DirectSessionRoute> route;
+    };
+    TcpRecoveryPreparation PrepareDirectTcpRecoveryAuthentication(reach::DirectHandle,uint64 epoch);
+    void RememberDirectQuicRecoveryIdentity(uint64 owner,reach::DirectHandle,uint32 route,uint64 epoch);
+    bool ClaimDirectTcpRecoveryAuthentication(CClientReqSocket&,reach::DirectHandle,const reach::DirectSessionRoute&,uint64 epoch);
+    bool ValidateDirectTcpRecoveryAuthentication(CClientReqSocket&,bool adopting) const;
     bool QueueAuthenticatedProvisionalPeer(CClientReqSocket&);
 	// Selection only, from the subscribed live client's owned source snapshot.
 	// Host must supply independently authenticated endpoint return validations.
@@ -430,6 +442,18 @@ private:
 	ese::DirectBatchPump m_directPump;
 	struct DirectTcpObservation { uint64 lifetime=0; std::array<uint8,16> userHash{}; reach::DirectCandidate candidate; };
 	std::array<DirectTcpObservation,256> m_directTcpObservations{};
+    struct DirectTcpRecoveryIdentity {
+        reach::DirectHandle handle;
+        uint64 lifetime=0,topology=0,epoch=0,fileSize=0;
+        reach::DirectFileKey file;
+        std::array<uint8,32> node{};
+        std::array<uint8,16> userHash{};
+        std::array<uint8,80> verifiedKey{};
+        uint8 verifiedKeySize=0;
+        ese::TcpRecoveryAuthorization authentication;
+    };
+    std::array<DirectTcpRecoveryIdentity,reach::kDirectMaxAttempts> m_directTcpRecoveryIdentities{};
+    bool CurrentDirectTcpRecoveryIdentity(const DirectTcpRecoveryIdentity&) const;
 	void ApplyDirectTcpObservations(reach::NativeDirectCandidateSnapshotV1&,uint64 lifetime,uint64 now) const;
 	bool GatherDirectTcpObservations(reach::NativeDirectCandidateSnapshotV1&,uint64 lifetime,uint64 now) const;
 	bool m_topologyGenerationExhausted=false;

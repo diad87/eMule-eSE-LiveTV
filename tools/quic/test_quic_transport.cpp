@@ -162,8 +162,73 @@ static void ProgressAndLiveness() {
     client.Close(DirectReason::Disabled);
     server.Close(DirectReason::Disabled);
 }
+static void QuicNoProgressCloseRetirement() {
+    // Exercise the production CLOSE reason and retirement contract entirely
+    // in memory. No socket, file payload or network impairment is involved.
+    for(const bool acknowledge : {false,true}) {
+        DirectBufferPool pool;
+        auto senderEvents=std::make_unique<DirectEventQueue>();
+        auto receiverEvents=std::make_unique<DirectEventQueue>();
+        auto senderRuntime=std::make_unique<FakeRuntime>();
+        auto receiverRuntime=std::make_unique<FakeRuntime>();
+        auto* senderObserver=senderRuntime.get();
+        auto* receiverObserver=receiverRuntime.get();
+        QuicTransport sender(Config(false),std::move(senderRuntime),pool,*senderEvents);
+        QuicTransport receiver(Config(true),std::move(receiverRuntime),pool,*receiverEvents);
+        Check(sender.Start({2,17},Route()) && receiver.Start({3,23},Route()));
+        sender.Poll(10); receiver.Poll(10);
+        Move(sender,receiver,0); Move(receiver,sender,0); Move(sender,receiver,0);
+        Check(sender.Ready() && receiver.Ready() && sender.BoundPeer() && receiver.BoundPeer());
+        Check(sender.AdoptWinner({2,17},3,2) && receiver.AdoptWinner({3,23},3,2));
+        Check(sender.Acknowledged(0,0,185) && receiver.Acknowledged(0,0,185));
+        senderEvents->Drain(); receiverEvents->Drain();
+
+        Check(sender.RequestClose(wire::kEseWireCloseQuicNoProgress));
+        const std::uint8_t byte=1;
+        const auto send=sender.Send({&byte,1});
+        const auto receive=sender.Received(4,{&byte,1});
+        Check(!sender.DataReady() && !sender.Retirable() && senderObserver->shutdown==0);
+        Check(send.status==DirectIoStatus::Closed && send.accepted==0);
+        Check(receive.status==DirectIoStatus::WouldBlock && receive.accepted==0);
+        Check(sender.Snapshot().rx_buffered==0 && sender.UsefulReceived()==0 && senderEvents->Size()==0);
+        const auto frame=sender.Pending(0);
+        const std::uint8_t golden[]={0,0,0,3,3,0,12};
+        Check(frame.size==sizeof(golden) && std::memcmp(frame.data,golden,sizeof(golden))==0);
+        Move(sender,receiver,0);
+
+        const auto remote=receiverEvents->Drain();
+        Check(remote.size()==1 && remote[0].type==DirectEventType::Closed &&
+            remote[0].reason==DirectReason::QuicNoProgress && remote[0].handle.slot==3 &&
+            remote[0].handle.generation==23 && remote[0].route_id==3 && remote[0].session_epoch==2);
+        Check(receiver.Retirable() && receiverObserver->shutdown==1 && !receiver.DataReady());
+        const auto afterRemoteClose=receiver.Received(4,{&byte,1});
+        Check(afterRemoteClose.status==DirectIoStatus::Closed && afterRemoteClose.accepted==0);
+        Check(receiver.Snapshot().rx_buffered==0 && receiver.UsefulReceived()==0);
+        // Submitting/delivering CLOSE alone cannot retire the sender. It keeps
+        // the control transport alive for its ACK or the bounded 1000 ms grace.
+        Check(!sender.Retirable() && senderEvents->Size()==0 && senderObserver->shutdown==0);
+        sender.Poll(1009);
+        Check(!sender.Retirable() && senderEvents->Size()==0 && senderObserver->shutdown==0);
+        if(acknowledge) {
+            Check(!sender.Acknowledged(0,186,1)); // an ACK hole is not delivery
+            Check(sender.Acknowledged(0,185,6) && !sender.Retirable() && senderEvents->Size()==0);
+            Check(sender.Acknowledged(0,191,1));
+        } else {
+            sender.Poll(1010);
+        }
+        const auto local=senderEvents->Drain();
+        Check(sender.Retirable() && senderObserver->shutdown==1 && local.size()==1 &&
+            local[0].type==DirectEventType::Closed && local[0].reason==DirectReason::QuicNoProgress &&
+            local[0].handle.slot==2 && local[0].handle.generation==17 &&
+            local[0].route_id==3 && local[0].session_epoch==2);
+        sender.Close(DirectReason::Disabled); receiver.Close(DirectReason::Disabled);
+        Check(senderEvents->Size()==0 && receiverEvents->Size()==0 && pool.Used()==0);
+    }
+    std::puts("QUIC recovery CLOSE: PASS (typed reason 12, data fenced, remote close, ACK/deadline retirement; in-memory)");
+}
 int main() {
     ProgressAndLiveness();
+    QuicNoProgressCloseRetirement();
     for(const auto result : {trust::CommitResult::Stored,trust::CommitResult::PersistenceFailed,trust::CommitResult::PinChanged}) {
         struct TrustPolicy final : trust::Committer {
             trust::CommitResult result; QuicTransport* transport=nullptr; unsigned calls=0;

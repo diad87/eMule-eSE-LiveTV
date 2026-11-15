@@ -89,6 +89,8 @@ int main()
     CHECK(!c.AuthorizesStart(active.handle,changed,0));
     changed=route; ++changed.candidate.expires_monotonic_ms;
     CHECK(!c.AuthorizesStart(active.handle,changed,0));
+    changed=route; changed.recovery_authentication=true;
+    CHECK(!c.AuthorizesStart(active.handle,changed,0));
     CHECK(!c.AuthorizesStart({active.handle.slot,active.handle.generation+1},route,0));
     DirectSessionEvent event{active.handle,7,1,1,0,DirectEventType::Connected,0};
     c.Advance(active.handle,10,{event});
@@ -120,6 +122,13 @@ int main()
         receiver.Advance(shared.handle,30,{lost});
         const auto before=receiver.Snapshot(shared.handle);
         CHECK(before && before->state==DirectSessionState::Recovering && before->epoch==1 && before->highest_route_id==1);
+        CHECK(before->recovery_cause==DirectReason::DirectUnreachable &&
+            before->recovery_outcome==DirectRecoveryOutcome::AcquiringEvidence);
+        CHECK(!receiver.RecordRecoveryOutcome({shared.handle.slot,shared.handle.generation+1},1,DirectRecoveryOutcome::NoCandidate));
+        CHECK(!receiver.RecordRecoveryOutcome(shared.handle,2,DirectRecoveryOutcome::NoCandidate));
+        CHECK(receiver.RecordRecoveryOutcome(shared.handle,1,DirectRecoveryOutcome::AcquiringEvidence));
+        CHECK(!receiver.RecordRecoveryOutcome(shared.handle,1,DirectRecoveryOutcome::Receiving));
+        CHECK(receiver.Snapshot(shared.handle)->winner==0 && receiver.Snapshot(shared.handle)->epoch_useful_bytes==0);
         const auto joined=receiver.RequestSharedAttempt(peer,71,Id(71),7,31);
         CHECK(joined.status==DirectRequestStatus::Joined && joined.handle.slot==shared.handle.slot &&
             joined.handle.generation==shared.handle.generation && receiver.Size()==1);
@@ -131,6 +140,7 @@ int main()
         CHECK(started.actions.size()==1 && started.actions[0].type==DirectActionType::Start &&
             started.actions[0].route_id==2 && started.actions[0].session_epoch==1);
         CHECK(receiver.AuthorizesStart(shared.handle,fresh,1));
+        CHECK(!receiver.RecordRecoveryOutcome(shared.handle,1,DirectRecoveryOutcome::NoCandidate));
         CHECK(!receiver.AuthorizesStart(shared.handle,first,1));
         CHECK(receiver.Snapshot(shared.handle)->attempt_id==Id(71) && receiver.Snapshot(shared.handle)->epoch==1);
         receiver.Cancel(shared.handle,DirectReason::PeerGone);

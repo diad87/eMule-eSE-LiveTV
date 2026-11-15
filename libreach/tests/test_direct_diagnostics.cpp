@@ -63,6 +63,40 @@ int main() {
     CHECK(!publisher.Publish(invalid,1023));
     bool rejected=false; try { DirectDiagnosticJson(invalid); } catch(const std::invalid_argument&) {rejected=true;}
     CHECK(rejected);
+    // A preserved verified prefix is not progress by the recovered TCP epoch.
+    source.state=DirectSessionState::Ready; source.winner=2; source.epoch=2;
+    source.useful_bytes=4096; source.transfer_verified=true;
+    source.recovery_cause=DirectReason::QuicNoProgress;
+    source.recovery_outcome=DirectRecoveryOutcome::TcpAuthenticated;
+    source.epoch_useful_bytes=0; source.epoch_transfer_verified=false;
+    route.id=2; route.transport=DirectTcp;
+    value=ProjectDirectDiagnostic(source,{route});
+    CHECK(value.authenticated && value.transfer_verified && !value.epoch_transfer_verified);
+    CHECK(value.accepted_unique_bytes==4096 && value.epoch_accepted_unique_bytes==0);
+    CHECK(publisher.Publish(value,2000));
+    json=DirectDiagnosticJson(*publisher.Read());
+    CHECK(json.find("\"recovery_cause\":15")!=std::string::npos);
+    CHECK(json.find("\"recovery_outcome\":\"TCP_AUTHENTICATED\"")!=std::string::npos);
+    CHECK(json.find("\"epoch_accepted_unique_bytes\":\"0\"")!=std::string::npos);
+    CHECK(json.find("\"epoch_transfer_verified\":false")!=std::string::npos);
+    source.state=DirectSessionState::Transferring; source.useful_bytes=4097; source.epoch_useful_bytes=1;
+    source.recovery_outcome=DirectRecoveryOutcome::Receiving;
+    value=ProjectDirectDiagnostic(source,{route});
+    CHECK(publisher.Publish(value,2001)); // recovery milestone bypasses byte-counter throttling
+    CHECK(publisher.Read()->epoch_accepted_unique_bytes==1 && !publisher.Read()->epoch_transfer_verified);
+    source.recovery_outcome=DirectRecoveryOutcome::VerifiedData; source.epoch_transfer_verified=true;
+    value=ProjectDirectDiagnostic(source,{route});
+    CHECK(publisher.Publish(value,2002) && publisher.Read()->epoch_transfer_verified);
+    CHECK(publisher.Read()->state==DirectSessionState::Transferring);
+    const auto recoveryValid=publisher.Read();
+    invalid=value; invalid.recovery_outcome=static_cast<DirectRecoveryOutcome>(255);
+    CHECK(!publisher.Publish(invalid,2003) && publisher.Read()==recoveryValid);
+    invalid=value; invalid.recovery_cause=DirectReason::None;
+    CHECK(!publisher.Publish(invalid,2003) && publisher.Read()==recoveryValid);
+    invalid=value; invalid.epoch_accepted_unique_bytes=4098;
+    CHECK(!publisher.Publish(invalid,2003) && publisher.Read()==recoveryValid);
+    invalid=value; invalid.transfer_verified=false;
+    CHECK(!publisher.Publish(invalid,2003) && publisher.Read()==recoveryValid);
     std::printf("test_direct_diagnostics: %d checks, %d failures\n",checks,failures);
     return failures ? 1 : 0;
 }

@@ -134,6 +134,8 @@ protected:
 	bool m_legacyDirectConnected=false,m_legacyDirectClosed=false;
 	bool m_legacyHelloAccepted=false,m_legacySecureIdentReported=false;
 	bool m_legacySecureIdentVerified=false,m_legacyDirectAdopted=false;
+	bool m_legacyRecoveryAuthentication=false;
+	uint32 m_legacySecureIdentChallenge=0;
 	bool m_legacyVerifiedPartReported=false;
 	uint64 m_legacyLabParsedBlocks=0; // explicit self-test diagnostic, not useful-byte accounting
 	uint64 m_directPeerOwner=0,m_directPeerEpoch=0;

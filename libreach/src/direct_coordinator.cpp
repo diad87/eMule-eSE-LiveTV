@@ -128,6 +128,12 @@ DirectCoordinatorBatch DirectCoordinator::Cancel(DirectHandle handle,DirectReaso
     auto* slot=Resolve(handle);
     return slot ? Batch(handle,*slot,slot->session->Cancel(reason)) : DirectCoordinatorBatch{handle,{},{}};
 }
+bool DirectCoordinator::RecordRecoveryOutcome(DirectHandle handle,std::uint64_t epoch,
+    DirectRecoveryOutcome outcome) noexcept
+{
+    auto* slot=Resolve(handle);
+    return slot && slot->session->RecordRecoveryOutcome(epoch,outcome);
+}
 DirectIdentityResult DirectCoordinator::ResolveAuthenticatedPeer(DirectHandle handle,
     std::uint32_t route,std::uint64_t epoch,const DirectPeerKey& authenticated)
 {
@@ -238,6 +244,7 @@ std::optional<DirectCoordinatorSnapshot> DirectCoordinator::Snapshot(DirectHandl
     if (!slot) return std::nullopt;
     const auto& s=*slot->session;
     return DirectCoordinatorSnapshot{handle,slot->attempt_id,slot->peer,s.State(),s.Reason(),
-        s.Winner(),s.Epoch(),s.UsefulBytes(),s.TransferVerified(),slot->subscribers.size(),slot->topology_generation,s.HighestRouteId(),s.ReasonChain(),s.ReasonCount(),s.FallbackCount()};
+        s.Winner(),s.Epoch(),s.UsefulBytes(),s.TransferVerified(),slot->subscribers.size(),slot->topology_generation,s.HighestRouteId(),s.ReasonChain(),s.ReasonCount(),s.FallbackCount(),
+        s.RecoveryCause(),s.RecoveryOutcome(),s.EpochUsefulBytes(),s.EpochTransferVerified()};
 }
 } // namespace reach

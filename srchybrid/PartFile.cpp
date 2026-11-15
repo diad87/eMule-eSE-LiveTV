@@ -456,12 +456,40 @@ bool CPartFile::RunHashVerdictAcceptanceSelfTest(const PartHashVerdict_Struct& d
 	file.m_mapPendingHashParts[(std::numeric_limits<UINT>::max)()]=1;
 	file.m_mapPendingHashParts[0]=7;
 	file.m_aChangedPart[0]=true; file.corrupted_list.AddTail(static_cast<uint16>(0));
+		// A hash belongs to the file revision even when its contributing transport
+		// has retired. Its saved receipt must not turn into authority for a new
+		// transport, and the missing transport receipt must not reject a valid hash.
+		auto retiredLedger=std::make_unique<reach::DirectPartContributions>();
+		reach::DirectPartContributor retired{1,{255,(std::numeric_limits<uint64>::max)()},1,1,1};
+		if(!retiredLedger->Record(file.NativeDirectFileKey(),0,retired,3)) return false;
+		DirectHashSnapshot retiredSnapshot; retiredSnapshot.generation=7;
+		retiredSnapshot.receipts=retiredLedger->Snapshot(file.NativeDirectFileKey(),0,7);
+		if(retiredSnapshot.receipts.size()!=1 || retiredLedger->DiscardHandle(retired.handle)!=1 ||
+			retiredLedger->TakeVerified(retiredSnapshot.receipts[0],7,reach::PartVerification::Verified)) return false;
+		file.m_directHashSnapshots[0]=std::move(retiredSnapshot);
 	auto verdict=diskVerdict; verdict.uPart=0; verdict.uGen=7;
 	verdict.fileLifetime=file.m_directFileLifetime; verdict.bNoAICH=true;
 	file.ProcessPartHashVerdict(verdict);
 	UINT generation=0;
 	if(file.m_mapPendingHashParts.Lookup(0,generation) || file.m_aChangedPart[0]
-		|| file.IsCorruptedPart(0) || !file.IsCompleteBD(0,2)) return false;
+			|| file.IsCorruptedPart(0) || !file.IsCompleteBD(0,2) || file.m_directHashSnapshots.count(0)) return false;
+		// A late failed callback from the retired generation cannot undo the
+		// verified part or reopen its ranges after the accepted verdict.
+		auto late=verdict; late.aMD4Hash[0]^=1;
+		file.ProcessPartHashVerdict(late);
+		if(file.m_aChangedPart[0] || file.IsCorruptedPart(0) || !file.IsCompleteBD(0,2)) return false;
+		// Retiring one transport only releases its own request. Another source's
+		// same-range reservation and the file's verified bytes remain untouched.
+		Requested_Block_Struct oldRequest{},otherRequest{};
+		oldRequest.StartOffset=otherRequest.StartOffset=0;
+		oldRequest.EndOffset=otherRequest.EndOffset=2;
+		file.requestedblocks_list.AddTail(&oldRequest);
+		file.requestedblocks_list.AddTail(&otherRequest);
+		const bool retiredOwnRequest=file.RemoveBlockFromList(&oldRequest);
+		const bool keptOtherRequest=file.requestedblocks_list.GetCount()==1 &&
+			file.requestedblocks_list.GetHead()==&otherRequest;
+		file.requestedblocks_list.RemoveAll(); // fixture requests are stack-owned
+		if(!retiredOwnRequest || !keptOtherRequest || !file.IsCompleteBD(0,2)) return false;
 	file.m_mapPendingHashParts[0]=8; file.m_aChangedPart[0]=true;
 	verdict.uGen=8; verdict.aMD4Hash[0]^=1;
 	file.ProcessPartHashVerdict(verdict);

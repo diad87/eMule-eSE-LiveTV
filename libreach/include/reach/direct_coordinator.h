@@ -46,6 +46,10 @@ struct DirectCoordinatorSnapshot {
     std::array<DirectReasonEntry,kDirectMaxReasons> reason_chain{};
     std::size_t reason_count = 0;
     std::uint64_t fallback_count=0;
+    DirectReason recovery_cause=DirectReason::None;
+    DirectRecoveryOutcome recovery_outcome=DirectRecoveryOutcome::None;
+    std::uint64_t epoch_useful_bytes=0;
+    bool epoch_transfer_verified=false; // at least one part, never file completion
     // Allocation floor only, never permission to start or authenticate a route.
     std::uint32_t NextRouteId(std::uint32_t requested=1) const noexcept {
         if(!requested || highest_route_id==(std::numeric_limits<std::uint32_t>::max)()) return 0;
@@ -82,6 +86,7 @@ public:
     DirectCoordinatorBatch Advance(DirectHandle handle, std::uint64_t now_ms,
         const std::vector<DirectSessionEvent>& events = {});
     DirectCoordinatorBatch Cancel(DirectHandle handle, DirectReason reason);
+    bool RecordRecoveryOutcome(DirectHandle, std::uint64_t epoch, DirectRecoveryOutcome) noexcept;
     // Owning host calls only after cryptographic identity verification, before
     // publishing Authenticated. Never derive this key from an endpoint/HELLO.
     // Merged closes the redundant source; caller must rebind moved subscribers

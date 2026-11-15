@@ -17,7 +17,8 @@ bool DirectSession::AuthorizesStart(const DirectSessionRoute& spec,std::uint64_t
     if (Terminal() || epoch != epoch_) return false;
     for (const auto& route : routes_) {
         if (route.phase != Phase::Connecting || route.spec.id != spec.id ||
-            route.spec.transport != spec.transport) continue;
+            route.spec.transport != spec.transport ||
+            route.spec.recovery_authentication != spec.recovery_authentication) continue;
         const auto& a=route.spec.candidate; const auto& b=spec.candidate;
         return a.id==b.id && a.kind==b.kind && a.family==b.family &&
             a.address==b.address && a.port==b.port && a.transport_mask==b.transport_mask &&
@@ -65,6 +66,28 @@ bool DirectSession::Terminal() const noexcept
     return state_ == DirectSessionState::Failed || state_ == DirectSessionState::Cancelled;
 }
 
+bool DirectSession::RecordRecoveryOutcome(std::uint64_t epoch,DirectRecoveryOutcome outcome) noexcept
+{
+    if(state_!=DirectSessionState::Recovering || epoch!=epoch_ ||
+        recovery_cause_==DirectReason::None) return false;
+    switch(outcome) {
+    case DirectRecoveryOutcome::AcquiringEvidence:
+    case DirectRecoveryOutcome::NoCandidate:
+    case DirectRecoveryOutcome::EvidenceExpired:
+    case DirectRecoveryOutcome::NoAuthenticatedIdentity:
+    case DirectRecoveryOutcome::IdentityRejected:
+    case DirectRecoveryOutcome::AuthenticationTimedOut:
+    case DirectRecoveryOutcome::ConnectionFailed:
+    case DirectRecoveryOutcome::Exhausted:
+    case DirectRecoveryOutcome::Cancelled:
+    case DirectRecoveryOutcome::NetworkChanged:
+        recovery_outcome_=outcome;
+        return true;
+    default:
+        return false; // connection, authentication and data milestones require actual events
+    }
+}
+
 void DirectSession::RememberReason(std::uint32_t route, DirectReason reason) noexcept
 {
     if (reason == DirectReason::None) return;
@@ -96,6 +119,26 @@ std::vector<DirectSessionAction> DirectSession::Finish(
     // Complete allocation before changing state or ownership. In particular,
     // authenticated identity merges must not half-cancel on allocation failure.
     actions.reserve(routes_.size()+1);
+    if(recovery_cause_!=DirectReason::None) {
+        // Preserve an acquisition failure supplied by the host. Terminal reason
+        // still describes the attempt, independently of why recovery began.
+        if(reason==DirectReason::StaleTopology)
+            recovery_outcome_=DirectRecoveryOutcome::NetworkChanged;
+        else if(state==DirectSessionState::Cancelled &&
+            (reason==DirectReason::Disabled || reason==DirectReason::PeerGone))
+            recovery_outcome_=DirectRecoveryOutcome::Cancelled;
+        else if(recovery_outcome_<DirectRecoveryOutcome::NoCandidate ||
+            recovery_outcome_==DirectRecoveryOutcome::RouteAuthenticated) {
+            switch(reason) {
+            case DirectReason::IdentityMismatch:
+            case DirectReason::PinChanged:recovery_outcome_=DirectRecoveryOutcome::IdentityRejected;break;
+            case DirectReason::AuthTimeout:recovery_outcome_=DirectRecoveryOutcome::AuthenticationTimedOut;break;
+            case DirectReason::NoCandidate:recovery_outcome_=DirectRecoveryOutcome::NoCandidate;break;
+            case DirectReason::DirectUnreachable:recovery_outcome_=DirectRecoveryOutcome::ConnectionFailed;break;
+            default:recovery_outcome_=DirectRecoveryOutcome::Exhausted;break;
+            }
+        }
+    }
     state_ = state;
     reason_ = reason;
     for (auto& route : routes_) Close(route, reason, actions);
@@ -122,6 +165,12 @@ std::vector<DirectSessionAction> DirectSession::SetRoutes(
             !(spec.candidate.transport_mask & spec.transport) ||
             spec.candidate.topology_generation != topology_generation_ ||
             spec.candidate.expires_monotonic_ms <= now_ms ||
+            (spec.recovery_authentication &&
+                (state_!=DirectSessionState::Recovering || !epoch_ || spec.transport!=DirectTcp ||
+                 !spec.candidate.id || !spec.candidate.port || spec.candidate.transport_mask!=DirectTcp ||
+                 spec.candidate.kind!=DirectKind::DirectV4 || spec.candidate.family!=4 ||
+                 spec.candidate.evidence!=DirectEvidence::Advertised ||
+                 spec.candidate.scope!=DirectScope::Global || spec.candidate.interface_id)) ||
             std::any_of(routes_.begin(), routes_.end(),
                 [&](const Route& old) { return old.spec.id == spec.id; }))
             return Finish(DirectSessionState::Failed, DirectReason::NoCandidate);
@@ -152,6 +201,8 @@ void DirectSession::Schedule(std::uint64_t now_ms,
         if (route.phase != Phase::Pending) continue;
         if (route.spec.candidate.expires_monotonic_ms <= now_ms) {
             route.phase = Phase::Closed;
+            if(recovery_cause_!=DirectReason::None)
+                recovery_outcome_=DirectRecoveryOutcome::EvidenceExpired;
             continue;
         }
         if (active) {
@@ -193,8 +244,12 @@ std::vector<DirectSessionAction> DirectSession::Advance(std::uint64_t now_ms,
         if ((route.phase == Phase::Connecting || route.phase == Phase::Authenticating) &&
             (now_ms >= route.deadline_ms ||
              now_ms >= route.spec.candidate.expires_monotonic_ms))
+        {
+            if(recovery_cause_!=DirectReason::None && now_ms>=route.spec.candidate.expires_monotonic_ms)
+                recovery_outcome_=DirectRecoveryOutcome::EvidenceExpired;
             Close(route, route.phase == Phase::Authenticating ?
                 DirectReason::AuthTimeout : DirectReason::DirectUnreachable, actions);
+        }
     }
     // Keep per-route ordering, then nominate all successes in plan order.
     auto ordered = events;
@@ -219,6 +274,9 @@ std::vector<DirectSessionAction> DirectSession::Advance(std::uint64_t now_ms,
                 it->phase = Phase::Authenticating;
                 it->deadline_ms = std::min(deadline_ms_, AddTime(now_ms, 5000));
                 state_ = DirectSessionState::Authenticating;
+                if(recovery_cause_!=DirectReason::None)
+                    recovery_outcome_=it->spec.transport==DirectTcp ?
+                        DirectRecoveryOutcome::TcpConnected : DirectRecoveryOutcome::Authenticating;
             }
             break;
         case DirectEventType::Authenticated:
@@ -242,17 +300,26 @@ std::vector<DirectSessionAction> DirectSession::Advance(std::uint64_t now_ms,
                 winner_ = 0;
                 state_ = DirectSessionState::Recovering;
                 deadline_ms_ = AddTime(now_ms, 15000);
+                if(recovery_cause_==DirectReason::None)
+                    recovery_cause_=event.reason==DirectReason::None ? DirectReason::NoRoute : event.reason;
+                recovery_outcome_=DirectRecoveryOutcome::AcquiringEvidence;
             }
             break;
         case DirectEventType::UsefulRange:
             if (event.useful_bytes && event.useful_bytes <=
                 std::numeric_limits<std::uint64_t>::max() - useful_bytes_) {
                 useful_bytes_ += event.useful_bytes;
+                epoch_useful_bytes_ += event.useful_bytes; // bounded by cumulative counter above
                 state_ = DirectSessionState::Transferring;
+                if(recovery_cause_!=DirectReason::None && !epoch_transfer_verified_)
+                    recovery_outcome_=DirectRecoveryOutcome::Receiving;
             }
             break;
         case DirectEventType::VerifiedPart:
             transfer_verified_ = true;
+            epoch_transfer_verified_ = true;
+            if(recovery_cause_!=DirectReason::None)
+                recovery_outcome_=DirectRecoveryOutcome::VerifiedData;
             break;
         }
     }
@@ -263,9 +330,14 @@ std::vector<DirectSessionAction> DirectSession::Advance(std::uint64_t now_ms,
                 continue;
             winner_ = route.spec.id;
             ++epoch_;
+            epoch_useful_bytes_=0;
+            epoch_transfer_verified_=false;
             route.phase = Phase::Winner;
             state_ = DirectSessionState::Ready;
             reason_ = DirectReason::None;
+            if(recovery_cause_!=DirectReason::None)
+                recovery_outcome_=route.spec.transport==DirectTcp ?
+                    DirectRecoveryOutcome::TcpAuthenticated : DirectRecoveryOutcome::RouteAuthenticated;
             actions.push_back({DirectActionType::Attach, winner_, epoch_, DirectReason::None});
             for (auto& other : routes_)
                 if (other.spec.id != winner_) Close(other, DirectReason::None, actions);

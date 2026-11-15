@@ -28,6 +28,42 @@ enum class DirectEventType : std::uint8_t {
     UsefulRange, VerifiedPart
 };
 
+// Diagnostic milestones for an established-session recovery. These values do
+// not grant route authority. In particular, TcpAuthenticated is not evidence
+// that the requested file is available, or that any new bytes were received.
+enum class DirectRecoveryOutcome : std::uint8_t {
+    None, AcquiringEvidence, TcpConnected, Authenticating, TcpAuthenticated,
+    Receiving, VerifiedData, NoCandidate, EvidenceExpired,
+    NoAuthenticatedIdentity, IdentityRejected, AuthenticationTimedOut,
+    ConnectionFailed, FileUnavailable, RemoteQueue, Exhausted, Cancelled,
+    NetworkChanged, RouteAuthenticated
+};
+
+inline const char* DirectRecoveryOutcomeName(DirectRecoveryOutcome outcome) noexcept {
+    switch(outcome) {
+    case DirectRecoveryOutcome::None:return "NONE";
+    case DirectRecoveryOutcome::AcquiringEvidence:return "ACQUIRING_EVIDENCE";
+    case DirectRecoveryOutcome::TcpConnected:return "TCP_CONNECTED";
+    case DirectRecoveryOutcome::Authenticating:return "AUTHENTICATING";
+    case DirectRecoveryOutcome::TcpAuthenticated:return "TCP_AUTHENTICATED";
+    case DirectRecoveryOutcome::Receiving:return "RECEIVING";
+    case DirectRecoveryOutcome::VerifiedData:return "VERIFIED_DATA";
+    case DirectRecoveryOutcome::NoCandidate:return "NO_CANDIDATE";
+    case DirectRecoveryOutcome::EvidenceExpired:return "EVIDENCE_EXPIRED";
+    case DirectRecoveryOutcome::NoAuthenticatedIdentity:return "NO_AUTHENTICATED_IDENTITY";
+    case DirectRecoveryOutcome::IdentityRejected:return "IDENTITY_REJECTED";
+    case DirectRecoveryOutcome::AuthenticationTimedOut:return "AUTHENTICATION_TIMED_OUT";
+    case DirectRecoveryOutcome::ConnectionFailed:return "CONNECTION_FAILED";
+    case DirectRecoveryOutcome::FileUnavailable:return "FILE_UNAVAILABLE";
+    case DirectRecoveryOutcome::RemoteQueue:return "REMOTE_QUEUE";
+    case DirectRecoveryOutcome::Exhausted:return "EXHAUSTED";
+    case DirectRecoveryOutcome::Cancelled:return "CANCELLED";
+    case DirectRecoveryOutcome::NetworkChanged:return "NETWORK_CHANGED";
+    case DirectRecoveryOutcome::RouteAuthenticated:return "ROUTE_AUTHENTICATED";
+    }
+    return "UNAVAILABLE";
+}
+
 struct DirectSessionEvent {
     DirectHandle handle;
     std::uint64_t topology_generation = 0;
@@ -58,6 +94,9 @@ struct DirectSessionRoute {
     std::uint32_t id = 0;
     DirectCandidate candidate;
     std::uint8_t transport = 0; // exactly one DirectTransport bit
+    // Explicit host-issued purpose, never inferred from Advertised evidence.
+    // The adapter must claim its scoped permission before opening the socket.
+    bool recovery_authentication = false;
 };
 
 // Main-thread-owned controller. Adapters execute returned actions after this
@@ -74,6 +113,9 @@ public:
         const std::vector<DirectSessionEvent>& events = {});
     std::vector<DirectSessionAction> Cancel(DirectReason reason);
     std::vector<DirectSessionAction> InvalidateTopology(std::uint64_t generation);
+    // Owner-side acquisition diagnostics only: no actions, counter changes,
+    // authentication, or writable-route permission can be produced here.
+    bool RecordRecoveryOutcome(std::uint64_t epoch, DirectRecoveryOutcome) noexcept;
 
     DirectSessionState State() const noexcept { return state_; }
     DirectReason Reason() const noexcept { return reason_; }
@@ -84,6 +126,10 @@ public:
     std::uint64_t Epoch() const noexcept { return epoch_; }
     std::uint64_t UsefulBytes() const noexcept { return useful_bytes_; }
     bool TransferVerified() const noexcept { return transfer_verified_; }
+    DirectReason RecoveryCause() const noexcept { return recovery_cause_; }
+    DirectRecoveryOutcome RecoveryOutcome() const noexcept { return recovery_outcome_; }
+    std::uint64_t EpochUsefulBytes() const noexcept { return epoch_useful_bytes_; }
+    bool EpochTransferVerified() const noexcept { return epoch_transfer_verified_; }
     const std::array<DirectReasonEntry,kDirectMaxReasons>& ReasonChain() const noexcept { return reasons_; }
     std::size_t ReasonCount() const noexcept { return reason_count_; }
     bool AwaitingAuthentication(std::uint32_t route, std::uint64_t epoch) const noexcept;
@@ -128,6 +174,12 @@ private:
     std::uint64_t fallback_count_=0;
     bool route_started_=false;
     bool transfer_verified_ = false;
+    // The original cause survives a successful attach and later failed retries.
+    // Cumulative file contributions above are never reset by a new transport.
+    DirectReason recovery_cause_ = DirectReason::None;
+    DirectRecoveryOutcome recovery_outcome_ = DirectRecoveryOutcome::None;
+    std::uint64_t epoch_useful_bytes_ = 0;
+    bool epoch_transfer_verified_ = false;
     std::array<DirectReasonEntry,kDirectMaxReasons> reasons_{};
     std::size_t reason_count_ = 0;
 };

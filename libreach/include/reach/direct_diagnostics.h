@@ -36,9 +36,18 @@ struct DirectDiagnosticV2 {
     std::uint8_t transport=0;
     // Zero means no winner; otherwise DirectKind + 1 (not a route ID).
     std::uint8_t route_kind=0;
+    DirectReason recovery_cause=DirectReason::None;
+    DirectRecoveryOutcome recovery_outcome=DirectRecoveryOutcome::None;
+    std::uint64_t epoch_accepted_unique_bytes=0;
+    bool epoch_transfer_verified=false; // first verified part in this epoch only
 };
 inline bool ValidDirectDiagnostic(const DirectDiagnosticV2& value) noexcept {
     return value.state<=DirectSessionState::Cancelled && value.terminal_reason<=DirectReason::UnsupportedRemote &&
+        value.recovery_cause<=DirectReason::UnsupportedRemote &&
+        value.recovery_outcome<=DirectRecoveryOutcome::RouteAuthenticated &&
+        ((value.recovery_cause==DirectReason::None)==(value.recovery_outcome==DirectRecoveryOutcome::None)) &&
+        value.epoch_accepted_unique_bytes<=value.accepted_unique_bytes &&
+        (!value.epoch_transfer_verified || value.transfer_verified) &&
         value.progress_blocker<=DirectProgressBlocker::None &&
         value.candidate_count<=kDirectMaxCandidates && value.route_kind<=8 &&
         (!value.transport || value.transport==DirectTcp || value.transport==DirectUtp || value.transport==DirectQuic) &&
@@ -64,6 +73,9 @@ inline DirectDiagnosticV2 ProjectDirectDiagnostic(const DirectCoordinatorSnapsho
     result.topology_generation=source.topology_generation; result.session_epoch=source.epoch;
     result.accepted_unique_bytes=source.useful_bytes; result.state=source.state;
     result.terminal_reason=source.reason; result.transfer_verified=source.transfer_verified;
+    result.recovery_cause=source.recovery_cause; result.recovery_outcome=source.recovery_outcome;
+    result.epoch_accepted_unique_bytes=source.epoch_useful_bytes;
+    result.epoch_transfer_verified=source.epoch_transfer_verified;
     result.fallback_count=source.fallback_count; result.fallback_count_available=true;
     result.progress_blocker=source.state==DirectSessionState::Gathering ? DirectProgressBlocker::Preparing :
         source.state==DirectSessionState::Recovering ? DirectProgressBlocker::Recovering :
@@ -92,6 +104,10 @@ inline std::string DirectDiagnosticJson(const DirectDiagnosticV2& value) {
         ",\"route_kind\":"+std::to_string(value.route_kind)+
         ",\"transport\":\""+(value.transport==DirectTcp ? "TCP" : value.transport==DirectUtp ? "UTP" : value.transport==DirectQuic ? "QUIC" : "NONE")+"\""+
         ",\"terminal_reason\":"+std::to_string(static_cast<unsigned>(value.terminal_reason))+
+        ",\"recovery_cause\":"+std::to_string(static_cast<unsigned>(value.recovery_cause))+
+        ",\"recovery_outcome\":\""+DirectRecoveryOutcomeName(value.recovery_outcome)+"\""+
+        ",\"epoch_accepted_unique_bytes\":\""+std::to_string(value.epoch_accepted_unique_bytes)+"\""+
+        ",\"epoch_transfer_verified\":"+(value.epoch_transfer_verified ? "true" : "false")+
         ",\"auth_status\":\""+(value.authenticated ? "AUTHENTICATED" : "UNVERIFIED")+
         "\",\"transfer_verified\":"+(value.transfer_verified ? "true" : "false")+
         ",\"progress_blocker\":\""+DirectBlockerName(value.progress_blocker)+
@@ -110,10 +126,13 @@ public:
         if(current_) {
             const auto& old=*current_;
             const bool transition=std::tie(next.state,next.terminal_reason,next.topology_generation,
-                next.session_epoch,next.authenticated,next.transfer_verified,next.candidate_count,next.session_id,next.route_kind,next.transport,next.fallback_count_available,next.progress_blocker)!=
+                next.session_epoch,next.authenticated,next.transfer_verified,next.candidate_count,next.session_id,next.route_kind,next.transport,next.fallback_count_available,next.progress_blocker,
+                next.recovery_cause,next.recovery_outcome,next.epoch_transfer_verified)!=
                 std::tie(old.state,old.terminal_reason,old.topology_generation,
-                old.session_epoch,old.authenticated,old.transfer_verified,old.candidate_count,old.session_id,old.route_kind,old.transport,old.fallback_count_available,old.progress_blocker);
-            const bool counters=next.accepted_unique_bytes!=old.accepted_unique_bytes || next.fallback_count!=old.fallback_count;
+                old.session_epoch,old.authenticated,old.transfer_verified,old.candidate_count,old.session_id,old.route_kind,old.transport,old.fallback_count_available,old.progress_blocker,
+                old.recovery_cause,old.recovery_outcome,old.epoch_transfer_verified);
+            const bool counters=next.accepted_unique_bytes!=old.accepted_unique_bytes || next.fallback_count!=old.fallback_count ||
+                next.epoch_accepted_unique_bytes!=old.epoch_accepted_unique_bytes;
             if(!transition && (!counters || now-last_publication_<1000)) { last_clock_=now; return false; }
             if(old.snapshot_sequence==(std::numeric_limits<std::uint64_t>::max)()) return false;
             next.snapshot_sequence=old.snapshot_sequence+1;

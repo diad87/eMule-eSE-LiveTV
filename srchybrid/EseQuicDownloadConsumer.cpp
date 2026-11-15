@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "EseQuicDownloadConsumer.h"
+#include "EseWireProtocol.h"
 #include "DirectReachabilityManager.h"
 #include "emule.h"
 #include "ClientList.h"
@@ -46,7 +47,8 @@ bool QuicDownloadConsumer::Schedule(reach::DirectHandle handle,
     if(!snapshot || (snapshot->state!=reach::DirectSessionState::Gathering && snapshot->state!=reach::DirectSessionState::Recovering)) return false;
     for(const auto& route:routes) {
         const auto* entry=Find(handle,route.id);
-        if(!entry || entry->closing || route.transport!=entry->route.transport) return false;
+        if(!entry || entry->closing || route.transport!=entry->route.transport ||
+            route.recovery_authentication!=entry->route.recovery_authentication) return false;
         const auto& a=route.candidate; const auto& b=entry->route.candidate;
         if(a.id!=b.id || a.kind!=b.kind || a.family!=b.family || a.address!=b.address ||
             a.port!=b.port || a.transport_mask!=b.transport_mask || a.evidence!=b.evidence ||
@@ -375,7 +377,12 @@ void QuicDownloadConsumer::PumpOwnedRecovery() noexcept {
             const auto result=BeginObservedTcp(pending.handle);
             if(result==TcpStartResult::Unavailable) {
                 if(pending.quicStalled) {
-                    Fail(pending.handle,reach::DirectReason::QuicNoProgress);
+                    // A stale/missing observation is not permission to use an
+                    // open TCP port. Acquire a fresh signature on a scoped,
+                    // handshake-only route; normal DCO adoption still gates
+                    // data and owns the next session epoch.
+                    if(BeginFreshTcp(pending.handle,pending.epoch)==TcpStartResult::Unavailable)
+                        Fail(pending.handle,reach::DirectReason::QuicNoProgress);
                     continue;
                 }
                 const auto now=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -395,6 +402,42 @@ void QuicDownloadConsumer::PumpOwnedRecovery() noexcept {
         }
     }
 }
+QuicDownloadConsumer::TcpStartResult QuicDownloadConsumer::BeginFreshTcp(
+    reach::DirectHandle handle,std::uint64_t epoch) noexcept {
+    if(std::this_thread::get_id()!=thread_) std::terminate();
+    try {
+        const auto prepared=manager_.PrepareDirectTcpRecoveryAuthentication(handle,epoch);
+        using Status=CDirectReachabilityManager::TcpRecoveryPreparationStatus;
+        auto outcome=reach::DirectRecoveryOutcome::Exhausted;
+        switch(prepared.status) {
+        case Status::Ready: outcome=reach::DirectRecoveryOutcome::AcquiringEvidence; break;
+        case Status::NoCandidate: outcome=reach::DirectRecoveryOutcome::NoCandidate; break;
+        case Status::NoAuthenticatedIdentity: outcome=reach::DirectRecoveryOutcome::NoAuthenticatedIdentity; break;
+        case Status::StaleTopology: outcome=reach::DirectRecoveryOutcome::NetworkChanged; break;
+        case Status::Unavailable: break;
+        }
+        manager_.DirectConnections().RecordRecoveryOutcome(handle,epoch,outcome);
+        if(prepared.status==Status::StaleTopology) {
+            Fail(handle,reach::DirectReason::StaleTopology); return TcpStartResult::Failed;
+        }
+        if(prepared.status!=Status::Ready) return TcpStartResult::Unavailable;
+        if(!prepared.route || !RegisterLegacy(handle,*prepared.route)) {
+            Fail(handle,reach::DirectReason::NoRoute); return TcpStartResult::Failed;
+        }
+        const auto now=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+        if(!Schedule(handle,{*prepared.route},now)) {
+            Fail(handle,reach::DirectReason::NoRoute); return TcpStartResult::Failed;
+        }
+        const auto state=manager_.DirectConnections().Snapshot(handle);
+        const auto lifetime=manager_.DirectTransferClientLifetime(handle);
+        auto* client=lifetime && theApp.clientlist ? theApp.clientlist->FindClientByLifetime(*lifetime) : nullptr;
+        if(!state || state->state==reach::DirectSessionState::Failed ||
+            state->state==reach::DirectSessionState::Cancelled || !client) return TcpStartResult::Failed;
+        client->SetDownloadState(DS_CONNECTING);
+        return TcpStartResult::Scheduled;
+    } catch(...) { Fail(handle,reach::DirectReason::ResourceLimit); return TcpStartResult::Failed; }
+}
 QuicDownloadConsumer::TcpStartResult QuicDownloadConsumer::BeginObservedTcp(reach::DirectHandle handle) noexcept {
     if(std::this_thread::get_id()!=thread_) std::terminate();
     try {
@@ -407,6 +450,8 @@ QuicDownloadConsumer::TcpStartResult QuicDownloadConsumer::BeginObservedTcp(reac
         reach::NativeDirectTransportPolicy policy; policy.enabled_transports=reach::DirectTcp;
         const auto selected=manager_.SelectDirectDownloadRoutes(handle,policy);
         if(selected.routes.empty()) return TcpStartResult::Unavailable;
+        if(state->state==reach::DirectSessionState::Recovering)
+            manager_.DirectConnections().RecordRecoveryOutcome(handle,state->epoch,reach::DirectRecoveryOutcome::AcquiringEvidence);
         // Reserve every context before any Start. Terminal Batch retires partial reservations.
         for(const auto& route:selected.routes) if(!RegisterLegacy(handle,route)) {
             Fail(handle,reach::DirectReason::NoRoute); return TcpStartResult::Failed;
@@ -464,7 +509,12 @@ void QuicDownloadConsumer::CheckQuicProgress(Entry& entry)
     else if(action==QuicProgressWatchdog::Action::Recover) {
         DebugLogWarning(_T("QUIC application progress expired (control timeout=%u)"),
             static_cast<unsigned>(transport->LivenessUnresponsive()));
-        transport->Close(reach::DirectReason::QuicNoProgress);
+        // Retire the owned writer immediately, but let the authenticated
+        // control CLOSE drain within its existing one-second budget. A peer
+        // whose control channel still works can release the old QUIC session
+        // before the subsequent TCP handshake reaches its duplicate guard.
+        if(!RequestClose(entry.handle,entry.route.id,wire::kEseWireCloseQuicNoProgress))
+            transport->Close(reach::DirectReason::QuicNoProgress);
     }
 }
 

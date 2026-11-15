@@ -168,7 +168,8 @@ std::vector<DirectSessionAction> DirectSession::SetRoutes(
             (spec.recovery_authentication &&
                 (state_!=DirectSessionState::Recovering || !epoch_ || spec.transport!=DirectTcp ||
                  !spec.candidate.id || !spec.candidate.port || spec.candidate.transport_mask!=DirectTcp ||
-                 spec.candidate.kind!=DirectKind::DirectV4 || spec.candidate.family!=4 ||
+                 (spec.candidate.kind!=DirectKind::DirectV4 && spec.candidate.kind!=DirectKind::VerifiedMapping) ||
+                 spec.candidate.family!=4 ||
                  spec.candidate.evidence!=DirectEvidence::Advertised ||
                  spec.candidate.scope!=DirectScope::Global || spec.candidate.interface_id)) ||
             std::any_of(routes_.begin(), routes_.end(),

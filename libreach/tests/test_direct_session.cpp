@@ -285,8 +285,33 @@ int main()
         DirectSession initial({3,5},7,0);
         CHECK(Count(initial.SetRoutes({authRoute},0),DirectActionType::Start)==0);
         CHECK(initial.Reason()==DirectReason::NoCandidate);
+        auto mappedAuth=authRoute; mappedAuth.candidate.kind=DirectKind::VerifiedMapping;
+        auto mappedRecovery=StalledQuicSession();
+        CHECK(Count(mappedRecovery.SetRoutes({mappedAuth},6),DirectActionType::Start)==1);
+        CHECK(mappedRecovery.AuthorizesStart(mappedAuth,1) && !mappedRecovery.AuthorizesStart(authRoute,1));
+        CHECK(mappedRecovery.RoutesSnapshot()[0].candidate.evidence==DirectEvidence::Advertised);
+        mappedRecovery.Advance(7,{Event(2,1,DirectEventType::Connected,1)});
+        CHECK(mappedRecovery.State()==DirectSessionState::Authenticating && !mappedRecovery.Winner() && mappedRecovery.Epoch()==1);
+        const auto mappedAttach=mappedRecovery.Advance(8,{Event(2,2,DirectEventType::Authenticated,1)});
+        CHECK(Count(mappedAttach,DirectActionType::Attach)==1 && mappedRecovery.Winner()==2 && mappedRecovery.Epoch()==2);
+        CHECK(mappedRecovery.UsefulBytes()==4096 && mappedRecovery.TransferVerified() &&
+            mappedRecovery.EpochUsefulBytes()==0 && !mappedRecovery.EpochTransferVerified());
+        for(const auto kind:{DirectKind::DirectV6,DirectKind::Callback,DirectKind::Punch2,
+            DirectKind::Punch3,DirectKind::Predicted,DirectKind::Birthday}) {
+            auto invalidMapped=mappedAuth; invalidMapped.candidate.kind=kind;
+            auto rejected=StalledQuicSession();
+            CHECK(Count(rejected.SetRoutes({invalidMapped},6),DirectActionType::Start)==0);
+            CHECK(rejected.Reason()==DirectReason::NoCandidate && !rejected.Winner());
+        }
+        for(const auto proof:{DirectEvidence::Observed,DirectEvidence::Reserved,
+            DirectEvidence::MappingVerified,DirectEvidence::InboundVerified}) {
+            auto invalidMapped=mappedAuth; invalidMapped.candidate.evidence=proof;
+            auto rejected=StalledQuicSession();
+            CHECK(Count(rejected.SetRoutes({invalidMapped},6),DirectActionType::Start)==0);
+            CHECK(rejected.Reason()==DirectReason::NoCandidate && !rejected.Winner());
+        }
         for(unsigned variant=0;variant<10;++variant) {
-            auto invalidAuthRoute=authRoute;
+            auto invalidAuthRoute=mappedAuth;
             switch(variant) {
             case 0:invalidAuthRoute.transport=DirectUtp;invalidAuthRoute.candidate.transport_mask=DirectUtp;break;
             case 1:invalidAuthRoute.candidate.kind=DirectKind::Callback;break;

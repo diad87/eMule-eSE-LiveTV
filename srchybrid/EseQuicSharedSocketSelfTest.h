@@ -577,6 +577,31 @@ public:
         std::array<uint8,16> hash{}; memcpy(hash.data(),client.GetUserHash(),16); source.peer.expected_user_hash=hash;
         source.candidates[0].route=route.candidate; source.candidates[0].route.evidence=reach::DirectEvidence::Advertised;
         source.candidates[0].route.expires_monotonic_ms=now+15000;
+        if(route.candidate.kind==reach::DirectKind::VerifiedMapping) {
+            check(client.socket && client.socket->m_legacyDirectCandidate.kind==reach::DirectKind::VerifiedMapping &&
+                client.socket->m_legacyDirectCandidate.evidence==reach::DirectEvidence::Advertised);
+            const auto observation=client.socket->ObservedLegacyTcpCandidate();
+            check(observation && observation->kind==reach::DirectKind::DirectV4 && observation->family==4 &&
+                observation->evidence==reach::DirectEvidence::Observed && observation->transport_mask==reach::DirectTcp &&
+                observation->address==route.candidate.address && observation->port==route.candidate.port &&
+                observation->expires_monotonic_ms==route.candidate.expires_monotonic_ms);
+            auto gathered=source;
+            check(manager.GatherDirectTcpObservations(gathered,client.GetDirectClientLifetime(),now) && gathered.count==2 &&
+                gathered.candidates[0].route.kind==reach::DirectKind::VerifiedMapping &&
+                gathered.candidates[0].route.evidence==reach::DirectEvidence::Advertised &&
+                gathered.candidates[1].route.kind==reach::DirectKind::DirectV4 &&
+                gathered.candidates[1].route.evidence==reach::DirectEvidence::Observed &&
+                gathered.candidates[1].route.transport_mask==reach::DirectTcp &&
+                gathered.candidates[1].source==reach::DirectCandidateSource::Observed);
+            const auto routes=manager.DirectConnections().RoutesSnapshot(client.socket->m_legacyDirectHandle);
+            check(routes && routes->size()==1 && (*routes)[0].candidate.kind==reach::DirectKind::VerifiedMapping &&
+                (*routes)[0].candidate.evidence==reach::DirectEvidence::Advertised &&
+                client.socket->m_legacyDirectCandidate.kind==reach::DirectKind::VerifiedMapping &&
+                client.socket->m_legacyDirectCandidate.evidence==reach::DirectEvidence::Advertised);
+            source.candidates[0].route=*observation;
+            source.candidates[0].route.evidence=reach::DirectEvidence::Advertised;
+            source.candidates[0].route.expires_monotonic_ms=now+15000;
+        }
         auto apply=[&](auto snapshot,uint64 lifetime,uint64 when) { manager.ApplyDirectTcpObservations(snapshot,lifetime,when); return snapshot; };
         const auto observed=apply(source,client.GetDirectClientLifetime(),now);
         check(observed.candidates[0].route.evidence==reach::DirectEvidence::Observed &&
@@ -2747,10 +2772,12 @@ inline void RunLegacyPartialFile(CDirectReachabilityManager& manager,CUpDownClie
     if(packed) Log(_T("REACH_SELFTEST V123 PASS: TCP compressed37 fragments4096 real IOCP partial old inflater active close fresh route epoch2 discards decoder keeps disk requests gap1 plain final hash complete exact; no uTP QUIC mixed F1"));
 }
 
-inline void RunLegacyTcpOwner(CDirectReachabilityManager& manager,bool wrongDestination=false,bool invalidHello=false,bool wireHello=false,bool validHello=false,unsigned secureIdentCase=0,bool mergeIdentity=false) {
+inline void RunLegacyTcpOwner(CDirectReachabilityManager& manager,bool wrongDestination=false,bool invalidHello=false,bool wireHello=false,bool validHello=false,unsigned secureIdentCase=0,bool mergeIdentity=false,bool mappedObservation=false) {
     const bool scheduled=secureIdentCase>=6 && secureIdentCase<=9;
     const bool consumerOwned=secureIdentCase==3 || secureIdentCase==5 || scheduled;
     Require(!mergeIdentity || secureIdentCase==3,"identity merge uses actual prepared RSA consumer");
+    Require(!mappedObservation || (validHello && secureIdentCase==3 && !mergeIdentity),
+        "mapped observation uses the actual prepared RSA consumer without identity merge");
     if(consumerOwned) Require(manager.InstallQuicDownloadConsumer(),"legacy prepared consumer installed before admission");
     Log(_T("LEGACY_OWNER_SELFTEST stage: begin"));
     Require(theApp.m_bReachBindingSelfTest && !manager.DirectConnections().Size(),"legacy TCP owner explicit isolated lab");
@@ -2770,6 +2797,7 @@ inline void RunLegacyTcpOwner(CDirectReachabilityManager& manager,bool wrongDest
     std::array<BYTE,16> expectedHash{}; expectedHash[0]=0x97; expectedHash[15]=1;
     expectedHash[14]=static_cast<BYTE>(secureIdentCase); // isolate per-peer key/credit state
     if(mergeIdentity) expectedHash[13]=0x59; // fresh RSA peer, not a pin rotation of the earlier case3
+    if(mappedObservation) expectedHash[13]=0x5a; // independent peer for the mapped endpoint projection
     client->SetUserHash(expectedHash.data()); // expectation only, no SecureIdent proof
     CUpDownClient* transferClient=client;
     std::array<uint64,5> originalRange{};
@@ -2881,6 +2909,7 @@ inline void RunLegacyTcpOwner(CDirectReachabilityManager& manager,bool wrongDest
     }
     reach::DirectSessionRoute route; route.id=1; route.transport=reach::DirectTcp;
     route.candidate.id=1; route.candidate.family=4; route.candidate.address[0]=127; route.candidate.address[3]=1;
+    if(mappedObservation) route.candidate.kind=reach::DirectKind::VerifiedMapping;
     route.candidate.port=ntohs(address.sin_port); route.candidate.transport_mask=reach::DirectTcp;
     if(wrongDestination) route.candidate.port=route.candidate.port==65535 ? 65534 : route.candidate.port+1;
     route.candidate.topology_generation=snapshot.local_generation; route.candidate.expires_monotonic_ms=Now()+8000;
@@ -2965,6 +2994,7 @@ inline void RunLegacyTcpOwner(CDirectReachabilityManager& manager,bool wrongDest
     const auto connected=manager.DirectConnections().Snapshot(admitted.request.handle);
     Require(connected && connected->state==reach::DirectSessionState::Authenticating && connected->winner==0 &&
         connected->useful_bytes==0 && !connected->transfer_verified && !socket->HasAuthenticatedDirectConnection(),"TCP connected grants no identity winner useful bytes or proof");
+    if(mappedObservation) Require(!socket->ObservedLegacyTcpCandidate(),"mapped TCP connection alone grants no observation");
     if(validHello) {
         Require(CNativeDirectSelfTestAccess::LegacyHelloPacket(*socket,helloBytes.get(),helloSize),
             "expected legacy HELLOANSWER reaches normal production parser");
@@ -3000,6 +3030,7 @@ inline void RunLegacyTcpOwner(CDirectReachabilityManager& manager,bool wrongDest
             std::array<BYTE,201> signature{};
             signature[0]=theApp.clientcredits->CreateSignature(&target,signature.data()+1,200,0,0,&signer);
             Require(signature[0]>=10,"legacy real RSA signature generated");
+            if(mappedObservation) Require(!socket->ObservedLegacyTcpCandidate(),"mapped TCP HELLO and challenge alone grant no observation");
             if(secureIdentCase==2) signature[1]^=1;
             if(secureIdentCase>=5) Require(!transferClient->socket && !transferClient->Credits() &&
                 CNativeDirectSelfTestAccess::LegacyPendingRange(*transferClient)==originalRange &&
@@ -3049,6 +3080,7 @@ inline void RunLegacyTcpOwner(CDirectReachabilityManager& manager,bool wrongDest
                     client=transferClient;
                 }
                 CNativeDirectSelfTestAccess::TestTcpObservation(manager,*client,route);
+                if(mappedObservation) Log(_T("REACH_SELFTEST TCP_MAPPING_OBSERVATION PASS: actual adopted RSA TCP yields separate DirectV4 Observed endpoint while owned VerifiedMapping Advertised route remains unchanged; loopback fixture no router proof"));
                 const auto contributor=socket->LegacyDirectPartContributor();
                 Require(contributor && manager.ValidateLegacyDirectPartDelivery(*contributor)==socket,
                     "authenticated adopted legacy contributor resolves original socket");

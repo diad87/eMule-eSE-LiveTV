@@ -1,9 +1,30 @@
 #pragma once
 #include "reach/direct_session.h"
+#include <algorithm>
 #include <optional>
 #include <limits>
 
 namespace ese {
+// Normalize an advertised descriptor endpoint for the quarantined handshake
+// only. The host must independently enforce its public-address policy first.
+// A descriptor's longer lease is not an authentication deadline or proof.
+inline std::optional<reach::DirectSessionRoute> PrepareFreshTcpRecoveryRoute(
+    const reach::DirectCandidate& candidate,std::uint32_t routeId,
+    std::uint64_t topology,std::uint64_t now) noexcept {
+    if(!routeId || !topology || now>(std::numeric_limits<std::uint64_t>::max)()-15000 ||
+        !candidate.id || (candidate.kind!=reach::DirectKind::DirectV4 &&
+            candidate.kind!=reach::DirectKind::VerifiedMapping) || candidate.family!=4 ||
+        !candidate.port || !(candidate.transport_mask&reach::DirectTcp) ||
+        candidate.evidence!=reach::DirectEvidence::Advertised || candidate.scope!=reach::DirectScope::Global ||
+        candidate.interface_id || candidate.topology_generation!=topology || candidate.expires_monotonic_ms<=now ||
+        std::any_of(candidate.address.begin()+4,candidate.address.end(),[](std::uint8_t byte) {return byte!=0;}))
+        return std::nullopt;
+    reach::DirectSessionRoute route{routeId,candidate,reach::DirectTcp,true};
+    route.candidate.transport_mask=reach::DirectTcp;
+    route.candidate.expires_monotonic_ms=(std::min)(candidate.expires_monotonic_ms,now+15000);
+    return route;
+}
+
 // Local permission to negotiate with an already pinned identity. This is not
 // return-path evidence or a cryptographic verifier. The host must check the
 // signed QUIC identity, verified RSA pin, file identity and actual socket peer.
@@ -16,7 +37,8 @@ public:
         const auto& c=route.candidate;
         if(route_ || !handle.generation || !lifetime || !epoch || epoch==(std::numeric_limits<std::uint64_t>::max)() ||
             !route.id || !route.recovery_authentication || route.transport!=reach::DirectTcp || !c.id || !c.port ||
-            c.kind!=reach::DirectKind::DirectV4 || c.family!=4 || c.transport_mask!=reach::DirectTcp ||
+            (c.kind!=reach::DirectKind::DirectV4 && c.kind!=reach::DirectKind::VerifiedMapping) ||
+            c.family!=4 || c.transport_mask!=reach::DirectTcp ||
             c.evidence!=reach::DirectEvidence::Advertised || c.scope!=reach::DirectScope::Global || c.interface_id ||
             !c.topology_generation || c.expires_monotonic_ms<=now || c.expires_monotonic_ms-now>15000) return false;
         handle_=handle; lifetime_=lifetime; epoch_=epoch; route_=route; return true;

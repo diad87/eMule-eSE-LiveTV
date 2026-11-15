@@ -273,9 +273,13 @@ std::optional<reach::DirectCandidate> CClientReqSocket::ObservedLegacyTcpCandida
 			!client->HasPassedSecureIdent(false) || !MatchesTcpEndpoint(*m_classicDirectTcpCandidate)) return std::nullopt;
 		return m_classicDirectTcpCandidate;
 	}
+	const bool mappedV4=m_legacyDirectCandidate.kind==reach::DirectKind::VerifiedMapping && m_legacyDirectCandidate.family==4;
 	if(!m_legacyDirectRoute || m_pUtpLayer || !HasAuthenticatedDirectConnection() || !MatchesLegacyDirectEndpoint() ||
-		(m_legacyDirectCandidate.kind!=reach::DirectKind::DirectV4 && m_legacyDirectCandidate.kind!=reach::DirectKind::DirectV6)) return std::nullopt;
+		(m_legacyDirectCandidate.kind!=reach::DirectKind::DirectV4 && m_legacyDirectCandidate.kind!=reach::DirectKind::DirectV6 && !mappedV4)) return std::nullopt;
 	auto observed=m_legacyDirectCandidate;
+	// An authenticated socket observes only its own TCP endpoint, not the
+	// router mapping claimed by its descriptor. Keep that owned route unchanged.
+	if(mappedV4) observed.kind=reach::DirectKind::DirectV4;
 	observed.transport_mask=reach::DirectTcp; observed.evidence=reach::DirectEvidence::Observed;
 	return observed; // socket/identity proof is local; no Node binding or inbound status
 }

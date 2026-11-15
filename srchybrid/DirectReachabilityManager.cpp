@@ -461,21 +461,16 @@ CDirectReachabilityManager::PrepareDirectTcpRecoveryAuthentication(reach::Direct
         const auto& candidate=snapshot.candidates[i].route;
         // Classic SecureIdent has no IPv6 binding. The existing explicit LAN
         // policy is not widened by recovery; only ordinary public TCP is used.
-        if(!candidate.id || candidate.kind!=reach::DirectKind::DirectV4 || candidate.family!=4 ||
-            !candidate.port || !(candidate.transport_mask&reach::DirectTcp) ||
-            candidate.evidence!=reach::DirectEvidence::Advertised || candidate.scope!=reach::DirectScope::Global ||
-            candidate.interface_id || candidate.topology_generation!=identity.topology || candidate.expires_monotonic_ms<=now ||
-            std::any_of(candidate.address.begin()+4,candidate.address.end(),[](uint8 b) {return b!=0;})) continue;
         uint32 address=0; memcpy(&address,candidate.address.data(),4);
         if(!CAddress::FromIPv4NetworkOrder(address).IsUsablePublic()) continue;
-        reach::DirectSessionRoute authentication{id,candidate,reach::DirectTcp,true};
-        authentication.candidate.transport_mask=reach::DirectTcp;
+        const auto authentication=ese::PrepareFreshTcpRecoveryRoute(candidate,id,identity.topology,now);
+        if(!authentication) continue;
         // Keep Advertised. The ordinary route selector still rejects it;
         // this permission admits only the quarantined authentication adapter.
-        if(!identity.authentication.Issue(handle,identity.lifetime,epoch,authentication,now)) {
+        if(!identity.authentication.Issue(handle,identity.lifetime,epoch,*authentication,now)) {
             result.status=TcpRecoveryPreparationStatus::Unavailable; return result;
         }
-        result.route=authentication; result.status=TcpRecoveryPreparationStatus::Ready;
+        result.route=*authentication; result.status=TcpRecoveryPreparationStatus::Ready;
         return result;
     }
     return result;

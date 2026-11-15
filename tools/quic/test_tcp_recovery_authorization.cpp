@@ -59,9 +59,53 @@ int main() {
     Check(!permission.Allows(handle,40,9,2,41,DirectSessionState::Ready,5,15100,true));
     Check(!permission.Allows(handle,40,9,1,41,DirectSessionState::Authenticating,0,15100,false));
 
+    // A signed descriptor calls its public endpoint a mapping, but still
+    // carries only Advertised evidence. It may authenticate without acquiring
+    // mapping proof or a transferable socket permission.
+    auto mapped=route; mapped.candidate.kind=DirectKind::VerifiedMapping;
+    auto advertised=mapped.candidate; advertised.transport_mask=DirectTcp|DirectQuic;
+    advertised.expires_monotonic_ms=120100;
+    const auto prepared=ese::PrepareFreshTcpRecoveryRoute(advertised,5,9,100);
+    Check(prepared && prepared->candidate.expires_monotonic_ms==15100 &&
+        prepared->candidate.transport_mask==DirectTcp && prepared->recovery_authentication);
+    Check(advertised.expires_monotonic_ms==120100 && advertised.transport_mask==(DirectTcp|DirectQuic));
+    advertised.expires_monotonic_ms=105;
+    const auto shorterPrepared=ese::PrepareFreshTcpRecoveryRoute(advertised,5,9,100);
+    Check(shorterPrepared && shorterPrepared->candidate.expires_monotonic_ms==105);
+    Check(!ese::PrepareFreshTcpRecoveryRoute(advertised,5,9,105));
+    Check(!ese::PrepareFreshTcpRecoveryRoute(advertised,5,9,(std::numeric_limits<std::uint64_t>::max)()-14999));
+    ese::TcpRecoveryAuthorization mappedPermission;
+    Check(mappedPermission.Issue(handle,40,1,mapped,100));
+    Check(mappedPermission.Route()->candidate.kind==DirectKind::VerifiedMapping &&
+        mappedPermission.Route()->candidate.evidence==DirectEvidence::Advertised);
+    Check(!mappedPermission.Claim(handle,40,9,1,route,41,101));
+    Check(mappedPermission.Claim(handle,40,9,1,mapped,41,101));
+    Check(mappedPermission.Allows(handle,40,9,1,41,DirectSessionState::Authenticating,0,102,false));
+    Check(!mappedPermission.Allows(handle,40,9,2,42,DirectSessionState::Ready,5,103,true));
+    Check(mappedPermission.Allows(handle,40,9,2,41,DirectSessionState::Ready,5,104,true));
+    Check(!mappedPermission.Allows(handle,40,9,2,41,DirectSessionState::Ready,5,15100,true));
+    auto shorter=mapped; shorter.candidate.expires_monotonic_ms=105;
+    ese::TcpRecoveryAuthorization shortPermission;
+    Check(shortPermission.Issue(handle,40,1,shorter,100));
+    Check(shortPermission.Claim(handle,40,9,1,shorter,41,101));
+    Check(shortPermission.Allows(handle,40,9,2,41,DirectSessionState::Ready,5,104,true));
+    Check(!shortPermission.Allows(handle,40,9,2,41,DirectSessionState::Ready,5,105,true));
+    for(const auto kind:{DirectKind::DirectV6,DirectKind::Callback,DirectKind::Punch2,
+        DirectKind::Punch3,DirectKind::Predicted,DirectKind::Birthday}) {
+        auto invalid=mapped; invalid.candidate.kind=kind;
+        ese::TcpRecoveryAuthorization rejected;
+        Check(!rejected.Issue(handle,40,1,invalid,100) && !rejected.Route());
+    }
+    for(const auto proof:{DirectEvidence::Observed,DirectEvidence::Reserved,
+        DirectEvidence::MappingVerified,DirectEvidence::InboundVerified}) {
+        auto invalid=mapped; invalid.candidate.evidence=proof;
+        ese::TcpRecoveryAuthorization rejected;
+        Check(!rejected.Issue(handle,40,1,invalid,100) && !rejected.Route());
+    }
+
     // Acquisition must not silently become a general route-policy exception.
     for(unsigned variant=0;variant<9;++variant) {
-        auto invalid=route;
+        auto invalid=mapped;
         if(variant==0) invalid.candidate.evidence=DirectEvidence::Observed;
         if(variant==1) invalid.transport=DirectUtp;
         if(variant==2) invalid.candidate.family=6;

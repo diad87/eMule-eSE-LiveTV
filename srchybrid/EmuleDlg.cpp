@@ -1857,6 +1857,8 @@ static bool RunReachBindingSelfTest(bool tcpFallbackF1)
 	Log(_T("REACH_SELFTEST V108 PASS: prepared TCP consumer owns real SecureIdent Attach OS close common drain and subscriber retirement preserves pending range; no automatic Start mixed race or real file recovery"));
     try { ese::shared_socket_selftest::RunLegacyTcpOwner(manager,false,false,false,true,3,true); }
     catch(const std::exception& error) { throw std::runtime_error(std::string("authenticated provisional merge: ")+error.what()); }
+    try { ese::shared_socket_selftest::RunLegacyTcpOwner(manager,false,false,false,true,3,false,true); }
+    catch(const std::exception& error) { throw std::runtime_error(std::string("authenticated mapped TCP observation: ")+error.what()); }
 	try { ese::shared_socket_selftest::RunLegacyTcpOwner(manager,false,false,false,true,4); }
 	catch(const std::exception& error) { throw std::runtime_error(std::string("isolated route credits: ")+error.what()); }
 	Log(_T("REACH_SELFTEST V109 PASS: real TCP route SecureIdent uses private credits global record unchanged second same hash route challenge proof independent; no original client promotion or automatic race"));

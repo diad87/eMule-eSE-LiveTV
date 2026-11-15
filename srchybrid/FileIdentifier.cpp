@@ -20,6 +20,8 @@
 #include "safefile.h"
 #include "knownfile.h"
 #include "log.h"
+#include <memory>
+#include <vector>
 
 // File size       Data parts      ED2K parts      ED2K part hashes		AICH part hashes
 // -------------------------------------------------------------------------------------------
@@ -176,28 +178,39 @@ bool CFileIdentifier::LoadMD4HashsetFromFile(CFileDataIO &file, bool bVerifyExis
 {
 	uchar checkid[MDX_DIGEST_SIZE];
 	file.ReadHash16(checkid);
-	//TRACE("File size: %u (%u full parts + %u bytes)\n", GetFileSize(), GetFileSize()/PARTSIZE, GetFileSize()%PARTSIZE);
-	//TRACE("File hash: %s\n", (LPCTSTR)md4str(checkid));
 	ASSERT(m_aMD4HashSet.IsEmpty());
 	ASSERT(!isnulmd4(m_abyMD4Hash) || !bVerifyExistingHash);
 	DeleteMD4Hashset();
-
-	uint16 parts = file.ReadUInt16();
-	//TRACE("Nr. hashes: %u\n", (UINT)parts);
-	if (bVerifyExistingHash && (!md4equ(m_abyMD4Hash, checkid) || parts != GetTheoreticalMD4PartHashCount()))
-		return false;
-	for (UINT i = 0; i < parts; ++i) {
-		uchar *cur_hash = new uchar[MDX_DIGEST_SIZE];
-		file.ReadHash16(cur_hash);
-		//TRACE("Hash[%3u]: %s\n", i, (LPCTSTR)md4str(cur_hash));
-		m_aMD4HashSet.Add(cur_hash);
-	}
-
+	// The saved metadata root identifies the download even if its part hashes
+	// are missing or invalid. The network path must retain its existing root.
 	if (!bVerifyExistingHash)
 		md4cpy(m_abyMD4Hash, checkid);
 
-	// Calculate hash out of hashset and compare to existing file hash
-	return m_aMD4HashSet.IsEmpty() || CalculateMD4HashByHashSet(true, true);
+	const uint16 parts = file.ReadUInt16();
+	if (bVerifyExistingHash && (!md4equ(m_abyMD4Hash, checkid) || parts != GetTheoreticalMD4PartHashCount()))
+		return false;
+	if (!parts)
+		return true;
+
+	// The on-disk uint16 count caps this temporary read at 1 MiB.
+	const UINT size = static_cast<UINT>(parts) * MDX_DIGEST_SIZE;
+	std::vector<uchar> hashes(size);
+	if (file.Read(hashes.data(), size) != size)
+		AfxThrowFileException(CFileException::endOfFile);
+
+	uchar digest[MDX_DIGEST_SIZE];
+	if (parts < 2 || !CKnownFile::CreateHash(hashes.data(), size, digest) || !md4equ(digest, m_abyMD4Hash))
+		return false;
+
+	std::vector<std::unique_ptr<uchar[]>> pending(parts);
+	for (UINT i = 0; i < parts; ++i) {
+		pending[i] = std::make_unique<uchar[]>(MDX_DIGEST_SIZE);
+		md4cpy(pending[i].get(), hashes.data() + i * MDX_DIGEST_SIZE);
+	}
+	m_aMD4HashSet.SetSize(parts);
+	for (UINT i = 0; i < parts; ++i)
+		m_aMD4HashSet[i] = pending[i].release();
+	return true;
 }
 
 bool CFileIdentifier::SetMD4HashSet(const CArray<uchar*, uchar*> &aHashset)

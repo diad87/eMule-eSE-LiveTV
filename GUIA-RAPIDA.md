@@ -1,12 +1,12 @@
-# Guía rápida de eMule eSE 9.3.0-rc.1
+# Guía rápida de eMule eSE 9.3.0
 
-Esta guía acompaña al candidato portable para Windows 10/11 x64. La
-distribución está pendiente de la validación descrita en el
-[plan de ejecución](docs/V93_RC1_EXECUTION.md).
+Esta guía acompaña al paquete portable x64 con LiveTV y el panel web.
+Si usas el paquete x86 con el servidor web nativo, consulta la [guía
+Win32](docs/RELEASE_WIN32.md).
 
 ## 1. Descargar
 
-Cuando esté disponible el paquete `v0.70b-eSE9.3.0-rc.1`, comprueba su SHA-256,
+Cuando esté disponible el paquete `v0.70b-eSE9.3.0`, comprueba su SHA-256,
 `BUILD_INFO.txt` y `RELEASE_NOTES.md` antes de abrirlo.
 
 La autoactualización está desactivada y no se empaqueta ningún actualizador
@@ -31,7 +31,7 @@ idiomas y la configuración inicial.
 5. Se abrirá el panel en
    [http://localhost:8080/live](http://localhost:8080/live).
 
-En esta candidata el panel, la API y el HLS recibido son solo locales. No abras ni
+El panel, la API y el HLS recibido son solo locales. No abras ni
 reenvíes los puertos `4711` o `8080` para acceder desde otro equipo; el acceso
 LAN/remoto queda aplazado.
 

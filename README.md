@@ -9,16 +9,14 @@ P2P live streaming over eD2K and Kad. It combines the native Windows client,
 FFmpeg-based HLS broadcasting and a local web dashboard in one portable
 Windows x64 package.
 
-## Current candidate
+## eSE 9.3.0 packages
 
-### eSE 9.3.0-rc.1 for Windows x64
+The Windows x64 package includes LiveTV and the dashboard. The x86 package
+includes the native client, QUIC and the native WebServer.
+H93-16 qualification is pending for these packages.
 
-This source tree is preparing the `9.3.0-rc.1` Windows x64 candidate. Packaging
-and R1 qualification are in progress. The latest published stable release is
-`9.1.0`.
-
-[Draft 9.3.0-rc.1 release notes](docs/RELEASE_NOTES_v9.3.0-rc.1.md)
-· [RC1 execution plan](docs/V93_RC1_EXECUTION.md)
+[9.3.0 release notes](docs/RELEASE_NOTES_v9.3.0.md)
+· [Win32 package](docs/RELEASE_WIN32.md)
 · [All releases](https://github.com/diad87/eMule-eSE-LiveTV/releases)
 
 
@@ -158,7 +156,7 @@ For a local developer build:
 ```powershell
 .\tools\build_quic_msys2_candidate.ps1 -WorkRoot D:\tmp\ese-quic-x64
 .\tools\build_all.ps1 `
-  -ReleaseTag v0.70b-eSE9.3.0-rc.1 `
+  -ReleaseTag v0.70b-eSE9.3.0 `
   -QuicReleaseRoot D:\tmp\ese-quic-x64 `
   -FfmpegPath <path-to-pinned-ffmpeg.exe> `
   -AllowDirty `

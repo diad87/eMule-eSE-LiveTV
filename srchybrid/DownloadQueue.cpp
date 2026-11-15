@@ -679,7 +679,7 @@ bool CDownloadQueue::CheckAndAddSource(CPartFile *sender, CUpDownClient *source)
 	//our new source is really new, but maybe it is already uploading to us?
 	//if yes the known client will be attached to the var "source"
 	//and the old source client will be deleted
-	if (theApp.clientlist->AttachToAlreadyKnown(&source, NULL)) {
+	if (theApp.clientlist->AttachToAlreadyKnown(&source, NULL) == CClientList::Attachment::Attached) {
 #ifdef _DEBUG
 		const CPartFile *srcfile = source->GetRequestFile();
 		if (thePrefs.GetVerbose() && srcfile) {

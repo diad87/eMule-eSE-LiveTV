@@ -876,12 +876,24 @@ bool CClientReqSocket::ProcessPacket(const BYTE *packet, uint32 size, UINT opcod
 			// if not we keep our new-constructed client ;)
 			// Registered DCO routes own a specific client lifetime. The classic
 			// merge may replace/delete that client and cannot transfer this owner.
-			if (!m_directPeerOwner && !m_legacyDirectRoute && theApp.clientlist->AttachToAlreadyKnown(&client, this))
-				// update the old client informations
-				bIsMuleHello = client->ProcessHelloPacket(packet, size);
-			else if(!m_directPeerOwner && !m_legacyDirectRoute) {
-				theApp.clientlist->AddClient(client);
-				client->SetCommentDirty();
+			if (!m_directPeerOwner && !m_legacyDirectRoute) {
+				const auto attachment = theApp.clientlist->AttachToAlreadyKnown(&client, this);
+				if (attachment == CClientList::Attachment::DirectConnectionActive) {
+					if (bNewClient) {
+						auto *unregistered = client;
+						client = nullptr;
+						unregistered->socket = nullptr;
+						delete unregistered;
+					}
+					Disconnect(_T("Authenticated direct connection is already active"));
+					return false;
+				}
+				if (attachment == CClientList::Attachment::Attached)
+					bIsMuleHello = client->ProcessHelloPacket(packet, size);
+				else {
+					theApp.clientlist->AddClient(client);
+					client->SetCommentDirty();
+				}
 			}
 
 			theApp.emuledlg->transferwnd->GetClientList()->RefreshClient(client);

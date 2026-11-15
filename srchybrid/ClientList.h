@@ -101,7 +101,8 @@ public:
 	// sent to legacy peers.
 	void	GetConnectedSnapshot(std::vector<CUpDownClient*>& out, size_t max,
 	                             bool bRequirePrivacyTunneling = false) const;
-	bool	AttachToAlreadyKnown(CUpDownClient **client, CClientReqSocket *sender);
+	enum class Attachment { Unattached, Attached, DirectConnectionActive };
+	Attachment AttachToAlreadyKnown(CUpDownClient **client, CClientReqSocket *sender);
 	CUpDownClient* FindClientByConnIP(uint32 clientip, UINT port) const;
 	CUpDownClient* FindClientByIP(uint32 clientip, UINT port) const;
 	CUpDownClient* FindClientByUserHash(const uchar *clienthash, uint32 dwIP = 0, uint16 nTCPPort = 0) const;

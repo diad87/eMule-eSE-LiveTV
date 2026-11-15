@@ -4015,6 +4015,17 @@ inline void RunQuicToTcpFileRecovery(CDirectReachabilityManager& manager,CUpDown
         file.IsCompleteBD(0,4095) && file.GetTotalGapSizeInPart(0)==1,"mixed recovery real partial prerequisites");
     const auto oldSource=manager.SnapshotDirectPartContributions(file.NativeDirectFileKey(),0,1);
     Require(oldSource.size()==1 && oldSource[0].source.kind==reach::DirectPartOwnerKind::Quic,"mixed initial QUIC provenance");
+    auto* activeSocket=client.socket;
+    auto* duplicateSocket=new CClientReqSocket();
+    auto* duplicate=new CUpDownClient(&file,client.GetUserPort(),client.GetUserIDHybrid(),0,0);
+    duplicate->SetIP(client.GetIP());
+    duplicate->SetUserHash(client.GetUserHash());
+    const auto attachment=theApp.clientlist->AttachToAlreadyKnown(&duplicate,duplicateSocket);
+    if(attachment!=CClientList::Attachment::Attached) delete duplicate;
+    duplicateSocket->Safe_Delete();
+    Require(attachment==CClientList::Attachment::DirectConnectionActive && client.socket==activeSocket &&
+        !oldTransport.Snapshot().closed,"ordinary duplicate connection preserves authenticated direct transfer");
+    Log(_T("REACH_SELFTEST authenticated direct owner PASS: classic duplicate leaves active QUIC and partial file intact"));
     if(cooldownCheck) {
         CNativeDirectSelfTestAccess::TestStalledQuicCooldown(manager,handle,*before,oldTransport);
         Require(file.IsCompleteBD(0,4095) && file.GetTotalGapSizeInPart(0)==1,"stalled route keeps accepted disk bytes");

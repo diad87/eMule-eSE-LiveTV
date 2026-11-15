@@ -829,7 +829,7 @@ BOOL CSearchListCtrl::OnCommand(WPARAM wParam, LPARAM)
 					(new PreviewDlg())->SetFile(file);
 				} else {
 					CUpDownClient *newclient = new CUpDownClient(NULL, file->GetClientPort(), file->GetClientID(), file->GetClientServerIP(), file->GetClientServerPort(), true);
-					if (!theApp.clientlist->AttachToAlreadyKnown(&newclient, NULL))
+					if (theApp.clientlist->AttachToAlreadyKnown(&newclient, NULL) != CClientList::Attachment::Attached)
 						theApp.clientlist->AddClient(newclient);
 
 					newclient->SendPreviewRequest(*file);

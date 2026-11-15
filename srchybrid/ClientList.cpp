@@ -227,7 +227,7 @@ void CClientList::GetConnectedSnapshot(std::vector<CUpDownClient*>& out, size_t 
 	}
 }
 
-bool CClientList::AttachToAlreadyKnown(CUpDownClient **client, CClientReqSocket *sender)
+CClientList::Attachment CClientList::AttachToAlreadyKnown(CUpDownClient **client, CClientReqSocket *sender)
 {
 	CUpDownClient *tocheck = *client;
 	CUpDownClient *found_client = NULL;
@@ -244,11 +244,15 @@ bool CClientList::AttachToAlreadyKnown(CUpDownClient **client, CClientReqSocket 
 		}
 	}
 	if (found_client == NULL)
-		return false;
+		return Attachment::Unattached;
 	if (found_client == tocheck) {
 		//we found the same client instance (client may have sent more than one OP_HELLO). Do not delete this client!
-		return true;
+		return Attachment::Attached;
 	}
+	if (sender && found_client->socket && found_client->socket != sender &&
+		found_client->socket->HasAuthenticatedDirectConnection())
+		return Attachment::DirectConnectionActive;
+
 	found_client->MergeReachabilityFrom(*tocheck);
 	if (sender) {
 		if (found_client->socket) {
@@ -266,7 +270,7 @@ bool CClientList::AttachToAlreadyKnown(CUpDownClient **client, CClientReqSocket 
 						, tocheck->GetUserName(), (LPCTSTR)ipstr(tocheck->GetConnectIP())
 						, found_client->GetUserName(), (LPCTSTR)ipstr(found_client->GetConnectIP()));
 				}
-				return false;
+				return Attachment::Unattached;
 			}
 			found_client->socket->client = NULL;
 			found_client->socket->Safe_Delete();
@@ -280,7 +284,7 @@ bool CClientList::AttachToAlreadyKnown(CUpDownClient **client, CClientReqSocket 
 		theApp.liveStreamManager->OnPeerReplaced(tocheck, found_client);
 	delete tocheck;
 	*client = found_client;
-	return true;
+	return Attachment::Attached;
 }
 
 CUpDownClient *CClientList::FindClientByConnIP(uint32 clientip, UINT port) const

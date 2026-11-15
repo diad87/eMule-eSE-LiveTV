@@ -55,6 +55,19 @@ and retains the timed probe logs in the dependency work directory.
 | AICH recovery and parser bounds | `0d1aa33d` passed on x64 and Win32. Each run exercised 10,000 trees, 2,491 truncations, 512 malformed cases and the `known2.met` compaction lock. Both returned to the original live allocation count and closed from private desktops. |
 | `.part.met` replacement and recovery | `5ab9abd7` held the staging file open to force a replacement failure. The committed metadata and backup remained byte-identical. Startup chose valid committed metadata, recovered `.bak` and legacy `.backup` as applicable, and ignored an unfinished `.tmp`. |
 
+Both `e2231067` packages passed native authentication, shutdown and ZIP
+integrity. The Win32 package completed F1 after the UDP loss window, verified
+NC-Q05 fallback, and passed profile replacement and rollback to the original
+x64 eSE 9.2.0-rc.2. The pre-upgrade snapshot, eD2K user hash, nickname and
+SecureIdent key matched after rollback. Both architectures passed the
+retired KRP and R.3 controls with zero legacy connections. The `937e725d`
+runtime passed the duplicate-connection guard and the classic TCP control.
+
+| `e2231067` ZIP | SHA-256 |
+| --- | --- |
+| x64 | `4477A8F2AF443D8B96253AF2026D4E5754A669946864F114DCDC701DFB79CDE8` |
+| Win32 | `32503EA34F714EA963613961631EDC8884DEF8FE1E37DE19C184D74678BBD6F9` |
+
 ## Pending exit checks
 
 | Area | Evidence required for the candidate |

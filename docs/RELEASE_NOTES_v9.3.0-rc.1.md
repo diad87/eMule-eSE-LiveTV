@@ -11,11 +11,13 @@
   transfer after 15 seconds of UDP packet discard. The verified parts were
   preserved and the completed file matched the source SHA-256. This test used
   the integrated x64 laboratory build on a single host.
-- The x64 package verifies the signed QUIC dependencies and bundles the
-  runtime DLLs, notices and corresponding sources. In Connection preferences,
-  Direct QUIC can be enabled explicitly with Net Lab consent and a pinned
-  peer key. It starts disabled. Initial transfer authorization still depends
-  on a compatible current route and the ordinary upload queue.
+- The x64 and Win32 packages verify the QUIC dependencies and include the
+  runtime DLLs, notices and corresponding sources. Win32 GnuTLS is built
+  from signed source. In Connection preferences, enable Direct QUIC with
+  Net Lab consent and a pinned peer key. Direct QUIC starts disabled.
+  Initial authorization depends on a compatible current route and the
+  ordinary upload queue.
+  [Win32 package contents](RELEASE_WIN32.md)
 - Active QUIC sessions track useful transfer progress. When prolonged UDP
   loss leaves no viable route, the transfer ends with a no-progress reason
   and keeps its verified parts. The isolated restart test recovered those
@@ -23,17 +25,19 @@
 - In an explicitly scheduled mixed-route loopback test, loss of the initial
   QUIC packets triggered one switch to observed TCP. Fresh SecureIdent,
   all 111 part hashes and the final 1 GiB SHA-256 passed.
+- A duplicate classic connection leaves an authenticated QUIC transfer
+  attached to its active route. Failed replacement of
+  `preferences.ini` or `.part.met` leaves the previous saved file available.
 - The native build retires the KRP proxy and LiveTV buddy relay. The former
   LiveTV relay mutation endpoints report HTTP 410. Their opcodes and feature
   bit remain reserved for compatibility.
 
 ## Qualification still open
 
-The candidate must complete the two-machine transfer and recovery checks,
-normal route selection for TCP fallback, mobility, and classic
-interoperability. D21 also requires the x64 and Win32 distribution packages
-and focused integrated qualification. Supported profiles, experimental
-features and network limits will be recorded after qualification.
+The candidate must complete the physical transfer, recovery and network
+change checks between two machines. Those checks include normal TCP route
+selection and the applicable classic and prior eSE controls. Supported
+profiles and network limits will be recorded after qualification.
 [Candidate execution record](V93_RC1_EXECUTION.md)
 
 ## Installation and rollback during qualification

@@ -40,6 +40,12 @@ public:
         if(!ingress || ingress_!=ingress) return false;
         ingress_=nullptr; head_=size_=dropNext_=0; ingress->SocketReset(); return true;
     }
+    // Keep datagrams already sent to this logical socket when a test hands
+    // its receive queue to another handler. Ordinary detach still discards it.
+    bool DetachQuicIngressForHandoff(QuicUdpIngress* ingress) noexcept {
+        if(!ingress || ingress_!=ingress) return false;
+        ingress_=nullptr; dropNext_=0; ingress->SocketReset(); return true;
+    }
     QuicUdpSendResult SendQuicDatagram(QuicUdpIngress* ingress,const udp::Endpoint& destination,
         const std::uint8_t* bytes,std::size_t length) override {
         if(!ingress || ingress!=ingress_ || !bytes || !length || length>MaxPacket) return {QuicUdpSendStatus::Invalid,0};

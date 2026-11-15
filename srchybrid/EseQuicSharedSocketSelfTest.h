@@ -1985,16 +1985,20 @@ inline void ResolveSimulatedSource(CDirectReachabilityManager& manager,
         void Poll(std::uint64_t) override {}
         void SocketReset() noexcept override { packets.clear(); }
     } inbox;
-    Require(port.AttachQuicIngress(&inbox),"discovery simulated witness ingress");
+    Require(port.memory!=nullptr,"discovery uses the simulated witness port");
+    auto& witnessPort=*port.memory;
+    Require(witnessPort.AttachQuicIngress(&inbox),"discovery simulated witness ingress");
     struct Cleanup {
-        CDirectReachabilityManager& manager; Port& port; Inbox& inbox;
+        CDirectReachabilityManager& manager; test::SimulatedQuicPort& port; Inbox& inbox;
+        bool preserveQueue=false;
         ~Cleanup() {
             // The timer can start the download bootstrap while consuming the
-            // discovery result. Retire only the lookup and its own bootstrap.
+            // discovery result. Keep its queued PROBE for the next responder.
             manager.CancelDirectKad6Resolution();
-            port.DetachQuicIngress(&inbox);
+            if(preserveQueue) port.DetachQuicIngressForHandoff(&inbox);
+            else port.DetachQuicIngress(&inbox);
         }
-    } cleanup{manager,port,inbox};
+    } cleanup{manager,witnessPort,inbox};
     struct Signer final : control::Signer {
         Identity& identity; explicit Signer(Identity& value):identity(value) {}
         bool Sign(const std::uint8_t* p,std::size_t n,std::array<std::uint8_t,64>& sig) noexcept override { return identity.Sign(p,n,sig.data()); }
@@ -2032,7 +2036,7 @@ inline void ResolveSimulatedSource(CDirectReachabilityManager& manager,
     control::Header context; unsigned finds=0,gets=0,refreshes=0;
     bool done=false; unsigned timerMessages=0; const auto deadline=Now()+4000;
     while(Now()<deadline && !done) {
-        manager.TickDirectConnections(); port.memory->Deliver();
+        manager.TickDirectConnections(); witnessPort.Deliver();
         auto packets=std::move(inbox.packets); inbox.packets.clear();
         for(const auto& packet:packets) {
             Require(packet.peer==localPort.Endpoint(),"discovery requester logical endpoint");
@@ -2066,7 +2070,7 @@ inline void ResolveSimulatedSource(CDirectReachabilityManager& manager,
                 header.type=wire::kEseWireUdpDescriptorResult;
                 Require(control::BuildDescriptorResult(header,0,advertised.source.file,locator,advertised.descriptor.data(),advertised.length,identity.pub,signer,response),"discovery signed RESULT");
             }
-            Require(port.SendQuicDatagram(&inbox,packet.peer,response.bytes.data(),response.size).status==QuicUdpSendStatus::Sent,"discovery witness datagram response");
+            Require(witnessPort.SendQuicDatagram(&inbox,packet.peer,response.bytes.data(),response.size).status==QuicUdpSendStatus::Sent,"discovery witness datagram response");
         }
         localPort.Deliver(); manager.TickDirectConnections();
         if(gets==1) {
@@ -2087,9 +2091,22 @@ inline void ResolveSimulatedSource(CDirectReachabilityManager& manager,
         manager.ConsumeDirectKad6DownloadSources(*theApp.downloadqueue)==0,"discovery mailbox source single delivery");
     Log(_T("REACH_SELFTEST V164 PASS: normal per-file Kad6 scheduler signed registered-cap contact bootstrap FIND GET timer source single delivery; simulated witness no physical NAT claim"));
     if(needsRefresh) {
+        // Exercise early admission explicitly once. The next real upload
+        // timer queues the first download PROBE while the witness is attached.
+        const auto admissionDeadline=Now()+1500;
+        while(!witnessPort.Queued() && Now()<admissionDeadline) {
+            MSG message{};
+            for(unsigned count=0;count<256 && !witnessPort.Queued() && PeekMessage(&message,nullptr,0,0,PM_REMOVE);++count) {
+                TranslateMessage(&message); DispatchMessage(&message);
+            }
+            if(!witnessPort.Queued()) Sleep(1);
+        }
+        Require(witnessPort.Queued()==1,"early admission queues the download PROBE before witness handoff");
         exercisedExpiredContact=true;
         Log(_T("REACH_SELFTEST V165 PASS: expired signed contact bootstrap CONTACT_GET same-key fresh CONTACT_RESULT before normal FIND GET; simulated witness no physical NAT claim"));
     }
+    cleanup.preserveQueue=true;
+    Log(_T("DISCOVERY_HANDOFF_SELFTEST queued=%u"),static_cast<unsigned>(witnessPort.Queued()));
 }
 inline void MultipartHash(const BYTE* bytes,std::array<BYTE,32>& parts,std::array<BYTE,16>& root) {
     Require(CKnownFile::CreateHash(bytes,PARTSIZE,parts.data()) &&
@@ -4753,16 +4770,6 @@ inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNu
             coldFile->srclist.GetCount()==1 && coldFile->srclist.GetHead()==client.get(),
             "active duplicate preserves source token lifetime attempt epoch and subscriber count");
         Log(_T("DISCOVERY_DUPLICATE_SELFTEST active: rejected=1 tokenPreserved=1 lifetimePreserved=1 attemptPreserved=1 sourceCount=1"));
-        const auto repeatDeadline=Now()+300;
-        while(Now()<repeatDeadline) {
-            MSG message;
-            for(unsigned count=0;count<256 && PeekMessage(&message,nullptr,0,0,PM_REMOVE);++count) {
-                TranslateMessage(&message); DispatchMessage(&message);
-            }
-            Sleep(1);
-        }
-        Require(client->GetNativeDirectDownloadSubscriber()==originalToken &&
-            manager.DirectConnections().Size()==1 && !client->socket,"automatic caller repeated reask is single-flight");
     } else admitted=client->RequestNativeDirectDownload(Now()+15000);
     const auto token=client->GetNativeDirectDownloadSubscriber();
     Require(admitted.request.status==reach::DirectRequestStatus::Created,"consumer DCO request");
@@ -4930,9 +4937,19 @@ inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNu
         if(slowPreparation) Require(CNativeDirectSelfTestAccess::QuicPolicyIssued(manager)>=preparationStarted+1600,
             "control deadline starts after real slow policy preparation");
         Require(!client->socket && manager.SelectOwnedDirectQuicDownloadRoutes(admitted.request.handle).routes.empty(),"automatic preparation has no premature transport");
-        bool ackQueued=false; unsigned probes=0,proofs=0,adoptions=0;
+        bool ackQueued=false; unsigned probes=0,proofs=0,adoptions=0,reaskTimerMessages=0;
         control::Datagram firstProof; const auto until=Now()+1500;
         while(Now()<until && !ackQueued) {
+            // The discovery timer can already have started the 1500 ms control
+            // exchange. Test repeated reasks while servicing the simulated peer
+            // so the fixture cannot spend the real retry budget before replying.
+            if(automaticCaller) {
+                MSG message{};
+                for(unsigned count=0;count<256 && PeekMessage(&message,nullptr,0,0,PM_REMOVE);++count) {
+                    if(message.message==WM_TIMER) ++reaskTimerMessages;
+                    TranslateMessage(&message); DispatchMessage(&message);
+                }
+            }
             manager.TickDirectConnections(); port.memory->Deliver();
             QuicUdpRouter::PendingControl packet;
             while(responder->PopControlReply(packet)) {
@@ -4989,8 +5006,12 @@ inline void RunConsumer(CDirectReachabilityManager& manager,std::uint16_t portNu
         }
         Require(ackQueued && !client->socket,"ACK queued without manual route registration");
         if(slowPreparation) Log(_T("REACH_SELFTEST V161 PASS: real1600ms policy preparation before fresh1500ms control deadline then signed ACK4 queued no socket no Core deadline extension; historical zero-PROBE failure class reproduced separately"));
-        if(automaticCaller) Require(probes==2 && proofs==2 && adoptions==1 && port.memory->Dropped()==2,
-            "automatic lost challenge and ACK bounded retries single admission");
+        if(automaticCaller) {
+            Require(reaskTimerMessages && client->GetNativeDirectDownloadSubscriber()==token &&
+                manager.DirectConnections().Size()==1 && !client->socket,"automatic caller repeated reask is single-flight");
+            Require(probes==2 && proofs==2 && adoptions==1 && port.memory->Dropped()==2,
+                "automatic lost challenge and ACK bounded retries single admission");
+        }
         responder->Stop(); events->Drain(); responder->Poll(Now());
         Require(responder->Empty() && peer.Attach(),"control responder transfers ingress to native peer");
     }
